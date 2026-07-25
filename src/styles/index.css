@@ -1,0 +1,1045 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/* ----------------------------------------------------------------------------
+   Two themes, one contract. Every color in the app resolves through these
+   variables, so a theme is just a different set of values for the same names.
+   :root                    = "Cool Crisp" light (the default)
+   html[data-theme='dark']  = the original dark palette, unchanged
+
+   Which one applies is decided by data-theme on <html>, set before first paint
+   by the inline script in index.html (see useTheme in src/lib/useTheme.ts).
+---------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  /* Surfaces. The canvas is kept only slightly below pure white on purpose:
+     text on it has to survive the orb field overlaying ~0.14 of accent, which
+     costs about 0.5 of contrast ratio, so the headroom is spent there rather
+     than on a deeper canvas. Definition comes from the border instead. */
+  --bg: #f4f6f9; /* page canvas + recessed code blocks */
+  --surface: #ffffff; /* topbar, sidebar, reading column, cards */
+  --surface-hover: #e8ebf1; /* hover / raised, diagrams, table headers */
+  /* Borders carry no text, so this can be much stronger than the old #e4e6eb
+     (1.25:1 — the reason the light theme read flat) with zero AA cost. */
+  --border: #d2d7e0; /* dividers, hairlines — 1.45:1 on white */
+
+  /* text — contrast ratios are against --surface (#fff) */
+  --text: #2b2d33; /* body / reading text — 12.6:1 */
+  --text-heading: #14151a; /* titles, headings — 17.9:1 */
+  --text-secondary: #565a66; /* metadata, captions, nav-inactive — 7.2:1 */
+  /* Muted has to clear AA on the *darkest* thing it lands on, which is the code
+     block header (--surface-hover over the code canvas), not the white surface.
+     #6b7280 looked fine at 4.83:1 on white but fell to 4.32:1 there. */
+  --text-muted: #606877; /* 5.61:1 on surface, 4.83:1 worst case */
+
+  /* accent */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-contrast: #ffffff; /* text/icon on accent fills */
+  --accent-tint: #ececfb; /* pill / active-nav / tag backgrounds */
+
+  /* reading highlight (revision <mark>) — on-brand violet, not gold */
+  --highlight-bg: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  --highlight-text: var(--text-heading);
+  /* text selection — translucent so it reads over code + tinted panels */
+  --select-bg: rgba(79, 70, 229, 0.18);
+  --select-text: #14151a;
+
+  /* status — dark theme's pastels wash out on white, so these are the deep
+     variants: they carry callout borders, titles and icons at AA. */
+  --success: #0f7a4d;
+  --warning: #b45309;
+  --danger: #dc2626;
+
+  /* derived */
+  --grad: linear-gradient(125deg, #4f46e5 0%, #6d28d9 55%, #7c3aed 100%);
+  --grad-soft: linear-gradient(120deg, rgba(79, 70, 229, 0.08), rgba(124, 58, 237, 0.08));
+  /* Raised from 0.10: until the Tailwind v4 shadow-color syntax was fixed this
+     never rendered at all, and at 0.10 it stays invisible on white now that it
+     does. This is the accent halo on hovered cards and gradient buttons. */
+  --glow: rgba(79, 70, 229, 0.22);
+  /* canvas vignette + card lift: both are theme-shaped, not just theme-colored,
+     so they resolve through vars rather than being hardcoded at the use site. */
+  --vignette: transparent; /* a dark fade would dirty the white canvas */
+  --card-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 12px 32px -16px rgba(16, 24, 40, 0.22);
+  --dropdown-shadow: 0 4px 6px -2px rgba(16, 24, 40, 0.07), 0 14px 32px -8px rgba(16, 24, 40, 0.24);
+
+  /* syntax tokens, tuned for the #F6F7F9 light code surface */
+  --hl-comment: #606877;
+  --hl-keyword: #9333ea;
+  --hl-string: #0a7c42;
+  --hl-number: #b45309;
+  --hl-title: #1d4ed8;
+  --hl-builtin: #0e7490;
+  --hl-literal: #b45309;
+  --hl-type: #be185d;
+  --hl-attr: #2563eb;
+  --hl-meta: #606877;
+
+  /* Section brand hues (see src/lib/sectionIcons.tsx). The real brand colors are
+     mid-tone and wash out on white — at 16px these read as 2.2–3.0:1. These are
+     hue-preserving darkenings that hold >=4.6:1 on the canvas, which matters
+     because the same value also tints bold body copy via --bold-color. */
+  --brand-python: #3874a4;
+  --brand-django: #2c7d5e;
+  --brand-fastapi: #097d73;
+  --brand-databases: #2a73b4;
+  --brand-celery: #4a7b2d;
+  --brand-redis: #db2110;
+  --brand-docker: #0e72bf;
+
+  /* Ambient orb field. Hues are pre-mixed toward white because --accent is a
+     DARK violet: dropped raw onto the near-white canvas it eats luminance fast
+     (pure accent at 0.10 already lands --text-muted at 4.52:1, with no room to
+     spare). Mixing 55% to white keeps the same bloom at half the luminance
+     cost, which is what buys the 0.14 budget below. */
+  --orb-a: color-mix(in srgb, var(--accent) 62%, #fff);
+  --orb-b: color-mix(in srgb, #7c3aed 62%, #fff);
+  --orb-c: color-mix(in srgb, var(--brand-databases) 62%, #fff);
+  --orb-d: color-mix(in srgb, var(--brand-fastapi) 62%, #fff);
+  --orb-e: color-mix(in srgb, var(--accent) 52%, #fff);
+  /* Group opacity on the container is a HARD ceiling on how much colour any
+     pixel can take, however many orbs overlap — which is what makes the AA
+     budget provable rather than eyeballed. 0.15 is the measured ceiling: at
+     0.16 the teal orb drifting under the footer separators takes --text-muted
+     to 4.49:1. Verified by sweeping all five animations through 24 phases and
+     sampling real painted pixels, not by estimating. */
+  --orb-field: 0.16;
+  --orb-field-calm: 0.06;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #15161b; /* page canvas + recessed code blocks */
+  --surface: #1c1d24; /* topbar, sidebar, reading column, cards */
+  --surface-hover: #262832; /* hover / raised, diagrams, table headers */
+  --border: #2e3039; /* dividers, hairlines */
+
+  /* text */
+  --text: #d6d7de; /* body / reading text */
+  --text-heading: #f2f2f6; /* titles, headings */
+  --text-secondary: #9a9ca7; /* metadata, captions, nav-inactive */
+  --text-muted: #8b8d99; /* faint hints, placeholders */
+
+  /* accent */
+  --accent: #8b93f8;
+  --accent-hover: #a5abfa;
+  --accent-contrast: #12131a; /* text/icon on accent fills */
+  --accent-tint: #24263a; /* pill / active-nav / tag backgrounds */
+
+  /* reading highlight (revision <mark>) — on-brand violet, not gold */
+  --highlight-bg: color-mix(in srgb, var(--accent) 24%, var(--surface));
+  --highlight-text: var(--text-heading);
+  /* text selection — translucent so it reads over code + tinted panels */
+  --select-bg: rgba(139, 147, 248, 0.32);
+  --select-text: #f4f4f8;
+
+  /* status */
+  --success: #6fcf97;
+  --warning: #f2c55c;
+  --danger: #f2777a;
+
+  /* derived */
+  --grad: linear-gradient(125deg, #8b93f8 0%, #a5abfa 55%, #b8a5fb 100%);
+  --grad-soft: linear-gradient(120deg, rgba(139, 147, 248, 0.14), rgba(165, 171, 250, 0.14));
+  --glow: rgba(139, 147, 248, 0.22);
+  --vignette: color-mix(in srgb, #000 22%, transparent);
+  --card-shadow: inset 0 1px 0 0 color-mix(in srgb, #fff 4%, transparent),
+    0 18px 40px -28px rgba(0, 0, 0, 0.65);
+  --dropdown-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
+
+  /* syntax tokens, tuned for the #15161B code surface */
+  --hl-comment: #8b8d99;
+  --hl-keyword: #a5abfa;
+  --hl-string: #6fcf97;
+  --hl-number: #f2c55c;
+  --hl-title: #8b93f8;
+  --hl-builtin: #7dd3e0;
+  --hl-literal: #f2c55c;
+  --hl-type: #f2a9c0;
+  --hl-attr: #8b93f8;
+  --hl-meta: #8b8d99;
+
+  /* True brand colors — these are already tuned for the dark surface. */
+  --brand-python: #4b8bbe;
+  --brand-django: #44b78b;
+  --brand-fastapi: #0ba99c;
+  --brand-databases: #5b9bd5;
+  --brand-celery: #7fbf5a;
+  --brand-redis: #ff5c4d;
+  --brand-docker: #2e9bee;
+
+  /* Mirror of the light logic: here the orbs ADD light to a near-black canvas,
+     which reduces contrast for the mid-grey --text-muted, so they are mixed
+     toward --bg instead. Ceiling is 0.17. */
+  --orb-a: color-mix(in srgb, var(--accent) 75%, var(--bg));
+  --orb-b: color-mix(in srgb, #b8a5fb 75%, var(--bg));
+  --orb-c: color-mix(in srgb, var(--brand-databases) 75%, var(--bg));
+  --orb-d: color-mix(in srgb, var(--brand-fastapi) 75%, var(--bg));
+  --orb-e: color-mix(in srgb, var(--accent) 65%, var(--bg));
+  --orb-field: 0.19;
+  --orb-field-calm: 0.06;
+}
+
+/* Map semantic vars → Tailwind color tokens (utilities like bg-surface / text-fg). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-code: var(--bg);
+  --color-fg: var(--text);
+  --color-heading: var(--text-heading);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-contrast: var(--accent-contrast);
+
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+/* ----------------------------------------------------------------------------
+   Base
+---------------------------------------------------------------------------- */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background: var(--bg);
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: transparent;
+    color: var(--text);
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Dark-theme bottom vignette only. The two static accent washes that used to
+     live here moved into .orb-field — keeping both would stack ~10% accent
+     under the field's ~14% and push --text-muted on --bg to about 4.05:1,
+     an AA failure. Paints below .orb-field, which is what we want. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: linear-gradient(180deg, transparent 55%, var(--vignette));
+  }
+  @media (min-width: 1024px) {
+    body {
+      font-size: 16.5px;
+    }
+  }
+  ::selection {
+    background: var(--select-bg);
+    color: var(--select-text);
+  }
+  mark {
+    background: var(--highlight-bg);
+    color: var(--highlight-text);
+    padding: 0.05em 0.3em;
+    border-radius: 0.3em;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  *:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------------
+   Reusable brand + rendered-Markdown styling.
+   Intentionally UNLAYERED: unlayered rules outrank any @layer, so these win over
+   @tailwindcss/typography's layered `.prose` defaults. Without this the plugin's
+   own prose colors load AFTER ours and win, ignoring the active theme.
+---------------------------------------------------------------------------- */
+  .text-gradient {
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .brand-gradient {
+    background: var(--grad);
+  }
+
+  .prose {
+    --tw-prose-body: var(--text);
+    --tw-prose-headings: var(--text-heading);
+    --tw-prose-links: var(--accent);
+    --tw-prose-bold: var(--text-heading);
+    --tw-prose-counters: var(--text-secondary);
+    --tw-prose-bullets: color-mix(in srgb, var(--accent) 55%, transparent);
+    --tw-prose-hr: var(--border);
+    --tw-prose-quotes: var(--text);
+    --tw-prose-quote-borders: var(--accent);
+    --tw-prose-captions: var(--text-secondary);
+    --tw-prose-code: var(--text-heading);
+    --tw-prose-th-borders: var(--border);
+    --tw-prose-td-borders: var(--border);
+    /* 75ch measured ~75-80 characters at prose-lg's flat 18px, above the
+       45-75 comfort band for long-form reading. 68ch lands around 66-70. */
+    max-width: 68ch;
+    /* Long URLs and identifiers in prose have no other escape hatch — there is
+       no other overflow-wrap/word-break rule in the stylesheet. */
+    overflow-wrap: break-word;
+    color: var(--text);
+  }
+  .prose :where(h1, h2, h3, h4) {
+    scroll-margin-top: 5.5rem;
+    color: var(--text-heading);
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  /* h1 — note title: large, tight, with a short gradient accent rule */
+  .prose :where(h1) {
+    /* 2.35em of an 18px base is 42px, wide enough that a single long word like
+       "Reconciliation" overflowed the 240px column at 320px. Scaled with the
+       viewport on small screens, fixed at the original size from 640px up. */
+    font-size: clamp(1.75rem, 7.5vw, 2.35em);
+    font-weight: 800;
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+    margin: 0 0 0.55em;
+    padding-bottom: 0.3em;
+  }
+  @media (min-width: 640px) {
+    .prose :where(h1) {
+      font-size: 2.35em;
+    }
+  }
+  .prose :where(h1)::after {
+    content: '';
+    display: block;
+    width: 3.25rem;
+    height: 3px;
+    margin-top: 0.55rem;
+    border-radius: 2px;
+    background: var(--grad);
+  }
+  /* h2 — a section header: icon + left accent bar + faint tint banner */
+  .prose :where(h2) {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.35em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-top: 2.6em;
+    margin-bottom: 0.9em;
+    padding: 0.55rem 0.9rem;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--sec-color, var(--accent));
+    border-radius: 0.55rem;
+    background: color-mix(in srgb, var(--sec-color, var(--accent)) 7%, var(--surface));
+  }
+  .prose :where(h2) .sec-icon {
+    width: 1.15rem;
+    height: 1.15rem;
+    flex: none;
+    color: var(--sec-color, var(--accent));
+  }
+  .sec-warn {
+    --sec-color: var(--warning);
+  }
+  .sec-key {
+    --sec-color: var(--success);
+  }
+  .sec-next {
+    --sec-color: var(--text-secondary);
+  }
+  /* sec-info, sec-qa fall through to --accent */
+
+  /* h3 — a subheading within a section: slim accent tick */
+  .prose :where(h3) {
+    font-size: 1.18em;
+    font-weight: 650;
+    line-height: 1.3;
+    margin-top: 1.9em;
+    margin-bottom: 0.5em;
+    padding-left: 0.7rem;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  /* h4 — a small label: clearly below h3 and distinct from body */
+  .prose :where(h4) {
+    font-size: 0.82em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-secondary);
+    margin-top: 1.6em;
+    margin-bottom: 0.4em;
+  }
+  /* body copy + lists: comfortable measure and rhythm */
+  .prose :where(p) {
+    line-height: 1.75;
+    margin-top: 1.05em;
+    margin-bottom: 1.05em;
+  }
+  .prose :where(ul, ol) {
+    margin-top: 1em;
+    margin-bottom: 1em;
+  }
+  .prose :where(li) {
+    margin-top: 0.38em;
+    margin-bottom: 0.38em;
+    line-height: 1.7;
+  }
+  /* keep inline code inside headings from dominating the title */
+  .prose :where(h1, h2, h3, h4) code {
+    font-size: 0.78em;
+    font-weight: 700;
+    padding: 0.08em 0.34em;
+  }
+  .prose a {
+    font-weight: 500;
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .prose a:hover {
+    color: var(--accent-hover);
+    border-bottom-color: var(--accent-hover);
+  }
+  /* remove the typography plugin's auto backtick / smart-quote glyphs */
+  .prose :where(code)::before,
+  .prose :where(code)::after,
+  .prose :where(blockquote p):first-of-type::before,
+  .prose :where(blockquote p):last-of-type::after {
+    content: none;
+  }
+  .prose :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    font-weight: 500;
+    padding: 0.12em 0.4em;
+    background: color-mix(in srgb, var(--accent) 6%, var(--surface-hover));
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    /* Was `white-space: nowrap`, which is why every phone scrolled sideways:
+       `Book.objects.select_related("author").prefetch_related("tags")` renders
+       585px inside a 343px card and nothing in the ancestor chain clips it, so
+       the document became ~2x the viewport. `anywhere` only breaks a token when
+       it would otherwise overflow, so short identifiers still stay intact. */
+    overflow-wrap: anywhere;
+    color: var(--text-heading);
+  }
+
+  /* Bold copy is tinted with the current section's colour (set per-page via
+     --bold-color on the .prose container), pulled toward the heading colour so
+     it stays legible in either theme. Makes key terms pop while reading. */
+  .prose :where(strong) {
+    font-weight: 700;
+    color: color-mix(in srgb, var(--bold-color, var(--accent)) 78%, var(--text-heading));
+  }
+
+  /* Leading one-sentence summary callout (the note's thesis) */
+  .prose blockquote {
+    position: relative;
+    margin: 0 0 1.9rem;
+    padding: 1rem 1.25rem 1rem 1.4rem;
+    font-style: normal;
+    font-weight: 500;
+    font-size: 1.05em;
+    line-height: 1.65;
+    color: var(--text-heading);
+    background:
+      linear-gradient(
+        color-mix(in srgb, var(--surface) 66%, transparent),
+        color-mix(in srgb, var(--surface) 66%, transparent)
+      ),
+      var(--grad-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+    border-radius: 0.75rem;
+    overflow: hidden;
+  }
+  .prose blockquote::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--grad);
+  }
+  .prose blockquote p {
+    margin: 0;
+  }
+
+  /* Callouts (> [!TYPE] → div.callout via remarkCallouts): one base rule
+     + a --c-accent swap per type. Palette capped at 4 hues on purpose. */
+  .callout {
+    --c-accent: var(--accent);
+    margin: 1.4rem 0;
+    padding: 0.85rem 1.1rem;
+    border: 1px solid color-mix(in srgb, var(--c-accent) 28%, var(--border));
+    border-left: 3px solid var(--c-accent);
+    border-radius: 0.6rem;
+    background: color-mix(in srgb, var(--c-accent) 8%, var(--surface));
+  }
+  .callout-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.4rem;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.005em;
+    color: color-mix(in srgb, var(--c-accent) 62%, var(--text-heading));
+  }
+  .callout-title svg {
+    width: 1rem;
+    height: 1rem;
+    flex: none;
+    color: var(--c-accent);
+  }
+  .callout-body > :first-child {
+    margin-top: 0;
+  }
+  .callout-body > :last-child {
+    margin-bottom: 0;
+  }
+  .callout-tip {
+    --c-accent: var(--success);
+  }
+  .callout-warn,
+  .callout-warning,
+  .callout-gotcha {
+    --c-accent: var(--warning);
+  }
+  .callout-key,
+  .callout-important {
+    --c-accent: var(--accent-hover);
+  }
+  .callout-danger {
+    --c-accent: var(--danger);
+  }
+  /* note / info fall through to the default --accent */
+
+  /* Reading card: lifts off the canvas. Dark adds a faint top highlight;
+     light uses a soft ambient drop instead (see --card-shadow per theme). */
+  .note-card {
+    box-shadow: var(--card-shadow);
+  }
+
+  /* Small keycap chip — the "/" affordance on the home command bar + hints. */
+  .cmd-hint {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5em;
+    height: 1.5em;
+    padding: 0 0.4em;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 0.4em;
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    line-height: 1;
+    color: var(--text-secondary);
+  }
+
+  /* code blocks + ASCII diagrams (rendered not-prose) */
+  .code-card {
+    position: relative;
+    margin: 1.25rem 0;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .code-card::after {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: var(--grad);
+    opacity: 0.7;
+  }
+  .code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.55rem 0.4rem 0.95rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  }
+  .code-lang {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 0.4rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .copy-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .code-card pre {
+    margin: 0;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+  }
+  .code-card code {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    white-space: pre;
+    color: var(--text);
+    background: none;
+  }
+  .code-card.is-diagram {
+    background: var(--surface-hover);
+  }
+  .code-card.is-diagram code {
+    line-height: 1.5;
+    font-size: 0.86rem;
+  }
+
+  /* tables (wrapped in .table-wrap.not-prose) */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+  }
+  .table-wrap table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+  .table-wrap th,
+  .table-wrap td {
+    padding: 0.65rem 0.9rem;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+  }
+  .table-wrap tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .table-wrap thead th {
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface-hover));
+    color: var(--text-heading);
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  }
+  .table-wrap tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--surface-hover) 40%, transparent);
+  }
+  .table-wrap tbody tr:hover {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  /* first column = the comparison label: emphasized + its own divider */
+  .table-wrap tbody td:first-child {
+    font-weight: 600;
+    color: var(--text-heading);
+    border-right: 1px solid var(--border);
+  }
+  /* wide comparison tables on mobile: pin the label column while scrolling.
+     A sticky cell must paint its own opaque background or the scrolling cells
+     show through — but a flat --surface then overrode the row's zebra and hover
+     states, so on even rows the pinned cell was white while the rest of the row
+     was tinted, and hover lit every column EXCEPT the anchor one. These two
+     rules re-apply the row states to the pinned cell, composited over
+     --surface so it stays opaque. */
+  .table-wrap th:first-child,
+  .table-wrap td:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+  }
+  .table-wrap tbody tr:nth-child(even) td:first-child {
+    background: color-mix(in srgb, var(--surface-hover) 40%, var(--surface));
+  }
+  .table-wrap tbody tr:hover td:first-child {
+    background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  }
+  .table-wrap thead th:first-child {
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface-hover));
+  }
+
+/* ----------------------------------------------------------------------------
+   highlight.js tokens
+---------------------------------------------------------------------------- */
+.hljs-comment,
+.hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag {
+  color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--hl-string);
+}
+.hljs-number,
+.hljs-literal {
+  color: var(--hl-number);
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--hl-title);
+}
+.hljs-built_in {
+  color: var(--hl-builtin);
+}
+.hljs-type {
+  color: var(--hl-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-params {
+  color: var(--hl-attr);
+}
+.hljs-meta {
+  color: var(--hl-meta);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
+}
+
+/* ----------------------------------------------------------------------------
+   Touch targets.
+
+   Scoped to `pointer: coarse` rather than a width breakpoint on purpose: this is
+   a property of the INPUT DEVICE, not the screen. A touch laptop needs the
+   larger targets at 1400px; a narrow desktop window with a mouse does not. The
+   desktop information density stays exactly as it is.
+
+   Apple HIG asks for 44px, Material for 48px. The sidebar note links were ~29px
+   with 1px of separation, and .copy-btn ~20px — the smallest control in the app.
+---------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .tap-target {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    /* min-* beats the h-9/w-9 utilities, so the header buttons grow too. */
+    min-width: 44px;
+  }
+  .tap-target-inline {
+    min-height: 44px;
+  }
+  .copy-btn {
+    min-height: 44px;
+    padding-inline: 0.9rem;
+  }
+  /* 1px between adjacent 29px targets is where mis-taps come from. */
+  .tap-target + .tap-target,
+  .tap-list > * + * {
+    margin-top: 2px;
+  }
+}
+
+/* Unlayered on purpose: the anti-flash <style> in index.html is also unlayered,
+   so anything inside @layer base loses to it and the canvas would stay pinned to
+   that hardcoded colour. `:root` (0,1,0) outranks its `html` (0,0,1), so the
+   theme variable wins once the stylesheet loads. Body stays transparent so the
+   orb field (z-index -1) is not painted over. */
+:root {
+  background-color: var(--bg);
+}
+html > body {
+  background: transparent;
+}
+
+/* ----------------------------------------------------------------------------
+   Ambient orb field — the live background.
+
+   Deliberately radial-gradients with NO filter: blur(). A blurred layer is not
+   cached, the Gaussian re-runs as a draw-time shader pass on every frame the
+   surface moves, and blur(80px) inflates a 400px orb to an ~880px surface
+   (~140 MB of layer memory for five at DPR 3). A radial gradient with soft
+   stops IS the same falloff a blurred disc produces, painted by the gradient
+   shader for a fraction of the cost.
+
+   Only `transform` animates, so this runs entirely on the compositor and never
+   touches layout, paint, or the main thread.
+---------------------------------------------------------------------------- */
+.orb-field {
+  position: fixed;
+  /* inset:0, never 100vh/100dvh: on iOS those change as the URL bar collapses,
+     re-laying-out and re-rasterising every orb on each scroll direction change. */
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  contain: layout paint style;
+
+  opacity: var(--orb-field);
+
+  /* Keeps moving colour out of the top 140px so the sticky header's
+     backdrop-blur stays a cached blur instead of re-blurring every frame. */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 140px);
+  mask-image: linear-gradient(180deg, transparent 0, #000 140px);
+
+  transform: scale(1);
+  transition: opacity 800ms ease, transform 1200ms ease;
+}
+
+/* Note pages: dimmer and drawn back. Shrinking the container shortens each
+   orbit without touching animation-duration — changing that would re-map
+   progress against the preserved currentTime and visibly jump on every nav. */
+.orb-field[data-calm] {
+  opacity: var(--orb-field-calm);
+  transform: scale(0.9);
+}
+
+.orb {
+  position: absolute;
+  width: var(--s);
+  height: var(--s);
+  margin: calc(var(--s) * -0.5) 0 0 calc(var(--s) * -0.5);
+  /* closest-side puts the transparent stop on the inscribed circle, so the
+     corners are already empty and no border-radius is needed. The shallow final
+     segment prevents a visible ring at the edge. */
+  background: radial-gradient(
+    circle closest-side,
+    var(--c) 0%,
+    color-mix(in srgb, var(--c) 76%, transparent) 26%,
+    color-mix(in srgb, var(--c) 45%, transparent) 46%,
+    color-mix(in srgb, var(--c) 20%, transparent) 64%,
+    color-mix(in srgb, var(--c) 6%, transparent) 82%,
+    transparent 100%
+  );
+  animation-iteration-count: infinite;
+  /* Applied per segment, so velocity is zero at every waypoint including the
+     0%/100% seam — position and direction both match there, so the loop cannot
+     visibly pop the way `linear` would. */
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+/* Anchor, size, hue, period, phase. The static transform is also the
+   reduced-motion pose: killing the animation lands exactly here. */
+.orb-1 {
+  --s: clamp(150px, 34vw, 460px);
+  --c: var(--orb-a);
+  left: 12%;
+  top: 30%;
+  transform: translate3d(30px, -18px, 0) scale(1.04);
+  animation-name: orb-a;
+  animation-duration: 89s;
+  animation-delay: -7s;
+}
+.orb-2 {
+  --s: clamp(130px, 28vw, 380px);
+  --c: var(--orb-b);
+  left: 84%;
+  top: 24%;
+  transform: translate3d(-40px, 26px, 0) scale(0.98);
+  animation-name: orb-b;
+  animation-duration: 73s;
+  animation-delay: -31s;
+}
+.orb-3 {
+  --s: clamp(165px, 38vw, 500px);
+  --c: var(--orb-c);
+  left: 70%;
+  top: 74%;
+  transform: translate3d(-24px, -30px, 0) scale(1.02);
+  animation-name: orb-c;
+  animation-duration: 61s;
+  animation-delay: -19s;
+}
+.orb-4 {
+  --s: clamp(140px, 32vw, 420px);
+  --c: var(--orb-d);
+  left: 22%;
+  top: 86%;
+  transform: translate3d(48px, -22px, 0) scale(1.05);
+  animation-name: orb-d;
+  animation-duration: 53s;
+  animation-delay: -43s;
+}
+.orb-5 {
+  --s: clamp(120px, 26vw, 340px);
+  --c: var(--orb-e);
+  left: 52%;
+  top: 46%;
+  transform: translate3d(-60px, 14px, 0) scale(0.95);
+  animation-name: orb-e;
+  animation-duration: 43s;
+  animation-delay: -11s;
+}
+
+/* Five closed loops, each returning exactly to the identity transform so the
+   seam is exact. Periods 89/73/61/53/43 are all prime and the waypoint
+   percentages differ per orb, so no two ever turn in unison. ~8px/s drift. */
+@keyframes orb-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  20% {
+    transform: translate3d(86px, -34px, 0) scale(1.07);
+  }
+  40% {
+    transform: translate3d(132px, 58px, 0) scale(0.95);
+  }
+  62% {
+    transform: translate3d(44px, 104px, 0) scale(1.05);
+  }
+  81% {
+    transform: translate3d(-52px, 46px, 0) scale(0.99);
+  }
+}
+@keyframes orb-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  24% {
+    transform: translate3d(-46px, 72px, 0) scale(0.94);
+  }
+  47% {
+    transform: translate3d(18px, 128px, 0) scale(1.08);
+  }
+  68% {
+    transform: translate3d(62px, 54px, 0) scale(1);
+  }
+  86% {
+    transform: translate3d(34px, -38px, 0) scale(1.04);
+  }
+}
+@keyframes orb-c {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  18% {
+    transform: translate3d(-104px, 22px, 0) scale(1.03);
+  }
+  39% {
+    transform: translate3d(-142px, -46px, 0) scale(0.93);
+  }
+  58% {
+    transform: translate3d(-60px, -92px, 0) scale(1.06);
+  }
+  79% {
+    transform: translate3d(38px, -40px, 0) scale(1.01);
+  }
+}
+@keyframes orb-d {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  22% {
+    transform: translate3d(58px, -66px, 0) scale(1.1);
+  }
+  44% {
+    transform: translate3d(112px, -26px, 0) scale(0.9);
+  }
+  63% {
+    transform: translate3d(76px, 40px, 0) scale(1.06);
+  }
+  84% {
+    transform: translate3d(-30px, 18px, 0) scale(0.97);
+  }
+}
+@keyframes orb-e {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  26% {
+    transform: translate3d(-118px, -30px, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-166px, 44px, 0) scale(0.96);
+  }
+  73% {
+    transform: translate3d(-72px, 86px, 0) scale(1.09);
+  }
+  90% {
+    transform: translate3d(46px, 36px, 0) scale(1.02);
+  }
+}
+
+/* Phones: five large layers at DPR 3 is a lot of texture for little gain. */
+@media (max-width: 640px) {
+  .orb-2,
+  .orb-5 {
+    display: none;
+  }
+}
+
+/* Freeze to each orb's static base transform — a deliberate composition, and
+   with no running animation the layers are never promoted at all, so
+   reduced-motion users pay zero layer memory. */
+@media (prefers-reduced-motion: reduce) {
+  .orb {
+    animation: none;
+  }
+  .orb-field {
+    transition: none;
+  }
+}
+
+/* animated gradient for the hero heading */
+@keyframes gradient-pan {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+.animate-gradient {
+  background-size: 200% auto;
+  animation: gradient-pan 6s linear infinite alternate;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-gradient {
+    animation: none;
+  }
+}

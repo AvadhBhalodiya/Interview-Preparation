@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f6f7f9" />
+    <meta
+      name="description"
+      content="Concise, web-verified backend engineering interview notes: Python, Django, FastAPI, databases, caching and more, each with key points, a code example, interview Q&amp;A, and gotchas."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Interview Notes" />
+    <meta
+      property="og:description"
+      content="A revision-ready reference for backend engineering interviews: key points, worked examples, interview Q&amp;A, and gotchas."
+    />
+    <meta name="twitter:card" content="summary" />
+    <title>Interview Notes</title>
+    <script>
+      // Applies the saved theme before the first paint, so reloading in dark mode
+      // never flashes the light canvas. Deliberately inline, synchronous and
+      // dependency-free: a module or deferred script runs after paint, which is
+      // exactly the flash we're avoiding. Mirrors src/lib/useTheme.ts — keep the
+      // storage key and the two background colors in sync with it.
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('theme')
+          var theme = saved === 'dark' || saved === 'light' ? saved : 'light'
+          document.documentElement.dataset.theme = theme
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', theme === 'dark' ? '#15161b' : '#f6f7f9')
+        } catch (err) {
+          // localStorage can throw in private mode — fall back to the default.
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
+    <style>
+      /* Pre-paint canvas colour, before the stylesheet loads. Tracks --bg.
+         Deliberately sets ONLY html, never body: a background on body paints
+         AFTER negative-z-index descendants, so it would cover the ambient orb
+         field (and, before it, the decorative washes on body::before). This
+         rule is unlayered, so it also outranks anything in @layer base. */
+      html {
+        background-color: #f4f6f9;
+      }
+      html[data-theme='dark'] {
+        background-color: #15161b;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

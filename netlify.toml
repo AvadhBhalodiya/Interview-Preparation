@@ -1,0 +1,22 @@
+# Netlify build config (used when you connect a Git repo or deploy with the CLI's build).
+# For a drag-and-drop deploy you only need the built `dist/` folder; this file is ignored there.
+
+[build]
+  command = "pnpm build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Serverless function for owner-only "mark as read" sync (src/lib/useProgress.ts).
+# Served at /.netlify/functions/progress; needs OWNER_TOKEN set in the Netlify UI.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Serve the SPA shell for unknown paths. Harmless with the current hash routing,
+# and future-proofs the site if it ever switches to clean history URLs.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

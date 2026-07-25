@@ -1,0 +1,48 @@
+{
+  "name": "dev-notes",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Clean, searchable, offline-friendly developer interview-prep notes.",
+  "scripts": {
+    "dev": "vite",
+    "dev:netlify": "set -a; [ -f .env ] && . ./.env; set +a; netlify dev --command 'pnpm exec vite --port 5173 --strictPort' --target-port 5173 --port 5175 --functions netlify/functions --no-open",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "check:links": "node scripts/check-links.mjs",
+    "check:structure": "node scripts/check-structure.mjs",
+    "check": "pnpm check:structure && pnpm check:links"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@netlify/blobs": "^10.7.10",
+    "highlight.js": "^11.11.1",
+    "js-yaml": "^4.1.0",
+    "motion": "^12.42.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.7.0",
+    "react-markdown": "^9.0.1",
+    "react-router-dom": "^6.28.0",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^5.3.0",
+    "@tailwindcss/typography": "^0.5.20",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "netlify-cli": "^27.0.0",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5"
+  },
+  "packageManager": "pnpm@10.2.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

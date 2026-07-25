@@ -1,0 +1,18 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite
+*.log
+
+# Secrets for the owner-sync function; keep .env.example tracked.
+.env
+.env.*
+!.env.example
+
+# Local Netlify folder
+.netlify
+
+# Local Claude Code permissions; machine-specific paths, so keep it untracked.
+.claude/settings.local.json
