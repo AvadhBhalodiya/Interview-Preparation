@@ -4,110 +4,1809 @@ group: "Docs & Framework Choice"
 order: 7
 ---
 
-# Auto OpenAPI / Swagger Docs
+# FastAPI: Auto OpenAPI / Swagger Docs
 
-> FastAPI turns your type hints and Pydantic models into a standards-compliant OpenAPI 3.1 schema at `/openapi.json`, then serves two live UIs off it: interactive Swagger UI at `/docs` and read-only ReDoc at `/redoc`.
+> FastAPI reads your route declarations, Python type hints, Pydantic models, validation rules, responses, and security dependencies, then converts them into an **OpenAPI schema**. Swagger UI and ReDoc use that schema to display API documentation automatically.
 
-## What it is
-FastAPI introspects every path operation - its type hints, request and response models, parameter metadata, `response_model`, and status code - and assembles the OpenAPI 3.1 document for you at `/openapi.json`. You never write that document by hand.
+---
 
-> [!KEY] Your **annotations are the contract**. The same hints and models that already validate requests and serialize responses are what generate `/openapi.json`, so the docs are only ever as good as the handlers behind them. `/docs` and `/redoc` just **render** that one file, generating nothing themselves.
+## Index
 
-Everything in a path operation feeds that single document:
+1. [What Automatic API Documentation Means](#1-what-automatic-api-documentation-means)
+2. [OpenAPI, Swagger UI, and ReDoc](#2-openapi-swagger-ui-and-redoc)
+3. [How FastAPI Generates the Documentation](#3-how-fastapi-generates-the-documentation)
+4. [Default Documentation URLs](#4-default-documentation-urls)
+5. [First Practical Example](#5-first-practical-example)
+6. [How Type Hints Become API Documentation](#6-how-type-hints-become-api-documentation)
+7. [Documenting Request Models](#7-documenting-request-models)
+8. [Documenting Path and Query Parameters](#8-documenting-path-and-query-parameters)
+9. [Documenting Responses](#9-documenting-responses)
+10. [Improving Endpoint Descriptions](#10-improving-endpoint-descriptions)
+11. [Organizing Endpoints with Tags](#11-organizing-endpoints-with-tags)
+12. [Authentication in Swagger UI](#12-authentication-in-swagger-ui)
+13. [Customizing Documentation URLs](#13-customizing-documentation-urls)
+14. [Configuring Swagger UI](#14-configuring-swagger-ui)
+15. [Hiding Endpoints from the Schema](#15-hiding-endpoints-from-the-schema)
+16. [Disabling or Conditionally Enabling Docs](#16-disabling-or-conditionally-enabling-docs)
+17. [Custom OpenAPI Schema](#17-custom-openapi-schema)
+18. [Docs Behind a Reverse Proxy](#18-docs-behind-a-reverse-proxy)
+19. [Using OpenAPI Beyond Documentation](#19-using-openapi-beyond-documentation)
+20. [Testing the Generated Schema](#20-testing-the-generated-schema)
+21. [Production Best Practices](#21-production-best-practices)
+22. [Complete Practical Example](#22-complete-practical-example)
+23. [Quick Revision](#23-quick-revision)
 
-| Source in your handler | What it adds to `/openapi.json` |
-| --- | --- |
-| Function **type hints** | parameter and return types, and whether each param is required |
-| **Pydantic models** | full JSON Schema for request and response **bodies**, nested fields and all |
-| `Path()` / `Query()` / `Body()` | per-param **title, description, constraints** (`ge`, `max_length`) and examples |
-| `response_model` + status code | the **success** response shape and its HTTP code |
-| `tags`, `summary`, docstring | **grouping and human docs**: bucket, short label, long Markdown description |
-| `responses={...}` | extra **error** response shapes (404, 409, ...) beyond the 200 |
+---
 
-## Key points
-Swagger UI and ReDoc are just two renderings of the same `/openapi.json`, so pick by audience:
+# 1. What Automatic API Documentation Means
 
-| Endpoint | What it serves | Interactive | Reach for it when |
-| --- | --- | --- | --- |
-| `/openapi.json` | the **machine-readable** OpenAPI 3.1 spec | no | feeding client generators or contract tests |
-| `/docs` | **Swagger UI** over the spec | **yes** - fires real requests | poking the API by hand while developing |
-| `/redoc` | **ReDoc** over the spec | no - **read-only** | handing a clean reference to API consumers |
+In many frameworks, developers manually write and maintain API documentation. That documentation can become outdated when endpoints change.
 
-- **OpenAPI 3.1 by default** since FastAPI 0.99. Because 3.1 is built on **JSON Schema**, Pydantic v2's generated schema drops straight into the spec, examples and all. Under the older 3.0 output those examples had to be translated first.
-- **App-wide metadata** goes on the constructor: `title`, `version`, `description`, `summary`, `contact`, `license_info`, `terms_of_service`. `description` and `summary` render as **Markdown** at the top of the docs.
-- **Per-route knobs** live on the decorator: `tags` to bucket it, `summary` for the short label, the **docstring** for the long description, `response_description`, and `deprecated=True` to strike it through without removing it. `openapi_tags` on the app then adds a blurb under each tag heading.
-- **Document the failures**, not just the 200: `responses={404: {"model": Error}}` tells clients what an error body looks like. Leave it out and the spec pretends only the happy path exists.
-- **Security schemes register themselves**: declare `OAuth2PasswordBearer`, an API-key header, anything subclassing `SecurityBase`, and Swagger UI grows an Authorize button plus a padlock on each protected route.
-- **Toggle the endpoints** with `docs_url`, `redoc_url`, and `openapi_url` - each takes a new path (to move it) or `None` (to switch it off).
+FastAPI follows a different approach:
 
-There are three ways to attach examples, and only one gives the try-it-out dropdown:
+```text
+Python route declaration
+        +
+Type hints and validation rules
+        +
+Pydantic request/response models
+        +
+Metadata and security dependencies
+        |
+        v
+Generated OpenAPI schema
+        |
+        +------------------+
+        |                  |
+        v                  v
+   Swagger UI            ReDoc
+ Interactive testing   Readable reference
+```
 
-| Mechanism | Where it lives | Shows up as |
-| --- | --- | --- |
-| `json_schema_extra={"examples": [...]}` | on the **Pydantic model** | a whole-payload example in the schema |
-| `Field(examples=[...])` | on a **single field** | that field's example in the schema |
-| `openapi_examples={...}` | on `Body()` / `Query()` / `Path()` | the **labeled dropdown** in try-it-out (each entry has its own `summary`, `description`, `value`) |
+You define the API contract in Python, and FastAPI generates the machine-readable and human-readable documentation from the same source.
 
-> [!TIP] Treat `/openapi.json` as a **contract**. Point a client generator (TypeScript, Go) at it or wire it into a contract test, and your frontend and backend cannot drift apart without something failing loudly.
+## Main benefit
 
-## Example
-One endpoint wired up with app metadata, a typed error response, and a model example:
+Your validation, runtime behavior, and documentation use the same declarations. This greatly reduces documentation drift.
+
+```python
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    return {"user_id": user_id}
+```
+
+From `user_id: int`, FastAPI understands that:
+
+- `user_id` is a path parameter.
+- It is required.
+- It must be an integer.
+- Invalid values should produce a validation error.
+- The documentation should display it as an integer input.
+
+---
+
+# 2. OpenAPI, Swagger UI, and ReDoc
+
+These terms are related, but they are not the same thing.
+
+## 2.1 OpenAPI
+
+**OpenAPI** is a standard format for describing HTTP APIs.
+
+It describes information such as:
+
+- Available paths
+- HTTP methods
+- Request parameters
+- Request bodies
+- Response schemas
+- Status codes
+- Authentication schemes
+- API metadata
+
+FastAPI normally exposes the generated schema as JSON.
+
+```text
+GET /openapi.json
+```
+
+A simplified part of an OpenAPI schema looks like this:
+
+```json
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Inventory API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/items/{item_id}": {
+      "get": {
+        "summary": "Get an item"
+      }
+    }
+  }
+}
+```
+
+## 2.2 Swagger UI
+
+**Swagger UI** is a browser-based interface that reads the OpenAPI schema.
+
+It is useful for:
+
+- Exploring endpoints
+- Viewing request and response schemas
+- Entering parameters
+- Sending real requests using **Try it out**
+- Testing authentication
+- Viewing status codes and response headers
+
+FastAPI serves it at `/docs` by default.
+
+## 2.3 ReDoc
+
+**ReDoc** is another interface that reads the same OpenAPI schema.
+
+It is generally more suitable for:
+
+- Clean API reference documentation
+- Reading large schemas
+- Navigating grouped endpoints
+- Sharing documentation with consumers
+
+FastAPI serves it at `/redoc` by default.
+
+## Relationship
+
+```mermaid
+flowchart LR
+    A[FastAPI Routes] --> B[OpenAPI Schema]
+    B --> C[Swagger UI]
+    B --> D[ReDoc]
+    B --> E[Client SDK Generator]
+    B --> F[API Gateway or Testing Tool]
+```
+
+> Swagger UI and ReDoc do not independently inspect your Python code. They render the OpenAPI schema generated by FastAPI.
+
+---
+
+# 3. How FastAPI Generates the Documentation
+
+FastAPI collects metadata from several parts of your application.
+
+```mermaid
+flowchart TD
+    A[Route decorator] --> G[OpenAPI operation]
+    B[Function parameters] --> G
+    C[Python type hints] --> G
+    D[Pydantic models] --> G
+    E[response_model] --> G
+    F[Security dependencies] --> G
+    G --> H[/openapi.json]
+    H --> I[/docs - Swagger UI]
+    H --> J[/redoc - ReDoc]
+```
+
+## Common sources of schema information
+
+| FastAPI declaration | Documentation produced |
+|---|---|
+| `@app.get("/items/{item_id}")` | Path and HTTP method |
+| `item_id: int` | Required integer path parameter |
+| `limit: int = 20` | Optional query parameter with default value |
+| `item: ItemCreate` | JSON request body schema |
+| `response_model=ItemResponse` | Success response schema |
+| `status_code=201` | Documented success status code |
+| `summary="Create item"` | Short operation heading |
+| `description="..."` | Detailed operation description |
+| `tags=["Items"]` | Documentation grouping |
+| `Depends(oauth2_scheme)` | Security scheme and authorization input |
+
+---
+
+# 4. Default Documentation URLs
+
+For a standard FastAPI application:
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+```
+
+FastAPI creates these endpoints automatically:
+
+| URL | Purpose |
+|---|---|
+| `/docs` | Interactive Swagger UI |
+| `/redoc` | Alternative ReDoc documentation |
+| `/openapi.json` | Raw OpenAPI schema |
+| `/docs/oauth2-redirect` | Swagger UI OAuth2 redirect helper |
+
+For local development:
+
+```text
+http://127.0.0.1:8000/docs
+http://127.0.0.1:8000/redoc
+http://127.0.0.1:8000/openapi.json
+```
+
+Run the application with:
+
+```bash
+fastapi dev main.py
+```
+
+or:
+
+```bash
+uvicorn main:app --reload
+```
+
+---
+
+# 5. First Practical Example
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+
+app = FastAPI(
+    title="Inventory API",
+    description="API for managing inventory items.",
+    version="1.0.0",
+)
+
+
+class ItemCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    price: float = Field(gt=0)
+    quantity: int = Field(ge=0)
+
+
+class ItemResponse(ItemCreate):
+    id: int
+
+
+@app.post(
+    "/items",
+    response_model=ItemResponse,
+    status_code=201,
+    summary="Create an inventory item",
+    tags=["Items"],
+)
+async def create_item(item: ItemCreate) -> ItemResponse:
+    """Create and return a new inventory item."""
+    return ItemResponse(id=1, **item.model_dump())
+```
+
+FastAPI derives the following documentation automatically:
+
+```text
+POST /items
+
+Request body:
+- name: required string, 2-100 characters
+- price: required number, greater than 0
+- quantity: required integer, 0 or greater
+
+Success response:
+- HTTP 201
+- id: integer
+- name: string
+- price: number
+- quantity: integer
+```
+
+## Request flow in Swagger UI
+
+```mermaid
+sequenceDiagram
+    actor Developer
+    participant Swagger as Swagger UI
+    participant API as FastAPI
+    participant Validator as Pydantic
+
+    Developer->>Swagger: Enter JSON and click Execute
+    Swagger->>API: POST /items
+    API->>Validator: Validate ItemCreate
+    alt Valid request
+        Validator-->>API: Parsed model
+        API-->>Swagger: 201 ItemResponse
+    else Invalid request
+        Validator-->>API: Validation errors
+        API-->>Swagger: 422 error response
+    end
+```
+
+---
+
+# 6. How Type Hints Become API Documentation
+
+FastAPI uses the route path and function signature to determine where each value comes from.
+
+```python
+from typing import Annotated
+
+from fastapi import Body, FastAPI, Path, Query
+from pydantic import BaseModel
+
+app = FastAPI()
+
+
+class ItemUpdate(BaseModel):
+    name: str
+    price: float
+
+
+@app.put("/items/{item_id}")
+async def update_item(
+    item_id: Annotated[int, Path(gt=0)],
+    item: Annotated[ItemUpdate, Body()],
+    notify: Annotated[bool, Query()] = False,
+):
+    return {
+        "item_id": item_id,
+        "item": item,
+        "notify": notify,
+    }
+```
+
+FastAPI interprets the parameters as follows:
+
+| Parameter | Source | Reason |
+|---|---|---|
+| `item_id` | Path | The name exists inside `/items/{item_id}` |
+| `item` | Request body | It is a Pydantic model |
+| `notify` | Query string | It is a scalar value not present in the route path |
+
+Swagger UI then shows separate input sections for the path parameter, query parameter, and JSON body.
+
+---
+
+# 7. Documenting Request Models
+
+A Pydantic model becomes a reusable JSON Schema component inside OpenAPI.
+
+## 7.1 Field descriptions and constraints
+
+```python
+from pydantic import BaseModel, Field
+
+
+class ProductCreate(BaseModel):
+    name: str = Field(
+        min_length=2,
+        max_length=120,
+        description="Customer-facing product name",
+        examples=["Mechanical Keyboard"],
+    )
+    sku: str = Field(
+        pattern=r"^[A-Z0-9-]+$",
+        description="Unique uppercase stock-keeping unit",
+        examples=["KB-MECH-001"],
+    )
+    price: float = Field(
+        gt=0,
+        description="Selling price; must be greater than zero",
+        examples=[129.99],
+    )
+    in_stock: bool = Field(
+        default=True,
+        description="Whether the product can currently be ordered",
+    )
+```
+
+The documentation displays:
+
+- Field names
+- Data types
+- Required or optional status
+- Default values
+- Minimum and maximum constraints
+- Regular-expression patterns
+- Descriptions
+- Examples
+
+## 7.2 Model-level example with Pydantic v2
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CustomerCreate(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Asha Patel",
+                    "email": "asha@example.com",
+                    "age": 29,
+                }
+            ]
+        }
+    )
+
+    name: str = Field(min_length=2)
+    email: str
+    age: int = Field(ge=18)
+```
+
+Use examples that look realistic but contain no real secrets or personal data.
+
+## 7.3 Separate input and output models
+
+Avoid using one database model for every purpose.
+
+```text
+ProductCreate   -> fields accepted from the client
+ProductUpdate   -> fields that may be changed
+ProductResponse -> fields returned to the client
+ProductDB       -> internal persistence representation
+```
+
+Example:
+
+```python
+from pydantic import BaseModel
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+```
+
+```python
+@app.post("/users", response_model=UserResponse)
+async def create_user(payload: UserCreate):
+    return {
+        "id": 101,
+        "email": payload.email,
+        "password": "must-not-appear",
+    }
+```
+
+Because the response model is `UserResponse`, the password is excluded from the documented and serialized response.
+
+> `response_model` is not only documentation. It also validates and filters the output according to the declared response contract.
+
+---
+
+# 8. Documenting Path and Query Parameters
+
+Use `Path`, `Query`, `Header`, and `Cookie` when you need constraints, descriptions, examples, aliases, or deprecation information.
+
+## 8.1 Path parameters
+
+```python
+from typing import Annotated
+
+from fastapi import FastAPI, Path
+
+app = FastAPI()
+
+
+@app.get("/orders/{order_id}")
+async def get_order(
+    order_id: Annotated[
+        int,
+        Path(
+            gt=0,
+            description="Internal numeric order identifier",
+            examples=[4501],
+        ),
+    ],
+):
+    return {"order_id": order_id}
+```
+
+A path parameter is always required because the URL cannot match without it.
+
+## 8.2 Query parameters
+
+```python
+from typing import Annotated, Literal
+
+from fastapi import Query
+
+
+@app.get("/products")
+async def list_products(
+    search: Annotated[
+        str | None,
+        Query(
+            min_length=2,
+            max_length=50,
+            description="Text searched in product names",
+        ),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
+    page_size: Annotated[
+        int,
+        Query(ge=1, le=100, description="Maximum records per page"),
+    ] = 20,
+    sort: Annotated[
+        Literal["name", "price", "created_at"],
+        Query(description="Field used to sort results"),
+    ] = "created_at",
+):
+    return {
+        "search": search,
+        "page": page,
+        "page_size": page_size,
+        "sort": sort,
+    }
+```
+
+Swagger UI displays enum-like choices for `Literal` values, making the allowed values easy to discover.
+
+## 8.3 Parameter aliases
+
+Use an alias when the public HTTP name differs from the Python variable name.
+
+```python
+@app.get("/reports")
+async def get_reports(
+    from_date: Annotated[
+        str | None,
+        Query(alias="from", description="Start date in YYYY-MM-DD format"),
+    ] = None,
+):
+    return {"from": from_date}
+```
+
+Client request:
+
+```text
+GET /reports?from=2026-07-01
+```
+
+Python code still uses the valid identifier `from_date`.
+
+---
+
+# 9. Documenting Responses
+
+Good documentation describes both successful and expected error responses.
+
+## 9.1 Success response with `response_model`
+
+```python
+from fastapi import status
+
+
+@app.post(
+    "/products",
+    response_model=ProductResponse,
+    status_code=status.HTTP_201_CREATED,
+    response_description="The newly created product",
+)
+async def create_product(payload: ProductCreate):
+    ...
+```
+
+## 9.2 Multiple response schemas
 
 ```python
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-class Order(BaseModel):
+app = FastAPI()
+
+
+class ProductResponse(BaseModel):
     id: int
-    total: float
-    # whole-payload example -> shows in the schema and both UIs
-    model_config = {"json_schema_extra": {"examples": [{"id": 1, "total": 42.0}]}}
+    name: str
 
-class Error(BaseModel):
-    detail: str                               # matches FastAPI's default error body
 
-app = FastAPI(
-    title="Orders API",
-    version="1.0.0",
-    summary="Create and read orders.",        # one-liner atop the docs
-    description="Internal service for the orders team.",   # Markdown
-)
+class ErrorResponse(BaseModel):
+    code: str
+    message: str
+
 
 @app.get(
-    "/orders/{order_id}",
-    response_model=Order,                     # describes the 200 body
-    tags=["orders"],                          # buckets it in the UI
-    summary="Get one order",                  # short label
-    responses={404: {"model": Error, "description": "No order with that id"}},
+    "/products/{product_id}",
+    response_model=ProductResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Product was not found",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": "Product is not available in the current state",
+        },
+    },
 )
-def get_order(order_id: int):
-    """Look up a single order by its **id**."""   # docstring -> long description
-    if order_id != 1:
-        raise HTTPException(status_code=404, detail="not found")
-    return Order(id=1, total=42.0)
+async def get_product(product_id: int):
+    if product_id != 1:
+        raise HTTPException(status_code=404, detail="Product not found")
 
-# Swagger UI: /docs   ReDoc: /redoc   raw spec: /openapi.json
+    return ProductResponse(id=1, name="Mechanical Keyboard")
 ```
 
-## Interview Q&A
-- **Where do the docs come from?** Introspection. FastAPI reads your type hints, Pydantic models, and decorator metadata into an OpenAPI 3.1 schema, and the UIs just render it. Nothing is written by hand.
-- **What is served, and where?** `/openapi.json` is the machine-readable spec, `/docs` is Swagger UI (interactive), and `/redoc` is ReDoc (read-only). All three are on by default, live, with no build step.
-- **How do you group and label endpoints?** `tags` on each route buckets them, `openapi_tags` on the app describes each bucket, `summary` is the short label, and the docstring is the long description.
-- **How do you get the Authorize button?** Declare a security-scheme dependency like `OAuth2PasswordBearer`. Anything inheriting from `SecurityBase` registers in the spec, and Swagger UI draws the auth UI for it.
-- **How do you turn docs off in production?** `docs_url=None` and `redoc_url=None` hide the two UIs. `openapi_url=None` removes the spec too, which takes both UIs down with it. Just remember that is obscurity, not access control.
+## Important distinction
 
-## Gotchas
-> [!WARN] `openapi_url=None` also takes down `/docs` and `/redoc`, because both fetch the spec at runtime. And hiding any of them is **obscurity, not security** - the routes still exist and still respond, so put real auth on the endpoints.
+The `responses` dictionary documents additional responses, but it does not automatically make your runtime exception body match the declared model.
 
-> [!WARN] Swagger UI's "Try it out" fires real requests at your **running server**, not a sandbox. On a shared or production box those are live reads and writes, so watch what you send.
+For example, the standard `HTTPException` response is normally:
 
-- Return a bare `dict` or a raw `Response` with no `response_model` or return-type hint and FastAPI has nothing to describe the body with, so it lands in the spec as **unspecified** - an invisible field to anyone generating a client off your schema.
-- Model and field examples populate the **schema**, but only `openapi_examples` produces the **multi-example dropdown** in try-it-out. Added examples to your model and don't see the dropdown? That is why.
-- Want the raw spec for internal tooling but no public UI? Do the opposite of a full blackout: keep `openapi_url` and set only `docs_url` and `redoc_url` to `None`.
+```json
+{
+  "detail": "Product not found"
+}
+```
 
-## Revise next
-- **[Response models](response-models.md)** - `response_model`, `response_model_exclude_none`, and filtering which fields go out.
-- **[Pydantic v2 models & validation](pydantic-models-validation.md)** - `Field`, `field_validator`, `ConfigDict`, and how `model_json_schema()` becomes the spec.
-- **[Path/Query/Body parameters](path-query-body-parameters.md)** - the metadata and constraints (`ge`, `max_length`, `title`) that surface in the schema.
+If your documented error contract is:
 
-*Reviewed against FastAPI 0.139 / Pydantic 2.13, July 2026.*
+```json
+{
+  "code": "PRODUCT_NOT_FOUND",
+  "message": "Product not found"
+}
+```
+
+then your exception handler must return that exact structure.
+
+## 9.3 Reusable error responses
+
+```python
+ERROR_RESPONSES = {
+    401: {
+        "model": ErrorResponse,
+        "description": "Authentication is required",
+    },
+    403: {
+        "model": ErrorResponse,
+        "description": "The authenticated user is not allowed to perform this action",
+    },
+}
+
+
+@app.delete(
+    "/products/{product_id}",
+    status_code=204,
+    responses={
+        **ERROR_RESPONSES,
+        404: {
+            "model": ErrorResponse,
+            "description": "Product was not found",
+        },
+    },
+)
+async def delete_product(product_id: int):
+    ...
+```
+
+This keeps common response documentation consistent across endpoints.
+
+---
+
+# 10. Improving Endpoint Descriptions
+
+The route decorator accepts metadata that directly improves generated documentation.
+
+```python
+@app.patch(
+    "/products/{product_id}",
+    summary="Update selected product fields",
+    description=(
+        "Updates only the fields provided by the client. "
+        "Fields omitted from the request remain unchanged."
+    ),
+    response_description="The updated product",
+    operation_id="updateProduct",
+    tags=["Products"],
+)
+async def update_product(product_id: int, payload: ProductUpdate):
+    ...
+```
+
+## Common metadata
+
+| Option | Purpose |
+|---|---|
+| `summary` | Short operation title |
+| `description` | Detailed behavior and rules |
+| `response_description` | Description of the main successful response |
+| `tags` | Grouping in Swagger UI and ReDoc |
+| `operation_id` | Stable identifier used by OpenAPI tools and SDK generators |
+| `deprecated=True` | Marks an operation as deprecated |
+| `include_in_schema=False` | Excludes an operation from OpenAPI |
+
+## Docstrings as descriptions
+
+FastAPI can use the path operation function docstring as the description.
+
+```python
+@app.post("/payments", summary="Create a payment")
+async def create_payment(payload: PaymentCreate):
+    """
+    Create a payment for an existing invoice.
+
+    - The invoice must be open.
+    - The amount must not exceed the outstanding balance.
+    - An idempotency key should be supplied by external clients.
+    """
+    ...
+```
+
+Use route metadata for concise, contract-focused details. Keep internal implementation details out of public API documentation.
+
+## Deprecating an endpoint
+
+```python
+@app.get(
+    "/v1/customers",
+    deprecated=True,
+    summary="List customers using the legacy contract",
+)
+async def list_legacy_customers():
+    ...
+```
+
+Marking an operation deprecated informs API consumers, but it does not block requests.
+
+---
+
+# 11. Organizing Endpoints with Tags
+
+Tags keep large APIs readable.
+
+```python
+from fastapi import FastAPI
+
+
+tags_metadata = [
+    {
+        "name": "Products",
+        "description": "Create, search, update, and retire products.",
+    },
+    {
+        "name": "Orders",
+        "description": "Order placement and order lifecycle operations.",
+    },
+    {
+        "name": "Administration",
+        "description": "Restricted operational endpoints.",
+    },
+]
+
+app = FastAPI(
+    title="Commerce API",
+    version="2.0.0",
+    openapi_tags=tags_metadata,
+)
+```
+
+Apply tags directly:
+
+```python
+@app.get("/products", tags=["Products"])
+async def list_products():
+    ...
+```
+
+For larger applications, place the tag on an `APIRouter`:
+
+```python
+from fastapi import APIRouter
+
+router = APIRouter(
+    prefix="/products",
+    tags=["Products"],
+)
+
+
+@router.get("")
+async def list_products():
+    ...
+```
+
+## Recommended tag structure
+
+Prefer domain-oriented tags:
+
+```text
+Products
+Orders
+Customers
+Payments
+Reports
+Administration
+```
+
+Avoid overly technical group names such as:
+
+```text
+GET APIs
+POST APIs
+Database APIs
+Utility APIs
+```
+
+Consumers usually search by business capability, not by implementation layer.
+
+---
+
+# 12. Authentication in Swagger UI
+
+When security is declared with FastAPI security dependencies, the OpenAPI schema includes the corresponding security scheme. Swagger UI then displays an **Authorize** button.
+
+## 12.1 OAuth2 password bearer example
+
+```python
+from typing import Annotated
+
+from fastapi import Depends, FastAPI
+from fastapi.security import OAuth2PasswordBearer
+
+app = FastAPI()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+
+@app.get("/profile", tags=["Users"])
+async def read_profile(
+    token: Annotated[str, Depends(oauth2_scheme)],
+):
+    return {"token_received": bool(token)}
+```
+
+Swagger UI understands that `/profile` requires a bearer token.
+
+```text
+Open Swagger UI
+      |
+      v
+Click Authorize
+      |
+      v
+Enter token or complete OAuth2 flow
+      |
+      v
+Swagger UI adds Authorization header
+      |
+      v
+Execute secured endpoint
+```
+
+## 12.2 API key header example
+
+```python
+from typing import Annotated
+
+from fastapi import Depends, Security
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+
+@app.get("/internal/status")
+async def internal_status(
+    api_key: Annotated[str, Security(api_key_header)],
+):
+    return {"status": "ok"}
+```
+
+Swagger UI displays a field for the `X-API-Key` value and sends it in requests after authorization.
+
+> The documentation interface only sends the credentials. Your application must still validate tokens, API keys, roles, permissions, and scopes.
+
+---
+
+# 13. Customizing Documentation URLs
+
+Customize the docs when your organization uses versioned prefixes or reserves `/docs` for another service.
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI(
+    docs_url="/api/docs",
+    redoc_url="/api/reference",
+    openapi_url="/api/openapi.json",
+)
+```
+
+New paths:
+
+```text
+/api/docs
+/api/reference
+/api/openapi.json
+```
+
+## Disable only one interface
+
+```python
+app = FastAPI(
+    docs_url="/docs",
+    redoc_url=None,
+)
+```
+
+## Disable both visual interfaces but keep the schema
+
+```python
+app = FastAPI(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url="/openapi.json",
+)
+```
+
+The raw OpenAPI document remains available for SDK generation or API tooling.
+
+## Disable OpenAPI and both documentation interfaces
+
+```python
+app = FastAPI(openapi_url=None)
+```
+
+When no OpenAPI schema is exposed, the default Swagger UI and ReDoc interfaces cannot function and are also disabled.
+
+---
+
+# 14. Configuring Swagger UI
+
+FastAPI accepts Swagger UI configuration through `swagger_ui_parameters`.
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI(
+    title="Commerce API",
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1,
+        "displayRequestDuration": True,
+        "filter": True,
+        "operationsSorter": "method",
+        "tagsSorter": "alpha",
+    },
+)
+```
+
+## Useful parameters
+
+| Parameter | Effect |
+|---|---|
+| `filter` | Adds endpoint filtering/search |
+| `displayRequestDuration` | Shows request duration |
+| `operationsSorter` | Sorts operations, for example by method |
+| `tagsSorter` | Sorts tag groups |
+| `defaultModelsExpandDepth` | Controls the schemas/models section |
+| `docExpansion` | Controls whether operation groups start expanded |
+
+These values are passed to Swagger UI, so supported options depend on the bundled Swagger UI version.
+
+## Persisting authorization locally
+
+```python
+app = FastAPI(
+    swagger_ui_parameters={
+        "persistAuthorization": True,
+    }
+)
+```
+
+This can improve local development convenience, but consider the risk of credentials remaining in browser storage on shared machines.
+
+## Self-hosting documentation assets
+
+Swagger UI and ReDoc normally load JavaScript and CSS assets from external CDNs. In offline or restricted environments, you can self-host those assets.
+
+High-level approach:
+
+```text
+Disable default docs routes
+        |
+Mount local static assets
+        |
+Create custom /docs route
+        |
+Return get_swagger_ui_html(...)
+        |
+Point JavaScript and CSS URLs to local files
+```
+
+Simplified example:
+
+```python
+from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
+
+app = FastAPI(docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/static/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui.css",
+    )
+```
+
+Keep self-hosted assets pinned and updated as part of your dependency-management process.
+
+---
+
+# 15. Hiding Endpoints from the Schema
+
+Some routes are needed by the application but should not appear in the public API contract.
+
+```python
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    return {"status": "healthy"}
+```
+
+Common examples:
+
+- Internal health checks
+- Metrics endpoints
+- OAuth2 redirect helpers
+- Temporary migration endpoints
+- Internal operational routes
+
+## Important security point
+
+`include_in_schema=False` only removes the route from OpenAPI documentation. The route still exists and can still receive requests.
+
+Use authentication, authorization, network restrictions, or gateway policies to secure internal endpoints.
+
+---
+
+# 16. Disabling or Conditionally Enabling Docs
+
+Documentation visibility can be controlled through application settings.
+
+```python
+from fastapi import FastAPI
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
+    app_env: str = "development"
+    openapi_url: str = "/openapi.json"
+
+
+settings = Settings()
+
+app = FastAPI(
+    openapi_url=settings.openapi_url,
+    docs_url="/docs" if settings.openapi_url else None,
+    redoc_url="/redoc" if settings.openapi_url else None,
+)
+```
+
+Example environment values:
+
+```env
+# Development
+OPENAPI_URL=/openapi.json
+```
+
+```env
+# Environment where schema exposure is intentionally disabled
+OPENAPI_URL=
+```
+
+## Do not treat hidden documentation as API security
+
+```text
+Docs disabled != Endpoints disabled
+Docs hidden   != Authorization enabled
+Schema absent != Vulnerability removed
+```
+
+Protect the API using real controls:
+
+- Authentication
+- Role and permission checks
+- OAuth2 scopes where appropriate
+- Input and output validation
+- Rate limiting at the gateway or infrastructure layer
+- Secure password hashing
+- TLS
+- Secret management
+- Dependency and security updates
+
+Disabling docs may be an operational or compliance choice, but it is not a replacement for security.
+
+---
+
+# 17. Custom OpenAPI Schema
+
+Most projects should use FastAPI's default schema generation. Customize it only when there is a clear requirement.
+
+Typical reasons include:
+
+- Adding a logo or custom extension
+- Adding organization-specific metadata
+- Normalizing generated operation IDs
+- Integrating vendor extensions required by an API gateway
+- Modifying servers or security metadata
+
+## Custom schema function
+
+```python
+from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
+
+app = FastAPI(title="Billing API", version="1.0.0")
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description="Billing and invoice management API.",
+        routes=app.routes,
+    )
+
+    schema["info"]["x-logo"] = {
+        "url": "https://example.com/logo.png"
+    }
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+```
+
+## Why cache the schema?
+
+Schema generation inspects application routes. Once routes are fully registered, the result can normally be reused.
+
+```python
+if app.openapi_schema:
+    return app.openapi_schema
+```
+
+This avoids rebuilding the same document on every schema request.
+
+## Stable operation IDs
+
+SDK generators often use `operationId` values as generated method names.
+
+Explicit IDs can make client libraries more predictable:
+
+```python
+@app.get(
+    "/customers/{customer_id}",
+    operation_id="getCustomerById",
+)
+async def get_customer(customer_id: int):
+    ...
+```
+
+Operation IDs must remain unique across the entire OpenAPI document.
+
+---
+
+# 18. Docs Behind a Reverse Proxy
+
+Documentation can fail when the application is hosted behind a proxy under a path prefix.
+
+Example public URL:
+
+```text
+https://api.example.com/service-a/docs
+```
+
+Internal FastAPI application path:
+
+```text
+/docs
+```
+
+The external prefix is `/service-a`. Configure `root_path` when the proxy removes that prefix before forwarding the request.
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI(root_path="/service-a")
+```
+
+Or provide it to the server when appropriate:
+
+```bash
+fastapi run main.py --root-path /service-a
+```
+
+## Conceptual request flow
+
+```text
+Client request:
+/api-prefix/docs
+        |
+        v
+Reverse proxy removes /api-prefix
+        |
+        v
+FastAPI receives /docs
+        |
+        v
+OpenAPI and docs URLs use root_path information
+```
+
+Also ensure the proxy forwards trusted scheme and host information correctly. Otherwise, generated URLs may use an incorrect host or `http` instead of `https`.
+
+---
+
+# 19. Using OpenAPI Beyond Documentation
+
+The generated schema is useful even when no human opens Swagger UI.
+
+```mermaid
+flowchart LR
+    A[FastAPI OpenAPI Schema] --> B[Frontend Type Generation]
+    A --> C[Mobile SDK Generation]
+    A --> D[Contract Testing]
+    A --> E[API Gateway Import]
+    A --> F[Mock Server]
+    A --> G[Developer Portal]
+```
+
+## Common practical uses
+
+### Generate typed clients
+
+Frontend teams can generate TypeScript clients from `/openapi.json`.
+
+Benefits:
+
+- Typed request parameters
+- Typed response models
+- Less handwritten API boilerplate
+- Earlier detection of contract changes
+
+### Contract validation in CI
+
+Store or generate the schema during CI and compare it with the previous released schema.
+
+This can detect:
+
+- Removed paths
+- Removed fields
+- Changed data types
+- Newly required fields
+- Changed status codes
+
+### API gateway integration
+
+Many gateways can import OpenAPI documents to configure routing, validation, or developer portals. Support varies by product, so gateway-specific extensions may still be required.
+
+---
+
+# 20. Testing the Generated Schema
+
+The OpenAPI schema is part of your API contract and should be testable.
+
+## 20.1 Basic schema test
+
+```python
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+
+def test_openapi_schema_is_available():
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+
+    schema = response.json()
+    assert schema["info"]["title"] == "Commerce API"
+    assert "/products" in schema["paths"]
+```
+
+## 20.2 Verify response schema exists
+
+```python
+def test_create_product_contract_is_documented():
+    schema = client.get("/openapi.json").json()
+
+    create_operation = schema["paths"]["/products"]["post"]
+
+    assert create_operation["operationId"]
+    assert "201" in create_operation["responses"]
+```
+
+## 20.3 Snapshot testing
+
+A schema snapshot can reveal accidental contract changes.
+
+```text
+Generate openapi.json
+        |
+Compare with approved snapshot
+        |
+        +-- No change -> pass
+        |
+        +-- Changed -> review diff
+```
+
+Do not blindly reject every change. Some schema changes are intentional and should update the approved contract.
+
+## 20.4 Validate important contract rules
+
+Useful checks include:
+
+- Every public operation has a tag.
+- Every operation has a meaningful summary.
+- Operation IDs are unique.
+- Error responses are documented consistently.
+- Sensitive fields do not appear in response schemas.
+- Deprecated endpoints are clearly marked.
+
+---
+
+# 21. Production Best Practices
+
+## 21.1 Treat OpenAPI as a contract
+
+Do not consider Swagger UI only a testing page. The schema may be consumed by frontend generators, mobile clients, partner teams, gateways, and automated tests.
+
+## 21.2 Use dedicated response models
+
+```text
+Database object
+     |
+     v
+Response model filtering
+     |
+     v
+Public JSON response
+```
+
+This prevents internal or sensitive fields from leaking into public responses.
+
+## 21.3 Document business constraints
+
+Validation rules describe structural constraints, but not always business meaning.
+
+Weak description:
+
+```text
+amount: number
+```
+
+Better description:
+
+```text
+Payment amount in the invoice currency. It must not exceed the invoice's outstanding balance.
+```
+
+## 21.4 Keep examples realistic and safe
+
+Use valid-looking examples without including:
+
+- Production access tokens
+- Real customer records
+- Internal hostnames
+- Real secrets
+- Personal information
+
+## 21.5 Keep operation IDs stable
+
+Changing an `operationId` may rename methods in generated clients and create unnecessary downstream changes.
+
+## 21.6 Document expected errors
+
+Consumers need to understand unsuccessful responses as much as successful ones.
+
+Document common statuses such as:
+
+- `400` — invalid business request
+- `401` — missing or invalid authentication
+- `403` — insufficient permission
+- `404` — resource not found
+- `409` — state conflict
+- `422` — request validation failure
+- `429` — rate limit exceeded
+
+Only document responses that your API can actually return, and keep the runtime body consistent with the documented schema.
+
+## 21.7 Avoid manual schema modification unless necessary
+
+Prefer normal FastAPI declarations first:
+
+```text
+Type hints
+Pydantic models
+Field metadata
+Route metadata
+Security dependencies
+Documented responses
+```
+
+Use a custom `app.openapi()` function only for requirements the standard declarations cannot express cleanly.
+
+## 21.8 Pin and review dependencies
+
+FastAPI's documentation interfaces use frontend assets and framework dependencies that evolve over time. Pin versions for production, review release notes, run tests, and update deliberately.
+
+---
+
+# 22. Complete Practical Example
+
+The following example combines application metadata, tags, request models, response models, examples, documented errors, pagination parameters, authentication, and hidden operational routes.
+
+```python
+from typing import Annotated, Literal
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    Path,
+    Query,
+    Request,
+    Security,
+    status,
+)
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ConfigDict, Field
+
+
+tags_metadata = [
+    {
+        "name": "Products",
+        "description": "Product catalog operations.",
+    },
+    {
+        "name": "Operations",
+        "description": "Operational endpoints not intended for normal API consumers.",
+    },
+]
+
+app = FastAPI(
+    title="Product Catalog API",
+    description=(
+        "Manage products and query the product catalog. "
+        "All write operations require bearer authentication."
+    ),
+    version="1.0.0",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={
+        "displayRequestDuration": True,
+        "filter": True,
+        "tagsSorter": "alpha",
+    },
+)
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class ErrorResponse(BaseModel):
+    code: str = Field(examples=["PRODUCT_NOT_FOUND"])
+    message: str = Field(examples=["Product 999 was not found"])
+
+
+class AppError(Exception):
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"code": exc.code, "message": exc.message},
+    )
+
+
+class ProductCreate(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Mechanical Keyboard",
+                    "sku": "KB-MECH-001",
+                    "price": 129.99,
+                    "status": "active",
+                }
+            ]
+        }
+    )
+
+    name: str = Field(
+        min_length=2,
+        max_length=120,
+        description="Customer-facing product name",
+    )
+    sku: str = Field(
+        pattern=r"^[A-Z0-9-]+$",
+        description="Unique uppercase stock-keeping unit",
+    )
+    price: float = Field(
+        gt=0,
+        description="Selling price; must be greater than zero",
+    )
+    status: Literal["draft", "active"] = Field(
+        default="draft",
+        description="Initial product lifecycle status",
+    )
+
+
+class ProductResponse(BaseModel):
+    id: int
+    name: str
+    sku: str
+    price: float
+    status: Literal["draft", "active", "retired"]
+
+
+class ProductListResponse(BaseModel):
+    items: list[ProductResponse]
+    page: int
+    page_size: int
+    total: int
+
+
+def require_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(bearer_scheme),
+    ],
+) -> str:
+    if credentials is None or credentials.credentials != "development-token":
+        raise AppError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="INVALID_TOKEN",
+            message="A valid bearer token is required",
+        )
+
+    return credentials.credentials
+
+
+@app.get(
+    "/products",
+    response_model=ProductListResponse,
+    summary="Search the product catalog",
+    response_description="A paginated product collection",
+    tags=["Products"],
+    operation_id="listProducts",
+)
+async def list_products(
+    search: Annotated[
+        str | None,
+        Query(
+            min_length=2,
+            max_length=50,
+            description="Case-insensitive text searched in product names",
+        ),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
+    page_size: Annotated[
+        int,
+        Query(ge=1, le=100, description="Maximum records per page"),
+    ] = 20,
+):
+    product = ProductResponse(
+        id=1,
+        name="Mechanical Keyboard",
+        sku="KB-MECH-001",
+        price=129.99,
+        status="active",
+    )
+
+    return ProductListResponse(
+        items=[product],
+        page=page,
+        page_size=page_size,
+        total=1,
+    )
+
+
+@app.get(
+    "/products/{product_id}",
+    response_model=ProductResponse,
+    summary="Get one product",
+    tags=["Products"],
+    operation_id="getProductById",
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Product was not found",
+        }
+    },
+)
+async def get_product(
+    product_id: Annotated[
+        int,
+        Path(gt=0, description="Numeric product identifier"),
+    ],
+):
+    if product_id != 1:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="PRODUCT_NOT_FOUND",
+            message=f"Product {product_id} was not found",
+        )
+
+    return ProductResponse(
+        id=1,
+        name="Mechanical Keyboard",
+        sku="KB-MECH-001",
+        price=129.99,
+        status="active",
+    )
+
+
+@app.post(
+    "/products",
+    response_model=ProductResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a product",
+    response_description="The newly created product",
+    tags=["Products"],
+    operation_id="createProduct",
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Bearer authentication failed",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": "A product with the same SKU already exists",
+        },
+    },
+)
+async def create_product(
+    payload: ProductCreate,
+    token: Annotated[str, Depends(require_token)],
+):
+    return ProductResponse(
+        id=2,
+        **payload.model_dump(),
+    )
+
+
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    return {"status": "healthy"}
+```
+
+## What appears in the generated documentation
+
+```text
+Product Catalog API 1.0.0
+
+Products
+├── GET  /products
+│   ├── search: optional string
+│   ├── page: integer >= 1
+│   ├── page_size: integer from 1 to 100
+│   └── response: ProductListResponse
+│
+├── GET  /products/{product_id}
+│   ├── product_id: required integer > 0
+│   ├── 200: ProductResponse
+│   └── 404: ErrorResponse
+│
+└── POST /products
+    ├── bearer authentication required
+    ├── request: ProductCreate
+    ├── 201: ProductResponse
+    ├── 401: ErrorResponse
+    └── 409: ErrorResponse
+
+Hidden from OpenAPI:
+└── GET /health
+```
+
+---
+
+# 23. Quick Revision
+
+## Core mental model
+
+```text
+FastAPI declarations
+        |
+        v
+OpenAPI schema
+        |
+        +-----------------------+
+        |                       |
+        v                       v
+Swagger UI                  ReDoc
+Interactive testing         API reference
+```
+
+## Default paths
+
+```text
+/docs         -> Swagger UI
+/redoc        -> ReDoc
+/openapi.json -> Raw OpenAPI schema
+```
+
+## Most useful declarations
+
+```python
+FastAPI(
+    title="...",
+    description="...",
+    version="...",
+    openapi_tags=[...],
+)
+```
+
+```python
+@app.post(
+    "/resources",
+    response_model=ResourceResponse,
+    status_code=201,
+    summary="Create a resource",
+    description="...",
+    response_description="...",
+    tags=["Resources"],
+    operation_id="createResource",
+    responses={404: {"description": "Resource not found"}},
+)
+async def create_resource(payload: ResourceCreate):
+    ...
+```
+
+```python
+field: str = Field(
+    min_length=2,
+    description="...",
+    examples=["..."],
+)
+```
+
+## Key points to remember
+
+1. FastAPI generates OpenAPI from route declarations, type hints, Pydantic models, metadata, responses, and security dependencies.
+2. Swagger UI and ReDoc are interfaces that render the same OpenAPI schema.
+3. `response_model` documents, validates, and filters response data.
+4. Use `Field`, `Path`, and `Query` to make constraints and descriptions explicit.
+5. Use domain-based tags to organize larger APIs.
+6. Document expected error responses and make runtime bodies match the documented contract.
+7. Security dependencies create Swagger UI authorization controls, but the backend must still validate credentials and permissions.
+8. `include_in_schema=False` hides a route from documentation; it does not secure or disable the route.
+9. Disabling docs is not a substitute for authentication and authorization.
+10. Treat `/openapi.json` as a versioned API contract that can support client generation and CI checks.
+
+---
+
+# Official References
+
+Content checked against FastAPI **0.140.0**, released on **2026-07-24**.
+
+- FastAPI — First Steps and automatic docs: https://fastapi.tiangolo.com/tutorial/first-steps/
+- FastAPI — Features and OpenAPI standards: https://fastapi.tiangolo.com/features/
+- FastAPI — Metadata and docs URLs: https://fastapi.tiangolo.com/tutorial/metadata/
+- FastAPI — Configure Swagger UI: https://fastapi.tiangolo.com/how-to/configure-swagger-ui/
+- FastAPI — Custom docs UI assets: https://fastapi.tiangolo.com/how-to/custom-docs-ui-assets/
+- FastAPI — Conditional OpenAPI: https://fastapi.tiangolo.com/how-to/conditional-openapi/
+- FastAPI — Extending OpenAPI: https://fastapi.tiangolo.com/how-to/extending-openapi/
+- FastAPI — Behind a proxy: https://fastapi.tiangolo.com/advanced/behind-a-proxy/
+- FastAPI — Request example data: https://fastapi.tiangolo.com/tutorial/schema-extra-example/
+- FastAPI — Release notes: https://fastapi.tiangolo.com/release-notes/
