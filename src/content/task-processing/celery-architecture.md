@@ -4,105 +4,1931 @@ group: "Architecture & Brokers"
 order: 1
 ---
 
-# Celery Architecture: Broker, Worker, Result Backend
+# Celery Architecture: Broker, Worker, and Result Backend
 
-> Celery pushes work out of the request cycle: your app drops a task message on a broker, a pool of worker processes pulls it off and runs it, and an optional result backend stores the outcome for whoever wants to read it.
+> **Category:** Async & Task Processing  
+> **Level:** Intermediate Python Developer  
+> **Version checked:** Celery 5.6.3 documentation  
+> **Goal:** Understand how Celery moves, executes, tracks, and scales background tasks in real applications.
 
-## What it is
-Celery is a **distributed task queue**. You hand off work that has no business blocking a web request (sending email, rendering a PDF, calling a slow third-party API) and it runs on separate worker processes, in parallel, with retries when you ask for them.
+---
 
-The catch that trips people up: **Celery does not store or run tasks itself**. It is a client library plus a worker daemon that talk through someone else's queue. Name the parts and the system falls into place:
+## Index
 
-| Component | Role |
-| --- | --- |
-| **Producer** (your app) | Calls `.delay()` / `.apply_async()`, serializes the call, publishes it, returns at once |
-| **Broker** (Redis \| RabbitMQ \| SQS) | The **message transport** - holds tasks until a worker is free |
-| **Worker** (prefork \| gevent pool) | Long-running daemon that pulls messages and **executes** the task body |
-| **Result backend** (Redis \| DB \| RPC) | **Optional** store for the return value and state, read via `AsyncResult(id).get()` |
-| **Beat** (scheduler) | Enqueues tasks on a schedule - it **only publishes, never executes** |
+1. [Why Asynchronous Task Processing Is Needed](#1-why-asynchronous-task-processing-is-needed)
+2. [Celery in One Sentence](#2-celery-in-one-sentence)
+3. [High-Level Architecture](#3-high-level-architecture)
+4. [Core Components](#4-core-components)
+   - [Producer or Client](#41-producer-or-client)
+   - [Message Broker](#42-message-broker)
+   - [Worker](#43-worker)
+   - [Result Backend](#44-result-backend)
+5. [Complete Task Lifecycle](#5-complete-task-lifecycle)
+6. [Message Broker in Detail](#6-message-broker-in-detail)
+7. [Worker in Detail](#7-worker-in-detail)
+8. [Result Backend in Detail](#8-result-backend-in-detail)
+9. [Broker vs Result Backend](#9-broker-vs-result-backend)
+10. [Runnable Redis Example](#10-runnable-redis-example)
+11. [Production Architecture Example](#11-production-architecture-example)
+12. [Reliability and Delivery Semantics](#12-reliability-and-delivery-semantics)
+13. [Scaling and Performance](#13-scaling-and-performance)
+14. [Routing Tasks to Different Queues](#14-routing-tasks-to-different-queues)
+15. [Monitoring and Operations](#15-monitoring-and-operations)
+16. [Security Considerations](#16-security-considerations)
+17. [Practical Use Cases](#17-practical-use-cases)
+18. [Best-Practice Checklist](#18-best-practice-checklist)
+19. [Final Mental Model](#19-final-mental-model)
 
-> [!KEY] Celery keeps no state of its own: the **broker is the queue** and the **workers are the muscle**. Producer and worker never talk directly - every task is a message that flows producer -> broker -> worker.
+---
 
-## Key points
-- **`delay()` vs `apply_async()`.** Both publish the same message and hand back an `AsyncResult`. Reach for `apply_async` the moment you need delivery options.
+# 1. Why Asynchronous Task Processing Is Needed
 
-| Call | Use it when |
-| --- | --- |
-| `add.delay(2, 3)` | The **common case** - just args and kwargs. It literally calls `apply_async` for you |
-| `add.apply_async(args=(2, 3), ...)` | You need **execution options**: `countdown`, `eta`, `queue`, `priority`, `expires`, `retry` |
+A normal web request is synchronous:
 
-- **The broker is the queue, not Celery.** All three transports below are Stable in 5.6, so pick by the delivery guarantees you need.
+```text
+Client sends request
+        ↓
+Application performs all work
+        ↓
+Application returns response
+```
 
-| Transport | Redelivery model | Routing & DLQ | Ordering |
-| --- | --- | --- | --- |
-| **RabbitMQ** (AMQP) | **Ack + heartbeat**: detects a dead worker over the connection, no timer | Full routing, priorities, native **dead-letter exchange** | Per-queue FIFO |
-| **Redis** | **Visibility timeout** (default **1 hour**): unacked task redelivered on expiry | Lists / sorted sets, **no native DLQ** | Best-effort |
-| **Amazon SQS** | Visibility timeout + **redrive policy** to a DLQ after `maxReceiveCount` | Managed DLQ, **no remote control or events** in Celery | Standard best-effort \| **FIFO strict** |
+This is acceptable for fast operations such as:
 
-- **Workers run a pool.** The pool type decides whether concurrency means processes or greenlets.
+- Reading a database record
+- Validating a small payload
+- Returning cached data
 
-| Pool | Concurrency unit | Best for |
-| --- | --- | --- |
-| `prefork` (default) | **OS processes**, one per `-c` slot (defaults to CPU count) | **CPU-bound** or blocking work |
-| `gevent` / `eventlet` | **Greenlets** in one process, hundreds at once | **IO-bound**, high-concurrency network waits |
-| `solo` | Runs **inline** in the main process | Debugging only |
+It becomes a problem when the request performs slow or resource-heavy work:
 
-- **The result backend is optional.** Values and state land in Redis, a SQL database (SQLAlchemy or the Django ORM), or the RPC backend that ships results back over the broker. If nothing calls `.get()`, set `ignore_result=True` and skip the write. Storing a result nobody reads is wasted IO on every task.
-- **Task states:** `PENDING -> STARTED -> SUCCESS | FAILURE | RETRY`. `STARTED` only appears with `track_started=True`, so by default a running task still reports `PENDING`.
-- **Routing stops workloads starving each other.** Declare named queues and pin a worker to each with `-Q`. Park slow report jobs on a `heavy` queue with their own workers so fast `emails` tasks never sit behind them. The stock default queue is literally named `celery`.
-- **Task bodies run synchronously.** Even when your web app is async, the task runs sync inside the worker - there is no `await` in the body. For an asyncio-native queue with the same broker/worker/backend shape, look at **Taskiq** (~0.12, it bills itself as an "asyncio Celery"). It is not a drop-in and targets async-only projects.
+- Sending thousands of emails
+- Generating a PDF report
+- Processing an uploaded video
+- Running OCR on documents
+- Calling a slow third-party API
+- Training or invoking an ML pipeline
+- Recalculating analytics
+- Creating scheduled reports
 
-## Example
+Without a background task system, the user waits while the work completes.
+
+```text
+HTTP Request
+    |
+    |---- Generate report: 25 seconds
+    |---- Send email:       3 seconds
+    |---- Upload to S3:     4 seconds
+    |
+HTTP Response after 32 seconds
+```
+
+With Celery, the application submits the slow work as a task and returns quickly.
+
+```text
+HTTP Request
+    |
+    |---- Publish task: a few milliseconds
+    |
+HTTP 202 Accepted
+
+Background worker performs the slow work separately.
+```
+
+The web application and the background processing system are therefore **decoupled**.
+
+---
+
+# 2. Celery in One Sentence
+
+**Celery is a distributed task queue that sends task messages through a broker to worker processes, with an optional result backend for storing task states and return values.**
+
+Celery mainly focuses on:
+
+- Background processing
+- Distributed execution
+- Task retries
+- Scheduling
+- Queue-based routing
+- Parallel execution
+- Task status and result tracking
+- Horizontal scaling
+
+Celery does not execute a task merely because a function has the `@app.task` decorator. The function runs asynchronously only when it is submitted using methods such as:
+
 ```python
-# tasks.py
+send_email.delay(user_id=42)
+```
+
+or:
+
+```python
+send_email.apply_async(
+    kwargs={"user_id": 42},
+    queue="emails",
+    countdown=10,
+)
+```
+
+---
+
+# 3. High-Level Architecture
+
+The four important participants are:
+
+1. **Producer or client** — submits the task
+2. **Broker** — holds and delivers the task message
+3. **Worker** — executes the task
+4. **Result backend** — optionally stores task state and result
+
+```mermaid
+flowchart LR
+    A[Web App / API / Script<br/>Producer] -->|1. Publish task message| B[(Message Broker)]
+    B -->|2. Deliver message| C[Celery Worker]
+    C -->|3. Execute Python task| D[External Services<br/>Database / API / Storage]
+    C -->|4. Store state and result| E[(Result Backend)]
+    A -->|5. Query using task ID| E
+```
+
+A common deployment might use:
+
+```text
+Django or FastAPI  →  Redis or RabbitMQ  →  Celery Workers
+                              |
+                              └────────────→ Redis/PostgreSQL Result Backend
+```
+
+The broker and result backend have different jobs, even when both use Redis.
+
+---
+
+# 4. Core Components
+
+## 4.1 Producer or Client
+
+The producer is the code that creates and submits a task message.
+
+Common producers include:
+
+- Django views
+- FastAPI endpoints
+- Flask routes
+- Management commands
+- Python scripts
+- Another Celery task
+- Celery Beat for scheduled tasks
+
+Example:
+
+```python
+result = generate_invoice.delay(invoice_id=125)
+```
+
+The producer does **not** execute `generate_invoice()` directly. Instead, Celery:
+
+1. Creates a unique task ID.
+2. Serializes the task name and arguments.
+3. Publishes a message to the broker.
+4. Returns an `AsyncResult` object.
+
+A simplified message looks like this:
+
+```json
+{
+  "id": "4a429ad6-6ca8-4d2f-9617-746fa62457fd",
+  "task": "billing.tasks.generate_invoice",
+  "args": [],
+  "kwargs": {
+    "invoice_id": 125
+  },
+  "retries": 0
+}
+```
+
+The actual Celery protocol includes additional headers and metadata.
+
+### `delay()` vs `apply_async()`
+
+Use `delay()` for a simple immediate call:
+
+```python
+add.delay(10, 20)
+```
+
+Use `apply_async()` when you need execution options:
+
+```python
+add.apply_async(
+    args=(10, 20),
+    queue="calculations",
+    countdown=30,
+    expires=120,
+)
+```
+
+`delay()` is effectively a convenient shortcut around `apply_async()`.
+
+---
+
+## 4.2 Message Broker
+
+The broker is the communication layer between producers and workers.
+
+Its primary responsibility is to:
+
+- Receive task messages
+- Place messages in queues
+- Preserve them according to broker configuration
+- Deliver messages to available workers
+- Handle acknowledgements and redelivery
+
+Common broker choices:
+
+| Broker | Good Fit | Important Characteristics |
+|---|---|---|
+| RabbitMQ | General production workloads | Mature messaging features, routing, acknowledgements, durable queues |
+| Redis | Simple setup and fast small-message transport | Easy to operate, can also act as a result backend |
+| Amazon SQS | AWS-managed workloads | Highly scalable and managed, but some Celery remote-control features are unavailable |
+| Google Cloud Pub/Sub | GCP-managed workloads | Managed and scalable messaging |
+| SQLite transport | Local experiments only | Not a production broker |
+
+The broker stores a **task message**, not the final business result.
+
+For example, it may contain:
+
+```text
+Run task: reports.tasks.generate_report
+Arguments: report_id=721
+Queue: reports
+Task ID: abc-123
+```
+
+It should generally not contain:
+
+- Large uploaded files
+- Huge JSON documents
+- Raw video or image bytes
+- Entire database models
+- Sensitive objects that cannot be serialized safely
+
+Store large data in a database or object storage and pass only a reference:
+
+```python
+# Better
+process_document.delay(document_id=984)
+
+# Avoid
+process_document.delay(file_bytes=large_80_mb_file)
+```
+
+---
+
+## 4.3 Worker
+
+A worker is a long-running Celery process that consumes task messages and executes the corresponding Python functions.
+
+Start a worker:
+
+```bash
+celery -A project.celery_app:app worker --loglevel=INFO
+```
+
+A worker performs the following flow:
+
+```text
+Connect to broker
+      ↓
+Subscribe to one or more queues
+      ↓
+Reserve or receive a task message
+      ↓
+Deserialize the message
+      ↓
+Find the registered task by name
+      ↓
+Execute the task in a worker pool
+      ↓
+Acknowledge or reject the message
+      ↓
+Store status/result when configured
+```
+
+A worker may run multiple task execution units concurrently.
+
+```mermaid
+flowchart TB
+    B[(Broker)] --> C[Worker Consumer]
+    C --> P[Execution Pool]
+    P --> P1[Process / Thread 1]
+    P --> P2[Process / Thread 2]
+    P --> P3[Process / Thread 3]
+    P --> P4[Process / Thread 4]
+```
+
+Example:
+
+```bash
+celery -A project.celery_app:app worker \
+  --loglevel=INFO \
+  --concurrency=4
+```
+
+This worker can execute up to four tasks concurrently, depending on the selected pool.
+
+---
+
+## 4.4 Result Backend
+
+The result backend is an optional storage mechanism for:
+
+- Task state
+- Return value
+- Exception information
+- Traceback
+- Custom progress metadata
+
+Example:
+
+```python
+result = add.delay(10, 20)
+
+print(result.id)
+print(result.state)
+print(result.get(timeout=5))
+```
+
+Possible output:
+
+```text
+4a429ad6-6ca8-4d2f-9617-746fa62457fd
+SUCCESS
+30
+```
+
+Celery does not enable result storage automatically. A result backend must be configured when the application needs to retrieve states or return values.
+
+Common choices:
+
+| Result Backend | Good Fit | Trade-Off |
+|---|---|---|
+| Redis | Fast status/result lookup | Memory and persistence must be managed |
+| RPC | Real-time result delivery to the initiating client | Results are not a normal shared persistent store |
+| PostgreSQL/MySQL through SQLAlchemy | Persistent results and existing relational infrastructure | Polling can add database load |
+| Django ORM | Django projects already using a relational database | Requires cleanup and careful query volume |
+| Memcached | Fast temporary results | Not suitable for durable result history |
+| Custom backend | Special storage or compliance requirements | Additional implementation and maintenance |
+
+The result backend should not become the permanent source of truth for business data.
+
+For example, an invoice task should save the final invoice record in the application database. The result backend may only report:
+
+```json
+{
+  "state": "SUCCESS",
+  "result": {
+    "invoice_id": 125
+  }
+}
+```
+
+---
+
+# 5. Complete Task Lifecycle
+
+Consider this API operation:
+
+```python
+generate_report.delay(report_id=721)
+```
+
+The full lifecycle is:
+
+```mermaid
+sequenceDiagram
+    participant API as Web API / Producer
+    participant Broker as Message Broker
+    participant Worker as Celery Worker
+    participant Backend as Result Backend
+    participant DB as Application Database
+
+    API->>API: Generate unique task ID
+    API->>Broker: Publish task message
+    API-->>API: Return AsyncResult(task_id)
+    Broker->>Worker: Deliver task message
+    Worker->>Backend: Optionally mark STARTED
+    Worker->>DB: Load report data
+    Worker->>Worker: Generate report
+    Worker->>DB: Save report record/file reference
+    Worker->>Backend: Store SUCCESS and result metadata
+    Worker->>Broker: Acknowledge message
+    API->>Backend: Query state using task ID
+    Backend-->>API: SUCCESS + result
+```
+
+## Step 1: Producer creates a task request
+
+```python
+result = generate_report.delay(report_id=721)
+```
+
+The producer immediately receives an object containing the task ID:
+
+```python
+task_id = result.id
+```
+
+## Step 2: Message is published to the broker
+
+The message waits in a queue until a suitable worker is ready.
+
+```text
+reports queue
+┌─────────────────────────────┐
+│ Task A: report_id=721       │
+│ Task B: report_id=722       │
+│ Task C: report_id=723       │
+└─────────────────────────────┘
+```
+
+## Step 3: Worker consumes the message
+
+A worker subscribed to the `reports` queue receives the task.
+
+```bash
+celery -A project.celery_app:app worker -Q reports
+```
+
+## Step 4: Worker executes the task
+
+```python
+@app.task
+def generate_report(report_id: int) -> dict:
+    report = build_report(report_id)
+    return {"report_id": report.id, "status": "generated"}
+```
+
+## Step 5: Worker acknowledges the broker message
+
+The exact acknowledgement timing depends on configuration.
+
+- **Early acknowledgement:** usually acknowledged before execution
+- **Late acknowledgement:** acknowledged after execution
+
+This affects redelivery behavior if a worker crashes.
+
+## Step 6: Worker writes to the result backend
+
+When result storage is enabled, Celery stores state and result metadata.
+
+```text
+task_id: 4a429ad6...
+state: SUCCESS
+result: {"report_id": 721, "status": "generated"}
+```
+
+## Step 7: Application checks the result
+
+```python
+from celery.result import AsyncResult
+
+result = AsyncResult(task_id, app=app)
+
+if result.successful():
+    print(result.result)
+```
+
+---
+
+# 6. Message Broker in Detail
+
+## 6.1 Broker Responsibilities
+
+The broker is responsible for message delivery, not task execution.
+
+```text
+Producer              Broker               Worker
+   |                     |                    |
+   |---- publish -------->|                    |
+   |                     |---- deliver ------>|
+   |                     |<--- acknowledge ---|
+```
+
+The broker manages concepts such as:
+
+- Connections
+- Channels
+- Exchanges, depending on the transport
+- Queues
+- Routing keys
+- Message durability
+- Acknowledgements
+- Visibility timeouts for some transports
+- Redelivery
+
+## 6.2 Queue
+
+A queue is a named buffer that holds messages until workers consume them.
+
+```text
+Queue: emails
+  - send_welcome_email(user_id=15)
+  - send_invoice_email(invoice_id=91)
+  - send_password_reset(user_id=18)
+```
+
+Workers can subscribe to specific queues:
+
+```bash
+celery -A project.celery_app:app worker -Q emails
+```
+
+## 6.3 Why a Broker Is Required
+
+The broker provides decoupling.
+
+The producer does not need to know:
+
+- Which worker will execute the task
+- Where that worker is running
+- Whether the worker is currently busy
+- How many workers exist
+- Whether execution begins immediately
+
+The producer only publishes a message.
+
+## 6.4 RabbitMQ vs Redis as Broker
+
+### RabbitMQ
+
+RabbitMQ is a dedicated message broker.
+
+Use it when the system needs:
+
+- Mature routing behavior
+- Durable messaging
+- Strong queue-management features
+- Clear separation between messaging and caching
+- A traditional production message broker
+
+### Redis
+
+Redis can act as both broker and result backend.
+
+Use it when the system needs:
+
+- Simple infrastructure
+- Fast transport for relatively small messages
+- Easy local development
+- A familiar Redis-based stack
+
+Be careful with:
+
+- Redis memory usage
+- Eviction policies
+- Persistence configuration
+- Large messages
+- Using the same Redis instance for unrelated critical workloads
+
+### Practical Selection
+
+```text
+Simple project or POC
+    └── Redis broker + Redis backend
+
+General production system
+    └── RabbitMQ broker + Redis backend
+
+AWS-managed architecture
+    └── SQS broker + Redis/RDS/custom result storage
+```
+
+These are common patterns, not strict rules.
+
+---
+
+# 7. Worker in Detail
+
+## 7.1 Worker Process Structure
+
+A Celery worker is more than one Python function runner.
+
+At a high level, it contains:
+
+- A broker consumer
+- Task registration
+- An execution pool
+- Internal timers
+- Event and heartbeat support
+- Result-backend integration
+- Logging and lifecycle hooks
+
+```mermaid
+flowchart LR
+    B[(Broker)] --> CON[Consumer]
+    CON --> REG[Task Registry]
+    REG --> POOL[Execution Pool]
+    POOL --> TASK[Task Function]
+    TASK --> RB[(Result Backend)]
+    TASK --> EXT[DB / API / Storage]
+```
+
+## 7.2 Task Registration
+
+The worker must know the task name.
+
+```python
+@app.task(name="billing.generate_invoice")
+def generate_invoice(invoice_id: int) -> dict:
+    ...
+```
+
+When a message contains:
+
+```json
+{
+  "task": "billing.generate_invoice"
+}
+```
+
+the worker searches its task registry for that name.
+
+An unregistered-task error commonly means:
+
+- The task module was not imported
+- Autodiscovery was not configured
+- The worker is using old code
+- Producer and worker task names differ
+- The worker was not restarted after code changes
+
+## 7.3 Concurrency Pools
+
+Celery 5.6 uses **prefork** as the default worker pool and recommends it as the starting point for most workloads.
+
+| Pool | Execution Model | Suitable For | Notes |
+|---|---|---|---|
+| `prefork` | Multiple OS processes | CPU-bound and general workloads | Default and most feature-complete |
+| `threads` | Native threads | I/O-heavy work with thread-safe libraries | Python GIL limits CPU-bound parallelism |
+| `gevent` | Greenlets | High-concurrency network I/O | Requires compatible cooperative libraries |
+| `eventlet` | Greenlets | High-concurrency network I/O | CPU-bound work can block the event loop |
+| `solo` | Main thread only | Debugging and simple local runs | Executes one task at a time |
+| `custom` | User-provided pool | Advanced specialized cases | Additional maintenance |
+
+Start with prefork:
+
+```bash
+celery -A project.celery_app:app worker \
+  --pool=prefork \
+  --concurrency=4
+```
+
+Use alternative pools only after testing library compatibility and Celery feature support. Some worker features are unavailable or behave differently outside prefork.
+
+## 7.4 Concurrency Is Not the Same as Worker Count
+
+Suppose there are:
+
+- 3 worker containers
+- `--concurrency=4` for each worker
+
+Approximate task execution capacity:
+
+```text
+3 workers × 4 execution slots = 12 concurrent tasks
+```
+
+Actual throughput still depends on:
+
+- CPU
+- Memory
+- Task duration
+- External API limits
+- Database connections
+- Broker performance
+- Network latency
+- Task type
+
+## 7.5 Separate Workers for Different Workloads
+
+Avoid mixing every task type in one worker pool.
+
+```text
+emails queue    → I/O-focused workers
+reports queue   → CPU/memory-focused workers
+payments queue  → small controlled worker pool
+default queue   → general workers
+```
+
+This prevents a large report task from delaying a password-reset email.
+
+---
+
+# 8. Result Backend in Detail
+
+## 8.1 Task States
+
+Common built-in states are:
+
+```text
+PENDING → STARTED → SUCCESS
+                  ↘ FAILURE
+                  ↘ RETRY
+```
+
+Other states include:
+
+- `RECEIVED`
+- `REVOKED`
+- `REJECTED`
+- Custom application-defined states
+
+Important detail:
+
+`PENDING` can mean either:
+
+1. The task is waiting, or
+2. The backend does not know the task ID.
+
+It is not proof that the message is currently present in the broker.
+
+## 8.2 `STARTED` Is Not Enabled by Default
+
+Enable task-start tracking when needed:
+
+```python
+app.conf.task_track_started = True
+```
+
+This introduces additional backend writes, so enable it for an actual monitoring requirement rather than automatically.
+
+## 8.3 Reading Results
+
+```python
+result = add.delay(20, 22)
+
+print(result.id)
+print(result.state)
+
+value = result.get(timeout=10)
+print(value)
+```
+
+Useful `AsyncResult` methods and properties:
+
+```python
+result.ready()
+result.successful()
+result.failed()
+result.state
+result.result
+result.traceback
+result.get(timeout=10)
+result.forget()
+```
+
+Avoid calling `get()` inside a normal web request unless the wait is intentional. Waiting for a Celery task during the request removes much of the benefit of asynchronous execution.
+
+```python
+# Usually poor API design
+result = generate_report.delay(report_id)
+report = result.get(timeout=60)
+return report
+```
+
+A better API flow is:
+
+```text
+POST /reports
+    → 202 Accepted
+    → {"task_id": "...", "report_id": 721}
+
+GET /reports/721
+    → {"status": "processing"}
+
+GET /reports/721
+    → {"status": "completed", "download_url": "..."}
+```
+
+## 8.4 Ignore Results When They Are Not Needed
+
+For fire-and-forget tasks:
+
+```python
+@app.task(ignore_result=True)
+def record_audit_event(event: dict) -> None:
+    ...
+```
+
+Or globally:
+
+```python
+app.conf.task_ignore_result = True
+```
+
+Disabling unnecessary results reduces:
+
+- Backend writes
+- Storage usage
+- Network traffic
+- Cleanup work
+
+## 8.5 Expire Old Results
+
+Results should normally have a retention policy.
+
+```python
+app.conf.result_expires = 3600  # 1 hour
+```
+
+The exact cleanup behavior depends on the selected backend.
+
+Do not allow temporary task metadata to grow forever.
+
+## 8.6 Result Backend Is Not a Business Database
+
+Incorrect design:
+
+```text
+Invoice status exists only in Celery result backend.
+```
+
+Better design:
+
+```text
+Application database:
+    invoice.status = "GENERATED"
+    invoice.file_url = "..."
+
+Celery backend:
+    task state = SUCCESS
+    result = {"invoice_id": 125}
+```
+
+Celery results are operational metadata. Business state belongs in the business database.
+
+---
+
+# 9. Broker vs Result Backend
+
+This distinction is one of the most important parts of Celery architecture.
+
+| Area | Message Broker | Result Backend |
+|---|---|---|
+| Primary purpose | Deliver task messages | Store or transmit task states/results |
+| Written by | Producer | Worker |
+| Read by | Worker | Producer, API, monitoring code |
+| Data example | Task name, arguments, task ID | `SUCCESS`, return value, exception |
+| Required | Yes | No |
+| Typical technologies | RabbitMQ, Redis, SQS | Redis, RPC, PostgreSQL, Django ORM |
+| Data lifetime | Until consumed, expired, or removed | Until result expiration or cleanup |
+| Business source of truth | No | No |
+
+## Same Technology, Different Logical Role
+
+Redis may be used for both:
+
+```python
+broker_url = "redis://localhost:6379/0"
+result_backend = "redis://localhost:6379/1"
+```
+
+Here:
+
+- Redis database `0` carries task messages.
+- Redis database `1` stores results.
+
+The infrastructure is the same product, but the responsibilities remain separate.
+
+For larger production systems, separate instances or clusters may provide better isolation than separate logical databases alone.
+
+---
+
+# 10. Runnable Redis Example
+
+This example uses:
+
+- Celery 5.6.3
+- Redis as broker
+- Redis as result backend
+- A local Python worker
+
+## 10.1 Project Structure
+
+```text
+celery-demo/
+├── celery_app.py
+├── tasks.py
+├── run_task.py
+├── docker-compose.yml
+└── requirements.txt
+```
+
+## 10.2 Install Dependencies
+
+`requirements.txt`
+
+```text
+celery[redis]==5.6.3
+```
+
+Install:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## 10.3 Start Redis
+
+`docker-compose.yml`
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
+```
+
+Run:
+
+```bash
+docker compose up -d
+```
+
+## 10.4 Configure Celery
+
+`celery_app.py`
+
+```python
+import os
+
 from celery import Celery
 
+
 app = Celery(
-    "proj",
-    broker="redis://localhost:6379/0",     # where messages queue up
-    backend="redis://localhost:6379/1",    # where results land (optional)
+    "celery_demo",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1"),
+    include=["tasks"],
 )
 
-@app.task
-def add(x, y):
-    return x + y
+app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    task_track_started=True,
+    result_expires=3600,
+    broker_connection_retry_on_startup=True,
+)
 ```
+
+## 10.5 Define Tasks
+
+`tasks.py`
+
 ```python
-# caller runs in your web process and returns immediately
-result = add.delay(2, 3)                  # shorthand: serialized and pushed to the broker
-add.apply_async((2, 3), countdown=10)     # same task, but run it 10s from now
-result.get(timeout=5)                     # blocks up to 5s until the worker writes the result
+import time
+
+from celery_app import app
+
+
+@app.task
+def add(x: int, y: int) -> int:
+    return x + y
+
+
+@app.task(
+    bind=True,
+    autoretry_for=(ConnectionError,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 5},
+)
+def generate_report(self, report_id: int) -> dict:
+    # Simulate slow work.
+    time.sleep(5)
+
+    return {
+        "report_id": report_id,
+        "status": "generated",
+    }
 ```
+
+## 10.6 Start the Worker
+
 ```bash
-# start a worker: 4 prefork processes, consuming two queues
-celery -A tasks worker -c 4 --pool=prefork -Q celery,emails
+celery -A celery_app:app worker --loglevel=INFO
 ```
 
-## Interview Q&A
-- **What are Celery's core components?** Producer (your app), broker (message transport), worker (executor), plus an optional result backend. If someone says Celery stores the tasks, that is the tell they have missed the point - the broker does.
-- **What does the broker actually do?** It is the queue. Your app publishes a message, the broker holds it and hands it to a free worker. Celery keeps no state between the two.
-- **`delay()` vs `apply_async()`?** Identical under the hood, since `delay()` just calls `apply_async(args, kwargs)`. Use `apply_async` when you need execution options (countdown, eta, queue, priority, expires).
-- **When can you drop the result backend?** When nothing reads the outcome. Set `ignore_result=True` and save a write per task. Just do not call `.get()` afterward, because there is nothing to read back.
-- **prefork vs gevent?** prefork is OS processes, for CPU-bound and blocking tasks. gevent/eventlet are greenlets in a single process, for high-concurrency IO where forking that many processes would fall over.
+For explicit concurrency:
 
-## Gotchas
-> [!WARN] **PENDING does not mean "queued."** With the default backend, any unknown task id reads as `PENDING`. A task genuinely waiting to run and a task id you typo'd are indistinguishable - there is no "not found" state.
+```bash
+celery -A celery_app:app worker \
+  --pool=prefork \
+  --concurrency=4 \
+  --loglevel=INFO
+```
 
-- **Prefetch starves long tasks.** `worker_prefetch_multiplier` defaults to **4**, so each process reserves up to `4 x concurrency` messages up front. One worker can grab a stack of slow jobs while others sit idle. For long tasks set it to `1`.
-- **The Redis broker redelivers long tasks.** Its visibility timeout is one hour by default. A task that runs past it without acking looks dead to Redis, which hands the same message to another worker, so it runs twice (and can loop). Keep tasks well under the timeout, or use RabbitMQ, whose acks are not driven by a timer.
-- **No backend, no `.get()`.** Call `.get()` with no result backend configured and it blocks to the timeout, then errors. Skipping the backend is fine. Half-configuring it is the trap.
+## 10.7 Submit a Task
 
-> [!WARN] **`acks_late` demands idempotency.** Ack timing is really a delivery-guarantee switch, and a late ack re-runs any task whose worker died mid-flight.
+`run_task.py`
 
-| Setting | Ack timing | Guarantee | Worker dies mid-task |
-| --- | --- | --- | --- |
-| **ack-early** (default, `task_acks_late=False`) | Before the task runs | **At-most-once** | Message is **lost** |
-| **ack-late** (`task_acks_late=True`) | After the task returns | **At-least-once** | Message is **re-run** |
+```python
+from tasks import add, generate_report
 
-## Revise next
-- [Retries](retries-dead-letter-queues.md): `autoretry_for`, `retry_backoff`, and dead-letter handling
-- Celery **canvas**: chaining tasks with `chain`, `group`, and `chord`
-- [Celery **Beat**](celery-beat-periodic-tasks.md) for periodic and scheduled tasks
-- [**Taskiq**](celery-vs-taskiq.md), an asyncio-native queue for when Celery's sync workers do not fit
 
-*Reviewed against Celery 5.6, July 2026.*
+add_result = add.delay(10, 20)
+
+print("Add task ID:", add_result.id)
+print("Add result:", add_result.get(timeout=10))
+
+
+report_result = generate_report.delay(report_id=721)
+
+print("Report task ID:", report_result.id)
+print("Initial state:", report_result.state)
+print("Report result:", report_result.get(timeout=20))
+```
+
+Run:
+
+```bash
+python run_task.py
+```
+
+Expected output:
+
+```text
+Add task ID: <uuid>
+Add result: 30
+Report task ID: <uuid>
+Initial state: PENDING or STARTED
+Report result: {'report_id': 721, 'status': 'generated'}
+```
+
+## 10.8 What Happened Internally
+
+```text
+run_task.py
+    |
+    | add.delay(10, 20)
+    v
+Redis DB 0: broker queue
+    |
+    v
+Celery worker
+    |
+    | executes add(10, 20)
+    v
+Redis DB 1: SUCCESS + result 30
+    |
+    v
+add_result.get()
+```
+
+---
+
+# 11. Production Architecture Example
+
+Consider an application that supports:
+
+- User emails
+- PDF report generation
+- Payment reconciliation
+- Image processing
+
+A single queue is technically possible:
+
+```text
+default queue → all workers → every task type
+```
+
+It is usually difficult to operate because different tasks have different characteristics.
+
+A better architecture:
+
+```mermaid
+flowchart LR
+    API[Web API] --> B[(RabbitMQ Broker)]
+
+    B --> QE[emails queue]
+    B --> QR[reports queue]
+    B --> QP[payments queue]
+    B --> QI[images queue]
+
+    QE --> WE[Email Workers<br/>High concurrency]
+    QR --> WR[Report Workers<br/>More memory]
+    QP --> WP[Payment Workers<br/>Controlled concurrency]
+    QI --> WI[Image Workers<br/>CPU optimized]
+
+    WE --> RB[(Redis Result Backend)]
+    WR --> RB
+    WP --> RB
+    WI --> RB
+
+    WR --> DB[(Application Database)]
+    WP --> DB
+    WI --> OS[(Object Storage)]
+```
+
+Benefits:
+
+- Independent scaling
+- Better fault isolation
+- Different concurrency settings
+- Easier priority handling
+- Safer external API rate control
+- More predictable latency
+- Clear operational ownership
+
+Example worker commands:
+
+```bash
+celery -A project.celery_app:app worker \
+  -Q emails \
+  --concurrency=20 \
+  --hostname=emails@%h
+
+celery -A project.celery_app:app worker \
+  -Q reports \
+  --concurrency=4 \
+  --hostname=reports@%h
+
+celery -A project.celery_app:app worker \
+  -Q payments \
+  --concurrency=2 \
+  --hostname=payments@%h
+```
+
+The exact concurrency values must come from load testing and resource measurements.
+
+---
+
+# 12. Reliability and Delivery Semantics
+
+## 12.1 Acknowledgements
+
+An acknowledgement tells the broker that a worker has accepted responsibility for a message.
+
+### Early Acknowledgement
+
+With the common default behavior, the task is acknowledged before execution completes.
+
+Advantage:
+
+- Reduces accidental duplicate execution after some worker failures
+
+Risk:
+
+- If the worker process terminates during execution, the task may be lost from the queue
+
+### Late Acknowledgement
+
+Enable per task:
+
+```python
+@app.task(acks_late=True)
+def charge_customer(payment_id: int) -> None:
+    ...
+```
+
+or globally:
+
+```python
+app.conf.task_acks_late = True
+```
+
+The message is acknowledged after task execution.
+
+Advantage:
+
+- A broker may redeliver the task when a worker dies before acknowledgement
+
+Risk:
+
+- The same task may execute more than once
+
+Therefore, late acknowledgement should be paired with **idempotent task design**.
+
+## 12.2 Idempotency
+
+An idempotent operation can be repeated without creating an incorrect additional effect.
+
+Unsafe task:
+
+```python
+@app.task(acks_late=True)
+def charge_card(payment_id: int) -> None:
+    payment = Payment.objects.get(id=payment_id)
+    gateway.charge(payment.amount)
+```
+
+If the task executes twice, the customer may be charged twice.
+
+Safer approach:
+
+```python
+@app.task(acks_late=True)
+def charge_card(payment_id: int) -> None:
+    payment = Payment.objects.get(id=payment_id)
+
+    if payment.status == "completed":
+        return
+
+    gateway.charge(
+        amount=payment.amount,
+        idempotency_key=f"payment-{payment.id}",
+    )
+
+    payment.status = "completed"
+    payment.save(update_fields=["status"])
+```
+
+Idempotency may use:
+
+- A unique database constraint
+- An idempotency key
+- A processed-event table
+- Compare-and-set updates
+- Transactional locking
+- External API idempotency support
+
+## 12.3 Retries
+
+Retry temporary failures, not permanent validation errors.
+
+```python
+@app.task(
+    bind=True,
+    autoretry_for=(TimeoutError, ConnectionError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 5},
+)
+def call_partner_api(self, customer_id: int) -> dict:
+    return partner_client.fetch_customer(customer_id)
+```
+
+Exponential backoff prevents immediate retry storms.
+
+```text
+Attempt 1 → fail
+Wait ~1 second
+Attempt 2 → fail
+Wait ~2 seconds
+Attempt 3 → fail
+Wait ~4 seconds
+...
+```
+
+Do not retry indefinitely without an operational reason.
+
+## 12.4 Time Limits
+
+Protect workers from tasks that never finish.
+
+```python
+app.conf.task_soft_time_limit = 270
+app.conf.task_time_limit = 300
+```
+
+- Soft limit gives the task a chance to handle an exception and clean up.
+- Hard limit terminates execution when the maximum is crossed.
+
+Time-limit support can differ by worker pool and platform. Test it with the actual production pool.
+
+## 12.5 Transaction Boundary
+
+A common Django issue is publishing a task before the surrounding database transaction commits.
+
+Problem:
+
+```python
+with transaction.atomic():
+    order = Order.objects.create(...)
+    process_order.delay(order.id)
+```
+
+A fast worker may read the database before `order` is committed.
+
+Safer pattern:
+
+```python
+from django.db import transaction
+
+
+with transaction.atomic():
+    order = Order.objects.create(...)
+
+    transaction.on_commit(
+        lambda: process_order.delay(order.id)
+    )
+```
+
+This publishes the task only after a successful commit.
+
+## 12.6 Delivery Is Not Exactly Once
+
+In distributed systems, failures can happen between:
+
+- Task execution
+- Database commit
+- Result storage
+- Broker acknowledgement
+- Network confirmation
+
+Design Celery tasks assuming they may be:
+
+- Retried
+- Redelivered
+- Executed more than once
+- Interrupted during execution
+
+The practical target is normally:
+
+```text
+At-least-once capable delivery
+            +
+Idempotent business operation
+            =
+Reliable observable outcome
+```
+
+---
+
+# 13. Scaling and Performance
+
+## 13.1 Horizontal Scaling
+
+Add more workers when queue depth or task latency increases.
+
+```text
+Before:
+Broker → Worker 1
+
+After:
+Broker → Worker 1
+       → Worker 2
+       → Worker 3
+       → Worker 4
+```
+
+Workers coordinate through the broker. The producer normally requires no change.
+
+## 13.2 Vertical Scaling
+
+Increase resources for existing workers:
+
+- More CPU
+- More memory
+- Higher concurrency
+- Faster network
+- Faster disks, when relevant
+
+Horizontal scaling is often safer because it improves isolation and replacement behavior.
+
+## 13.3 Concurrency Selection
+
+General starting point:
+
+```text
+CPU-bound task
+    → prefork
+    → concurrency near available CPU cores
+
+I/O-bound task
+    → prefork or threads first
+    → benchmark higher concurrency carefully
+
+Very high cooperative network I/O
+    → consider gevent/eventlet
+    → verify every library is compatible
+```
+
+More concurrency is not automatically faster.
+
+High concurrency can overload:
+
+- PostgreSQL connection limits
+- Redis
+- Third-party APIs
+- Memory
+- File descriptors
+- Network sockets
+- Downstream microservices
+
+## 13.4 Prefetch
+
+Workers can reserve tasks before execution slots become available.
+
+Celery's default `worker_prefetch_multiplier` is commonly `4`.
+
+Approximate reserved-message count:
+
+```text
+concurrency × prefetch multiplier
+```
+
+For a worker with:
+
+```text
+concurrency = 4
+prefetch multiplier = 4
+```
+
+the worker may reserve multiple tasks per execution slot.
+
+For long-running tasks, a lower value can improve fairness:
+
+```python
+app.conf.worker_prefetch_multiplier = 1
+```
+
+A common long-task configuration is:
+
+```python
+app.conf.update(
+    task_acks_late=True,
+    worker_prefetch_multiplier=1,
+)
+```
+
+This is not a universal setting. Benchmark it with the real workload.
+
+## 13.5 Separate Short and Long Tasks
+
+Bad arrangement:
+
+```text
+One queue:
+- 20 ms notification
+- 40-minute video processing
+- 100 ms audit task
+```
+
+A long task can sit ahead of many latency-sensitive tasks.
+
+Better:
+
+```text
+short_tasks queue → short-task workers
+long_tasks queue  → long-task workers
+```
+
+## 13.6 Keep Task Messages Small
+
+Prefer:
+
+```python
+generate_thumbnail.delay(image_id=101)
+```
+
+Instead of:
+
+```python
+generate_thumbnail.delay(image_bytes=large_binary_payload)
+```
+
+Small messages reduce:
+
+- Serialization cost
+- Broker memory pressure
+- Network transfer
+- Queue congestion
+- Failure-recovery cost
+
+## 13.7 Avoid Blocking on Results
+
+This defeats async processing:
+
+```python
+result = heavy_task.delay()
+value = result.get()
+```
+
+Use callbacks, chains, groups, chords, polling endpoints, WebSockets, or application status records when the workflow requires later continuation.
+
+---
+
+# 14. Routing Tasks to Different Queues
+
+## 14.1 Configuration-Based Routing
+
+```python
+app.conf.task_routes = {
+    "project.tasks.send_email": {
+        "queue": "emails",
+    },
+    "project.tasks.generate_report": {
+        "queue": "reports",
+    },
+    "project.tasks.reconcile_payment": {
+        "queue": "payments",
+    },
+}
+```
+
+This is preferable to scattering queue names throughout business code.
+
+## 14.2 Start Queue-Specific Workers
+
+```bash
+celery -A project.celery_app:app worker \
+  -Q emails \
+  --hostname=emails@%h
+```
+
+```bash
+celery -A project.celery_app:app worker \
+  -Q reports \
+  --hostname=reports@%h
+```
+
+## 14.3 Dynamic Routing
+
+A producer can override the queue:
+
+```python
+generate_report.apply_async(
+    kwargs={"report_id": 721},
+    queue="priority-reports",
+)
+```
+
+Use dynamic routing sparingly. Central configuration is easier to review and operate.
+
+## 14.4 Routing Decision Model
+
+```text
+Does the task need low latency?
+    ├── Yes → dedicated priority queue
+    └── No
+         |
+         ├── CPU/memory heavy? → resource-specific queue
+         ├── External rate limit? → controlled queue
+         └── General work → default queue
+```
+
+---
+
+# 15. Monitoring and Operations
+
+A production Celery system needs visibility into:
+
+- Queue depth
+- Oldest queued message
+- Task runtime
+- Success and failure rate
+- Retry rate
+- Worker availability
+- Worker heartbeats
+- Broker connections
+- Result-backend usage
+- Memory and CPU
+- Task timeouts
+- Unacknowledged messages
+
+## 15.1 Useful Commands
+
+Check workers:
+
+```bash
+celery -A project.celery_app:app status
+```
+
+Inspect active tasks:
+
+```bash
+celery -A project.celery_app:app inspect active
+```
+
+Inspect reserved tasks:
+
+```bash
+celery -A project.celery_app:app inspect reserved
+```
+
+Inspect scheduled tasks:
+
+```bash
+celery -A project.celery_app:app inspect scheduled
+```
+
+Inspect registered tasks:
+
+```bash
+celery -A project.celery_app:app inspect registered
+```
+
+## 15.2 Flower
+
+Flower is a web-based Celery monitoring tool.
+
+Typical usage:
+
+```bash
+pip install flower
+celery -A project.celery_app:app flower
+```
+
+It can help visualize:
+
+- Workers
+- Tasks
+- Runtime
+- Failures
+- Retries
+- Events
+
+Do not expose Flower publicly without authentication and network controls.
+
+## 15.3 Graceful Shutdown
+
+Use graceful termination so workers can finish active tasks.
+
+Container platforms should provide enough termination grace time for normal task completion.
+
+A forced kill can interrupt active work, leading to:
+
+- Lost work with early acknowledgements
+- Redelivery with late acknowledgements
+- Partially completed business operations
+
+Tasks should be designed to recover from both situations.
+
+## 15.4 Logging Context
+
+Include useful identifiers:
+
+```text
+task_id
+task_name
+queue
+retry_number
+business_entity_id
+duration
+worker_hostname
+```
+
+Example:
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@app.task(bind=True)
+def generate_report(self, report_id: int) -> dict:
+    logger.info(
+        "Generating report",
+        extra={
+            "task_id": self.request.id,
+            "report_id": report_id,
+        },
+    )
+    ...
+```
+
+Avoid logging secrets or full sensitive payloads.
+
+---
+
+# 16. Security Considerations
+
+## 16.1 Protect the Broker
+
+Anyone who can publish trusted Celery messages may be able to trigger registered tasks.
+
+Use:
+
+- Authentication
+- Private networking
+- TLS
+- Firewall rules
+- Least-privilege broker users
+- Separate virtual hosts or namespaces
+- Secret rotation
+
+## 16.2 Prefer JSON Serialization
+
+```python
+app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+)
+```
+
+Avoid unsafe serializers such as pickle when untrusted users or services may access the broker. Pickle can deserialize executable Python objects.
+
+## 16.3 Do Not Pass Secrets as Task Arguments
+
+Task messages may appear in:
+
+- Broker storage
+- Logs
+- Monitoring tools
+- Error traces
+- Dead-letter or retry flows
+
+Prefer passing a database identifier and loading the secret securely inside the task.
+
+## 16.4 Validate Task Inputs
+
+A task should not assume that every message is valid merely because it came through the broker.
+
+```python
+@app.task
+def process_invoice(invoice_id: int) -> None:
+    if invoice_id <= 0:
+        raise ValueError("invoice_id must be positive")
+```
+
+Also enforce authorization and tenant boundaries when processing multi-tenant data.
+
+---
+
+# 17. Practical Use Cases
+
+## 17.1 Email Delivery
+
+```text
+API creates user
+      ↓
+send_welcome_email.delay(user.id)
+      ↓
+API returns immediately
+      ↓
+Email worker sends message
+```
+
+The task should be idempotent or record whether the email was already sent.
+
+## 17.2 Report Generation
+
+```text
+User requests report
+      ↓
+Application creates Report(status="queued")
+      ↓
+Celery task generates file
+      ↓
+File stored in object storage
+      ↓
+Report updated to status="completed"
+```
+
+The application database is the business source of truth.
+
+## 17.3 OCR Pipeline
+
+```mermaid
+flowchart LR
+    U[Document Upload] --> S[(Object Storage)]
+    U --> Q[(OCR Queue)]
+    Q --> W1[OCR Worker]
+    W1 --> S
+    W1 --> DB[(Database)]
+    W1 --> Q2[(Post-processing Queue)]
+    Q2 --> W2[Validation Worker]
+    W2 --> DB
+```
+
+Pass a file reference, not raw document bytes.
+
+## 17.4 Third-Party API Synchronization
+
+Use:
+
+- Timeouts
+- Retries with backoff
+- Rate limits
+- Idempotency keys
+- Circuit-breaking at the application layer when needed
+- Dedicated queues for each integration
+
+## 17.5 Scheduled Tasks
+
+Celery Beat publishes scheduled task messages to the broker.
+
+```text
+Celery Beat → Broker → Worker
+```
+
+Beat does not normally execute the business task itself. It schedules and publishes it.
+
+Only one active scheduler should own a given schedule unless the scheduler implementation provides safe coordination.
+
+---
+
+# 18. Best-Practice Checklist
+
+## Architecture
+
+- Use the broker only for task-message delivery.
+- Use the result backend only when states or results are needed.
+- Store permanent business state in the application database.
+- Separate task queues by workload, latency, or risk.
+- Scale workers independently for each queue.
+
+## Task Design
+
+- Keep tasks small and focused.
+- Pass IDs or storage references instead of large payloads.
+- Make tasks idempotent.
+- Add explicit network timeouts.
+- Retry only recoverable failures.
+- Use exponential backoff and jitter.
+- Set practical time limits.
+- Avoid waiting for task results inside web requests.
+- Publish tasks after database commit.
+
+## Worker Design
+
+- Start with the prefork pool.
+- Size concurrency using measurements, not guesswork.
+- Avoid mixing very long and very short tasks.
+- Use queue-specific workers.
+- Plan graceful shutdown behavior.
+- Monitor worker memory and restart policies.
+
+## Broker and Backend
+
+- Protect both using authentication and private networking.
+- Use TLS where traffic crosses untrusted networks.
+- Configure persistence based on business requirements.
+- Define result expiration and cleanup.
+- Monitor queue depth and backend storage.
+- Avoid large task messages.
+- Avoid sharing one Redis instance with unrelated high-risk workloads unless capacity and isolation are understood.
+
+## Observability
+
+- Log task ID and business entity ID.
+- Track success, failure, retry, and duration.
+- Alert on growing queue depth.
+- Alert on missing workers or heartbeats.
+- Measure oldest-message age, not only queue length.
+- Protect monitoring dashboards.
+
+---
+
+# 19. Final Mental Model
+
+Remember Celery as a delivery pipeline:
+
+```text
+Producer
+   |
+   | "Please execute this task"
+   v
+Broker
+   |
+   | "Here is the next queued message"
+   v
+Worker
+   |
+   | Runs Python code
+   v
+Result Backend
+   |
+   | "The task succeeded, failed, or returned this value"
+   v
+Application / Monitoring
+```
+
+In one line:
+
+```text
+Broker carries the work.
+Worker performs the work.
+Result backend describes what happened.
+```
+
+The most important production principle is:
+
+> Celery provides distributed task execution, but reliable business behavior comes from idempotent tasks, correct transaction boundaries, controlled retries, observability, and carefully chosen broker and backend settings.
+
+---
+
+## Official References
+
+- [Celery Documentation](https://docs.celeryq.dev/)
+- [Introduction to Celery](https://docs.celeryq.dev/en/stable/getting-started/introduction.html)
+- [First Steps with Celery](https://docs.celeryq.dev/en/stable/getting-started/first-steps-with-celery.html)
+- [Backends and Brokers](https://docs.celeryq.dev/en/stable/getting-started/backends-and-brokers/)
+- [Tasks](https://docs.celeryq.dev/en/stable/userguide/tasks.html)
+- [Workers Guide](https://docs.celeryq.dev/en/stable/userguide/workers.html)
+- [Concurrency](https://docs.celeryq.dev/en/stable/userguide/concurrency/)
+- [Configuration and Defaults](https://docs.celeryq.dev/en/stable/userguide/configuration.html)
+- [Optimizing Celery](https://docs.celeryq.dev/en/stable/userguide/optimizing.html)
+- [Monitoring and Management](https://docs.celeryq.dev/en/stable/userguide/monitoring.html)

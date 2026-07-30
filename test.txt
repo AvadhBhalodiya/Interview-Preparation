@@ -1,47 +1,23 @@
-Joins, Subqueries & CTEs (WITH)
-- Databases & SQL topic
+Docker: Image vs Container, Dockerfile, Layers, Multi-Stage
+- AWS, Docker & DevOps
 - give me into single md file
 
-Indexing (B-tree): when it helps vs when it hurts
-- Databases & SQL topic
+Docker Volumes, Networking & Compose
+- AWS, Docker & DevOps
 - give me into single md file
 
-EXPLAIN / EXPLAIN ANALYZE (Query Optimization)
-- Databases & SQL topic
+Docker: Image vs Container, Dockerfile, Layers, Multi-Stage
+- AWS, Docker & DevOps
 - give me into single md file
 
-ACID Properties
-- Databases & SQL topic
+Docker: Image vs Container, Dockerfile, Layers, Multi-Stage
+- AWS, Docker & DevOps
 - give me into single md file
 
-Transaction Isolation Levels
-- Databases & SQL topic
+Docker: Image vs Container, Dockerfile, Layers, Multi-Stage
+- AWS, Docker & DevOps
 - give me into single md file
 
-Locking: Optimistic vs Pessimistic
-- Databases & SQL topic
-- give me into single md file
-
-Normalization vs Denormalization
-- Databases & SQL topic
-- give me into single md file
-
-Connection Pooling
-- Databases & SQL topic
-- give me into single md file
-
-Replication, Sharding & Partitioning
-- Databases & SQL topic
-- give me into single md file
-
-PostgreSQL Specifics: JSONB, Partial Index, VACUUM
-- Databases & SQL topic
-- give me into single md file
-
-SQL vs NoSQL - When to Use Each
-- Databases & SQL topic
-- give me into single md file
-
-DynamoDB: Keys, GSI/LSI, Single-Table Design
-- Databases & SQL topic
+Docker: Image vs Container, Dockerfile, Layers, Multi-Stage
+- AWS, Docker & DevOps
 - give me into single md file

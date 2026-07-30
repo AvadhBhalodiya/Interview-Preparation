@@ -14,6 +14,43 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# `netlify dev` runs these redirect rules against EVERY request before proxying
+# to the Vite dev server, so the catch-all below would otherwise rewrite the
+# whole module graph (/src/main.tsx, /@vite/client, …) to /index.html — the
+# browser gets HTML where it expects JS, React never mounts, and the page stays
+# blank on the proxy port. These passthroughs let Vite's dev-only paths reach it.
+# Rules are matched in order, so they must stay ABOVE the catch-all.
+# A production build emits none of these prefixes, so they are inert once deployed.
+[[redirects]]
+  from = "/src/*"
+  to = "/src/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/node_modules/*"
+  to = "/node_modules/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/@vite/*"
+  to = "/@vite/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/@id/*"
+  to = "/@id/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/@fs/*"
+  to = "/@fs/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/@react-refresh"
+  to = "/@react-refresh"
+  status = 200
+
 # Serve the SPA shell for unknown paths. Harmless with the current hash routing,
 # and future-proofs the site if it ever switches to clean history URLs.
 [[redirects]]
