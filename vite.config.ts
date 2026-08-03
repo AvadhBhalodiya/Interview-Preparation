@@ -2,11 +2,12 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { contentIndex } from './vite/md-meta'
+import { devFunctions } from './vite/dev-functions'
 
 // base: './' makes the built asset URLs relative, so the static `dist/`
 // works when hosted from ANY path (root, a subfolder, GitHub Pages, etc.).
 export default defineConfig({
-  plugins: [react(), tailwindcss(), contentIndex()],
+  plugins: [react(), tailwindcss(), contentIndex(), devFunctions()],
   base: './',
   build: {
     rollupOptions: {

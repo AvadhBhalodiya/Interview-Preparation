@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Clean, searchable, offline-friendly developer interview-prep notes.",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 5176 --strictPort",
     "dev:netlify": "set -a; [ -f .env ] && . ./.env; set +a; netlify dev --command 'pnpm exec vite --port 5173 --strictPort' --target-port 5173 --port 5176 --functions netlify/functions --no-open",
     "build": "tsc && vite build",
     "preview": "vite preview",
