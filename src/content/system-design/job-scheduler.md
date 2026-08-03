@@ -12,36 +12,6 @@ order: 12
 
 ---
 
-## Index
-
-1. [Problem Overview](#1-problem-overview)
-2. [Requirements and Scope](#2-requirements-and-scope)
-3. [Core Concepts](#3-core-concepts)
-4. [High-Level Architecture](#4-high-level-architecture)
-5. [End-to-End Job Lifecycle](#5-end-to-end-job-lifecycle)
-6. [Core Components](#6-core-components)
-7. [Data Model](#7-data-model)
-8. [Scheduler Design](#8-scheduler-design)
-9. [Queue Design](#9-queue-design)
-10. [Worker Design](#10-worker-design)
-11. [Delivery Guarantees and Idempotency](#11-delivery-guarantees-and-idempotency)
-12. [Retries, Backoff, and Dead-Letter Queues](#12-retries-backoff-and-dead-letter-queues)
-13. [Recurring Jobs, Time Zones, and Missed Runs](#13-recurring-jobs-time-zones-and-missed-runs)
-14. [High Availability and Failure Recovery](#14-high-availability-and-failure-recovery)
-15. [Scaling and Partitioning](#15-scaling-and-partitioning)
-16. [Priority, Fairness, Ordering, and Rate Limits](#16-priority-fairness-ordering-and-rate-limits)
-17. [API Design](#17-api-design)
-18. [Important Algorithms and Pseudocode](#18-important-algorithms-and-pseudocode)
-19. [Observability and Operations](#19-observability-and-operations)
-20. [Security and Multi-Tenancy](#20-security-and-multi-tenancy)
-21. [Technology Choices](#21-technology-choices)
-22. [Practical Design Evolution](#22-practical-design-evolution)
-23. [Key Design Decisions](#23-key-design-decisions)
-24. [Final Mental Model](#24-final-mental-model)
-25. [References](#25-references)
-
----
-
 ## 1. Problem Overview
 
 A **job scheduler and queue** accepts work that should run:

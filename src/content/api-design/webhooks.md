@@ -12,28 +12,6 @@ order: 7
 
 ---
 
-## Table of Contents
-
-1. [What Is a Webhook?](#1-what-is-a-webhook)
-2. [Why Webhooks Are Used](#2-why-webhooks-are-used)
-3. [How a Webhook Works](#3-how-a-webhook-works)
-4. [Webhooks vs APIs, Polling, WebSockets, and Message Brokers](#4-webhooks-vs-apis-polling-websockets-and-message-brokers)
-5. [Webhook HTTP Contract](#5-webhook-http-contract)
-6. [Designing Webhook Events and Payloads](#6-designing-webhook-events-and-payloads)
-7. [Delivery Semantics and Reliability](#7-delivery-semantics-and-reliability)
-8. [Webhook Security](#8-webhook-security)
-9. [Production-Ready Receiver Architecture](#9-production-ready-receiver-architecture)
-10. [FastAPI Webhook Receiver Example](#10-fastapi-webhook-receiver-example)
-11. [Webhook Sender Design](#11-webhook-sender-design)
-12. [Testing and Local Development](#12-testing-and-local-development)
-13. [Observability and Operations](#13-observability-and-operations)
-14. [Common Practical Use Cases](#14-common-practical-use-cases)
-15. [Webhook Design Checklist](#15-webhook-design-checklist)
-16. [Key Takeaways](#16-key-takeaways)
-17. [References](#17-references)
-
----
-
 # 1. What Is a Webhook?
 
 A **webhook** is an HTTP callback used by one system to notify another system when an event occurs.

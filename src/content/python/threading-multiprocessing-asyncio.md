@@ -14,42 +14,6 @@ order: 13
 
 ---
 
-## Index
-
-1. [The Problem These Models Solve](#1-the-problem-these-models-solve)
-2. [Concurrency vs Parallelism](#2-concurrency-vs-parallelism)
-3. [CPU-Bound vs I/O-Bound Work](#3-cpu-bound-vs-io-bound-work)
-4. [Quick Comparison](#4-quick-comparison)
-5. [Multithreading](#5-multithreading)
-   - [How Threads Work](#51-how-threads-work)
-   - [The GIL and Threads](#52-the-gil-and-threads)
-   - [When to Use Threads](#53-when-to-use-threads)
-   - [ThreadPoolExecutor Example](#54-threadpoolexecutor-example)
-   - [Shared State and Locks](#55-shared-state-and-locks)
-6. [Multiprocessing](#6-multiprocessing)
-   - [How Processes Work](#61-how-processes-work)
-   - [When to Use Processes](#62-when-to-use-processes)
-   - [ProcessPoolExecutor Example](#63-processpoolexecutor-example)
-   - [Process Communication Cost](#64-process-communication-cost)
-7. [Asyncio](#7-asyncio)
-   - [How the Event Loop Works](#71-how-the-event-loop-works)
-   - [Coroutine vs Task vs Future](#72-coroutine-vs-task-vs-future)
-   - [When to Use Asyncio](#73-when-to-use-asyncio)
-   - [Asyncio Example](#74-asyncio-example)
-   - [Timeouts and Structured Concurrency](#75-timeouts-and-structured-concurrency)
-8. [Running Blocking Code from Asyncio](#8-running-blocking-code-from-asyncio)
-9. [Decision Flow](#9-decision-flow)
-10. [Real-World Use Cases](#10-real-world-use-cases)
-11. [Combining the Models](#11-combining-the-models)
-12. [Error Handling and Cancellation](#12-error-handling-and-cancellation)
-13. [Performance and Scalability](#13-performance-and-scalability)
-14. [Best Practices](#14-best-practices)
-15. [Modern Python Note: Free-Threaded Builds and Interpreter Pools](#15-modern-python-note-free-threaded-builds-and-interpreter-pools)
-16. [Final Selection Guide](#16-final-selection-guide)
-17. [References](#17-references)
-
----
-
 # 1. The Problem These Models Solve
 
 A normal Python program executes instructions sequentially:

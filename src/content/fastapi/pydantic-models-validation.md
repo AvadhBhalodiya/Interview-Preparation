@@ -13,36 +13,6 @@ This guide focuses on **Pydantic v2**, which is the current production version a
 
 ---
 
-## Index
-
-1. [Why FastAPI Uses Pydantic](#1-why-fastapi-uses-pydantic)
-2. [How Validation Works in FastAPI](#2-how-validation-works-in-fastapi)
-3. [Creating a Basic Pydantic Model](#3-creating-a-basic-pydantic-model)
-4. [Required, Optional, and Nullable Fields](#4-required-optional-and-nullable-fields)
-5. [Field Constraints with `Field`](#5-field-constraints-with-field)
-6. [Common Built-in Validation Types](#6-common-built-in-validation-types)
-7. [Nested Models and Collections](#7-nested-models-and-collections)
-8. [Field Validators in Pydantic v2](#8-field-validators-in-pydantic-v2)
-9. [Model Validators and Cross-Field Validation](#9-model-validators-and-cross-field-validation)
-10. [Validation Modes: Before, After, Plain, and Wrap](#10-validation-modes-before-after-plain-and-wrap)
-11. [Model Configuration with `ConfigDict`](#11-model-configuration-with-configdict)
-12. [Strict Mode and Type Coercion](#12-strict-mode-and-type-coercion)
-13. [Aliases for API Field Names](#13-aliases-for-api-field-names)
-14. [Serialization with `model_dump`](#14-serialization-with-model_dump)
-15. [Request Models and Response Models](#15-request-models-and-response-models)
-16. [ORM Objects and `from_attributes`](#16-orm-objects-and-from_attributes)
-17. [Partial Updates with PATCH](#17-partial-updates-with-patch)
-18. [Validation Errors and FastAPI 422 Responses](#18-validation-errors-and-fastapi-422-responses)
-19. [`TypeAdapter` for Validation Without a Model](#19-typeadapter-for-validation-without-a-model)
-20. [Pydantic v1 vs v2 Comparison](#20-pydantic-v1-vs-v2-comparison)
-21. [Migrating Validators from v1 to v2](#21-migrating-validators-from-v1-to-v2)
-22. [Complete FastAPI Example](#22-complete-fastapi-example)
-23. [Testing Pydantic Validation](#23-testing-pydantic-validation)
-24. [Practical Design Guidelines](#24-practical-design-guidelines)
-25. [Key Takeaways](#25-key-takeaways)
-
----
-
 # 1. Why FastAPI Uses Pydantic
 
 An API receives data from outside the application:

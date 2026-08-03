@@ -12,25 +12,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [Why We Need Multiple Test Levels](#1-why-we-need-multiple-test-levels)
-2. [The Main Difference: Test Boundary](#2-the-main-difference-test-boundary)
-3. [Unit Tests](#3-unit-tests)
-4. [Integration Tests](#4-integration-tests)
-5. [End-to-End Tests](#5-end-to-end-tests)
-6. [Unit vs Integration vs E2E Comparison](#6-unit-vs-integration-vs-e2e-comparison)
-7. [One Feature Tested at All Three Levels](#7-one-feature-tested-at-all-three-levels)
-8. [Mocks, Fakes, Stubs, and Real Dependencies](#8-mocks-fakes-stubs-and-real-dependencies)
-9. [Testing Pyramid and Modern Test Strategy](#9-testing-pyramid-and-modern-test-strategy)
-10. [Where Tests Run in CI/CD](#10-where-tests-run-in-cicd)
-11. [How to Decide Which Test to Write](#11-how-to-decide-which-test-to-write)
-12. [Practical Project Structure](#12-practical-project-structure)
-13. [Reliable Test Design Principles](#13-reliable-test-design-principles)
-14. [Key Takeaways](#14-key-takeaways)
-
----
-
 # 1. Why We Need Multiple Test Levels
 
 A production application contains different types of risk:

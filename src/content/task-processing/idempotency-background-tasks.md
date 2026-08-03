@@ -12,27 +12,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [What Idempotency Means](#1-what-idempotency-means)
-2. [Why Background Tasks Run More Than Once](#2-why-background-tasks-run-more-than-once)
-3. [Idempotency vs Related Concepts](#3-idempotency-vs-related-concepts)
-4. [Identifying Safe and Unsafe Operations](#4-identifying-safe-and-unsafe-operations)
-5. [Core Idempotency Patterns](#5-core-idempotency-patterns)
-6. [Database-Backed Implementation](#6-database-backed-implementation)
-7. [Idempotency Keys](#7-idempotency-keys)
-8. [Handling Concurrency and Race Conditions](#8-handling-concurrency-and-race-conditions)
-9. [Retries, Backoff, and Dead-Letter Queues](#9-retries-backoff-and-dead-letter-queues)
-10. [External APIs and Side Effects](#10-external-apis-and-side-effects)
-11. [Celery Example](#11-celery-example)
-12. [Outbox and Inbox Patterns](#12-outbox-and-inbox-patterns)
-13. [Long-Running and Multi-Step Tasks](#13-long-running-and-multi-step-tasks)
-14. [Observability and Testing](#14-observability-and-testing)
-15. [Production Design Checklist](#15-production-design-checklist)
-16. [Key Takeaways](#16-key-takeaways)
-
----
-
 # 1. What Idempotency Means
 
 An operation is **idempotent** when executing it multiple times has the same final effect as executing it once.

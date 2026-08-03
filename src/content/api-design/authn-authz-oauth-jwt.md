@@ -15,38 +15,6 @@ order: 6
 
 ---
 
-## Table of Contents
-
-1. [The Big Picture](#1-the-big-picture)
-2. [Authentication — AuthN](#2-authentication--authn)
-3. [Authorization — AuthZ](#3-authorization--authz)
-4. [AuthN vs AuthZ](#4-authn-vs-authz)
-5. [OAuth 2.x](#5-oauth-2x)
-   - [What OAuth Solves](#51-what-oauth-solves)
-   - [OAuth Roles](#52-oauth-roles)
-   - [Tokens and Scopes](#53-tokens-and-scopes)
-   - [Authorization Code with PKCE](#54-authorization-code-with-pkce)
-   - [Client Credentials](#55-client-credentials)
-   - [Refresh Tokens](#56-refresh-tokens)
-   - [OAuth and OpenID Connect](#57-oauth-and-openid-connect)
-6. [JSON Web Tokens — JWT](#6-json-web-tokens--jwt)
-   - [JWT Structure](#61-jwt-structure)
-   - [Signing vs Encryption](#62-signing-vs-encryption)
-   - [JWT Validation](#63-jwt-validation)
-   - [JWT Revocation and Logout](#64-jwt-revocation-and-logout)
-7. [API Keys](#7-api-keys)
-8. [How These Concepts Work Together](#8-how-these-concepts-work-together)
-9. [Comparison Tables](#9-comparison-tables)
-10. [REST API Status Codes](#10-rest-api-status-codes)
-11. [Practical Authorization Models](#11-practical-authorization-models)
-12. [Secure API Architecture](#12-secure-api-architecture)
-13. [Choosing the Right Approach](#13-choosing-the-right-approach)
-14. [Production Best Practices](#14-production-best-practices)
-15. [Final Mental Model](#15-final-mental-model)
-16. [Official References](#16-official-references)
-
----
-
 # 1. The Big Picture
 
 API security usually answers two different questions:

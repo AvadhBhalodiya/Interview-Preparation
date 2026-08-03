@@ -22,29 +22,6 @@ Decorators are commonly used for:
 
 ---
 
-## Index
-
-1. [Decorator Mental Model](#1-decorator-mental-model)
-2. [Functions as First-Class Objects](#2-functions-as-first-class-objects)
-3. [Function-Level Decorators](#3-function-level-decorators)
-4. [Decorators with Arguments](#4-decorators-with-arguments)
-5. [Preserving Function Metadata](#5-preserving-function-metadata)
-6. [Stacking Multiple Decorators](#6-stacking-multiple-decorators)
-7. [Stateful Decorators](#7-stateful-decorators)
-8. [Decorating Instance, Class, and Static Methods](#8-decorating-instance-class-and-static-methods)
-9. [Common Built-in Function Decorators](#9-common-built-in-function-decorators)
-10. [Class-Level Decorators](#10-class-level-decorators)
-11. [Class-Based Decorators](#11-class-based-decorators)
-12. [Function Decorator vs Class Decorator vs Metaclass](#12-function-decorator-vs-class-decorator-vs-metaclass)
-13. [Decorators with Async and Generator Functions](#13-decorators-with-async-and-generator-functions)
-14. [Typing Decorators](#14-typing-decorators)
-15. [Production Patterns](#15-production-patterns)
-16. [Testing Decorated Code](#16-testing-decorated-code)
-17. [Best Practices](#17-best-practices)
-18. [Quick Revision](#18-quick-revision)
-
----
-
 # 1. Decorator Mental Model
 
 A decorator is usually a callable that:

@@ -14,44 +14,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [Why These Concepts Matter](#1-why-these-concepts-matter)
-2. [Sample Schema Used in This Guide](#2-sample-schema-used-in-this-guide)
-3. [The Core Mental Model](#3-the-core-mental-model)
-4. [SQL Joins](#4-sql-joins)
-   - [INNER JOIN](#41-inner-join)
-   - [LEFT JOIN](#42-left-join)
-   - [RIGHT JOIN](#43-right-join)
-   - [FULL OUTER JOIN](#44-full-outer-join)
-   - [CROSS JOIN](#45-cross-join)
-   - [SELF JOIN](#46-self-join)
-   - [Semi-Joins and Anti-Joins](#47-semi-joins-and-anti-joins)
-   - [Joining More Than Two Tables](#48-joining-more-than-two-tables)
-   - [NULL and Predicate Placement](#49-null-and-predicate-placement)
-5. [How Databases Physically Execute Joins](#5-how-databases-physically-execute-joins)
-6. [Subqueries](#6-subqueries)
-   - [Scalar Subqueries](#61-scalar-subqueries)
-   - [Subqueries with IN](#62-subqueries-with-in)
-   - [Subqueries with EXISTS](#63-subqueries-with-exists)
-   - [Correlated Subqueries](#64-correlated-subqueries)
-   - [Derived Tables](#65-derived-tables)
-   - [ANY, SOME, and ALL](#66-any-some-and-all)
-7. [Common Table Expressions](#7-common-table-expressions)
-   - [Basic CTE](#71-basic-cte)
-   - [Multiple CTEs](#72-multiple-ctes)
-   - [CTE Reuse and Scope](#73-cte-reuse-and-scope)
-   - [Recursive CTEs](#74-recursive-ctes)
-   - [Materialization and Inlining](#75-materialization-and-inlining)
-8. [Join vs Subquery vs CTE](#8-join-vs-subquery-vs-cte)
-9. [Practical Production Patterns](#9-practical-production-patterns)
-10. [Performance and Query-Review Checklist](#10-performance-and-query-review-checklist)
-11. [Database Portability Notes](#11-database-portability-notes)
-12. [Compact Revision Notes](#12-compact-revision-notes)
-13. [Official References](#13-official-references)
-
----
-
 ## 1. Why These Concepts Matter
 
 Real applications rarely store everything in one table. A typical API request may need to combine:

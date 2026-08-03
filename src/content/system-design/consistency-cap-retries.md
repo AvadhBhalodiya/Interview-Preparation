@@ -12,47 +12,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [The Core Idea](#1-the-core-idea)
-2. [What Consistency Means](#2-what-consistency-means)
-   - [Consistency in a replicated system](#21-consistency-in-a-replicated-system)
-   - [Common consistency models](#22-common-consistency-models)
-   - [Consistency vs transaction isolation](#23-consistency-vs-transaction-isolation)
-3. [The CAP Theorem](#3-the-cap-theorem)
-   - [The three CAP properties](#31-the-three-cap-properties)
-   - [What CAP actually says](#32-what-cap-actually-says)
-   - [CP, AP, and CA](#33-cp-ap-and-ca)
-   - [CAP is an operation-level trade-off](#34-cap-is-an-operation-level-trade-off)
-   - [Beyond CAP: PACELC](#35-beyond-cap-pacelc)
-4. [Choosing Consistency for Real Features](#4-choosing-consistency-for-real-features)
-5. [Why Distributed Operations Need Retries](#5-why-distributed-operations-need-retries)
-   - [The ambiguous timeout problem](#51-the-ambiguous-timeout-problem)
-   - [How retries create duplicate effects](#52-how-retries-create-duplicate-effects)
-6. [Idempotency](#6-idempotency)
-   - [Definition](#61-definition)
-   - [HTTP idempotency vs business idempotency](#62-http-idempotency-vs-business-idempotency)
-   - [Idempotency is not exactly-once execution](#63-idempotency-is-not-exactly-once-execution)
-7. [Designing an Idempotent API](#7-designing-an-idempotent-api)
-   - [Request contract](#71-request-contract)
-   - [Server-side workflow](#72-server-side-workflow)
-   - [Database schema](#73-database-schema)
-   - [Handling concurrent duplicate requests](#74-handling-concurrent-duplicate-requests)
-   - [Choosing a retention period](#75-choosing-a-retention-period)
-8. [Implementation Patterns](#8-implementation-patterns)
-   - [Database-only operation](#81-database-only-operation)
-   - [External payment provider](#82-external-payment-provider)
-   - [Message consumer deduplication](#83-message-consumer-deduplication)
-   - [Transactional outbox](#84-transactional-outbox)
-9. [Safe Retry Policy](#9-safe-retry-policy)
-10. [End-to-End Payment Example](#10-end-to-end-payment-example)
-11. [Observability and Operational Controls](#11-observability-and-operational-controls)
-12. [Design Checklist](#12-design-checklist)
-13. [Interview Summary](#13-interview-summary)
-14. [References](#14-references)
-
----
-
 # 1. The Core Idea
 
 These three topics are connected:

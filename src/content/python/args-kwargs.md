@@ -10,29 +10,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [Why `*args` and `**kwargs` Exist](#1-why-args-and-kwargs-exist)
-2. [Arguments vs Parameters](#2-arguments-vs-parameters)
-3. [`*args`: Variable Positional Arguments](#3-args-variable-positional-arguments)
-4. [`**kwargs`: Variable Keyword Arguments](#4-kwargs-variable-keyword-arguments)
-5. [Using `*args` and `**kwargs` Together](#5-using-args-and-kwargs-together)
-6. [Packing vs Unpacking](#6-packing-vs-unpacking)
-7. [Function Parameter Order](#7-function-parameter-order)
-8. [Positional-Only and Keyword-Only Parameters](#8-positional-only-and-keyword-only-parameters)
-9. [How Python Binds Arguments](#9-how-python-binds-arguments)
-10. [Practical Development Use Cases](#10-practical-development-use-cases)
-11. [Forwarding Arguments](#11-forwarding-arguments)
-12. [Decorators and Signature Preservation](#12-decorators-and-signature-preservation)
-13. [Using Them with Classes and `super()`](#13-using-them-with-classes-and-super)
-14. [Type Hints](#14-type-hints)
-15. [Important Runtime Behaviors](#15-important-runtime-behaviors)
-16. [Best Practices](#16-best-practices)
-17. [Quick Comparison](#17-quick-comparison)
-18. [Mental Model and Summary](#18-mental-model-and-summary)
-
----
-
 # 1. Why `*args` and `**kwargs` Exist
 
 A normal function has a fixed number of parameters:

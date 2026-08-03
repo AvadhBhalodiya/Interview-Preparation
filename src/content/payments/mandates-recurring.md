@@ -12,39 +12,6 @@ order: 6
 
 ---
 
-## Table of Contents
-
-1. [Overview](#1-overview)
-2. [Core Terminology](#2-core-terminology)
-3. [Mandate vs Subscription vs Payment](#3-mandate-vs-subscription-vs-payment)
-4. [Types of Recurring Payment Arrangements](#4-types-of-recurring-payment-arrangements)
-5. [On-Session and Off-Session Payments](#5-on-session-and-off-session-payments)
-6. [Customer-Initiated and Merchant-Initiated Transactions](#6-customer-initiated-and-merchant-initiated-transactions)
-7. [End-to-End Recurring Payment Flow](#7-end-to-end-recurring-payment-flow)
-8. [Mandate Lifecycle](#8-mandate-lifecycle)
-9. [Recurring Payment Lifecycle](#9-recurring-payment-lifecycle)
-10. [Recommended Domain Model](#10-recommended-domain-model)
-11. [Scheduling and Invoice Generation](#11-scheduling-and-invoice-generation)
-12. [Idempotency and Duplicate Prevention](#12-idempotency-and-duplicate-prevention)
-13. [Webhooks and Asynchronous Processing](#13-webhooks-and-asynchronous-processing)
-14. [Retries, Dunning, and Recovery](#14-retries-dunning-and-recovery)
-15. [Amount Changes, Plan Changes, and Proration](#15-amount-changes-plan-changes-and-proration)
-16. [Cancellation and Revocation](#16-cancellation-and-revocation)
-17. [Payment Method Updates](#17-payment-method-updates)
-18. [Reconciliation and Settlement](#18-reconciliation-and-settlement)
-19. [Security and Compliance](#19-security-and-compliance)
-20. [India-Specific Mandate Systems](#20-india-specific-mandate-systems)
-21. [RBI E-Mandate Framework 2026](#21-rbi-e-mandate-framework-2026)
-22. [API Design Example](#22-api-design-example)
-23. [Backend Implementation Example](#23-backend-implementation-example)
-24. [Observability and Operational Metrics](#24-observability-and-operational-metrics)
-25. [Testing Strategy](#25-testing-strategy)
-26. [Production Best Practices](#26-production-best-practices)
-27. [Key Takeaways](#27-key-takeaways)
-28. [References](#28-references)
-
----
-
 # 1. Overview
 
 A **recurring payment** is a payment collected repeatedly using previously approved customer instructions.

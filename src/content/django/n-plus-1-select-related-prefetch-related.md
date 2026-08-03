@@ -10,26 +10,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [Why This Topic Matters](#1-why-this-topic-matters)
-2. [Example Models](#2-example-models)
-3. [What Is the N+1 Query Problem?](#3-what-is-the-n1-query-problem)
-4. [`select_related()`](#4-select_related)
-5. [`prefetch_related()`](#5-prefetch_related)
-6. [`select_related()` vs `prefetch_related()`](#6-select_related-vs-prefetch_related)
-7. [Using Both Together](#7-using-both-together)
-8. [Advanced Prefetching with `Prefetch`](#8-advanced-prefetching-with-prefetch)
-9. [N+1 Queries in Django REST Framework](#9-n1-queries-in-django-rest-framework)
-10. [How to Detect and Measure N+1 Queries](#10-how-to-detect-and-measure-n1-queries)
-11. [Performance Trade-offs](#11-performance-trade-offs)
-12. [Practical Decision Guide](#12-practical-decision-guide)
-13. [Best Practices](#13-best-practices)
-14. [Final Mental Model](#14-final-mental-model)
-15. [Official References](#15-official-references)
-
----
-
 # 1. Why This Topic Matters
 
 Django makes related-object access look like normal Python attribute access:

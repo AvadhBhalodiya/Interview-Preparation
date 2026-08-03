@@ -13,43 +13,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [Why These Three Topics Belong Together](#1-why-these-three-topics-belong-together)
-2. [Docker Storage Fundamentals](#2-docker-storage-fundamentals)
-   - [Container Writable Layer](#21-container-writable-layer)
-   - [Storage Options](#22-storage-options)
-3. [Docker Volumes](#3-docker-volumes)
-   - [Named, Anonymous, Bind and tmpfs Storage](#31-named-anonymous-bind-and-tmpfs-storage)
-   - [Volume Commands](#32-volume-commands)
-   - [Mount Syntax](#33-mount-syntax)
-   - [Read-Only Mounts](#34-read-only-mounts)
-   - [Backup and Restore](#35-backup-and-restore)
-   - [Permissions](#36-volume-permissions)
-4. [Docker Networking](#4-docker-networking)
-   - [Core Network Drivers](#41-core-network-drivers)
-   - [Bridge Networking](#42-bridge-networking)
-   - [DNS and Service Discovery](#43-dns-and-service-discovery)
-   - [Ports, expose and EXPOSE](#44-ports-expose-and-expose)
-   - [Connecting to the Host](#45-connecting-to-the-host)
-   - [Network Isolation](#46-network-isolation)
-5. [Docker Compose](#5-docker-compose)
-   - [Compose Application Model](#51-compose-application-model)
-   - [Compose File Structure](#52-compose-file-structure)
-   - [Service Configuration](#53-service-configuration)
-   - [Startup Order and Health Checks](#54-startup-order-and-health-checks)
-   - [Environment Variables and Secrets](#55-environment-variables-and-secrets)
-   - [Profiles, Overrides and Watch](#56-profiles-overrides-and-watch)
-6. [Complete Practical Example](#6-complete-practical-example)
-7. [Compose Lifecycle and Daily Commands](#7-compose-lifecycle-and-daily-commands)
-8. [AWS Mapping](#8-aws-mapping)
-9. [Production Design Guidance](#9-production-design-guidance)
-10. [Troubleshooting Workflow](#10-troubleshooting-workflow)
-11. [Key Takeaways](#11-key-takeaways)
-12. [Official References](#12-official-references)
-
----
-
 # 1. Why These Three Topics Belong Together
 
 A real application usually needs more than one container:

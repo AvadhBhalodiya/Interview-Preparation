@@ -12,31 +12,6 @@ This guide is based on **Django 6.0 documentation**. At the time of writing, the
 
 ---
 
-## Index
-
-1. [Why Caching Is Needed](#1-why-caching-is-needed)
-2. [How Caching Works](#2-how-caching-works)
-3. [What Should Be Cached](#3-what-should-be-cached)
-4. [Caching Levels in Django](#4-caching-levels-in-django)
-5. [Cache Backends](#5-cache-backends)
-6. [Configuring Redis](#6-configuring-redis)
-7. [The Low-Level Cache API](#7-the-low-level-cache-api)
-8. [Practical Cache-Aside Example](#8-practical-cache-aside-example)
-9. [Per-View Caching](#9-per-view-caching)
-10. [Template Fragment Caching](#10-template-fragment-caching)
-11. [Per-Site Caching](#11-per-site-caching)
-12. [Cache Keys and Namespacing](#12-cache-keys-and-namespacing)
-13. [Cache Invalidation](#13-cache-invalidation)
-14. [User-Specific and Private Data](#14-user-specific-and-private-data)
-15. [Asynchronous Cache Operations](#15-asynchronous-cache-operations)
-16. [Cache Stampede and Race Conditions](#16-cache-stampede-and-race-conditions)
-17. [Testing and Monitoring](#17-testing-and-monitoring)
-18. [Production Design Example](#18-production-design-example)
-19. [Best-Practice Checklist](#19-best-practice-checklist)
-20. [Final Summary](#20-final-summary)
-
----
-
 # 1. Why Caching Is Needed
 
 A normal Django request may perform several expensive operations:

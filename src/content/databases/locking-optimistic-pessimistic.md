@@ -13,31 +13,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [Why Locking Is Needed](#1-why-locking-is-needed)
-2. [The Lost Update Problem](#2-the-lost-update-problem)
-3. [Optimistic Locking](#3-optimistic-locking)
-   - [How It Works](#31-how-it-works)
-   - [Version Column Pattern](#32-version-column-pattern)
-   - [Timestamp and Value Comparison](#33-timestamp-and-value-comparison)
-   - [Retry and Conflict Handling](#34-retry-and-conflict-handling)
-4. [Pessimistic Locking](#4-pessimistic-locking)
-   - [`SELECT ... FOR UPDATE`](#41-select--for-update)
-   - [`NOWAIT` and `SKIP LOCKED`](#42-nowait-and-skip-locked)
-   - [Lock Scope and Indexes](#43-lock-scope-and-indexes)
-5. [Optimistic vs Pessimistic Comparison](#5-optimistic-vs-pessimistic-comparison)
-6. [Choosing the Right Strategy](#6-choosing-the-right-strategy)
-7. [Practical Use Cases](#7-practical-use-cases)
-8. [Relationship with MVCC and Isolation Levels](#8-relationship-with-mvcc-and-isolation-levels)
-9. [Django Examples](#9-django-examples)
-10. [Database-Specific Notes](#10-database-specific-notes)
-11. [Production Best Practices](#11-production-best-practices)
-12. [Key Takeaways](#12-key-takeaways)
-13. [Official References](#13-official-references)
-
----
-
 # 1. Why Locking Is Needed
 
 Modern applications serve many requests at the same time. Two API requests, background workers, scheduled jobs, or separate services may read and update the same database row concurrently.

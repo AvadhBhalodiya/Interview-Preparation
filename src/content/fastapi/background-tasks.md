@@ -10,27 +10,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [What Is a Background Task?](#1-what-is-a-background-task)
-2. [Why Background Tasks Are Useful](#2-why-background-tasks-are-useful)
-3. [How FastAPI Executes Background Tasks](#3-how-fastapi-executes-background-tasks)
-4. [Basic `BackgroundTasks` Example](#4-basic-backgroundtasks-example)
-5. [Arguments and Keyword Arguments](#5-arguments-and-keyword-arguments)
-6. [Synchronous vs Asynchronous Task Functions](#6-synchronous-vs-asynchronous-task-functions)
-7. [Using Background Tasks with Dependencies](#7-using-background-tasks-with-dependencies)
-8. [Running Multiple Background Tasks](#8-running-multiple-background-tasks)
-9. [Returning HTTP `202 Accepted`](#9-returning-http-202-accepted)
-10. [Error Handling and Logging](#10-error-handling-and-logging)
-11. [Database and Request-Lifecycle Considerations](#11-database-and-request-lifecycle-considerations)
-12. [Testing Background Tasks](#12-testing-background-tasks)
-13. [`BackgroundTasks` vs a Task Queue](#13-backgroundtasks-vs-a-task-queue)
-14. [Practical Production Example](#14-practical-production-example)
-15. [Best Practices](#15-best-practices)
-16. [Key Takeaways](#16-key-takeaways)
-
----
-
 # 1. What Is a Background Task?
 
 A background task is work that starts **after FastAPI has prepared and sent the response** to the client.

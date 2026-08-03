@@ -13,35 +13,6 @@ order: 13
 
 ---
 
-## Index
-
-1. [What WebSockets Solve](#1-what-websockets-solve)
-2. [How a WebSocket Connection Works](#2-how-a-websocket-connection-works)
-3. [Why WebSockets Are Harder to Scale](#3-why-websockets-are-harder-to-scale)
-4. [Requirements and Capacity Estimation](#4-requirements-and-capacity-estimation)
-5. [Single-Server Design](#5-single-server-design)
-6. [Horizontally Scaled Architecture](#6-horizontally-scaled-architecture)
-7. [Load Balancing and Connection Affinity](#7-load-balancing-and-connection-affinity)
-8. [Connection Registry and Presence](#8-connection-registry-and-presence)
-9. [Cross-Node Message Delivery](#9-cross-node-message-delivery)
-10. [Rooms, Channels, and Topic Routing](#10-rooms-channels-and-topic-routing)
-11. [Delivery Guarantees, Ordering, and Deduplication](#11-delivery-guarantees-ordering-and-deduplication)
-12. [Backpressure and Slow Consumers](#12-backpressure-and-slow-consumers)
-13. [Heartbeats, Timeouts, and Reconnection](#13-heartbeats-timeouts-and-reconnection)
-14. [Autoscaling WebSocket Servers](#14-autoscaling-websocket-servers)
-15. [Graceful Deployment and Connection Draining](#15-graceful-deployment-and-connection-draining)
-16. [Failure Scenarios and Recovery](#16-failure-scenarios-and-recovery)
-17. [Multi-Region WebSocket Architecture](#17-multi-region-websocket-architecture)
-18. [Security and Abuse Protection](#18-security-and-abuse-protection)
-19. [Observability and SLOs](#19-observability-and-slos)
-20. [Practical Configuration Examples](#20-practical-configuration-examples)
-21. [Design Trade-offs](#21-design-trade-offs)
-22. [A Practical Reference Design](#22-a-practical-reference-design)
-23. [Interview-Focused Summary](#23-interview-focused-summary)
-24. [References](#24-references)
-
----
-
 # 1. What WebSockets Solve
 
 Traditional HTTP is mainly request-response based:

@@ -11,24 +11,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [What Prioritization Means](#1-what-prioritization-means)
-2. [Why Prioritization Matters](#2-why-prioritization-matters)
-3. [What Trade-offs Mean](#3-what-trade-offs-mean)
-4. [A Practical Prioritization Framework](#4-a-practical-prioritization-framework)
-5. [Common Prioritization Models](#5-common-prioritization-models)
-6. [How to Evaluate Trade-offs](#6-how-to-evaluate-trade-offs)
-7. [Prioritization in Software Development](#7-prioritization-in-software-development)
-8. [Handling Conflicting Priorities](#8-handling-conflicting-priorities)
-9. [Communicating Priority Decisions](#9-communicating-priority-decisions)
-10. [Behavioral Interview Story Structure](#10-behavioral-interview-story-structure)
-11. [Detailed Practical Example](#11-detailed-practical-example)
-12. [Strong Decision-Making Principles](#12-strong-decision-making-principles)
-13. [Summary](#13-summary)
-
----
-
 # 1. What Prioritization Means
 
 Prioritization is the process of deciding:

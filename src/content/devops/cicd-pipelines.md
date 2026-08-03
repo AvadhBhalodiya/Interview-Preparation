@@ -13,34 +13,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [What Is a CI/CD Pipeline?](#1-what-is-a-cicd-pipeline)
-2. [CI, Continuous Delivery, and Continuous Deployment](#2-ci-continuous-delivery-and-continuous-deployment)
-3. [The Core Pipeline: Build → Test → Deploy](#3-the-core-pipeline-build--test--deploy)
-4. [Important CI/CD Building Blocks](#4-important-cicd-building-blocks)
-5. [Build Stage](#5-build-stage)
-6. [Test Stage](#6-test-stage)
-7. [Deploy Stage](#7-deploy-stage)
-8. [Deployment Strategies](#8-deployment-strategies)
-9. [Environment Promotion](#9-environment-promotion)
-10. [Docker in a CI/CD Pipeline](#10-docker-in-a-cicd-pipeline)
-11. [CI/CD on AWS](#11-cicd-on-aws)
-12. [Practical AWS + Docker Pipeline](#12-practical-aws--docker-pipeline)
-13. [GitHub Actions Example: Docker to Amazon ECS](#13-github-actions-example-docker-to-amazon-ecs)
-14. [AWS CodeBuild Example](#14-aws-codebuild-example)
-15. [Database Migrations in CI/CD](#15-database-migrations-in-cicd)
-16. [Secrets and AWS Authentication](#16-secrets-and-aws-authentication)
-17. [Pipeline Security](#17-pipeline-security)
-18. [Failure Handling and Rollback](#18-failure-handling-and-rollback)
-19. [Pipeline Performance and Reliability](#19-pipeline-performance-and-reliability)
-20. [Observability and Useful Metrics](#20-observability-and-useful-metrics)
-21. [Common Pipeline Designs](#21-common-pipeline-designs)
-22. [Key Interview Takeaways](#22-key-interview-takeaways)
-23. [References](#23-references)
-
----
-
 # 1. What Is a CI/CD Pipeline?
 
 A **CI/CD pipeline** is an automated workflow that takes a software change from source code to a running environment.

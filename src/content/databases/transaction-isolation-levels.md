@@ -12,39 +12,6 @@ order: 5
 
 ---
 
-## Table of Contents
-
-1. [Why Transaction Isolation Exists](#1-why-transaction-isolation-exists)
-2. [Isolation in ACID](#2-isolation-in-acid)
-3. [A Simple Mental Model](#3-a-simple-mental-model)
-4. [Concurrency Anomalies](#4-concurrency-anomalies)
-   - [Dirty Read](#41-dirty-read)
-   - [Non-Repeatable Read](#42-non-repeatable-read)
-   - [Phantom Read](#43-phantom-read)
-   - [Lost Update](#44-lost-update)
-   - [Write Skew](#45-write-skew)
-   - [Serialization Anomaly](#46-serialization-anomaly)
-5. [The Four Standard Isolation Levels](#5-the-four-standard-isolation-levels)
-   - [Read Uncommitted](#51-read-uncommitted)
-   - [Read Committed](#52-read-committed)
-   - [Repeatable Read](#53-repeatable-read)
-   - [Serializable](#54-serializable)
-6. [Isolation-Level Comparison](#6-isolation-level-comparison)
-7. [How Databases Implement Isolation](#7-how-databases-implement-isolation)
-   - [Lock-Based Concurrency Control](#71-lock-based-concurrency-control)
-   - [MVCC](#72-multiversion-concurrency-control-mvcc)
-   - [Snapshot Isolation](#73-snapshot-isolation)
-8. [Practical SQL Examples](#8-practical-sql-examples)
-9. [Database-Specific Behavior](#9-database-specific-behavior)
-10. [Selecting the Right Isolation Level](#10-selecting-the-right-isolation-level)
-11. [Correctness Patterns Beyond Isolation](#11-correctness-patterns-beyond-isolation)
-12. [Performance and Operational Considerations](#12-performance-and-operational-considerations)
-13. [Production Best Practices](#13-production-best-practices)
-14. [Interview-Relevant Summary](#14-interview-relevant-summary)
-15. [Official References](#15-official-references)
-
----
-
 # 1. Why Transaction Isolation Exists
 
 Modern applications execute many database operations concurrently.

@@ -10,22 +10,6 @@ order: 12
 
 ---
 
-## Index
-
-1. [Security Model at a Glance](#1-security-model-at-a-glance)
-2. [CSRF Protection](#2-csrf-protection)
-3. [XSS Protection](#3-xss-protection)
-4. [SQL Injection Protection](#4-sql-injection-protection)
-5. [How the Three Attacks Differ](#5-how-the-three-attacks-differ)
-6. [Secure End-to-End Example](#6-secure-end-to-end-example)
-7. [Security Testing](#7-security-testing)
-8. [Production Security Configuration](#8-production-security-configuration)
-9. [Practical Security Checklist](#9-practical-security-checklist)
-10. [Key Takeaways](#10-key-takeaways)
-11. [Official References](#11-official-references)
-
----
-
 # 1. Security Model at a Glance
 
 Django follows an important security principle:

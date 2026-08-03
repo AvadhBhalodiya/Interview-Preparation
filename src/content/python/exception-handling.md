@@ -8,27 +8,6 @@ order: 17
 
 > Exception handling lets a program respond to runtime failures in a controlled way. Good exception design keeps normal business logic readable, preserves debugging information, and gives callers enough context to decide what to do next.
 
-## Index
-
-1. [Errors and Exceptions](#1-errors-and-exceptions)
-2. [How Exceptions Flow Through a Program](#2-how-exceptions-flow-through-a-program)
-3. [The `try` and `except` Blocks](#3-the-try-and-except-blocks)
-4. [`else` and `finally`](#4-else-and-finally)
-5. [Catching Multiple Exceptions](#5-catching-multiple-exceptions)
-6. [The Exception Hierarchy](#6-the-exception-hierarchy)
-7. [Raising Exceptions](#7-raising-exceptions)
-8. [Exception Chaining](#8-exception-chaining)
-9. [Creating Custom Exceptions](#9-creating-custom-exceptions)
-10. [Designing an Exception Hierarchy](#10-designing-an-exception-hierarchy)
-11. [Adding Structured Information](#11-adding-structured-information)
-12. [`ExceptionGroup` and `except*`](#12-exceptiongroup-and-except)
-13. [Exceptions in Real Applications](#13-exceptions-in-real-applications)
-14. [Logging Exceptions](#14-logging-exceptions)
-15. [Exceptions and Context Managers](#15-exceptions-and-context-managers)
-16. [Testing Exception Behaviour](#16-testing-exception-behaviour)
-17. [Best Practices](#17-best-practices)
-18. [Quick Revision](#18-quick-revision)
-
 ---
 
 # 1. Errors and Exceptions

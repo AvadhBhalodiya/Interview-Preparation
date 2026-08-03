@@ -12,33 +12,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [Why Idempotency Is Critical in Payments](#1-why-idempotency-is-critical-in-payments)
-2. [What an Idempotency Key Is](#2-what-an-idempotency-key-is)
-3. [The Duplicate Payment Problem](#3-the-duplicate-payment-problem)
-4. [How Idempotency Works](#4-how-idempotency-works)
-5. [Idempotency Key Lifecycle](#5-idempotency-key-lifecycle)
-6. [API Contract Design](#6-api-contract-design)
-7. [Database Design](#7-database-design)
-8. [Handling Concurrent Requests](#8-handling-concurrent-requests)
-9. [Request Fingerprinting](#9-request-fingerprinting)
-10. [Calling a Payment Provider Safely](#10-calling-a-payment-provider-safely)
-11. [Retries and Error Handling](#11-retries-and-error-handling)
-12. [Idempotency and Payment State Machines](#12-idempotency-and-payment-state-machines)
-13. [Webhooks and Event Deduplication](#13-webhooks-and-event-deduplication)
-14. [Multi-Service Payment Flows](#14-multi-service-payment-flows)
-15. [Provider Behaviour](#15-provider-behaviour)
-16. [Practical FastAPI and PostgreSQL Example](#16-practical-fastapi-and-postgresql-example)
-17. [Testing Strategy](#17-testing-strategy)
-18. [Observability and Operations](#18-observability-and-operations)
-19. [Security Considerations](#19-security-considerations)
-20. [Production Checklist](#20-production-checklist)
-21. [Key Takeaways](#21-key-takeaways)
-22. [References](#22-references)
-
----
-
 # 1. Why Idempotency Is Critical in Payments
 
 Payment APIs operate across networks, databases, queues, banks, card networks, and third-party payment service providers. Any component can become slow, disconnect, or return an unclear response.

@@ -13,42 +13,6 @@ order: 11
 
 ---
 
-## Index
-
-1. [Problem Statement](#1-problem-statement)
-2. [Why a Distributed Rate Limiter Is Difficult](#2-why-a-distributed-rate-limiter-is-difficult)
-3. [Requirements](#3-requirements)
-4. [Back-of-the-Envelope Estimation](#4-back-of-the-envelope-estimation)
-5. [Rate-Limiting Dimensions](#5-rate-limiting-dimensions)
-6. [Rate-Limiting Algorithms](#6-rate-limiting-algorithms)
-7. [Recommended Design](#7-recommended-design)
-8. [High-Level Architecture](#8-high-level-architecture)
-9. [Request Flow](#9-request-flow)
-10. [API Contract](#10-api-contract)
-11. [Redis Data Model](#11-redis-data-model)
-12. [Atomic Token-Bucket Operation](#12-atomic-token-bucket-operation)
-13. [Hierarchical and Weighted Limits](#13-hierarchical-and-weighted-limits)
-14. [Configuration and Control Plane](#14-configuration-and-control-plane)
-15. [Scaling the Rate-Limit Service](#15-scaling-the-rate-limit-service)
-16. [Scaling Redis](#16-scaling-redis)
-17. [Hot-Key Handling](#17-hot-key-handling)
-18. [Consistency and Accuracy](#18-consistency-and-accuracy)
-19. [Failure Handling](#19-failure-handling)
-20. [Multi-Region Design](#20-multi-region-design)
-21. [Response Semantics](#21-response-semantics)
-22. [Security and Abuse Resistance](#22-security-and-abuse-resistance)
-23. [Observability](#23-observability)
-24. [Capacity Planning](#24-capacity-planning)
-25. [Testing Strategy](#25-testing-strategy)
-26. [Deployment and Rollout](#26-deployment-and-rollout)
-27. [Alternative Designs](#27-alternative-designs)
-28. [Trade-Off Summary](#28-trade-off-summary)
-29. [End-to-End Example](#29-end-to-end-example)
-30. [Interview-Focused Summary](#30-interview-focused-summary)
-31. [References](#31-references)
-
----
-
 # 1. Problem Statement
 
 A rate limiter controls how frequently a client can perform an operation.

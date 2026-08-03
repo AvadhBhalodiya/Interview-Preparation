@@ -10,39 +10,6 @@ order: 9
 
 ---
 
-## Index
-
-1. [Big Picture](#1-big-picture)
-2. [`@dataclass`](#2-dataclass)
-   - [Why Data Classes Exist](#21-why-data-classes-exist)
-   - [Basic Syntax](#22-basic-syntax)
-   - [Generated Methods](#23-generated-methods)
-   - [Default Values and `default_factory`](#24-default-values-and-default_factory)
-   - [Validation with `__post_init__`](#25-validation-with-__post_init__)
-   - [Field Configuration](#26-field-configuration)
-   - [Immutability, Equality, Ordering, and Hashing](#27-immutability-equality-ordering-and-hashing)
-   - [Keyword-Only Fields and Slots](#28-keyword-only-fields-and-slots)
-   - [`ClassVar` and `InitVar`](#29-classvar-and-initvar)
-   - [Inheritance](#210-dataclass-inheritance)
-   - [Helper Functions](#211-helper-functions)
-   - [When to Use a Data Class](#212-when-to-use-a-data-class)
-3. [Abstract Base Classes](#3-abstract-base-classes)
-   - [Why ABCs Exist](#31-why-abcs-exist)
-   - [Basic Syntax](#32-basic-syntax)
-   - [Abstract and Concrete Methods](#33-abstract-and-concrete-methods)
-   - [Abstract Properties, Class Methods, and Static Methods](#34-abstract-properties-class-methods-and-static-methods)
-   - [Runtime Enforcement](#35-runtime-enforcement)
-   - [Virtual Subclasses](#36-virtual-subclasses)
-   - [`collections.abc`](#37-collectionsabc)
-   - [ABC vs Duck Typing vs Protocol](#38-abc-vs-duck-typing-vs-protocol)
-4. [Using `@dataclass` with ABCs](#4-using-dataclass-with-abcs)
-5. [Practical Application Example](#5-practical-application-example)
-6. [Design Guidelines](#6-design-guidelines)
-7. [Quick Reference](#7-quick-reference)
-8. [Official References](#8-official-references)
-
----
-
 # 1. Big Picture
 
 A normal Python class can contain both:

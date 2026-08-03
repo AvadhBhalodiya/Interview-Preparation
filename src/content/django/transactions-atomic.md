@@ -12,32 +12,6 @@ This guide targets **Django 6.0** and is also applicable to **Django 5.2 LTS** f
 
 ---
 
-## Index
-
-1. [Why Transactions Are Needed](#1-why-transactions-are-needed)
-2. [How Django Handles Transactions](#2-how-django-handles-transactions)
-3. [Understanding `transaction.atomic`](#3-understanding-transactionatomic)
-4. [Using `atomic()` as a Context Manager](#4-using-atomic-as-a-context-manager)
-5. [Using `atomic()` as a Decorator](#5-using-atomic-as-a-decorator)
-6. [Commit and Rollback Behavior](#6-commit-and-rollback-behavior)
-7. [Nested Transactions and Savepoints](#7-nested-transactions-and-savepoints)
-8. [Correct Exception-Handling Pattern](#8-correct-exception-handling-pattern)
-9. [Database State vs Python Object State](#9-database-state-vs-python-object-state)
-10. [Running Work After Commit with `on_commit()`](#10-running-work-after-commit-with-on_commit)
-11. [Preventing Race Conditions](#11-preventing-race-conditions)
-12. [`select_for_update()` Row Locking](#12-select_for_update-row-locking)
-13. [Using `F()` Expressions for Atomic Updates](#13-using-f-expressions-for-atomic-updates)
-14. [`ATOMIC_REQUESTS`](#14-atomic_requests)
-15. [Transactions with Multiple Databases](#15-transactions-with-multiple-databases)
-16. [Transactions in Async Django Code](#16-transactions-in-async-django-code)
-17. [Testing Transactional Code](#17-testing-transactional-code)
-18. [Performance and Production Best Practices](#18-performance-and-production-best-practices)
-19. [Practical Order-Placement Example](#19-practical-order-placement-example)
-20. [Choosing the Right Transaction Technique](#20-choosing-the-right-transaction-technique)
-21. [Key Takeaways](#21-key-takeaways)
-
----
-
 # 1. Why Transactions Are Needed
 
 Consider an order-placement operation:

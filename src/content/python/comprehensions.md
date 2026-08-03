@@ -10,27 +10,6 @@ order: 2
 
 ---
 
-## Table of Contents
-
-1. [Why Comprehensions Matter](#1-why-comprehensions-matter)
-2. [The Core Mental Model](#2-the-core-mental-model)
-3. [List Comprehensions](#3-list-comprehensions)
-4. [Dictionary Comprehensions](#4-dictionary-comprehensions)
-5. [Set Comprehensions](#5-set-comprehensions)
-6. [Filtering with `if`](#6-filtering-with-if)
-7. [Conditional Expressions](#7-conditional-expressions)
-8. [Multiple `for` Clauses](#8-multiple-for-clauses)
-9. [Nested Comprehensions](#9-nested-comprehensions)
-10. [Practical Development Examples](#10-practical-development-examples)
-11. [Scope and Evaluation Behavior](#11-scope-and-evaluation-behavior)
-12. [Comprehensions vs Generator Expressions](#12-comprehensions-vs-generator-expressions)
-13. [Performance and Memory](#13-performance-and-memory)
-14. [Readability and Best Practices](#14-readability-and-best-practices)
-15. [Quick Comparison](#15-quick-comparison)
-16. [Key Takeaways](#16-key-takeaways)
-
----
-
 # 1. Why Comprehensions Matter
 
 In day-to-day Python development, we often need to:

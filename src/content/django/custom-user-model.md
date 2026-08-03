@@ -10,35 +10,6 @@ order: 10
 
 ---
 
-## Index
-
-1. [Why Django Provides a Custom User Model](#1-why-django-provides-a-custom-user-model)
-2. [Default User vs Custom User](#2-default-user-vs-custom-user)
-3. [The Two Main Approaches](#3-the-two-main-approaches)
-   - [Using `AbstractUser`](#31-using-abstractuser)
-   - [Using `AbstractBaseUser`](#32-using-abstractbaseuser)
-4. [Recommended Project Setup](#4-recommended-project-setup)
-   - [Create the Accounts App](#41-create-the-accounts-app)
-   - [Create a Custom Manager](#42-create-a-custom-manager)
-   - [Create the User Model](#43-create-the-user-model)
-   - [Configure `AUTH_USER_MODEL`](#44-configure-auth_user_model)
-   - [Register the Model in Admin](#45-register-the-model-in-admin)
-   - [Create Custom Forms](#46-create-custom-forms)
-   - [Run Migrations](#47-run-migrations)
-5. [How Authentication Works](#5-how-authentication-works)
-6. [Referencing the User Model Correctly](#6-referencing-the-user-model-correctly)
-7. [Adding User-Related Data](#7-adding-user-related-data)
-8. [Permissions and Admin Access](#8-permissions-and-admin-access)
-9. [Using the Custom User in Views and Services](#9-using-the-custom-user-in-views-and-services)
-10. [Using the Custom User with Django REST Framework](#10-using-the-custom-user-with-django-rest-framework)
-11. [Migration Considerations](#11-migration-considerations)
-12. [Testing the Custom User Model](#12-testing-the-custom-user-model)
-13. [Production Design Guidance](#13-production-design-guidance)
-14. [Complete Project Flow](#14-complete-project-flow)
-15. [Key Takeaways](#15-key-takeaways)
-
----
-
 # 1. Why Django Provides a Custom User Model
 
 Django includes a built-in user model:

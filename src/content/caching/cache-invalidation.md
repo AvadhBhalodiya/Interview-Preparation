@@ -10,28 +10,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [What Is Cache Invalidation?](#1-what-is-cache-invalidation)
-2. [Why Cache Invalidation Is Difficult](#2-why-cache-invalidation-is-difficult)
-3. [Source of Truth and Cache Ownership](#3-source-of-truth-and-cache-ownership)
-4. [Core Redis Invalidation Mechanisms](#4-core-redis-invalidation-mechanisms)
-5. [Common Cache Invalidation Strategies](#5-common-cache-invalidation-strategies)
-6. [Cache-Aside Invalidation Flow](#6-cache-aside-invalidation-flow)
-7. [Race Conditions and Consistency Problems](#7-race-conditions-and-consistency-problems)
-8. [Cache Stampede After Invalidation](#8-cache-stampede-after-invalidation)
-9. [Key Design for Reliable Invalidation](#9-key-design-for-reliable-invalidation)
-10. [Practical Python and Redis Example](#10-practical-python-and-redis-example)
-11. [Invalidating Related and Collection Caches](#11-invalidating-related-and-collection-caches)
-12. [Multi-Level Cache Invalidation](#12-multi-level-cache-invalidation)
-13. [Monitoring Cache Invalidation](#13-monitoring-cache-invalidation)
-14. [Strategy Selection Guide](#14-strategy-selection-guide)
-15. [Production Best Practices](#15-production-best-practices)
-16. [Key Takeaways](#16-key-takeaways)
-17. [Official References](#17-official-references)
-
----
-
 # 1. What Is Cache Invalidation?
 
 **Cache invalidation** is the process of removing, expiring, or marking cached data as outdated when the original data changes.

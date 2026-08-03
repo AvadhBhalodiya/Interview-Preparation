@@ -10,40 +10,6 @@ order: 9
 
 ---
 
-## Index
-
-1. [The Big Picture](#1-the-big-picture)
-2. [Replication](#2-replication)
-   - [How Replication Works](#21-how-replication-works)
-   - [Replication Topologies](#22-replication-topologies)
-   - [Synchronous vs Asynchronous Replication](#23-synchronous-vs-asynchronous-replication)
-   - [Physical vs Logical Replication](#24-physical-vs-logical-replication)
-   - [Read Scaling and Consistency](#25-read-scaling-and-consistency)
-   - [Failover and Replication Lag](#26-failover-and-replication-lag)
-3. [Partitioning](#3-partitioning)
-   - [Horizontal vs Vertical Partitioning](#31-horizontal-vs-vertical-partitioning)
-   - [Range, List and Hash Partitioning](#32-range-list-and-hash-partitioning)
-   - [Partition Pruning](#33-partition-pruning)
-   - [PostgreSQL Partitioning Example](#34-postgresql-partitioning-example)
-   - [Partition Lifecycle Management](#35-partition-lifecycle-management)
-4. [Sharding](#4-sharding)
-   - [How Sharding Works](#41-how-sharding-works)
-   - [Sharding Strategies](#42-sharding-strategies)
-   - [Choosing a Shard Key](#43-choosing-a-shard-key)
-   - [Routing Queries](#44-routing-queries)
-   - [Cross-Shard Operations](#45-cross-shard-operations)
-   - [Rebalancing and Resharding](#46-rebalancing-and-resharding)
-5. [Replication vs Partitioning vs Sharding](#5-replication-vs-partitioning-vs-sharding)
-6. [How They Work Together](#6-how-they-work-together)
-7. [Practical Architecture Examples](#7-practical-architecture-examples)
-8. [Choosing the Right Technique](#8-choosing-the-right-technique)
-9. [Operational Monitoring](#9-operational-monitoring)
-10. [Best Practices](#10-best-practices)
-11. [Final Mental Model](#11-final-mental-model)
-12. [References](#12-references)
-
----
-
 # 1. The Big Picture
 
 Replication, partitioning and sharding all involve placing data in more than one physical location. The difference is **why** and **how** the data is divided.

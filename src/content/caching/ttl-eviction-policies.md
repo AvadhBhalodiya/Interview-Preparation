@@ -13,30 +13,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [Why TTL and Eviction Matter](#1-why-ttl-and-eviction-matter)
-2. [TTL vs Eviction](#2-ttl-vs-eviction)
-3. [How Redis TTL Works](#3-how-redis-ttl-works)
-4. [TTL Commands](#4-ttl-commands)
-5. [Important TTL Behaviors](#5-important-ttl-behaviors)
-6. [How Redis Expires Keys](#6-how-redis-expires-keys)
-7. [What Triggers Eviction](#7-what-triggers-eviction)
-8. [Redis Eviction Policies](#8-redis-eviction-policies)
-9. [LRU: Least Recently Used](#9-lru-least-recently-used)
-10. [LFU: Least Frequently Used](#10-lfu-least-frequently-used)
-11. [LRU vs LFU](#11-lru-vs-lfu)
-12. [Choosing the Right Policy](#12-choosing-the-right-policy)
-13. [Configuration Examples](#13-configuration-examples)
-14. [Practical Python Example](#14-practical-python-example)
-15. [Monitoring TTL and Eviction](#15-monitoring-ttl-and-eviction)
-16. [Production Best Practices](#16-production-best-practices)
-17. [End-to-End Example](#17-end-to-end-example)
-18. [Quick Revision](#18-quick-revision)
-19. [Official References](#19-official-references)
-
----
-
 # 1. Why TTL and Eviction Matter
 
 Redis stores data primarily in memory. Memory is fast, but it is limited.

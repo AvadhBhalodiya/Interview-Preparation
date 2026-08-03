@@ -10,28 +10,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [Why Context Managers Exist](#1-why-context-managers-exist)
-2. [The `with` Statement](#2-the-with-statement)
-3. [How `with` Works Internally](#3-how-with-works-internally)
-4. [`__enter__()` and `__exit__()`](#4-__enter__-and-__exit__)
-5. [Creating a Class-Based Context Manager](#5-creating-a-class-based-context-manager)
-6. [Exception Handling and Suppression](#6-exception-handling-and-suppression)
-7. [Creating a Context Manager with `@contextmanager`](#7-creating-a-context-manager-with-contextmanager)
-8. [Class-Based vs Generator-Based Context Managers](#8-class-based-vs-generator-based-context-managers)
-9. [Using Multiple Context Managers](#9-using-multiple-context-managers)
-10. [Useful Tools from `contextlib`](#10-useful-tools-from-contextlib)
-11. [Dynamic Resource Management with `ExitStack`](#11-dynamic-resource-management-with-exitstack)
-12. [Asynchronous Context Managers](#12-asynchronous-context-managers)
-13. [Real-World Development Examples](#13-real-world-development-examples)
-14. [Testing Context Managers](#14-testing-context-managers)
-15. [Design and Best Practices](#15-design-and-best-practices)
-16. [Interview-Focused Summary](#16-interview-focused-summary)
-17. [Official References](#17-official-references)
-
----
-
 # 1. Why Context Managers Exist
 
 Many operations follow the same three-step pattern:

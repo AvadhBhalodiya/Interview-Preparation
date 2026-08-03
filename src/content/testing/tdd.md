@@ -13,24 +13,6 @@ order: 4
 
 ---
 
-## Index
-
-1. [What Is TDD?](#1-what-is-tdd)
-2. [The Core TDD Cycle](#2-the-core-tdd-cycle)
-3. [What TDD Is Really Trying to Achieve](#3-what-tdd-is-really-trying-to-achieve)
-4. [Practical TDD Example with Python and pytest](#4-practical-tdd-example-with-python-and-pytest)
-5. [When TDD Is Most Useful](#5-when-tdd-is-most-useful)
-6. [When Strict TDD May Be Less Useful](#6-when-strict-tdd-may-be-less-useful)
-7. [Choosing the Right Test Boundary](#7-choosing-the-right-test-boundary)
-8. [Characteristics of Effective TDD Tests](#8-characteristics-of-effective-tdd-tests)
-9. [TDD in Real Development Workflows](#9-tdd-in-real-development-workflows)
-10. [TDD Compared with Related Approaches](#10-tdd-compared-with-related-approaches)
-11. [Practical Adoption Strategy](#11-practical-adoption-strategy)
-12. [Key Takeaways](#12-key-takeaways)
-13. [References](#13-references)
-
----
-
 # 1. What Is TDD?
 
 **Test-Driven Development (TDD)** is a software-development technique in which a developer:

@@ -10,26 +10,6 @@ order: 8
 
 ---
 
-## Index
-
-1. [What Are Dunder Methods?](#1-what-are-dunder-methods)
-2. [How Python Calls Them](#2-how-python-calls-them)
-3. [`__init__`: Initialize Object State](#3-__init__-initialize-object-state)
-4. [`__str__`: Human-Readable Representation](#4-__str__-human-readable-representation)
-5. [`__repr__`: Developer-Readable Representation](#5-__repr__-developer-readable-representation)
-6. [`__str__` vs `__repr__`](#6-__str__-vs-__repr__)
-7. [`__eq__`: Define Value Equality](#7-__eq__-define-value-equality)
-8. [`==` vs `is`](#8--vs-is)
-9. [`__eq__` and `__hash__`](#9-__eq__-and-__hash__)
-10. [Complete Real-World Example](#10-complete-real-world-example)
-11. [Inheritance and `super()`](#11-inheritance-and-super)
-12. [Dunder Methods with `dataclass`](#12-dunder-methods-with-dataclass)
-13. [Testing Dunder Methods](#13-testing-dunder-methods)
-14. [Best Practices](#14-best-practices)
-15. [Quick Revision](#15-quick-revision)
-
----
-
 # 1. What Are Dunder Methods?
 
 **Dunder** means **double underscore**. A dunder method has two leading and two trailing underscores:

@@ -14,33 +14,6 @@ order: 4
 
 ---
 
-## Index
-
-1. [What Dependency Injection Means](#1-what-dependency-injection-means)
-2. [Why FastAPI Uses Dependency Injection](#2-why-fastapi-uses-dependency-injection)
-3. [How `Depends` Works](#3-how-depends-works)
-4. [Basic Dependency Example](#4-basic-dependency-example)
-5. [How FastAPI Resolves Dependency Parameters](#5-how-fastapi-resolves-dependency-parameters)
-6. [Reusable Type Aliases with `Annotated`](#6-reusable-type-aliases-with-annotated)
-7. [Sub-dependencies and Dependency Graphs](#7-sub-dependencies-and-dependency-graphs)
-8. [Authentication and Authorization](#8-authentication-and-authorization)
-9. [Database Sessions with `yield`](#9-database-sessions-with-yield)
-10. [Dependency Cleanup Scope](#10-dependency-cleanup-scope)
-11. [Classes as Dependencies](#11-classes-as-dependencies)
-12. [Callable Objects as Configured Dependencies](#12-callable-objects-as-configured-dependencies)
-13. [Route, Router, and Application Dependencies](#13-route-router-and-application-dependencies)
-14. [Dependency Caching and `use_cache`](#14-dependency-caching-and-use_cache)
-15. [Sync and Async Dependencies](#15-sync-and-async-dependencies)
-16. [`Depends` vs Middleware](#16-depends-vs-middleware)
-17. [`Depends` vs `Security`](#17-depends-vs-security)
-18. [Testing with Dependency Overrides](#18-testing-with-dependency-overrides)
-19. [Recommended Project Structure](#19-recommended-project-structure)
-20. [Practical Mini Design](#20-practical-mini-design)
-21. [Design Guidelines](#21-design-guidelines)
-22. [Key Takeaways](#22-key-takeaways)
-
----
-
 # 1. What Dependency Injection Means
 
 Dependency Injection, usually called **DI**, means that a function declares what it needs, while another system creates or retrieves those required objects.

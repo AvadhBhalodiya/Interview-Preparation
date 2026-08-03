@@ -14,40 +14,6 @@ order: 14
 
 ---
 
-## Index
-
-1. [Problem Statement](#1-problem-statement)
-2. [KYC, CDD, EDD, and AML](#2-kyc-cdd-edd-and-aml)
-3. [Requirements](#3-requirements)
-4. [Design Principles](#4-design-principles)
-5. [High-Level Architecture](#5-high-level-architecture)
-6. [End-to-End Verification Flow](#6-end-to-end-verification-flow)
-7. [Workflow State Machine](#7-workflow-state-machine)
-8. [Core Components](#8-core-components)
-9. [Document Verification Pipeline](#9-document-verification-pipeline)
-10. [Biometric and Liveness Verification](#10-biometric-and-liveness-verification)
-11. [Sanctions, PEP, and Adverse-Media Screening](#11-sanctions-pep-and-adverse-media-screening)
-12. [Risk Scoring and Decisioning](#12-risk-scoring-and-decisioning)
-13. [Manual Review](#13-manual-review)
-14. [API Design](#14-api-design)
-15. [Events and Message Contracts](#15-events-and-message-contracts)
-16. [Data Model](#16-data-model)
-17. [Idempotency, Retries, and Exactly-Once Business Effects](#17-idempotency-retries-and-exactly-once-business-effects)
-18. [Security, Privacy, and Compliance](#18-security-privacy-and-compliance)
-19. [Scalability and Capacity Planning](#19-scalability-and-capacity-planning)
-20. [Reliability and Failure Handling](#20-reliability-and-failure-handling)
-21. [Observability and Auditability](#21-observability-and-auditability)
-22. [Re-KYC and Continuous Monitoring](#22-re-kyc-and-continuous-monitoring)
-23. [Vendor Integration Strategy](#23-vendor-integration-strategy)
-24. [Deployment Model](#24-deployment-model)
-25. [Important Trade-offs](#25-important-trade-offs)
-26. [Practical Implementation Plan](#26-practical-implementation-plan)
-27. [How to Explain This Design in an Interview](#27-how-to-explain-this-design-in-an-interview)
-28. [Key Takeaways](#28-key-takeaways)
-29. [Official References](#29-official-references)
-
----
-
 # 1. Problem Statement
 
 Design a system that verifies whether a customer is who they claim to be before allowing access to a regulated product such as:

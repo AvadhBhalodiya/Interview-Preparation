@@ -27,29 +27,6 @@ By the end of this guide, you should be able to:
 
 ---
 
-# Index
-
-## Main Sections
-
-1. [The Big Picture](#1-the-big-picture)
-2. [Load Balancing Fundamentals](#2-load-balancing-fundamentals)
-3. [AWS Elastic Load Balancing](#3-aws-elastic-load-balancing)
-4. [Auto-Scaling Fundamentals](#4-auto-scaling-fundamentals)
-5. [Amazon EC2 Auto Scaling](#5-amazon-ec2-auto-scaling)
-6. [Load Balancer and Auto Scaling Together](#6-load-balancer-and-auto-scaling-together)
-7. [Practical AWS Architecture](#7-practical-aws-architecture)
-8. [Scaling Policies and Metrics](#8-scaling-policies-and-metrics)
-9. [Health Checks and Graceful Traffic Handling](#9-health-checks-and-graceful-traffic-handling)
-10. [Docker and Container Scaling](#10-docker-and-container-scaling)
-11. [Monitoring and Troubleshooting](#11-monitoring-and-troubleshooting)
-12. [Cost and Capacity Planning](#12-cost-and-capacity-planning)
-13. [Practical Design Scenarios](#13-practical-design-scenarios)
-14. [Production Best Practices](#14-production-best-practices)
-15. [Quick Revision Summary](#15-quick-revision-summary)
-16. [Official References](#16-official-references)
-
----
-
 # 1. The Big Picture
 
 ## 1.1 Why Applications Need Scaling

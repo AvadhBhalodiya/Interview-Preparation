@@ -13,30 +13,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [What Is the OWASP Top 10?](#1-what-is-the-owasp-top-10)
-2. [OWASP Top 10:2025 at a Glance](#2-owasp-top-102025-at-a-glance)
-3. [How Security Fits into Application Development](#3-how-security-fits-into-application-development)
-4. [A01: Broken Access Control](#4-a012025-broken-access-control)
-5. [A02: Security Misconfiguration](#5-a022025-security-misconfiguration)
-6. [A03: Software Supply Chain Failures](#6-a032025-software-supply-chain-failures)
-7. [A04: Cryptographic Failures](#7-a042025-cryptographic-failures)
-8. [A05: Injection](#8-a052025-injection)
-9. [A06: Insecure Design](#9-a062025-insecure-design)
-10. [A07: Authentication Failures](#10-a072025-authentication-failures)
-11. [A08: Software or Data Integrity Failures](#11-a082025-software-or-data-integrity-failures)
-12. [A09: Security Logging and Alerting Failures](#12-a092025-security-logging-and-alerting-failures)
-13. [A10: Mishandling of Exceptional Conditions](#13-a102025-mishandling-of-exceptional-conditions)
-14. [How the Risks Work Together](#14-how-the-risks-work-together)
-15. [Security Testing Strategy](#15-security-testing-strategy)
-16. [Secure Development Lifecycle](#16-secure-development-lifecycle)
-17. [Practical Pull Request Checklist](#17-practical-pull-request-checklist)
-18. [Key Concepts to Remember](#18-key-concepts-to-remember)
-19. [Official References](#19-official-references)
-
----
-
 # 1. What Is the OWASP Top 10?
 
 **OWASP** stands for the **Open Worldwide Application Security Project**. It is a nonprofit community that publishes open resources for building and testing secure software.

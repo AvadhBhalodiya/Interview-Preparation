@@ -13,52 +13,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [Why Indexing Matters](#1-why-indexing-matters)
-2. [What a B-Tree Index Is](#2-what-a-b-tree-index-is)
-   - [B-tree vs B+ tree terminology](#21-b-tree-vs-b-tree-terminology)
-   - [How lookup works](#22-how-lookup-works)
-   - [Why the tree stays fast](#23-why-the-tree-stays-fast)
-3. [What SQL Operations a B-Tree Supports](#3-what-sql-operations-a-b-tree-supports)
-4. [When a B-Tree Index Helps](#4-when-a-b-tree-index-helps)
-   - [Selective equality lookups](#41-selective-equality-lookups)
-   - [Range queries](#42-range-queries)
-   - [ORDER BY and LIMIT](#43-order-by-and-limit)
-   - [Join columns](#44-join-columns)
-   - [Uniqueness enforcement](#45-uniqueness-enforcement)
-   - [Covering and index-only queries](#46-covering-and-index-only-queries)
-   - [Partial and filtered workloads](#47-partial-and-filtered-workloads)
-5. [When a B-Tree Index Hurts](#5-when-a-b-tree-index-hurts)
-   - [Write overhead](#51-write-overhead)
-   - [Extra storage and cache pressure](#52-extra-storage-and-cache-pressure)
-   - [Low-selectivity columns](#53-low-selectivity-columns)
-   - [Queries returning a large part of the table](#54-queries-returning-a-large-part-of-the-table)
-   - [Small tables](#55-small-tables)
-   - [Non-sargable expressions](#56-non-sargable-expressions)
-   - [Leading-wildcard searches](#57-leading-wildcard-searches)
-   - [Wrong composite-column order](#58-wrong-composite-column-order)
-   - [Too many, duplicate, or oversized indexes](#59-too-many-duplicate-or-oversized-indexes)
-   - [Random clustered keys in InnoDB](#510-random-clustered-keys-in-innodb)
-6. [Composite B-Tree Indexes](#6-composite-b-tree-indexes)
-   - [The leftmost-prefix idea](#61-the-leftmost-prefix-idea)
-   - [Equality before range](#62-equality-before-range)
-   - [Ordering columns](#63-ordering-columns)
-   - [One composite index vs several single-column indexes](#64-one-composite-index-vs-several-single-column-indexes)
-7. [Covering, Partial, and Expression Indexes](#7-covering-partial-and-expression-indexes)
-8. [A Practical E-Commerce Example](#8-a-practical-e-commerce-example)
-9. [How to Verify Whether an Index Helps](#9-how-to-verify-whether-an-index-helps)
-   - [PostgreSQL](#91-postgresql)
-   - [MySQL](#92-mysql)
-   - [What to inspect in a plan](#93-what-to-inspect-in-a-plan)
-10. [A Repeatable Index-Design Workflow](#10-a-repeatable-index-design-workflow)
-11. [PostgreSQL and MySQL Differences](#11-postgresql-and-mysql-differences)
-12. [Decision Guide](#12-decision-guide)
-13. [Key Takeaways](#13-key-takeaways)
-14. [Official References](#14-official-references)
-
----
-
 # 1. Why Indexing Matters
 
 Without a useful index, a database may need to inspect every row in a table to find the required data.

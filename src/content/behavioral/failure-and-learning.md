@@ -11,24 +11,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [What “Failure & Learning” Means](#1-what-failure--learning-means)
-2. [Why Interviewers Ask About Failure](#2-why-interviewers-ask-about-failure)
-3. [What Makes a Strong Failure Story](#3-what-makes-a-strong-failure-story)
-4. [Choosing the Right Example](#4-choosing-the-right-example)
-5. [Structuring the Story](#5-structuring-the-story)
-6. [The Learning Loop](#6-the-learning-loop)
-7. [Practical Software Engineering Example](#7-practical-software-engineering-example)
-8. [Alternative Example: Missed Delivery](#8-alternative-example-missed-delivery)
-9. [How to Show Ownership Without Self-Blame](#9-how-to-show-ownership-without-self-blame)
-10. [Turning Learning Into Evidence](#10-turning-learning-into-evidence)
-11. [Communicating the Story Naturally](#11-communicating-the-story-naturally)
-12. [Quick Preparation Framework](#12-quick-preparation-framework)
-13. [Final Takeaway](#13-final-takeaway)
-
----
-
 # 1. What “Failure & Learning” Means
 
 Failure and learning questions are not mainly about proving that you made a mistake.

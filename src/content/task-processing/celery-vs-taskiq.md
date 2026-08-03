@@ -13,34 +13,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [Why Background Task Queues Are Needed](#1-why-background-task-queues-are-needed)
-2. [Common Architecture](#2-common-architecture)
-3. [Celery Overview](#3-celery-overview)
-4. [Taskiq Overview](#4-taskiq-overview)
-5. [Celery vs Taskiq: Quick Comparison](#5-celery-vs-taskiq-quick-comparison)
-6. [The Most Important Difference: Execution Model](#6-the-most-important-difference-execution-model)
-7. [Broker and Result Backend Support](#7-broker-and-result-backend-support)
-8. [Retries and Failure Handling](#8-retries-and-failure-handling)
-9. [Scheduling Periodic Tasks](#9-scheduling-periodic-tasks)
-10. [Task Workflows and Pipelines](#10-task-workflows-and-pipelines)
-11. [Monitoring and Observability](#11-monitoring-and-observability)
-12. [Framework Integration](#12-framework-integration)
-13. [Practical Celery Example](#13-practical-celery-example)
-14. [Practical Taskiq Example](#14-practical-taskiq-example)
-15. [Reliability and Delivery Guarantees](#15-reliability-and-delivery-guarantees)
-16. [Performance and Scalability](#16-performance-and-scalability)
-17. [Testing](#17-testing)
-18. [When to Choose Celery](#18-when-to-choose-celery)
-19. [When to Choose Taskiq](#19-when-to-choose-taskiq)
-20. [Decision Flow](#20-decision-flow)
-21. [Production Best Practices](#21-production-best-practices)
-22. [Final Recommendation](#22-final-recommendation)
-23. [Official References](#23-official-references)
-
----
-
 # 1. Why Background Task Queues Are Needed
 
 A web request should usually finish quickly. Some operations are too slow, unreliable, or resource-intensive to execute inside the request-response cycle.

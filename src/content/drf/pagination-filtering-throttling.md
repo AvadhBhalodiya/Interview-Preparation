@@ -12,39 +12,6 @@ These three features are commonly used together on list endpoints. They help an 
 
 ---
 
-## Index
-
-1. [Overview](#1-overview)
-2. [Example Model and Serializer](#2-example-model-and-serializer)
-3. [Pagination](#3-pagination)
-   - [PageNumberPagination](#31-pagenumberpagination)
-   - [LimitOffsetPagination](#32-limitoffsetpagination)
-   - [CursorPagination](#33-cursorpagination)
-   - [Custom Pagination Response](#34-custom-pagination-response)
-   - [Pagination with APIView](#35-pagination-with-apiview)
-   - [Choosing a Pagination Style](#36-choosing-a-pagination-style)
-4. [Filtering](#4-filtering)
-   - [Filtering with get_queryset](#41-filtering-with-get_queryset)
-   - [DjangoFilterBackend](#42-djangofilterbackend)
-   - [Custom FilterSet](#43-custom-filterset)
-   - [SearchFilter](#44-searchfilter)
-   - [OrderingFilter](#45-orderingfilter)
-5. [Throttling](#5-throttling)
-   - [AnonRateThrottle](#51-anonratethrottle)
-   - [UserRateThrottle](#52-userratethrottle)
-   - [ScopedRateThrottle](#53-scopedratethrottle)
-   - [Burst and Sustained Limits](#54-burst-and-sustained-limits)
-   - [Cache and Concurrency](#55-cache-and-concurrency)
-6. [Complete ViewSet Example](#6-complete-viewset-example)
-7. [Request Processing Flow](#7-request-processing-flow)
-8. [Performance Considerations](#8-performance-considerations)
-9. [Testing](#9-testing)
-10. [Practical Best Practices](#10-practical-best-practices)
-11. [Quick Revision](#11-quick-revision)
-12. [Official References](#12-official-references)
-
----
-
 # 1. Overview
 
 Consider an endpoint containing hundreds of thousands of products:

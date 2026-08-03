@@ -12,35 +12,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [Caching Strategy Fundamentals](#1-caching-strategy-fundamentals)
-   - [Cache, Database, and Source of Truth](#11-cache-database-and-source-of-truth)
-   - [The Three Core Questions](#12-the-three-core-questions)
-2. [Cache-Aside](#2-cache-aside)
-   - [Read Flow](#21-read-flow)
-   - [Write Flow](#22-write-flow)
-   - [Python and Redis Example](#23-python-and-redis-example)
-   - [Strengths and Trade-offs](#24-strengths-and-trade-offs)
-3. [Write-Through](#3-write-through)
-   - [Write Flow](#31-write-flow)
-   - [Read Flow](#32-read-flow)
-   - [Python and Redis Example](#33-python-and-redis-example)
-   - [Strengths and Trade-offs](#34-strengths-and-trade-offs)
-4. [Write-Behind](#4-write-behind)
-   - [Write Flow](#41-write-flow)
-   - [Read Flow](#42-read-flow)
-   - [Redis Streams Implementation](#43-redis-streams-implementation)
-   - [Strengths and Trade-offs](#44-strengths-and-trade-offs)
-5. [Side-by-Side Comparison](#5-side-by-side-comparison)
-6. [Consistency and Failure Scenarios](#6-consistency-and-failure-scenarios)
-7. [Choosing the Right Strategy](#7-choosing-the-right-strategy)
-8. [Production Design Practices](#8-production-design-practices)
-9. [Combined Real-World Architecture](#9-combined-real-world-architecture)
-10. [Key Takeaways](#10-key-takeaways)
-
----
-
 # 1. Caching Strategy Fundamentals
 
 A cache strategy defines **how data moves between the application, Redis, and the primary database**.

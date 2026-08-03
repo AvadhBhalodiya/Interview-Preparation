@@ -8,23 +8,6 @@ order: 4
 
 > Python resolves a name by searching available namespaces in a defined order. Closures build on this rule by allowing an inner function to remember variables from its enclosing function even after the outer function has completed.
 
-## Table of Contents
-
-1. [Core Idea](#1-core-idea)
-2. [Names, Namespaces, and Scopes](#2-names-namespaces-and-scopes)
-3. [The LEGB Rule](#3-the-legb-rule)
-4. [How Assignment Changes Scope](#4-how-assignment-changes-scope)
-5. [`global` and `nonlocal`](#5-global-and-nonlocal)
-6. [What Is a Closure?](#6-what-is-a-closure)
-7. [How Closures Work Internally](#7-how-closures-work-internally)
-8. [Late Binding in Closures](#8-late-binding-in-closures)
-9. [Practical Closure Patterns](#9-practical-closure-patterns)
-10. [Scope in Comprehensions, Classes, and Exceptions](#10-scope-in-comprehensions-classes-and-exceptions)
-11. [Closures vs Classes](#11-closures-vs-classes)
-12. [Best Practices](#12-best-practices)
-13. [Quick Reference](#13-quick-reference)
-14. [Key Takeaways](#14-key-takeaways)
-
 ---
 
 # 1. Core Idea

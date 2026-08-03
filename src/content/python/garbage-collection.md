@@ -11,28 +11,6 @@ order: 14
 
 ---
 
-## Index
-
-1. [The Big Picture](#1-the-big-picture)
-2. [Python Objects and References](#2-python-objects-and-references)
-3. [Reference Counting](#3-reference-counting)
-4. [What `del` Actually Does](#4-what-del-actually-does)
-5. [The Circular Reference Problem](#5-the-circular-reference-problem)
-6. [The Cyclic Garbage Collector](#6-the-cyclic-garbage-collector)
-7. [Generational Garbage Collection](#7-generational-garbage-collection)
-8. [The `gc` Module](#8-the-gc-module)
-9. [Weak References](#9-weak-references)
-10. [Finalization and `__del__`](#10-finalization-and-__del__)
-11. [Resource Management Is Different](#11-resource-management-is-different)
-12. [Memory Leaks in Python](#12-memory-leaks-in-python)
-13. [Debugging Memory Problems](#13-debugging-memory-problems)
-14. [Practical Performance Guidance](#14-practical-performance-guidance)
-15. [CPython vs Other Python Implementations](#15-cpython-vs-other-python-implementations)
-16. [Complete Mental Model](#16-complete-mental-model)
-17. [Key Takeaways](#17-key-takeaways)
-
----
-
 # 1. The Big Picture
 
 Python automatically manages the lifetime of objects.

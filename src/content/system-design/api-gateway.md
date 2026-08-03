@@ -12,35 +12,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [The Problem They Solve](#1-the-problem-they-solve)
-2. [API Gateway](#2-api-gateway)
-   - [Core Responsibilities](#21-core-responsibilities)
-   - [Request Flow](#22-api-gateway-request-flow)
-   - [What Should Not Live in the Gateway](#23-what-should-not-live-in-the-gateway)
-3. [Backend for Frontend Pattern](#3-backend-for-frontend-pattern)
-   - [Why Separate BFFs](#31-why-separate-bffs)
-   - [BFF Responsibilities](#32-bff-responsibilities)
-   - [What Should Not Live in a BFF](#33-what-should-not-live-in-a-bff)
-4. [API Gateway vs BFF](#4-api-gateway-vs-bff)
-5. [Using API Gateway and BFF Together](#5-using-api-gateway-and-bff-together)
-6. [Practical E-Commerce Example](#6-practical-e-commerce-example)
-7. [Authentication and Security](#7-authentication-and-security)
-8. [Aggregation, Parallel Calls, and Partial Failure](#8-aggregation-parallel-calls-and-partial-failure)
-9. [Caching Strategy](#9-caching-strategy)
-10. [Resilience and Performance](#10-resilience-and-performance)
-11. [Scaling and Deployment](#11-scaling-and-deployment)
-12. [Observability](#12-observability)
-13. [API Versioning and Contract Ownership](#13-api-versioning-and-contract-ownership)
-14. [Testing Strategy](#14-testing-strategy)
-15. [When to Use Each Pattern](#15-when-to-use-each-pattern)
-16. [Design Checklist](#16-design-checklist)
-17. [Key Takeaways](#17-key-takeaways)
-18. [References](#18-references)
-
----
-
 # 1. The Problem They Solve
 
 A frontend in a microservice-based system rarely talks to only one backend service.

@@ -11,28 +11,6 @@ order: 1
 
 ---
 
-## Index
-
-### Main Sections
-
-1. [What Is Django's MTV Architecture?](#1-what-is-djangos-mtv-architecture)
-2. [MTV Components](#2-mtv-components)
-3. [MTV vs MVC](#3-mtv-vs-mvc)
-4. [High-Level Request/Response Cycle](#4-high-level-requestresponse-cycle)
-5. [Detailed Request Processing](#5-detailed-request-processing)
-6. [Complete Practical Example](#6-complete-practical-example)
-7. [Middleware in the Request/Response Cycle](#7-middleware-in-the-requestresponse-cycle)
-8. [Request and Response Objects](#8-request-and-response-objects)
-9. [Template Rendering Flow](#9-template-rendering-flow)
-10. [Error Handling During the Cycle](#10-error-handling-during-the-cycle)
-11. [WSGI, ASGI, Sync, and Async Requests](#11-wsgi-asgi-sync-and-async-requests)
-12. [Where Business Logic Should Live](#12-where-business-logic-should-live)
-13. [Performance and Design Considerations](#13-performance-and-design-considerations)
-14. [Testing the Request/Response Flow](#14-testing-the-requestresponse-flow)
-15. [Key Takeaways](#15-key-takeaways)
-
----
-
 # 1. What Is Django's MTV Architecture?
 
 Django organizes a web application using the **MTV architectural pattern**:

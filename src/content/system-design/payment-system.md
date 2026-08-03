@@ -12,39 +12,6 @@ order: 10
 
 ---
 
-## Table of Contents
-
-1. [What Are We Designing?](#1-what-are-we-designing)
-2. [Scope and Assumptions](#2-scope-and-assumptions)
-3. [Requirements](#3-requirements)
-4. [Payment Domain Fundamentals](#4-payment-domain-fundamentals)
-5. [High-Level Architecture](#5-high-level-architecture)
-6. [Core Components](#6-core-components)
-7. [Payment Lifecycle and State Machine](#7-payment-lifecycle-and-state-machine)
-8. [End-to-End Payment Flow](#8-end-to-end-payment-flow)
-9. [API Design](#9-api-design)
-10. [Data Model](#10-data-model)
-11. [Idempotency and Duplicate Prevention](#11-idempotency-and-duplicate-prevention)
-12. [Ledger and Money Movement](#12-ledger-and-money-movement)
-13. [Consistency and Transaction Boundaries](#13-consistency-and-transaction-boundaries)
-14. [Events, Queues, and the Transactional Outbox](#14-events-queues-and-the-transactional-outbox)
-15. [Webhook Processing](#15-webhook-processing)
-16. [Refunds, Reversals, and Chargebacks](#16-refunds-reversals-and-chargebacks)
-17. [Failure Handling and Recovery](#17-failure-handling-and-recovery)
-18. [Reconciliation](#18-reconciliation)
-19. [Scaling the System](#19-scaling-the-system)
-20. [Security and Compliance](#20-security-and-compliance)
-21. [Fraud and Risk Controls](#21-fraud-and-risk-controls)
-22. [Observability and Operations](#22-observability-and-operations)
-23. [Multi-Provider Routing](#23-multi-provider-routing)
-24. [Deployment and Disaster Recovery](#24-deployment-and-disaster-recovery)
-25. [Practical Technology Choices](#25-practical-technology-choices)
-26. [Important Trade-offs](#26-important-trade-offs)
-27. [Final Design Summary](#27-final-design-summary)
-28. [References](#28-references)
-
----
-
 # 1. What Are We Designing?
 
 We are designing an online payment platform used by applications such as an e-commerce website, subscription platform, marketplace, insurance portal, or SaaS product.

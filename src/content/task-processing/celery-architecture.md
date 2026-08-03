@@ -13,34 +13,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [Why Asynchronous Task Processing Is Needed](#1-why-asynchronous-task-processing-is-needed)
-2. [Celery in One Sentence](#2-celery-in-one-sentence)
-3. [High-Level Architecture](#3-high-level-architecture)
-4. [Core Components](#4-core-components)
-   - [Producer or Client](#41-producer-or-client)
-   - [Message Broker](#42-message-broker)
-   - [Worker](#43-worker)
-   - [Result Backend](#44-result-backend)
-5. [Complete Task Lifecycle](#5-complete-task-lifecycle)
-6. [Message Broker in Detail](#6-message-broker-in-detail)
-7. [Worker in Detail](#7-worker-in-detail)
-8. [Result Backend in Detail](#8-result-backend-in-detail)
-9. [Broker vs Result Backend](#9-broker-vs-result-backend)
-10. [Runnable Redis Example](#10-runnable-redis-example)
-11. [Production Architecture Example](#11-production-architecture-example)
-12. [Reliability and Delivery Semantics](#12-reliability-and-delivery-semantics)
-13. [Scaling and Performance](#13-scaling-and-performance)
-14. [Routing Tasks to Different Queues](#14-routing-tasks-to-different-queues)
-15. [Monitoring and Operations](#15-monitoring-and-operations)
-16. [Security Considerations](#16-security-considerations)
-17. [Practical Use Cases](#17-practical-use-cases)
-18. [Best-Practice Checklist](#18-best-practice-checklist)
-19. [Final Mental Model](#19-final-mental-model)
-
----
-
 # 1. Why Asynchronous Task Processing Is Needed
 
 A normal web request is synchronous:

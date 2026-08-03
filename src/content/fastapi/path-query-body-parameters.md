@@ -8,25 +8,6 @@ order: 1
 
 > FastAPI uses the endpoint path, Python type hints, and special helpers such as `Path`, `Query`, and `Body` to determine where request data comes from, validate it, convert it into Python objects, and document it automatically.
 
-## Index
-
-1. [The Big Picture](#1-the-big-picture)
-2. [How FastAPI Detects Parameter Sources](#2-how-fastapi-detects-parameter-sources)
-3. [Path Parameters](#3-path-parameters)
-4. [Query Parameters](#4-query-parameters)
-5. [Request Body Parameters](#5-request-body-parameters)
-6. [Using Path, Query, and Body Together](#6-using-path-query-and-body-together)
-7. [Required, Optional, and Nullable Values](#7-required-optional-and-nullable-values)
-8. [Validation and Metadata](#8-validation-and-metadata)
-9. [Multiple Body Parameters](#9-multiple-body-parameters)
-10. [Query Parameter Models](#10-query-parameter-models)
-11. [Aliases and API Naming](#11-aliases-and-api-naming)
-12. [Validation Error Responses](#12-validation-error-responses)
-13. [Practical CRUD Example](#13-practical-crud-example)
-14. [Testing the API](#14-testing-the-api)
-15. [Design Guidelines](#15-design-guidelines)
-16. [Quick Reference](#16-quick-reference)
-
 ---
 
 # 1. The Big Picture

@@ -11,30 +11,6 @@ order: 5
 
 ---
 
-## Table of Contents
-
-1. [What Is Rate Limiting?](#1-what-is-rate-limiting)
-2. [Why APIs Need Rate Limiting](#2-why-apis-need-rate-limiting)
-3. [Rate Limiting vs Related Concepts](#3-rate-limiting-vs-related-concepts)
-4. [Where Rate Limiting Fits in an API](#4-where-rate-limiting-fits-in-an-api)
-5. [Choosing the Rate-Limit Identity and Scope](#5-choosing-the-rate-limit-identity-and-scope)
-6. [Core Rate-Limiting Algorithms](#6-core-rate-limiting-algorithms)
-7. [Algorithm Comparison](#7-algorithm-comparison)
-8. [HTTP and REST Response Design](#8-http-and-rest-response-design)
-9. [Client-Side Retry Behaviour](#9-client-side-retry-behaviour)
-10. [Distributed Rate Limiting with Redis](#10-distributed-rate-limiting-with-redis)
-11. [Practical FastAPI and Redis Example](#11-practical-fastapi-and-redis-example)
-12. [Weighted and Multi-Level Limits](#12-weighted-and-multi-level-limits)
-13. [Rate Limiting in Microservices](#13-rate-limiting-in-microservices)
-14. [Observability and Monitoring](#14-observability-and-monitoring)
-15. [Security and Reliability Considerations](#15-security-and-reliability-considerations)
-16. [Recommended Production Design](#16-recommended-production-design)
-17. [Practical Scenarios](#17-practical-scenarios)
-18. [Interview-Focused Summary](#18-interview-focused-summary)
-19. [Standards Reference](#19-standards-reference)
-
----
-
 ## 1. What Is Rate Limiting?
 
 **Rate limiting controls how many requests a client can make to an API during a defined period.**

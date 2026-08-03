@@ -12,37 +12,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [Redis Is More Than a Key-Value Cache](#1-redis-is-more-than-a-key-value-cache)
-2. [Mental Model: Key, Value Type, and Commands](#2-mental-model-key-value-type-and-commands)
-3. [Data Structure Overview](#3-data-structure-overview)
-4. [Strings](#4-strings)
-5. [Hashes](#5-hashes)
-6. [Lists](#6-lists)
-7. [Sets](#7-sets)
-8. [Sorted Sets](#8-sorted-sets)
-9. [Streams](#9-streams)
-10. [Bitmaps](#10-bitmaps)
-11. [Bitfields](#11-bitfields)
-12. [HyperLogLog](#12-hyperloglog)
-13. [Geospatial Indexes](#13-geospatial-indexes)
-14. [JSON](#14-json)
-15. [Time Series](#15-time-series)
-16. [Probabilistic Structures](#16-probabilistic-structures)
-17. [Vector Sets](#17-vector-sets)
-18. [Arrays](#18-arrays)
-19. [Choosing the Correct Data Structure](#19-choosing-the-correct-data-structure)
-20. [Caching Design Patterns Using Data Structures](#20-caching-design-patterns-using-data-structures)
-21. [Atomicity, Transactions, and Concurrency](#21-atomicity-transactions-and-concurrency)
-22. [Memory and Performance Considerations](#22-memory-and-performance-considerations)
-23. [Key-Naming and Data-Modelling Best Practices](#23-key-naming-and-data-modelling-best-practices)
-24. [Practical Python Example](#24-practical-python-example)
-25. [Summary](#25-summary)
-26. [Official References](#26-official-references)
-
----
-
 # 1. Redis Is More Than a Key-Value Cache
 
 Redis stores data using the following model:

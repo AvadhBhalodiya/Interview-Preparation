@@ -12,38 +12,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [What Is API Versioning?](#1-what-is-api-versioning)
-2. [Why API Versioning Is Needed](#2-why-api-versioning-is-needed)
-3. [When Should an API Version Change?](#3-when-should-an-api-version-change)
-4. [Two Independent Versioning Decisions](#4-two-independent-versioning-decisions)
-5. [API Version Placement Strategies](#5-api-version-placement-strategies)
-   - [URI Path Versioning](#51-uri-path-versioning)
-   - [Query Parameter Versioning](#52-query-parameter-versioning)
-   - [Custom Header Versioning](#53-custom-header-versioning)
-   - [Media Type Versioning](#54-media-type-versioning)
-   - [Hostname Versioning](#55-hostname-versioning)
-6. [API Version Naming Strategies](#6-api-version-naming-strategies)
-   - [Major Version Numbers](#61-major-version-numbers)
-   - [Semantic Versioning](#62-semantic-versioning)
-   - [Calendar-Based Versioning](#63-calendar-based-versioning)
-   - [Stability Channels](#64-stability-channels)
-7. [Strategy Comparison](#7-strategy-comparison)
-8. [Backward-Compatible and Breaking Changes](#8-backward-compatible-and-breaking-changes)
-9. [Recommended Versioning Approach](#9-recommended-versioning-approach)
-10. [Version Routing Architecture](#10-version-routing-architecture)
-11. [Practical FastAPI Example](#11-practical-fastapi-example)
-12. [Deprecation and Sunset Strategy](#12-deprecation-and-sunset-strategy)
-13. [Versioning Webhooks and SDKs](#13-versioning-webhooks-and-sdks)
-14. [Documentation, Testing, and Monitoring](#14-documentation-testing-and-monitoring)
-15. [Practical Migration Example](#15-practical-migration-example)
-16. [Best Practices](#16-best-practices)
-17. [Key Takeaways](#17-key-takeaways)
-18. [Official References](#18-official-references)
-
----
-
 # 1. What Is API Versioning?
 
 API versioning is the process of maintaining multiple forms of an API contract so that the API can evolve without immediately breaking existing consumers.

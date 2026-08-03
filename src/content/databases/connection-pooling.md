@@ -12,28 +12,6 @@ order: 8
 
 ---
 
-## Table of Contents
-
-1. [What Is Connection Pooling?](#1-what-is-connection-pooling)
-2. [Why Database Connections Are Expensive](#2-why-database-connections-are-expensive)
-3. [How a Connection Pool Works](#3-how-a-connection-pool-works)
-4. [Important Terms](#4-important-terms)
-5. [Types of Connection Pooling](#5-types-of-connection-pooling)
-6. [Core Pool Configuration](#6-core-pool-configuration)
-7. [How to Size a Connection Pool](#7-how-to-size-a-connection-pool)
-8. [PgBouncer Pooling Modes](#8-pgbouncer-pooling-modes)
-9. [Transactions and Session State](#9-transactions-and-session-state)
-10. [Practical Configuration Examples](#10-practical-configuration-examples)
-11. [Common Deployment Architectures](#11-common-deployment-architectures)
-12. [Monitoring and Metrics](#12-monitoring-and-metrics)
-13. [Diagnosing Pool Problems](#13-diagnosing-pool-problems)
-14. [Production Best Practices](#14-production-best-practices)
-15. [Interview-Relevant Takeaways](#15-interview-relevant-takeaways)
-16. [Quick Revision Summary](#16-quick-revision-summary)
-17. [Official References](#17-official-references)
-
----
-
 # 1. What Is Connection Pooling?
 
 A **database connection pool** is a managed collection of reusable database connections.

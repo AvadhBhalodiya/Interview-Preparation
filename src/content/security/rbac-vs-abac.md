@@ -12,36 +12,6 @@ order: 4
 
 ---
 
-## Index
-
-1. [Access Control in Simple Terms](#1-access-control-in-simple-terms)
-2. [Role-Based Access Control (RBAC)](#2-role-based-access-control-rbac)
-   - [How RBAC Works](#21-how-rbac-works)
-   - [Core RBAC Components](#22-core-rbac-components)
-   - [RBAC Example](#23-rbac-example)
-   - [Role Hierarchy and Constraints](#24-role-hierarchy-and-constraints)
-   - [Advantages and Limitations](#25-advantages-and-limitations)
-3. [Attribute-Based Access Control (ABAC)](#3-attribute-based-access-control-abac)
-   - [How ABAC Works](#31-how-abac-works)
-   - [Types of Attributes](#32-types-of-attributes)
-   - [ABAC Example](#33-abac-example)
-   - [Policy Evaluation Flow](#34-policy-evaluation-flow)
-   - [Advantages and Limitations](#35-advantages-and-limitations)
-4. [RBAC vs ABAC](#4-rbac-vs-abac)
-5. [Practical Application Example](#5-practical-application-example)
-6. [Implementation Patterns](#6-implementation-patterns)
-   - [RBAC Data Model](#61-rbac-data-model)
-   - [ABAC Policy Model](#62-abac-policy-model)
-   - [Python Authorization Example](#63-python-authorization-example)
-   - [API Integration Pattern](#64-api-integration-pattern)
-7. [Hybrid Access Control](#7-hybrid-access-control)
-8. [Choosing the Right Model](#8-choosing-the-right-model)
-9. [Security Best Practices](#9-security-best-practices)
-10. [Key Takeaways](#10-key-takeaways)
-11. [References](#11-references)
-
----
-
 # 1. Access Control in Simple Terms
 
 **Access control** decides:

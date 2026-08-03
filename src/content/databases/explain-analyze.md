@@ -13,30 +13,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [Why Execution Plans Matter](#1-why-execution-plans-matter)
-2. [How a SQL Query Is Processed](#2-how-a-sql-query-is-processed)
-3. [EXPLAIN vs EXPLAIN ANALYZE](#3-explain-vs-explain-analyze)
-4. [Basic Syntax](#4-basic-syntax)
-5. [How to Read an Execution Plan](#5-how-to-read-an-execution-plan)
-6. [Understanding PostgreSQL Plan Metrics](#6-understanding-postgresql-plan-metrics)
-7. [Common Scan Operations](#7-common-scan-operations)
-8. [Common Join Algorithms](#8-common-join-algorithms)
-9. [Sort, Aggregate, and Other Important Nodes](#9-sort-aggregate-and-other-important-nodes)
-10. [Using BUFFERS to Understand I/O](#10-using-buffers-to-understand-io)
-11. [Estimated Rows vs Actual Rows](#11-estimated-rows-vs-actual-rows)
-12. [Practical Optimization Examples](#12-practical-optimization-examples)
-13. [A Reliable Query-Tuning Workflow](#13-a-reliable-query-tuning-workflow)
-14. [Safe Use with INSERT, UPDATE, and DELETE](#14-safe-use-with-insert-update-and-delete)
-15. [Database-Specific Differences](#15-database-specific-differences)
-16. [Production Best Practices](#16-production-best-practices)
-17. [Quick Reading Checklist](#17-quick-reading-checklist)
-18. [Interview-Ready Summary](#18-interview-ready-summary)
-19. [Official References](#19-official-references)
-
----
-
 # 1. Why Execution Plans Matter
 
 SQL is **declarative**. You describe the result you need, but normally you do not specify the exact steps the database must perform.

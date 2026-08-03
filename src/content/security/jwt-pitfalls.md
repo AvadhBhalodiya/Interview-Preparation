@@ -13,53 +13,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [JWT Security Mental Model](#1-jwt-security-mental-model)
-   - [JWT Structure](#11-jwt-structure)
-   - [Signed Does Not Mean Encrypted](#12-signed-does-not-mean-encrypted)
-   - [JWT Is a Token Format](#13-jwt-is-a-token-format)
-2. [Secure JWT Lifecycle](#2-secure-jwt-lifecycle)
-3. [Algorithm Pitfalls](#3-algorithm-pitfalls)
-   - [Trusting the `alg` Header](#31-trusting-the-alg-header)
-   - [`none` Algorithm](#32-none-algorithm)
-   - [HS256 and RS256 Confusion](#33-hs256-and-rs256-confusion)
-   - [Weak HMAC Secrets](#34-weak-hmac-secrets)
-   - [Choosing an Algorithm](#35-choosing-an-algorithm)
-   - [Key Rotation and `kid`](#36-key-rotation-and-kid)
-4. [Claim Validation Pitfalls](#4-claim-validation-pitfalls)
-   - [Important Registered Claims](#41-important-registered-claims)
-   - [Presence Is Different from Validation](#42-presence-is-different-from-validation)
-   - [Issuer and Audience Validation](#43-issuer-and-audience-validation)
-   - [Time-Based Claims](#44-time-based-claims)
-   - [`jti` and Token Identity](#45-jti-and-token-identity)
-   - [Token-Type Confusion](#46-token-type-confusion)
-   - [Sensitive Data in Claims](#47-sensitive-data-in-claims)
-5. [JWT Revocation](#5-jwt-revocation)
-   - [Why Revocation Is Difficult](#51-why-revocation-is-difficult)
-   - [Short-Lived Access Tokens](#52-short-lived-access-tokens)
-   - [Denylist Using `jti`](#53-denylist-using-jti)
-   - [Refresh-Token Rotation](#54-refresh-token-rotation)
-   - [Session-Version Strategy](#55-session-version-strategy)
-   - [Opaque Tokens and Introspection](#56-opaque-tokens-and-introspection)
-   - [Key Rotation Is Not Normal Logout](#57-key-rotation-is-not-normal-logout)
-6. [JWT Storage Pitfalls](#6-jwt-storage-pitfalls)
-   - [Browser Storage Comparison](#61-browser-storage-comparison)
-   - [HttpOnly Cookie Design](#62-httponly-cookie-design)
-   - [Backend-for-Frontend Pattern](#63-backend-for-frontend-pattern)
-   - [Mobile and Desktop Applications](#64-mobile-and-desktop-applications)
-   - [Server-Side Storage](#65-server-side-storage)
-7. [Access Token vs Refresh Token](#7-access-token-vs-refresh-token)
-8. [Safe Validation Pipeline](#8-safe-validation-pipeline)
-9. [Practical Python Example](#9-practical-python-example)
-10. [Redis Revocation Example](#10-redis-revocation-example)
-11. [Recommended Architectures](#11-recommended-architectures)
-12. [Production Checklist](#12-production-checklist)
-13. [Key Takeaways](#13-key-takeaways)
-14. [References](#14-references)
-
----
-
 # 1. JWT Security Mental Model
 
 A **JSON Web Token (JWT)** is a compact format used to transfer claims between systems. A JWT can be signed as a **JWS** or encrypted as a **JWE**.

@@ -21,46 +21,6 @@ These features solve different problems, but they are closely connected. JSONB w
 
 ---
 
-## Index
-
-- [1. Big Picture](#1-big-picture)
-- [2. JSONB](#2-jsonb)
-  - [2.1 JSON vs JSONB](#21-json-vs-jsonb)
-  - [2.2 When JSONB Is a Good Fit](#22-when-jsonb-is-a-good-fit)
-  - [2.3 Table Design](#23-table-design)
-  - [2.4 Reading JSONB Values](#24-reading-jsonb-values)
-  - [2.5 Filtering JSONB Data](#25-filtering-jsonb-data)
-  - [2.6 Updating JSONB Data](#26-updating-jsonb-data)
-  - [2.7 JSONB Indexing](#27-jsonb-indexing)
-  - [2.8 GIN Operator Classes](#28-gin-operator-classes)
-  - [2.9 Expression and Scalar Indexes](#29-expression-and-scalar-indexes)
-  - [2.10 JSONB Design and Performance](#210-jsonb-design-and-performance)
-- [3. Partial Indexes](#3-partial-indexes)
-  - [3.1 Core Idea](#31-core-idea)
-  - [3.2 Common Use Cases](#32-common-use-cases)
-  - [3.3 Partial Unique Indexes](#33-partial-unique-indexes)
-  - [3.4 Predicate Matching](#34-predicate-matching)
-  - [3.5 Partial Indexes with JSONB](#35-partial-indexes-with-jsonb)
-  - [3.6 Partial Index vs Other Options](#36-partial-index-vs-other-options)
-- [4. VACUUM](#4-vacuum)
-  - [4.1 Why PostgreSQL Needs VACUUM](#41-why-postgresql-needs-vacuum)
-  - [4.2 Standard VACUUM](#42-standard-vacuum)
-  - [4.3 VACUUM FULL](#43-vacuum-full)
-  - [4.4 VACUUM ANALYZE](#44-vacuum-analyze)
-  - [4.5 Autovacuum](#45-autovacuum)
-  - [4.6 Autovacuum Trigger Logic](#46-autovacuum-trigger-logic)
-  - [4.7 Transaction ID Wraparound](#47-transaction-id-wraparound)
-  - [4.8 Visibility Map and Index-Only Scans](#48-visibility-map-and-index-only-scans)
-  - [4.9 Monitoring VACUUM](#49-monitoring-vacuum)
-  - [4.10 Tuning High-Write Tables](#410-tuning-high-write-tables)
-- [5. How the Three Features Work Together](#5-how-the-three-features-work-together)
-- [6. Practical End-to-End Example](#6-practical-end-to-end-example)
-- [7. Production Checklist](#7-production-checklist)
-- [8. Quick Revision Summary](#8-quick-revision-summary)
-- [9. Official References](#9-official-references)
-
----
-
 # 1. Big Picture
 
 Consider an e-commerce application that stores products, orders, payments, and webhook events.

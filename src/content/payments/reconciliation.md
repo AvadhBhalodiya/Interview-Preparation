@@ -14,33 +14,6 @@ order: 3
 
 ---
 
-## Index
-
-1. [What Is Reconciliation?](#1-what-is-reconciliation)
-2. [Why Reconciliation Is Necessary](#2-why-reconciliation-is-necessary)
-3. [Important Payment Terms](#3-important-payment-terms)
-4. [Types of Reconciliation](#4-types-of-reconciliation)
-5. [End-to-End Reconciliation Flow](#5-end-to-end-reconciliation-flow)
-6. [The Three Main Sources of Truth](#6-the-three-main-sources-of-truth)
-7. [Matching Models](#7-matching-models)
-8. [Matching Strategy and Rules](#8-matching-strategy-and-rules)
-9. [Handling Fees, Refunds, Chargebacks, and Reserves](#9-handling-fees-refunds-chargebacks-and-reserves)
-10. [Reconciliation Status Model](#10-reconciliation-status-model)
-11. [Recommended Data Model](#11-recommended-data-model)
-12. [Reconciliation Engine Design](#12-reconciliation-engine-design)
-13. [Worked Example](#13-worked-example)
-14. [Exception Management](#14-exception-management)
-15. [Accounting and Ledger Reconciliation](#15-accounting-and-ledger-reconciliation)
-16. [Automation, Scheduling, and Idempotency](#16-automation-scheduling-and-idempotency)
-17. [Observability and Operational Metrics](#17-observability-and-operational-metrics)
-18. [Security, Auditability, and Controls](#18-security-auditability-and-controls)
-19. [Scaling Reconciliation Systems](#19-scaling-reconciliation-systems)
-20. [Practical Implementation Checklist](#20-practical-implementation-checklist)
-21. [Key Takeaways](#21-key-takeaways)
-22. [References](#22-references)
-
----
-
 # 1. What Is Reconciliation?
 
 Reconciliation is the process of comparing records from two or more systems to confirm that the same financial activity is represented correctly everywhere.

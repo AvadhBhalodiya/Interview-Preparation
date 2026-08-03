@@ -14,31 +14,6 @@ order: 2
 
 ---
 
-## Table of Contents
-
-1. [Why Message Brokers Are Needed](#1-why-message-brokers-are-needed)
-2. [Core Message-Broker Architecture](#2-core-message-broker-architecture)
-3. [Important Messaging Concepts](#3-important-messaging-concepts)
-4. [Redis as a Message Broker](#4-redis-as-a-message-broker)
-5. [RabbitMQ as a Message Broker](#5-rabbitmq-as-a-message-broker)
-6. [Amazon SQS as a Message Broker](#6-amazon-sqs-as-a-message-broker)
-7. [Redis vs RabbitMQ vs SQS](#7-redis-vs-rabbitmq-vs-sqs)
-8. [Message Delivery Semantics](#8-message-delivery-semantics)
-9. [Ordering and Concurrency](#9-ordering-and-concurrency)
-10. [Retries, Dead-Letter Queues, and Poison Messages](#10-retries-dead-letter-queues-and-poison-messages)
-11. [Idempotent Task Processing](#11-idempotent-task-processing)
-12. [Celery Configuration Examples](#12-celery-configuration-examples)
-13. [Production Architecture Examples](#13-production-architecture-examples)
-14. [Performance and Scaling](#14-performance-and-scaling)
-15. [Security and Operations](#15-security-and-operations)
-16. [Monitoring and Observability](#16-monitoring-and-observability)
-17. [How to Choose the Right Broker](#17-how-to-choose-the-right-broker)
-18. [Best Practices](#18-best-practices)
-19. [Final Summary](#19-final-summary)
-20. [Official References](#20-official-references)
-
----
-
 # 1. Why Message Brokers Are Needed
 
 In a synchronous application, the client waits while the server completes every operation.

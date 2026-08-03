@@ -14,37 +14,6 @@ order: 2
 
 ---
 
-## Table of Contents
-
-1. [Security Overview](#1-security-overview)
-2. [SQL Injection](#2-sql-injection)
-   - [What SQL Injection Is](#21-what-sql-injection-is)
-   - [How SQL Injection Works](#22-how-sql-injection-works)
-   - [Common SQL Injection Types](#23-common-sql-injection-types)
-   - [How to Prevent SQL Injection](#24-how-to-prevent-sql-injection)
-   - [Secure Python Examples](#25-secure-python-examples)
-3. [Cross-Site Scripting — XSS](#3-cross-site-scripting--xss)
-   - [What XSS Is](#31-what-xss-is)
-   - [How XSS Works](#32-how-xss-works)
-   - [Types of XSS](#33-types-of-xss)
-   - [Output Contexts](#34-output-contexts)
-   - [How to Prevent XSS](#35-how-to-prevent-xss)
-   - [Secure Frontend Examples](#36-secure-frontend-examples)
-4. [Cross-Site Request Forgery — CSRF](#4-cross-site-request-forgery--csrf)
-   - [What CSRF Is](#41-what-csrf-is)
-   - [How CSRF Works](#42-how-csrf-works)
-   - [When an Application Is Vulnerable](#43-when-an-application-is-vulnerable)
-   - [How to Prevent CSRF](#44-how-to-prevent-csrf)
-   - [Secure Django and API Examples](#45-secure-django-and-api-examples)
-5. [SQL Injection vs XSS vs CSRF](#5-sql-injection-vs-xss-vs-csrf)
-6. [How the Defenses Work Together](#6-how-the-defenses-work-together)
-7. [Security Testing in Development and CI/CD](#7-security-testing-in-development-and-cicd)
-8. [Production Security Checklist](#8-production-security-checklist)
-9. [Key Takeaways](#9-key-takeaways)
-10. [References](#10-references)
-
----
-
 # 1. Security Overview
 
 SQL Injection, Cross-Site Scripting, and Cross-Site Request Forgery attack different trust boundaries in a web application.

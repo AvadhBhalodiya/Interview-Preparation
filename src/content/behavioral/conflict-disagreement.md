@@ -12,24 +12,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [Understanding Conflict and Disagreement](#1-understanding-conflict-and-disagreement)
-2. [Why Interviewers Ask About Conflict](#2-why-interviewers-ask-about-conflict)
-3. [Common Types of Workplace Conflict](#3-common-types-of-workplace-conflict)
-4. [A Practical Conflict-Resolution Framework](#4-a-practical-conflict-resolution-framework)
-5. [How to Structure a Conflict Story](#5-how-to-structure-a-conflict-story)
-6. [Technical Disagreement Example](#6-technical-disagreement-example)
-7. [Priority and Delivery Conflict Example](#7-priority-and-delivery-conflict-example)
-8. [Conflict with a Manager or Senior Engineer](#8-conflict-with-a-manager-or-senior-engineer)
-9. [When Consensus Is Not Possible](#9-when-consensus-is-not-possible)
-10. [Communication Patterns That Work](#10-communication-patterns-that-work)
-11. [What Strong Conflict Handling Looks Like](#11-what-strong-conflict-handling-looks-like)
-12. [Preparing Your Own Conflict Story](#12-preparing-your-own-conflict-story)
-13. [Quick Revision Summary](#13-quick-revision-summary)
-
----
-
 # 1. Understanding Conflict and Disagreement
 
 Conflict does not always mean shouting, blaming, or having a damaged relationship.

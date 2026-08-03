@@ -10,28 +10,6 @@ order: 3
 
 ---
 
-## Index
-
-1. [What Is a Response Model?](#1-what-is-a-response-model)
-2. [Why Response Models Matter](#2-why-response-models-matter)
-3. [How Response Processing Works](#3-how-response-processing-works)
-4. [Basic `response_model` Usage](#4-basic-response_model-usage)
-5. [Return Type vs `response_model`](#5-return-type-vs-response_model)
-6. [Separate Input and Output Models](#6-separate-input-and-output-models)
-7. [Common Response Shapes](#7-common-response-shapes)
-8. [Response Validation and Serialization](#8-response-validation-and-serialization)
-9. [Controlling Returned Fields](#9-controlling-returned-fields)
-10. [Database and ORM Objects](#10-database-and-orm-objects)
-11. [Status Codes and Error Responses](#11-status-codes-and-error-responses)
-12. [Returning `Response` Directly](#12-returning-response-directly)
-13. [Reusable Response Envelopes](#13-reusable-response-envelopes)
-14. [Testing Response Models](#14-testing-response-models)
-15. [Production Best Practices](#15-production-best-practices)
-16. [Quick Reference](#16-quick-reference)
-17. [Final Understanding](#17-final-understanding)
-
----
-
 # 1. What Is a Response Model?
 
 A FastAPI endpoint normally performs two different data operations:

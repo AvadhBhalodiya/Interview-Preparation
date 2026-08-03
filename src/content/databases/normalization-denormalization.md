@@ -10,34 +10,6 @@ order: 7
 
 ---
 
-## Table of Contents
-
-1. [Overview](#1-overview)
-2. [The Core Idea](#2-the-core-idea)
-3. [Why Database Design Matters](#3-why-database-design-matters)
-4. [Data Anomalies](#4-data-anomalies)
-5. [Keys and Functional Dependencies](#5-keys-and-functional-dependencies)
-6. [Normalization](#6-normalization)
-   - [First Normal Form — 1NF](#61-first-normal-form--1nf)
-   - [Second Normal Form — 2NF](#62-second-normal-form--2nf)
-   - [Third Normal Form — 3NF](#63-third-normal-form--3nf)
-   - [BCNF](#64-boyce-codd-normal-form--bcnf)
-   - [Higher Normal Forms](#65-higher-normal-forms)
-7. [End-to-End Normalization Example](#7-end-to-end-normalization-example)
-8. [Denormalization](#8-denormalization)
-9. [Common Denormalization Techniques](#9-common-denormalization-techniques)
-10. [Normalization vs Denormalization](#10-normalization-vs-denormalization)
-11. [OLTP vs Analytics](#11-oltp-vs-analytics)
-12. [Performance Considerations](#12-performance-considerations)
-13. [Maintaining Consistency in Denormalized Data](#13-maintaining-consistency-in-denormalized-data)
-14. [How to Choose](#14-how-to-choose)
-15. [Practical Architecture Patterns](#15-practical-architecture-patterns)
-16. [Best-Practice Checklist](#16-best-practice-checklist)
-17. [Key Takeaways](#17-key-takeaways)
-18. [References](#18-references)
-
----
-
 # 1. Overview
 
 **Normalization** and **denormalization** are two database-design approaches used to balance:

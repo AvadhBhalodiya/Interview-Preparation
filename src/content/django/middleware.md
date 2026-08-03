@@ -13,28 +13,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [What Middleware Is](#1-what-middleware-is)
-2. [Where Middleware Fits](#2-where-middleware-fits)
-3. [The Onion Model](#3-the-onion-model)
-4. [Creating Custom Middleware](#4-creating-custom-middleware)
-5. [Registering Middleware](#5-registering-middleware)
-6. [Middleware Ordering](#6-middleware-ordering)
-7. [Short-Circuiting a Request](#7-short-circuiting-a-request)
-8. [Middleware Hooks](#8-middleware-hooks)
-9. [Built-in Django Middleware](#9-built-in-django-middleware)
-10. [Practical Custom Middleware Examples](#10-practical-custom-middleware-examples)
-11. [Synchronous and Asynchronous Middleware](#11-synchronous-and-asynchronous-middleware)
-12. [Streaming Responses](#12-streaming-responses)
-13. [Middleware vs Similar Django Features](#13-middleware-vs-similar-django-features)
-14. [Testing Middleware](#14-testing-middleware)
-15. [Production Best Practices](#15-production-best-practices)
-16. [Decision Guide](#16-decision-guide)
-17. [Summary](#17-summary)
-
----
-
 ## 1. What Middleware Is
 
 Middleware is a component placed between the web server and the Django view.

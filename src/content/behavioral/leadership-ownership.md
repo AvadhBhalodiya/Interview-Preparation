@@ -12,35 +12,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [Understanding Leadership and Ownership](#1-understanding-leadership-and-ownership)
-   - [What Is Leadership?](#11-what-is-leadership)
-   - [What Is Ownership?](#12-what-is-ownership)
-   - [Leadership vs Ownership](#13-leadership-vs-ownership)
-2. [Why These Skills Matter for Developers](#2-why-these-skills-matter-for-developers)
-3. [Leadership Without a Manager Title](#3-leadership-without-a-manager-title)
-4. [The Ownership Mindset](#4-the-ownership-mindset)
-5. [Core Behaviors Interviewers Look For](#5-core-behaviors-interviewers-look-for)
-   - [Taking Initiative](#51-taking-initiative)
-   - [Driving Clarity](#52-driving-clarity)
-   - [Making Decisions](#53-making-decisions)
-   - [Supporting the Team](#54-supporting-the-team)
-   - [Managing Risk](#55-managing-risk)
-   - [Following Through](#56-following-through)
-6. [Leadership Across the Software Development Lifecycle](#6-leadership-across-the-software-development-lifecycle)
-7. [How to Structure a Leadership Story](#7-how-to-structure-a-leadership-story)
-8. [Practical Engineering Scenarios](#8-practical-engineering-scenarios)
-9. [Handling Failure With Ownership](#9-handling-failure-with-ownership)
-10. [Influencing Without Authority](#10-influencing-without-authority)
-11. [Balancing Ownership and Collaboration](#11-balancing-ownership-and-collaboration)
-12. [Measuring Impact](#12-measuring-impact)
-13. [Best Practices](#13-best-practices)
-14. [Final Interview Checklist](#14-final-interview-checklist)
-15. [Quick Summary](#15-quick-summary)
-
----
-
 # 1. Understanding Leadership and Ownership
 
 Leadership and ownership are closely related, but they are not the same.

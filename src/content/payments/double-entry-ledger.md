@@ -13,34 +13,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [What Is a Double-Entry Ledger?](#1-what-is-a-double-entry-ledger)
-2. [Core Ledger Building Blocks](#2-core-ledger-building-blocks)
-3. [Debits and Credits](#3-debits-and-credits)
-4. [Why Fintech Systems Need a Ledger](#4-why-fintech-systems-need-a-ledger)
-5. [Chart of Accounts for a Payment Platform](#5-chart-of-accounts-for-a-payment-platform)
-6. [End-to-End Marketplace Payment Example](#6-end-to-end-marketplace-payment-example)
-7. [Common Payment and Wallet Flows](#7-common-payment-and-wallet-flows)
-8. [Pending, Posted, and Available Balances](#8-pending-posted-and-available-balances)
-9. [Ledger Data Model](#9-ledger-data-model)
-10. [PostgreSQL Schema Example](#10-postgresql-schema-example)
-11. [Posting a Transaction Safely](#11-posting-a-transaction-safely)
-12. [Idempotency and Duplicate Prevention](#12-idempotency-and-duplicate-prevention)
-13. [Concurrency and Double-Spend Prevention](#13-concurrency-and-double-spend-prevention)
-14. [Reversals, Refunds, and Corrections](#14-reversals-refunds-and-corrections)
-15. [Reconciliation](#15-reconciliation)
-16. [Multi-Currency Ledgers](#16-multi-currency-ledgers)
-17. [Ledger Architecture](#17-ledger-architecture)
-18. [Important Invariants and Controls](#18-important-invariants-and-controls)
-19. [Practical Design Decisions](#19-practical-design-decisions)
-20. [Observability and Operational Support](#20-observability-and-operational-support)
-21. [Worked Example: Wallet Transfer API](#21-worked-example-wallet-transfer-api)
-22. [Interview-Relevant Summary](#22-interview-relevant-summary)
-23. [References](#23-references)
-
----
-
 # 1. What Is a Double-Entry Ledger?
 
 A **ledger** is the system of record that explains how money moved and what every balance represents.

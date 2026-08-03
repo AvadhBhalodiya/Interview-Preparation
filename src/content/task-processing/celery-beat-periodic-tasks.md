@@ -12,40 +12,6 @@ order: 5
 
 ---
 
-## Table of Contents
-
-1. [What Are Periodic Tasks?](#1-what-are-periodic-tasks)
-2. [What Is Celery Beat?](#2-what-is-celery-beat)
-3. [Celery Beat Architecture](#3-celery-beat-architecture)
-4. [How a Scheduled Task Executes](#4-how-a-scheduled-task-executes)
-5. [Basic Project Setup](#5-basic-project-setup)
-6. [Defining Periodic Schedules](#6-defining-periodic-schedules)
-7. [Interval Schedules](#7-interval-schedules)
-8. [Crontab Schedules](#8-crontab-schedules)
-9. [Dynamic Schedule Registration](#9-dynamic-schedule-registration)
-10. [Schedule Entry Fields](#10-schedule-entry-fields)
-11. [Timezone Handling](#11-timezone-handling)
-12. [Running Celery Beat](#12-running-celery-beat)
-13. [Celery Beat with Django](#13-celery-beat-with-django)
-14. [Database-Backed Schedules with django-celery-beat](#14-database-backed-schedules-with-django-celery-beat)
-15. [One-Off Future Tasks vs Periodic Tasks](#15-one-off-future-tasks-vs-periodic-tasks)
-16. [Task Overlap and Concurrency Control](#16-task-overlap-and-concurrency-control)
-17. [Idempotency for Scheduled Tasks](#17-idempotency-for-scheduled-tasks)
-18. [Retries, Expiration, and Failure Handling](#18-retries-expiration-and-failure-handling)
-19. [Task Routing and Dedicated Queues](#19-task-routing-and-dedicated-queues)
-20. [Production Deployment](#20-production-deployment)
-21. [Docker Compose Example](#21-docker-compose-example)
-22. [Monitoring and Observability](#22-monitoring-and-observability)
-23. [Testing Periodic Tasks](#23-testing-periodic-tasks)
-24. [Practical Use Cases](#24-practical-use-cases)
-25. [Celery Beat vs Other Scheduling Options](#25-celery-beat-vs-other-scheduling-options)
-26. [Production Best Practices](#26-production-best-practices)
-27. [Key Interview Takeaways](#27-key-interview-takeaways)
-28. [Quick Revision Cheat Sheet](#28-quick-revision-cheat-sheet)
-29. [Official References](#29-official-references)
-
----
-
 # 1. What Are Periodic Tasks?
 
 A **periodic task** is a background operation that runs repeatedly according to a schedule.

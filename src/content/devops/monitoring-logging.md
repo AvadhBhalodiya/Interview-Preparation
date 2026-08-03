@@ -13,52 +13,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [Why Monitoring and Logging Matter](#1-why-monitoring-and-logging-matter)
-2. [Observability Fundamentals](#2-observability-fundamentals)
-   - [Metrics](#21-metrics)
-   - [Logs](#22-logs)
-   - [Traces](#23-traces)
-   - [Events and Alerts](#24-events-and-alerts)
-3. [Amazon CloudWatch Overview](#3-amazon-cloudwatch-overview)
-   - [CloudWatch Metrics](#31-cloudwatch-metrics)
-   - [CloudWatch Logs](#32-cloudwatch-logs)
-   - [CloudWatch Logs Insights](#33-cloudwatch-logs-insights)
-   - [CloudWatch Alarms](#34-cloudwatch-alarms)
-   - [Dashboards](#35-cloudwatch-dashboards)
-   - [CloudWatch Agent](#36-cloudwatch-agent)
-   - [Application Signals and OpenTelemetry](#37-application-signals-and-opentelemetry)
-4. [Sentry Overview](#4-sentry-overview)
-   - [Error Monitoring](#41-error-monitoring)
-   - [Tracing and Performance Monitoring](#42-tracing-and-performance-monitoring)
-   - [Releases and Environments](#43-releases-and-environments)
-   - [Breadcrumbs, Tags, and Context](#44-breadcrumbs-tags-and-context)
-5. [CloudWatch vs Sentry](#5-cloudwatch-vs-sentry)
-6. [Recommended Production Architecture](#6-recommended-production-architecture)
-7. [Logging Docker Containers to CloudWatch](#7-logging-docker-containers-to-cloudwatch)
-   - [Docker Compose with the awslogs Driver](#71-docker-compose-with-the-awslogs-driver)
-   - [Amazon ECS and Fargate](#72-amazon-ecs-and-fargate)
-   - [Docker Log Rotation](#73-docker-log-rotation)
-8. [Structured Application Logging](#8-structured-application-logging)
-9. [Using Sentry in Python Applications](#9-using-sentry-in-python-applications)
-   - [Django](#91-django)
-   - [FastAPI](#92-fastapi)
-   - [Celery Workers](#93-celery-workers)
-   - [Manual Error Capture](#94-manual-error-capture)
-10. [Correlation IDs and End-to-End Debugging](#10-correlation-ids-and-end-to-end-debugging)
-11. [Monitoring the Four Golden Signals](#11-monitoring-the-four-golden-signals)
-12. [Alert Design](#12-alert-design)
-13. [Dashboards and Operational Views](#13-dashboards-and-operational-views)
-14. [Security and Sensitive Data](#14-security-and-sensitive-data)
-15. [Cost and Data-Volume Control](#15-cost-and-data-volume-control)
-16. [Deployment Checklist](#16-deployment-checklist)
-17. [Practical Incident Walkthrough](#17-practical-incident-walkthrough)
-18. [Key Takeaways](#18-key-takeaways)
-19. [Official References](#19-official-references)
-
----
-
 # 1. Why Monitoring and Logging Matter
 
 A production application can fail even when the code works correctly on a developer machine.

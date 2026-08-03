@@ -11,27 +11,6 @@ order: 11
 
 ---
 
-## Table of Contents
-
-1. [Overview](#1-overview)
-2. [What Is the GIL?](#2-what-is-the-gil)
-3. [Why Does CPython Have a GIL?](#3-why-does-cpython-have-a-gil)
-4. [How the GIL Works](#4-how-the-gil-works)
-5. [Concurrency vs Parallelism](#5-concurrency-vs-parallelism)
-6. [I/O-Bound vs CPU-Bound Tasks](#6-io-bound-vs-cpu-bound-tasks)
-7. [Threads with I/O-Bound Work](#7-threads-with-io-bound-work)
-8. [Threads with CPU-Bound Work](#8-threads-with-cpu-bound-work)
-9. [Using Multiprocessing for CPU Work](#9-using-multiprocessing-for-cpu-work)
-10. [The GIL Does Not Prevent Race Conditions](#10-the-gil-does-not-prevent-race-conditions)
-11. [Native Extensions and the GIL](#11-native-extensions-and-the-gil)
-12. [Free-Threaded Python](#12-free-threaded-python)
-13. [Choosing the Right Concurrency Model](#13-choosing-the-right-concurrency-model)
-14. [Practical Development Guidelines](#14-practical-development-guidelines)
-15. [Summary](#15-summary)
-16. [References](#16-references)
-
----
-
 # 1. Overview
 
 Python supports multiple concurrency approaches:

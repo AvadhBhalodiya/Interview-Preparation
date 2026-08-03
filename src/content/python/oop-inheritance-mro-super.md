@@ -12,30 +12,6 @@ order: 7
 
 ---
 
-## Index
-
-1. [Mental Model](#1-mental-model)
-2. [Inheritance](#2-inheritance)
-   - [Single Inheritance](#21-single-inheritance)
-   - [Method Overriding](#22-method-overriding)
-   - [Extending Parent Behaviour](#23-extending-parent-behaviour)
-3. [`super()`](#3-super)
-   - [What `super()` Really Means](#31-what-super-really-means)
-   - [`super()` in `__init__`](#32-super-in-__init__)
-   - [Why Direct Parent Calls Are Fragile](#33-why-direct-parent-calls-are-fragile)
-4. [Method Resolution Order](#4-method-resolution-order)
-   - [How Python Resolves a Method](#41-how-python-resolves-a-method)
-   - [Inspecting the MRO](#42-inspecting-the-mro)
-   - [C3 Linearization](#43-c3-linearization)
-5. [Multiple Inheritance](#5-multiple-inheritance)
-6. [Diamond Inheritance](#6-diamond-inheritance)
-7. [Cooperative Multiple Inheritance](#7-cooperative-multiple-inheritance)
-8. [Mixins](#8-mixins)
-9. [Practical Design Guidance](#9-practical-design-guidance)
-10. [Key Takeaways](#10-key-takeaways)
-
----
-
 # 1. Mental Model
 
 Consider the following class hierarchy:

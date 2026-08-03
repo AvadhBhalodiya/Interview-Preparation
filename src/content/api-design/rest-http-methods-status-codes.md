@@ -13,37 +13,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [REST and HTTP: The Big Picture](#1-rest-and-http-the-big-picture)
-2. [Resources and Representations](#2-resources-and-representations)
-3. [REST Architectural Constraints](#3-rest-architectural-constraints)
-4. [Designing Resource-Oriented URLs](#4-designing-resource-oriented-urls)
-5. [HTTP Request and Response Structure](#5-http-request-and-response-structure)
-6. [HTTP Method Properties](#6-http-method-properties)
-7. [Core HTTP Methods](#7-core-http-methods)
-8. [Choosing PUT vs PATCH vs POST](#8-choosing-put-vs-patch-vs-post)
-9. [HTTP Status Code Classes](#9-http-status-code-classes)
-10. [Success Status Codes — 2xx](#10-success-status-codes--2xx)
-11. [Redirection Status Codes — 3xx](#11-redirection-status-codes--3xx)
-12. [Client Error Status Codes — 4xx](#12-client-error-status-codes--4xx)
-13. [Server Error Status Codes — 5xx](#13-server-error-status-codes--5xx)
-14. [Status-Code Selection Guide](#14-status-code-selection-guide)
-15. [REST Error Response Design](#15-rest-error-response-design)
-16. [Caching and Conditional Requests](#16-caching-and-conditional-requests)
-17. [Optimistic Concurrency with ETag](#17-optimistic-concurrency-with-etag)
-18. [Pagination, Filtering, Sorting and Search](#18-pagination-filtering-sorting-and-search)
-19. [Authentication and Authorization Semantics](#19-authentication-and-authorization-semantics)
-20. [API Versioning and Compatibility](#20-api-versioning-and-compatibility)
-21. [End-to-End REST API Example](#21-end-to-end-rest-api-example)
-22. [Practical FastAPI Example](#22-practical-fastapi-example)
-23. [REST Maturity and Hypermedia](#23-rest-maturity-and-hypermedia)
-24. [Practical Design Checklist](#24-practical-design-checklist)
-25. [Quick Revision Summary](#25-quick-revision-summary)
-26. [References](#26-references)
-
----
-
 # 1. REST and HTTP: The Big Picture
 
 ## 1.1 What Is REST?

@@ -13,32 +13,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [Why Payment Webhooks Matter](#1-why-payment-webhooks-matter)
-2. [The Correct Mental Model](#2-the-correct-mental-model)
-3. [Delivery Guarantees and Failure Modes](#3-delivery-guarantees-and-failure-modes)
-4. [Recommended Production Architecture](#4-recommended-production-architecture)
-5. [Webhook Processing Lifecycle](#5-webhook-processing-lifecycle)
-6. [Authenticity and Security](#6-authenticity-and-security)
-7. [Idempotency and Duplicate Handling](#7-idempotency-and-duplicate-handling)
-8. [Fast Acknowledgement and HTTP Responses](#8-fast-acknowledgement-and-http-responses)
-9. [Retries, Backoff, and Dead-Letter Queues](#9-retries-backoff-and-dead-letter-queues)
-10. [Out-of-Order Events and Payment State Machines](#10-out-of-order-events-and-payment-state-machines)
-11. [Database Design](#11-database-design)
-12. [FastAPI Implementation Example](#12-fastapi-implementation-example)
-13. [Worker Processing Example](#13-worker-processing-example)
-14. [Concurrency and Transaction Safety](#14-concurrency-and-transaction-safety)
-15. [Observability and Operations](#15-observability-and-operations)
-16. [Testing Strategy](#16-testing-strategy)
-17. [Provider Behaviour Comparison](#17-provider-behaviour-comparison)
-18. [Practical Payment Flow](#18-practical-payment-flow)
-19. [Design Checklist](#19-design-checklist)
-20. [Key Takeaways](#20-key-takeaways)
-21. [References](#21-references)
-
----
-
 # 1. Why Payment Webhooks Matter
 
 A payment API request and a payment result do not always happen at the same time.

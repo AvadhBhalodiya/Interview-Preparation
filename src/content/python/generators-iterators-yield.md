@@ -12,40 +12,6 @@ This topic is important in day-to-day Python development because it appears in l
 
 ---
 
-## Index
-
-1. [Core Mental Model](#1-core-mental-model)
-   - [Iterable](#11-iterable)
-   - [Iterator](#12-iterator)
-   - [Generator](#13-generator)
-2. [How Python Iteration Works](#2-how-python-iteration-works)
-   - [`iter()` and `next()`](#21-iter-and-next)
-   - [How a `for` Loop Works Internally](#22-how-a-for-loop-works-internally)
-   - [The Iterator Protocol](#23-the-iterator-protocol)
-3. [Creating a Custom Iterator](#3-creating-a-custom-iterator)
-4. [Generator Functions and `yield`](#4-generator-functions-and-yield)
-   - [Execution Lifecycle](#41-execution-lifecycle)
-   - [`return` vs `yield`](#42-return-vs-yield)
-   - [Generator Exhaustion](#43-generator-exhaustion)
-5. [Generator Expressions](#5-generator-expressions)
-6. [`yield from`](#6-yield-from)
-7. [Practical Development Patterns](#7-practical-development-patterns)
-   - [Streaming a Large File](#71-streaming-a-large-file)
-   - [Processing API Pagination](#72-processing-api-pagination)
-   - [Building Lazy Pipelines](#73-building-lazy-pipelines)
-   - [Processing Data in Batches](#74-processing-data-in-batches)
-8. [Advanced Generator Communication](#8-advanced-generator-communication)
-   - [`send()`](#81-send)
-   - [`throw()`](#82-throw)
-   - [`close()`](#83-close)
-9. [Type Hints](#9-type-hints)
-10. [Synchronous vs Asynchronous Generators](#10-synchronous-vs-asynchronous-generators)
-11. [Performance and Memory](#11-performance-and-memory)
-12. [Best Practices](#12-best-practices)
-13. [Final Summary](#13-final-summary)
-
----
-
 ## 1. Core Mental Model
 
 The following three terms are related, but they are not identical.

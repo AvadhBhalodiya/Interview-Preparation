@@ -10,34 +10,6 @@ order: 7
 
 ---
 
-## Index
-
-1. [What Automatic API Documentation Means](#1-what-automatic-api-documentation-means)
-2. [OpenAPI, Swagger UI, and ReDoc](#2-openapi-swagger-ui-and-redoc)
-3. [How FastAPI Generates the Documentation](#3-how-fastapi-generates-the-documentation)
-4. [Default Documentation URLs](#4-default-documentation-urls)
-5. [First Practical Example](#5-first-practical-example)
-6. [How Type Hints Become API Documentation](#6-how-type-hints-become-api-documentation)
-7. [Documenting Request Models](#7-documenting-request-models)
-8. [Documenting Path and Query Parameters](#8-documenting-path-and-query-parameters)
-9. [Documenting Responses](#9-documenting-responses)
-10. [Improving Endpoint Descriptions](#10-improving-endpoint-descriptions)
-11. [Organizing Endpoints with Tags](#11-organizing-endpoints-with-tags)
-12. [Authentication in Swagger UI](#12-authentication-in-swagger-ui)
-13. [Customizing Documentation URLs](#13-customizing-documentation-urls)
-14. [Configuring Swagger UI](#14-configuring-swagger-ui)
-15. [Hiding Endpoints from the Schema](#15-hiding-endpoints-from-the-schema)
-16. [Disabling or Conditionally Enabling Docs](#16-disabling-or-conditionally-enabling-docs)
-17. [Custom OpenAPI Schema](#17-custom-openapi-schema)
-18. [Docs Behind a Reverse Proxy](#18-docs-behind-a-reverse-proxy)
-19. [Using OpenAPI Beyond Documentation](#19-using-openapi-beyond-documentation)
-20. [Testing the Generated Schema](#20-testing-the-generated-schema)
-21. [Production Best Practices](#21-production-best-practices)
-22. [Complete Practical Example](#22-complete-practical-example)
-23. [Quick Revision](#23-quick-revision)
-
----
-
 # 1. What Automatic API Documentation Means
 
 In many frameworks, developers manually write and maintain API documentation. That documentation can become outdated when endpoints change.

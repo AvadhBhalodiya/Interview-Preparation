@@ -14,31 +14,6 @@ order: 8
 
 ---
 
-## Table of Contents
-
-1. [The Core Difference](#1-the-core-difference)
-2. [A Fair Comparison: FastAPI vs Django + DRF](#2-a-fair-comparison-fastapi-vs-django--drf)
-3. [High-Level Architecture](#3-high-level-architecture)
-4. [Feature Comparison](#4-feature-comparison)
-5. [When FastAPI Is the Better Choice](#5-when-fastapi-is-the-better-choice)
-6. [When Django Is the Better Choice](#6-when-django-is-the-better-choice)
-7. [Practical Example: Building the Same API](#7-practical-example-building-the-same-api)
-8. [Async and Performance](#8-async-and-performance)
-9. [Database and ORM Considerations](#9-database-and-orm-considerations)
-10. [Authentication, Authorization, and Security](#10-authentication-authorization-and-security)
-11. [Admin Panel and Internal Operations](#11-admin-panel-and-internal-operations)
-12. [Project Structure and Development Style](#12-project-structure-and-development-style)
-13. [Testing and Maintainability](#13-testing-and-maintainability)
-14. [Deployment and Scaling](#14-deployment-and-scaling)
-15. [Using FastAPI and Django Together](#15-using-fastapi-and-django-together)
-16. [Decision Framework](#16-decision-framework)
-17. [Common Real-World Scenarios](#17-common-real-world-scenarios)
-18. [Best Practices](#18-best-practices)
-19. [Final Summary](#19-final-summary)
-20. [Official References](#20-official-references)
-
----
-
 # 1. The Core Difference
 
 FastAPI and Django are both Python web frameworks, but they solve different default problems.

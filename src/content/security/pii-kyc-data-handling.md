@@ -13,45 +13,6 @@ order: 7
 
 ---
 
-## Index
-
-1. [Overview](#1-overview)
-2. [PII and KYC Data](#2-pii-and-kyc-data)
-   - [What Is PII?](#21-what-is-pii)
-   - [What Is KYC Data?](#22-what-is-kyc-data)
-   - [PII vs KYC Data](#23-pii-vs-kyc-data)
-3. [Why KYC Data Needs Strong Protection](#3-why-kyc-data-needs-strong-protection)
-4. [Core Data-Protection Principles](#4-core-data-protection-principles)
-5. [PII and KYC Data Lifecycle](#5-pii-and-kyc-data-lifecycle)
-6. [Secure KYC Architecture](#6-secure-kyc-architecture)
-7. [Secure Data Collection](#7-secure-data-collection)
-   - [Collect Only Required Data](#71-collect-only-required-data)
-   - [Consent, Notice, and Purpose](#72-consent-notice-and-purpose)
-   - [Secure Document Upload](#73-secure-document-upload)
-   - [Identity Proofing](#74-identity-proofing)
-8. [Secure Storage and Cryptography](#8-secure-storage-and-cryptography)
-   - [Encryption in Transit](#81-encryption-in-transit)
-   - [Encryption at Rest](#82-encryption-at-rest)
-   - [Envelope Encryption](#83-envelope-encryption)
-   - [Tokenization and Pseudonymization](#84-tokenization-and-pseudonymization)
-   - [Hashing Limitations](#85-hashing-limitations)
-9. [Access Control](#9-access-control)
-10. [API and Application Security](#10-api-and-application-security)
-11. [Logging, Monitoring, and Audit Trails](#11-logging-monitoring-and-audit-trails)
-12. [Third-Party KYC Providers](#12-third-party-kyc-providers)
-13. [Retention, Re-KYC, and Secure Deletion](#13-retention-re-kyc-and-secure-deletion)
-14. [KYC Risk Classification](#14-kyc-risk-classification)
-15. [Data Subject Rights and Privacy Requests](#15-data-subject-rights-and-privacy-requests)
-16. [Incident Response for PII Breaches](#16-incident-response-for-pii-breaches)
-17. [Practical Implementation Examples](#17-practical-implementation-examples)
-18. [Testing and Operational Controls](#18-testing-and-operational-controls)
-19. [Compliance Context](#19-compliance-context)
-20. [Production Checklist](#20-production-checklist)
-21. [Key Takeaways](#21-key-takeaways)
-22. [Official References](#22-official-references)
-
----
-
 # 1. Overview
 
 PII and KYC systems handle information that can identify a person, verify their identity, and assess their financial or regulatory risk.

@@ -13,45 +13,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [What PCI DSS Is](#1-what-pci-dss-is)
-   - [Why backend engineers should care](#11-why-backend-engineers-should-care)
-   - [Current standard status](#12-current-standard-status)
-2. [Payment Data You Must Recognize](#2-payment-data-you-must-recognize)
-   - [Cardholder Data](#21-cardholder-data-chd)
-   - [Sensitive Authentication Data](#22-sensitive-authentication-data-sad)
-   - [Storage rules](#23-storage-rules-at-a-glance)
-3. [Understanding PCI DSS Scope](#3-understanding-pci-dss-scope)
-   - [Cardholder Data Environment](#31-cardholder-data-environment-cde)
-   - [Systems that can affect security](#32-systems-that-can-affect-cde-security)
-   - [Scope reduction](#33-scope-reduction)
-4. [Recommended Payment Architecture](#4-recommended-payment-architecture)
-   - [Low-scope tokenized flow](#41-low-scope-tokenized-flow)
-   - [Direct card-data flow](#42-direct-card-data-flow)
-5. [The 12 PCI DSS Requirements](#5-the-12-pci-dss-requirements)
-6. [Backend Engineering Controls](#6-backend-engineering-controls)
-   - [Data minimization](#61-data-minimization)
-   - [Encryption and key management](#62-encryption-and-key-management)
-   - [Authentication and authorization](#63-authentication-and-authorization)
-   - [Secure software development](#64-secure-software-development)
-   - [Logging and monitoring](#65-logging-and-monitoring)
-   - [Payment-page security](#66-payment-page-security)
-   - [Vulnerability management](#67-vulnerability-management)
-7. [Practical Backend Patterns](#7-practical-backend-patterns)
-   - [Safe payment API](#71-safe-payment-api)
-   - [Structured logging](#72-structured-logging-with-an-allowlist)
-   - [Webhook verification](#73-webhook-signature-verification)
-   - [Payment data model](#74-payment-data-model)
-8. [Operational Evidence](#8-operational-evidence)
-9. [Validation: SAQ, ROC, AOC, QSA, and ASV](#9-validation-saq-roc-aoc-qsa-and-asv)
-10. [Practical E-commerce Scenario](#10-practical-e-commerce-scenario)
-11. [Backend Engineer Mental Model](#11-backend-engineer-mental-model)
-12. [Implementation Checklist](#12-implementation-checklist)
-13. [Official References](#13-official-references)
-
----
-
 # 1. What PCI DSS Is
 
 **PCI DSS** stands for **Payment Card Industry Data Security Standard**. It is a set of technical and operational security requirements for organizations that store, process, transmit, or can affect the security of payment-card account data.[^1]

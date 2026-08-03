@@ -15,33 +15,6 @@ This topic is based on the current Django REST Framework documentation and is su
 
 ---
 
-## Index
-
-1. [Why ViewSets and Routers Exist](#1-why-viewsets-and-routers-exist)
-2. [The Core Mental Model](#2-the-core-mental-model)
-3. [ViewSet Actions and HTTP Methods](#3-viewset-actions-and-http-methods)
-4. [Types of ViewSets](#4-types-of-viewsets)
-5. [Building a Complete CRUD API](#5-building-a-complete-crud-api)
-6. [How Routers Generate URLs](#6-how-routers-generate-urls)
-7. [SimpleRouter vs DefaultRouter](#7-simplerouter-vs-defaultrouter)
-8. [Understanding `basename`](#8-understanding-basename)
-9. [Custom Actions with `@action`](#9-custom-actions-with-action)
-10. [Action-Specific Behavior](#10-action-specific-behavior)
-11. [QuerySet Patterns in ViewSets](#11-queryset-patterns-in-viewsets)
-12. [Custom Lookup Fields](#12-custom-lookup-fields)
-13. [Limiting Supported Operations](#13-limiting-supported-operations)
-14. [Manual URL Binding Without a Router](#14-manual-url-binding-without-a-router)
-15. [Reversing ViewSet URLs](#15-reversing-viewset-urls)
-16. [Nested Resource Design](#16-nested-resource-design)
-17. [Request Lifecycle](#17-request-lifecycle)
-18. [Testing ViewSets and Router URLs](#18-testing-viewsets-and-router-urls)
-19. [APIView vs Generic Views vs ViewSets](#19-apiview-vs-generic-views-vs-viewsets)
-20. [Production Best Practices](#20-production-best-practices)
-21. [Practical Decision Guide](#21-practical-decision-guide)
-22. [Final Summary](#22-final-summary)
-
----
-
 # 1. Why ViewSets and Routers Exist
 
 Without a ViewSet, a resource commonly needs separate views for:

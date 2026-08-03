@@ -12,25 +12,6 @@ order: 15
 
 ---
 
-## Table of Contents
-
-1. [Why Copying Matters](#1-why-copying-matters)
-2. [Assignment Is Not Copying](#2-assignment-is-not-copying)
-3. [Shallow Copy](#3-shallow-copy)
-4. [Deep Copy](#4-deep-copy)
-5. [Shallow Copy vs Deep Copy](#5-shallow-copy-vs-deep-copy)
-6. [Common Ways to Copy Built-in Collections](#6-common-ways-to-copy-built-in-collections)
-7. [How Immutable Objects Affect Copying](#7-how-immutable-objects-affect-copying)
-8. [Practical Development Examples](#8-practical-development-examples)
-9. [Copying Custom Classes](#9-copying-custom-classes)
-10. [How `deepcopy()` Handles Cycles and Shared References](#10-how-deepcopy-handles-cycles-and-shared-references)
-11. [Performance Considerations](#11-performance-considerations)
-12. [Choosing the Correct Approach](#12-choosing-the-correct-approach)
-13. [Best Practices](#13-best-practices)
-14. [Quick Revision](#14-quick-revision)
-
----
-
 # 1. Why Copying Matters
 
 Copying becomes important when you need to modify data without changing the original object.

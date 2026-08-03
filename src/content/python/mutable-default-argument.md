@@ -10,24 +10,6 @@ order: 3
 
 ---
 
-## Index
-
-1. [What Is a Default Argument?](#1-what-is-a-default-argument)
-2. [What Is the Mutable Default Argument Bug?](#2-what-is-the-mutable-default-argument-bug)
-3. [Why Does It Happen?](#3-why-does-it-happen)
-4. [Correct Solution Using `None`](#4-correct-solution-using-none)
-5. [Mutable vs Immutable Defaults](#5-mutable-vs-immutable-defaults)
-6. [Common Mutable Default Cases](#6-common-mutable-default-cases)
-7. [Type-Hinted Functions](#7-type-hinted-functions)
-8. [Dataclasses and `default_factory`](#8-dataclasses-and-default_factory)
-9. [When Shared Mutable Defaults Are Intentional](#9-when-shared-mutable-defaults-are-intentional)
-10. [Practical Development Examples](#10-practical-development-examples)
-11. [How to Detect and Test the Problem](#11-how-to-detect-and-test-the-problem)
-12. [Best Practices](#12-best-practices)
-13. [Key Takeaways](#13-key-takeaways)
-
----
-
 ## 1. What Is a Default Argument?
 
 A default argument provides a value that Python uses when the caller does not pass that argument.

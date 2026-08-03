@@ -13,43 +13,6 @@ order: 12
 
 ---
 
-## Index
-
-1. [DynamoDB Mental Model](#1-dynamodb-mental-model)
-2. [Primary Keys](#2-primary-keys)
-   - [Partition Key](#21-partition-key)
-   - [Sort Key](#22-sort-key)
-   - [Simple vs Composite Primary Key](#23-simple-vs-composite-primary-key)
-   - [How Query Uses Keys](#24-how-query-uses-keys)
-   - [Good Key Design](#25-good-key-design)
-3. [Secondary Indexes](#3-secondary-indexes)
-   - [Why Secondary Indexes Exist](#31-why-secondary-indexes-exist)
-   - [Global Secondary Index](#32-global-secondary-index-gsi)
-   - [Local Secondary Index](#33-local-secondary-index-lsi)
-   - [GSI vs LSI](#34-gsi-vs-lsi)
-   - [Index Projections](#35-index-projections)
-   - [Sparse and Overloaded Indexes](#36-sparse-and-overloaded-indexes)
-4. [Single-Table Design](#4-single-table-design)
-   - [What It Means](#41-what-single-table-design-means)
-   - [Access-Pattern-First Modeling](#42-access-pattern-first-modeling)
-   - [Entity Prefixes](#43-entity-prefixes)
-   - [Item Collections](#44-item-collections)
-5. [Complete E-Commerce Example](#5-complete-e-commerce-example)
-   - [Requirements and Access Patterns](#51-requirements-and-access-patterns)
-   - [Key Schema](#52-key-schema)
-   - [Sample Items](#53-sample-items)
-   - [Query Examples](#54-query-examples)
-   - [Adding GSIs](#55-adding-gsis)
-6. [Common Design Patterns](#6-common-design-patterns)
-7. [Capacity, Consistency, and Cost](#7-capacity-consistency-and-cost)
-8. [When Single-Table Design Is a Good Fit](#8-when-single-table-design-is-a-good-fit)
-9. [Practical Design Workflow](#9-practical-design-workflow)
-10. [Best-Practice Checklist](#10-best-practice-checklist)
-11. [Key Takeaways](#11-key-takeaways)
-12. [Official References](#12-official-references)
-
----
-
 # 1. DynamoDB Mental Model
 
 Amazon DynamoDB is a fully managed, serverless NoSQL database designed for predictable low-latency access at scale.

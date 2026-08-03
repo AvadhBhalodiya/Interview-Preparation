@@ -12,46 +12,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [Why These Three Features Matter](#1-why-these-three-features-matter)
-2. [Project Setup](#2-project-setup)
-3. [Fixtures](#3-fixtures)
-   - [Fixture Mental Model](#31-fixture-mental-model)
-   - [Basic Fixtures](#32-basic-fixtures)
-   - [Setup and Teardown with `yield`](#33-setup-and-teardown-with-yield)
-   - [Fixture Scopes](#34-fixture-scopes)
-   - [Fixture Dependencies](#35-fixture-dependencies)
-   - [Sharing Fixtures with `conftest.py`](#36-sharing-fixtures-with-conftestpy)
-   - [Factory Fixtures](#37-factory-fixtures)
-   - [Autouse Fixtures](#38-autouse-fixtures)
-   - [Parametrized Fixtures](#39-parametrized-fixtures)
-   - [Useful Built-in Fixtures](#310-useful-built-in-fixtures)
-4. [Parametrization](#4-parametrization)
-   - [Basic `@pytest.mark.parametrize`](#41-basic-pytestmarkparametrize)
-   - [Multiple Inputs](#42-multiple-inputs)
-   - [Readable Test IDs](#43-readable-test-ids)
-   - [Marks on Individual Cases](#44-marks-on-individual-cases)
-   - [Stacked Parametrization](#45-stacked-parametrization)
-   - [Indirect Parametrization](#46-indirect-parametrization)
-5. [Mocking](#5-mocking)
-   - [What Mocking Solves](#51-what-mocking-solves)
-   - [`Mock`, `MagicMock`, and `AsyncMock`](#52-mock-magicmock-and-asyncmock)
-   - [`return_value` and `side_effect`](#53-return_value-and-side_effect)
-   - [Verifying Interactions](#54-verifying-interactions)
-   - [Using `patch`](#55-using-patch)
-   - [Where to Patch](#56-where-to-patch)
-   - [`spec`, `spec_set`, and `autospec`](#57-spec-spec_set-and-autospec)
-   - [The `monkeypatch` Fixture](#58-the-monkeypatch-fixture)
-6. [Complete Practical Example](#6-complete-practical-example)
-7. [Fixtures vs Parametrize vs Mocking](#7-fixtures-vs-parametrize-vs-mocking)
-8. [Recommended Test Structure](#8-recommended-test-structure)
-9. [Useful Commands](#9-useful-commands)
-10. [Best Practices](#10-best-practices)
-11. [Final Summary](#11-final-summary)
-
----
-
 # 1. Why These Three Features Matter
 
 Pytest becomes especially powerful when you combine three ideas:

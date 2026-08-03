@@ -10,31 +10,6 @@ order: 12
 
 ---
 
-## Index
-
-1. [Why asynchronous programming exists](#1-why-asynchronous-programming-exists)
-2. [Core terminology](#2-core-terminology)
-3. [Coroutines](#3-coroutines)
-4. [`await` and awaitable objects](#4-await-and-awaitable-objects)
-5. [The event loop](#5-the-event-loop)
-6. [How coroutine execution works](#6-how-coroutine-execution-works)
-7. [Starting an async program](#7-starting-an-async-program)
-8. [Sequential vs concurrent execution](#8-sequential-vs-concurrent-execution)
-9. [Tasks and structured concurrency](#9-tasks-and-structured-concurrency)
-10. [Collecting concurrent results](#10-collecting-concurrent-results)
-11. [Timeouts and cancellation](#11-timeouts-and-cancellation)
-12. [Blocking code inside async applications](#12-blocking-code-inside-async-applications)
-13. [Limiting concurrency and protecting shared state](#13-limiting-concurrency-and-protecting-shared-state)
-14. [Async context managers and iterators](#14-async-context-managers-and-iterators)
-15. [Practical service-layer example](#15-practical-service-layer-example)
-16. [Error handling patterns](#16-error-handling-patterns)
-17. [Debugging, testing, and observability](#17-debugging-testing-and-observability)
-18. [When to use and avoid async](#18-when-to-use-and-avoid-async)
-19. [Production best practices](#19-production-best-practices)
-20. [Final mental model](#20-final-mental-model)
-
----
-
 # 1. Why Asynchronous Programming Exists
 
 Many backend applications spend more time **waiting** than computing:

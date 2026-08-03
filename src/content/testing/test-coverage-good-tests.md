@@ -13,44 +13,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [Why This Topic Matters](#1-why-this-topic-matters)
-2. [What Is Test Coverage?](#2-what-is-test-coverage)
-3. [How Coverage Is Calculated](#3-how-coverage-is-calculated)
-4. [Types of Code Coverage](#4-types-of-code-coverage)
-   - [Statement or Line Coverage](#41-statement-or-line-coverage)
-   - [Function Coverage](#42-function-coverage)
-   - [Branch Coverage](#43-branch-coverage)
-   - [Condition Coverage](#44-condition-coverage)
-   - [Path Coverage](#45-path-coverage)
-5. [Code Coverage vs Test Coverage](#5-code-coverage-vs-test-coverage)
-6. [Why High Coverage Does Not Guarantee Good Tests](#6-why-high-coverage-does-not-guarantee-good-tests)
-7. [What Makes a Good Test?](#7-what-makes-a-good-test)
-8. [Arrange–Act–Assert Pattern](#8-arrangeactassert-pattern)
-9. [Good Test vs Weak Test](#9-good-test-vs-weak-test)
-10. [Testing Happy Paths, Edge Cases, and Failure Paths](#10-testing-happy-paths-edge-cases-and-failure-paths)
-11. [Test Independence and Isolation](#11-test-independence-and-isolation)
-12. [Deterministic Tests](#12-deterministic-tests)
-13. [Test Naming and Readability](#13-test-naming-and-readability)
-14. [Assertions: Quality Over Quantity](#14-assertions-quality-over-quantity)
-15. [Mocking Without Hiding Real Problems](#15-mocking-without-hiding-real-problems)
-16. [Coverage Targets and Practical Thresholds](#16-coverage-targets-and-practical-thresholds)
-17. [Risk-Based Coverage](#17-risk-based-coverage)
-18. [Changed-Code or Diff Coverage](#18-changed-code-or-diff-coverage)
-19. [Mutation Testing](#19-mutation-testing)
-20. [Test Pyramid and Coverage](#20-test-pyramid-and-coverage)
-21. [Measuring Coverage with Pytest](#21-measuring-coverage-with-pytest)
-22. [Configuration Example](#22-configuration-example)
-23. [Reading a Coverage Report](#23-reading-a-coverage-report)
-24. [Coverage in CI/CD](#24-coverage-in-cicd)
-25. [A Practical Testing Strategy](#25-a-practical-testing-strategy)
-26. [Review Checklist](#26-review-checklist)
-27. [Key Takeaways](#27-key-takeaways)
-28. [References](#28-references)
-
----
-
 # 1. Why This Topic Matters
 
 A test suite gives developers confidence to change code without silently breaking existing behaviour.

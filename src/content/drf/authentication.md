@@ -19,46 +19,6 @@ The examples are written for developers who already understand Django models, vi
 
 ---
 
-## Table of Contents
-
-- [1. Authentication in DRF](#1-authentication-in-drf)
-  - [Authentication request flow](#authentication-request-flow)
-  - [`request.user` and `request.auth`](#requestuser-and-requestauth)
-  - [Authentication vs permissions](#authentication-vs-permissions)
-- [2. Common project setup](#2-common-project-setup)
-- [3. Session Authentication](#3-session-authentication)
-  - [How it works](#how-session-authentication-works)
-  - [Configuration](#session-authentication-configuration)
-  - [Login and logout](#session-login-and-logout)
-  - [CSRF protection](#csrf-protection)
-  - [When to use it](#when-to-use-session-authentication)
-- [4. DRF Token Authentication](#4-drf-token-authentication)
-  - [How it works](#how-token-authentication-works)
-  - [Configuration](#token-authentication-configuration)
-  - [Obtaining a token](#obtaining-a-token)
-  - [Using and revoking a token](#using-and-revoking-a-token)
-  - [When to use it](#when-to-use-token-authentication)
-- [5. JWT Authentication](#5-jwt-authentication)
-  - [How JWT works](#how-jwt-works)
-  - [Access and refresh tokens](#access-and-refresh-tokens)
-  - [Simple JWT configuration](#simple-jwt-configuration)
-  - [Obtaining, refreshing, and verifying tokens](#obtaining-refreshing-and-verifying-tokens)
-  - [Logout and token blacklisting](#jwt-logout-and-token-blacklisting)
-  - [Custom claims](#custom-jwt-claims)
-  - [When to use it](#when-to-use-jwt-authentication)
-- [6. Protecting API endpoints](#6-protecting-api-endpoints)
-- [7. Global and per-view authentication](#7-global-and-per-view-authentication)
-- [8. Multiple authentication classes](#8-multiple-authentication-classes)
-- [9. Session vs Token vs JWT](#9-session-vs-token-vs-jwt)
-- [10. Choosing the right approach](#10-choosing-the-right-approach)
-- [11. Security best practices](#11-security-best-practices)
-- [12. Testing authentication](#12-testing-authentication)
-- [13. Practical project structure](#13-practical-project-structure)
-- [14. Key takeaways](#14-key-takeaways)
-- [References](#references)
-
----
-
 # 1. Authentication in DRF
 
 Django REST Framework runs authentication before permission checks and before the main view logic.

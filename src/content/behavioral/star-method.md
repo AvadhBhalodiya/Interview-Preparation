@@ -10,30 +10,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [What Is the STAR Method?](#1-what-is-the-star-method)
-2. [Why Behavioral Interviews Use STAR](#2-why-behavioral-interviews-use-star)
-3. [The Four Parts of STAR](#3-the-four-parts-of-star)
-   - [Situation](#31-situation)
-   - [Task](#32-task)
-   - [Action](#33-action)
-   - [Result](#34-result)
-4. [How a Strong STAR Answer Flows](#4-how-a-strong-star-answer-flows)
-5. [Developer-Focused STAR Example](#5-developer-focused-star-example)
-6. [Turning a Weak Answer into a Strong Answer](#6-turning-a-weak-answer-into-a-strong-answer)
-7. [Building a Reusable Story Bank](#7-building-a-reusable-story-bank)
-8. [Choosing the Right Story](#8-choosing-the-right-story)
-9. [Handling Difficult Behavioral Scenarios](#9-handling-difficult-behavioral-scenarios)
-10. [Using Metrics Without Forcing Them](#10-using-metrics-without-forcing-them)
-11. [Delivery, Length, and Communication Style](#11-delivery-length-and-communication-style)
-12. [STAR Preparation Worksheet](#12-star-preparation-worksheet)
-13. [Final Review Checklist](#13-final-review-checklist)
-14. [Key Takeaways](#14-key-takeaways)
-15. [References](#15-references)
-
----
-
 # 1. What Is the STAR Method?
 
 The **STAR method** is a structured way to explain how you handled a real situation from your past experience.

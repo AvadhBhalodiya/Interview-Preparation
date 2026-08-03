@@ -10,39 +10,6 @@ order: 16
 
 ---
 
-## Index
-
-1. [What Type Hints Are](#1-what-type-hints-are)
-2. [Why Type Hints Matter](#2-why-type-hints-matter)
-3. [How Static Type Checking Works](#3-how-static-type-checking-works)
-4. [Basic Type Hint Syntax](#4-basic-type-hint-syntax)
-5. [Typing Collections](#5-typing-collections)
-6. [Union Types and Optional Values](#6-union-types-and-optional-values)
-7. [`Any`, `object`, and Precise Types](#7-any-object-and-precise-types)
-8. [Type Narrowing](#8-type-narrowing)
-9. [Callable Types](#9-callable-types)
-10. [Type Aliases and `NewType`](#10-type-aliases-and-newtype)
-11. [`TypedDict` for Dictionary Structures](#11-typeddict-for-dictionary-structures)
-12. [`Literal`, `Final`, and `ClassVar`](#12-literal-final-and-classvar)
-13. [Generic Functions and Classes](#13-generic-functions-and-classes)
-14. [Bounds, Constraints, and Variance](#14-bounds-constraints-and-variance)
-15. [`Protocol` and Structural Typing](#15-protocol-and-structural-typing)
-16. [`Self` and Fluent APIs](#16-self-and-fluent-apis)
-17. [Function Overloading](#17-function-overloading)
-18. [Typing Decorators with `ParamSpec`](#18-typing-decorators-with-paramspec)
-19. [`TypeIs` and `TypeGuard`](#19-typeis-and-typeguard)
-20. [Async, Generator, and Context Manager Types](#20-async-generator-and-context-manager-types)
-21. [Useful Typing Utilities](#21-useful-typing-utilities)
-22. [Runtime Behavior and Annotation Inspection](#22-runtime-behavior-and-annotation-inspection)
-23. [Practical Application Example](#23-practical-application-example)
-24. [Recommended Development Workflow](#24-recommended-development-workflow)
-25. [Best Practices](#25-best-practices)
-26. [Version-Aware Syntax Guide](#26-version-aware-syntax-guide)
-27. [Quick Reference](#27-quick-reference)
-28. [Summary](#28-summary)
-
----
-
 # 1. What Type Hints Are
 
 Python is a **dynamically typed language**. A variable can refer to values of different types during execution.

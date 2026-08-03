@@ -13,43 +13,6 @@ order: 8
 
 ---
 
-## Index
-
-1. [The Most Important Distinction](#1-the-most-important-distinction)
-2. [High-Level Comparison](#2-high-level-comparison)
-3. [REST](#3-rest)
-   - [How REST Works](#31-how-rest-works)
-   - [REST Example](#32-rest-example)
-   - [Strengths](#33-rest-strengths)
-   - [Trade-offs](#34-rest-trade-offs)
-4. [GraphQL](#4-graphql)
-   - [How GraphQL Works](#41-how-graphql-works)
-   - [GraphQL Example](#42-graphql-example)
-   - [Strengths](#43-graphql-strengths)
-   - [Trade-offs](#44-graphql-trade-offs)
-5. [gRPC](#5-grpc)
-   - [How gRPC Works](#51-how-grpc-works)
-   - [gRPC Example](#52-grpc-example)
-   - [RPC Communication Types](#53-grpc-communication-types)
-   - [Strengths](#54-grpc-strengths)
-   - [Trade-offs](#55-grpc-trade-offs)
-6. [Same Requirement Implemented Three Ways](#6-same-requirement-implemented-three-ways)
-7. [Detailed Trade-off Comparison](#7-detailed-trade-off-comparison)
-8. [Performance: What Actually Matters](#8-performance-what-actually-matters)
-9. [Caching](#9-caching)
-10. [API Evolution and Versioning](#10-api-evolution-and-versioning)
-11. [Security and Authorization](#11-security-and-authorization)
-12. [Error Handling](#12-error-handling)
-13. [Observability and Debugging](#13-observability-and-debugging)
-14. [When to Choose Each Approach](#14-when-to-choose-each-approach)
-15. [Decision Tree](#15-decision-tree)
-16. [Hybrid Architecture](#16-hybrid-architecture)
-17. [Production Best Practices](#17-production-best-practices)
-18. [Interview-Ready Summary](#18-interview-ready-summary)
-19. [Official References](#19-official-references)
-
----
-
 # 1. The Most Important Distinction
 
 REST, GraphQL, and gRPC solve similar communication problems, but they are not exactly the same kind of technology.

@@ -13,35 +13,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [Redis in One Minute](#1-redis-in-one-minute)
-2. [Why Redis Is Used](#2-why-redis-is-used)
-3. [Use-Case Selection Map](#3-use-case-selection-map)
-4. [Application Caching](#4-application-caching)
-5. [Session Storage](#5-session-storage)
-6. [Rate Limiting](#6-rate-limiting)
-7. [Counters and Real-Time Analytics](#7-counters-and-real-time-analytics)
-8. [Leaderboards and Ranking](#8-leaderboards-and-ranking)
-9. [Background Job Queues](#9-background-job-queues)
-10. [Pub/Sub Messaging](#10-pubsub-messaging)
-11. [Reliable Event Streaming](#11-reliable-event-streaming)
-12. [Temporary Data, OTPs, and Idempotency](#12-temporary-data-otps-and-idempotency)
-13. [Shopping Carts and Short-Lived State](#13-shopping-carts-and-short-lived-state)
-14. [Geospatial Search](#14-geospatial-search)
-15. [Time-Series Data and Dashboards](#15-time-series-data-and-dashboards)
-16. [Distributed Coordination and Locks](#16-distributed-coordination-and-locks)
-17. [Probabilistic Data Processing](#17-probabilistic-data-processing)
-18. [Search, Recommendations, and AI Use Cases](#18-search-recommendations-and-ai-use-cases)
-19. [Choosing the Correct Redis Data Type](#19-choosing-the-correct-redis-data-type)
-20. [When Redis Is Not the Right Choice](#20-when-redis-is-not-the-right-choice)
-21. [Production Best Practices](#21-production-best-practices)
-22. [Practical System Design Example](#22-practical-system-design-example)
-23. [Key Takeaways](#23-key-takeaways)
-24. [Official References](#24-official-references)
-
----
-
 # 1. Redis in One Minute
 
 Redis is an in-memory data store commonly used as:

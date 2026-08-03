@@ -13,27 +13,6 @@ order: 3
 
 ---
 
-## Index
-
-1. [AWS Core Services at a Glance](#1-aws-core-services-at-a-glance)
-2. [How the Services Work Together](#2-how-the-services-work-together)
-3. [Amazon EC2 — Virtual Servers](#3-amazon-ec2--virtual-servers)
-4. [Amazon S3 — Object Storage](#4-amazon-s3--object-storage)
-5. [Amazon RDS — Managed Relational Databases](#5-amazon-rds--managed-relational-databases)
-6. [Amazon ECR — Container Image Registry](#6-amazon-ecr--container-image-registry)
-7. [Amazon ECS — Container Orchestration](#7-amazon-ecs--container-orchestration)
-8. [Amazon SQS — Message Queues](#8-amazon-sqs--message-queues)
-9. [Amazon CloudWatch — Monitoring and Observability](#9-amazon-cloudwatch--monitoring-and-observability)
-10. [End-to-End Docker Deployment Flow](#10-end-to-end-docker-deployment-flow)
-11. [Security and Networking Best Practices](#11-security-and-networking-best-practices)
-12. [Reliability and Scaling Strategy](#12-reliability-and-scaling-strategy)
-13. [Cost-Optimization Checklist](#13-cost-optimization-checklist)
-14. [Service Selection Summary](#14-service-selection-summary)
-15. [Key Takeaways](#15-key-takeaways)
-16. [Official AWS References](#16-official-aws-references)
-
----
-
 # 1. AWS Core Services at a Glance
 
 These services solve different parts of a production application.

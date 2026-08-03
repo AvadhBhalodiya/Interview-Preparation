@@ -13,33 +13,6 @@ order: 1
 
 ---
 
-## Table of Contents
-
-1. [Docker in One Picture](#1-docker-in-one-picture)
-2. [Docker Image](#2-docker-image)
-3. [Docker Container](#3-docker-container)
-4. [Docker Image vs Container](#4-docker-image-vs-container)
-5. [From Source Code to a Running Container](#5-from-source-code-to-a-running-container)
-6. [Dockerfile Fundamentals](#6-dockerfile-fundamentals)
-7. [Important Dockerfile Instructions](#7-important-dockerfile-instructions)
-8. [CMD vs ENTRYPOINT](#8-cmd-vs-entrypoint)
-9. [Docker Image Layers](#9-docker-image-layers)
-10. [Build Cache and Cache Invalidation](#10-build-cache-and-cache-invalidation)
-11. [Writing Cache-Friendly Dockerfiles](#11-writing-cache-friendly-dockerfiles)
-12. [Multi-Stage Builds](#12-multi-stage-builds)
-13. [Production FastAPI Multi-Stage Example](#13-production-fastapi-multi-stage-example)
-14. [Node.js Multi-Stage Example](#14-nodejs-multi-stage-example)
-15. [Docker Build Context and `.dockerignore`](#15-docker-build-context-and-dockerignore)
-16. [Image Tags, Digests, and Registries](#16-image-tags-digests-and-registries)
-17. [How Docker Layers Affect Storage](#17-how-docker-layers-affect-storage)
-18. [Production Best Practices](#18-production-best-practices)
-19. [Docker in an AWS Deployment Flow](#19-docker-in-an-aws-deployment-flow)
-20. [Useful Docker Commands](#20-useful-docker-commands)
-21. [Practical Debugging Workflow](#21-practical-debugging-workflow)
-22. [Key Takeaways](#22-key-takeaways)
-
----
-
 # 1. Docker in One Picture
 
 Docker packages an application and everything required to run it into an **image**. Docker then starts an isolated process from that image, called a **container**.

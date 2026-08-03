@@ -13,37 +13,6 @@ order: 4
 
 ---
 
-## Index
-
-1. [Why Failures Need a Strategy](#1-why-failures-need-a-strategy)
-2. [The Core Processing Model](#2-the-core-processing-model)
-3. [Classifying Failures Before Retrying](#3-classifying-failures-before-retrying)
-4. [Common Retry Strategies](#4-common-retry-strategies)
-   - [Immediate Retry](#41-immediate-retry)
-   - [Fixed-Delay Retry](#42-fixed-delay-retry)
-   - [Linear Backoff](#43-linear-backoff)
-   - [Exponential Backoff](#44-exponential-backoff)
-   - [Exponential Backoff with Jitter](#45-exponential-backoff-with-jitter)
-5. [Choosing Retry Limits and Time Budgets](#5-choosing-retry-limits-and-time-budgets)
-6. [Dead-Letter Queue Fundamentals](#6-dead-letter-queue-fundamentals)
-7. [Complete Retry-to-DLQ Flow](#7-complete-retry-to-dlq-flow)
-8. [Acknowledgements, Visibility Timeouts, and Redelivery](#8-acknowledgements-visibility-timeouts-and-redelivery)
-9. [Idempotency: The Safety Net for Retries](#9-idempotency-the-safety-net-for-retries)
-10. [Retry at the Correct Layer](#10-retry-at-the-correct-layer)
-11. [Practical Python Retry Implementation](#11-practical-python-retry-implementation)
-12. [Celery Retry Configuration](#12-celery-retry-configuration)
-13. [Amazon SQS with a DLQ](#13-amazon-sqs-with-a-dlq)
-14. [RabbitMQ Retry and Dead-Letter Exchanges](#14-rabbitmq-retry-and-dead-letter-exchanges)
-15. [Google Cloud Pub/Sub Dead-Letter Topics](#15-google-cloud-pubsub-dead-letter-topics)
-16. [DLQ Redrive and Message Recovery](#16-dlq-redrive-and-message-recovery)
-17. [Observability and Alerting](#17-observability-and-alerting)
-18. [Production Design Example](#18-production-design-example)
-19. [Decision Tables](#19-decision-tables)
-20. [Key Takeaways](#20-key-takeaways)
-21. [Official References](#21-official-references)
-
----
-
 # 1. Why Failures Need a Strategy
 
 Background tasks fail for normal reasons:

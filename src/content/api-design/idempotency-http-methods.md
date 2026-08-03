@@ -13,29 +13,6 @@ order: 2
 
 ---
 
-## Index
-
-1. [What Is Idempotency?](#1-what-is-idempotency)
-2. [Why Idempotency Matters in APIs](#2-why-idempotency-matters-in-apis)
-3. [Safe vs Idempotent Methods](#3-safe-vs-idempotent-methods)
-4. [HTTP Method Idempotency Matrix](#4-http-method-idempotency-matrix)
-5. [Understanding Each HTTP Method](#5-understanding-each-http-method)
-6. [Idempotent Method vs Idempotent Operation](#6-idempotent-method-vs-idempotent-operation)
-7. [Making POST and PATCH Retry-Safe](#7-making-post-and-patch-retry-safe)
-8. [Idempotency-Key Processing Flow](#8-idempotency-key-processing-flow)
-9. [Database Design for Idempotency](#9-database-design-for-idempotency)
-10. [Idempotency and Concurrent Requests](#10-idempotency-and-concurrent-requests)
-11. [Idempotency and Optimistic Concurrency](#11-idempotency-and-optimistic-concurrency)
-12. [Retry Strategy for REST Clients](#12-retry-strategy-for-rest-clients)
-13. [Practical API Design Examples](#13-practical-api-design-examples)
-14. [Testing Idempotency](#14-testing-idempotency)
-15. [Important Design Distinctions](#15-important-design-distinctions)
-16. [Best-Practice Checklist](#16-best-practice-checklist)
-17. [Quick Revision Summary](#17-quick-revision-summary)
-18. [References](#18-references)
-
----
-
 # 1. What Is Idempotency?
 
 An operation is **idempotent** when performing the same operation multiple times has the same **intended final effect on the server** as performing it once.

@@ -23,46 +23,6 @@ The fourth question leads to one of the most important caching failures in syste
 
 ---
 
-## Index
-
-1. [Why Caching Is Used](#1-why-caching-is-used)
-2. [The Main Caching Layers](#2-the-main-caching-layers)
-   - [Layer 1: Client and Browser Cache](#21-layer-1-client-and-browser-cache)
-   - [Layer 2: CDN and Edge Cache](#22-layer-2-cdn-and-edge-cache)
-   - [Layer 3: Reverse Proxy and API Gateway Cache](#23-layer-3-reverse-proxy-and-api-gateway-cache)
-   - [Layer 4: In-Process Application Cache](#24-layer-4-in-process-application-cache)
-   - [Layer 5: Distributed Cache](#25-layer-5-distributed-cache)
-   - [Layer 6: Database and Operating-System Cache](#26-layer-6-database-and-operating-system-cache)
-3. [How Requests Move Through Multiple Cache Layers](#3-how-requests-move-through-multiple-cache-layers)
-4. [Common Cache Access Patterns](#4-common-cache-access-patterns)
-   - [Cache-Aside](#41-cache-aside)
-   - [Read-Through](#42-read-through)
-   - [Write-Through](#43-write-through)
-   - [Write-Behind](#44-write-behind)
-   - [Refresh-Ahead](#45-refresh-ahead)
-5. [Cache Keys, TTLs, Invalidation, and Eviction](#5-cache-keys-ttls-invalidation-and-eviction)
-6. [The Cache Stampede Problem](#6-the-cache-stampede-problem)
-7. [Related Cache Failure Patterns](#7-related-cache-failure-patterns)
-8. [Techniques for Preventing a Cache Stampede](#8-techniques-for-preventing-a-cache-stampede)
-   - [Request Coalescing](#81-request-coalescing-single-flight)
-   - [Distributed Locking](#82-distributed-locking)
-   - [Stale-While-Revalidate](#83-stale-while-revalidate)
-   - [Early Refresh](#84-early-refresh)
-   - [Probabilistic Early Expiration](#85-probabilistic-early-expiration)
-   - [TTL Jitter](#86-ttl-jitter)
-   - [Cache Prewarming](#87-cache-prewarming)
-   - [Negative Caching](#88-negative-caching)
-   - [Backpressure and Rate Limiting](#89-backpressure-and-rate-limiting)
-9. [Practical Redis Implementation](#9-practical-redis-implementation)
-10. [Choosing the Right Protection Strategy](#10-choosing-the-right-protection-strategy)
-11. [Observability and Capacity Planning](#11-observability-and-capacity-planning)
-12. [Production Design Example](#12-production-design-example)
-13. [Best-Practice Checklist](#13-best-practice-checklist)
-14. [Key Takeaways](#14-key-takeaways)
-15. [References](#15-references)
-
----
-
 # 1. Why Caching Is Used
 
 A cache stores a copy of data in a location that is faster or closer to the consumer than the original source.

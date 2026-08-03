@@ -25,32 +25,6 @@ This guide explains how environment variables and dedicated secret managers fit 
 
 ---
 
-## Index
-
-1. [What Is a Secret?](#1-what-is-a-secret)
-2. [Configuration vs Secrets](#2-configuration-vs-secrets)
-3. [Why Hardcoded Secrets Are Dangerous](#3-why-hardcoded-secrets-are-dangerous)
-4. [Environment Variables](#4-environment-variables)
-5. [Dedicated Secret Managers](#5-dedicated-secret-managers)
-6. [Environment Variables vs Secret Managers](#6-environment-variables-vs-secret-managers)
-7. [How Applications Receive Secrets](#7-how-applications-receive-secrets)
-8. [Static vs Dynamic Secrets](#8-static-vs-dynamic-secrets)
-9. [Secret Rotation](#9-secret-rotation)
-10. [Identity and Access Control](#10-identity-and-access-control)
-11. [Encryption and Key Management](#11-encryption-and-key-management)
-12. [Secrets in Local Development](#12-secrets-in-local-development)
-13. [Secrets in Docker](#13-secrets-in-docker)
-14. [Secrets in Kubernetes](#14-secrets-in-kubernetes)
-15. [Secrets in CI/CD Pipelines](#15-secrets-in-cicd-pipelines)
-16. [Application Implementation Patterns](#16-application-implementation-patterns)
-17. [Logging, Monitoring, and Auditing](#17-logging-monitoring-and-auditing)
-18. [Secret Leakage Response](#18-secret-leakage-response)
-19. [Practical Architecture](#19-practical-architecture)
-20. [Best-Practice Checklist](#20-best-practice-checklist)
-21. [Key Takeaways](#21-key-takeaways)
-
----
-
 # 1. What Is a Secret?
 
 A **secret** is sensitive information that allows a person, application, or machine to prove identity or gain privileged access.

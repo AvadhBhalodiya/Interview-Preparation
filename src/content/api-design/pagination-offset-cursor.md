@@ -12,35 +12,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [Why APIs Need Pagination](#1-why-apis-need-pagination)
-2. [Quick Mental Model](#2-quick-mental-model)
-3. [Offset-Based Pagination](#3-offset-based-pagination)
-   - [How It Works](#31-how-it-works)
-   - [Request and Response](#32-request-and-response)
-   - [Database Query](#33-database-query)
-   - [Advantages](#34-advantages)
-   - [Limitations](#35-limitations)
-4. [Cursor-Based Pagination](#4-cursor-based-pagination)
-   - [How It Works](#41-how-it-works)
-   - [Request and Response](#42-request-and-response)
-   - [Keyset Query](#43-keyset-query)
-   - [Advantages](#44-advantages)
-   - [Limitations](#45-limitations)
-5. [Offset vs Cursor Comparison](#5-offset-vs-cursor-comparison)
-6. [Stable Ordering and Tie-Breakers](#6-stable-ordering-and-tie-breakers)
-7. [Designing a Cursor](#7-designing-a-cursor)
-8. [REST API Response Design](#8-rest-api-response-design)
-9. [FastAPI and SQLAlchemy Examples](#9-fastapi-and-sqlalchemy-examples)
-10. [Choosing the Right Strategy](#10-choosing-the-right-strategy)
-11. [Production Best Practices](#11-production-best-practices)
-12. [Migration from Offset to Cursor](#12-migration-from-offset-to-cursor)
-13. [Key Interview Takeaways](#13-key-interview-takeaways)
-14. [References](#14-references)
-
----
-
 # 1. Why APIs Need Pagination
 
 An API should not return thousands or millions of records in one response.

@@ -11,34 +11,6 @@ order: 4
 
 ---
 
-## Index
-
-1. [Core Idea](#1-core-idea)
-2. [Example Models](#2-example-models)
-3. [What Is a QuerySet?](#3-what-is-a-queryset)
-4. [How QuerySet Chaining Works](#4-how-queryset-chaining-works)
-5. [What Lazy Evaluation Means](#5-what-lazy-evaluation-means)
-6. [When a QuerySet Is Evaluated](#6-when-a-queryset-is-evaluated)
-7. [QuerySet Result Caching](#7-queryset-result-caching)
-8. [Fresh Data and Re-evaluation](#8-fresh-data-and-re-evaluation)
-9. [Slicing and Indexing](#9-slicing-and-indexing)
-10. [Common QuerySet Operations](#10-common-queryset-operations)
-11. [QuerySet vs Model Instance](#11-queryset-vs-model-instance)
-12. [Efficient Existence, Count, and Membership Checks](#12-efficient-existence-count-and-membership-checks)
-13. [Loading Only Required Data](#13-loading-only-required-data)
-14. [Related Object Loading](#14-related-object-loading)
-15. [Large QuerySets and `iterator()`](#15-large-querysets-and-iterator)
-16. [Async QuerySet Usage](#16-async-queryset-usage)
-17. [Inspecting SQL and Query Plans](#17-inspecting-sql-and-query-plans)
-18. [QuerySets in Views and Services](#18-querysets-in-views-and-services)
-19. [Custom QuerySets and Managers](#19-custom-querysets-and-managers)
-20. [Practical Performance Patterns](#20-practical-performance-patterns)
-21. [Mental Model](#21-mental-model)
-22. [Quick Reference](#22-quick-reference)
-23. [Official References](#23-official-references)
-
----
-
 # 1. Core Idea
 
 Django's ORM lets you work with database records through Python objects.

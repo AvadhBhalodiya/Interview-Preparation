@@ -13,31 +13,6 @@ order: 3
 
 ---
 
-## Table of Contents
-
-1. [What Is the OWASP API Security Top 10?](#1-what-is-the-owasp-api-security-top-10)
-2. [Why API Security Is Different](#2-why-api-security-is-different)
-3. [The Top 10 at a Glance](#3-the-top-10-at-a-glance)
-4. [API1: Broken Object Level Authorization](#4-api12023--broken-object-level-authorization-bola)
-5. [API2: Broken Authentication](#5-api22023--broken-authentication)
-6. [API3: Broken Object Property Level Authorization](#6-api32023--broken-object-property-level-authorization-bopla)
-7. [API4: Unrestricted Resource Consumption](#7-api42023--unrestricted-resource-consumption)
-8. [API5: Broken Function Level Authorization](#8-api52023--broken-function-level-authorization-bfla)
-9. [API6: Unrestricted Access to Sensitive Business Flows](#9-api62023--unrestricted-access-to-sensitive-business-flows)
-10. [API7: Server-Side Request Forgery](#10-api72023--server-side-request-forgery-ssrf)
-11. [API8: Security Misconfiguration](#11-api82023--security-misconfiguration)
-12. [API9: Improper Inventory Management](#12-api92023--improper-inventory-management)
-13. [API10: Unsafe Consumption of APIs](#13-api102023--unsafe-consumption-of-apis)
-14. [Authorization Risks Compared](#14-authorization-risks-compared)
-15. [Secure API Architecture](#15-secure-api-architecture)
-16. [Practical FastAPI Patterns](#16-practical-fastapi-patterns)
-17. [API Security Testing Strategy](#17-api-security-testing-strategy)
-18. [Production Security Checklist](#18-production-security-checklist)
-19. [Key Takeaways](#19-key-takeaways)
-20. [Official References](#20-official-references)
-
----
-
 # 1. What Is the OWASP API Security Top 10?
 
 The **OWASP API Security Top 10** is an awareness document that describes the most critical security risks commonly found in APIs.

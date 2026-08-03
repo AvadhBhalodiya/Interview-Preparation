@@ -13,35 +13,6 @@ order: 8
 
 ---
 
-## Index
-
-1. [Why HTTPS Is Needed](#1-why-https-is-needed)
-2. [HTTP, HTTPS, SSL, and TLS](#2-http-https-ssl-and-tls)
-3. [What Security TLS Provides](#3-what-security-tls-provides)
-4. [Where TLS Fits in the Network Stack](#4-where-tls-fits-in-the-network-stack)
-5. [Cryptography Used by TLS](#5-cryptography-used-by-tls)
-6. [TLS 1.3 Handshake](#6-tls-13-handshake)
-7. [Digital Certificates and PKI](#7-digital-certificates-and-pki)
-8. [How Certificate Validation Works](#8-how-certificate-validation-works)
-9. [TLS Versions](#9-tls-versions)
-10. [Cipher Suites](#10-cipher-suites)
-11. [SNI, ALPN, and HTTP Versions](#11-sni-alpn-and-http-versions)
-12. [TLS Termination in Real Applications](#12-tls-termination-in-real-applications)
-13. [Mutual TLS](#13-mutual-tls)
-14. [Session Resumption and 0-RTT](#14-session-resumption-and-0-rtt)
-15. [HTTPS Security Headers and Browser Controls](#15-https-security-headers-and-browser-controls)
-16. [Secure Server Configuration](#16-secure-server-configuration)
-17. [Application-Level HTTPS Practices](#17-application-level-https-practices)
-18. [Testing and Debugging HTTPS](#18-testing-and-debugging-https)
-19. [Common HTTPS and TLS Failures](#19-common-https-and-tls-failures)
-20. [What HTTPS Does Not Protect](#20-what-https-does-not-protect)
-21. [Production Architecture Example](#21-production-architecture-example)
-22. [Practical Checklist](#22-practical-checklist)
-23. [Key Takeaways](#23-key-takeaways)
-24. [References](#24-references)
-
----
-
 # 1. Why HTTPS Is Needed
 
 Normal HTTP sends data over the network without transport encryption.

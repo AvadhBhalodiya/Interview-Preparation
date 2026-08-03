@@ -10,31 +10,6 @@ order: 5
 
 ---
 
-## Index
-
-1. [Core Idea](#1-core-idea)
-2. [Synchronous vs Asynchronous Execution](#2-synchronous-vs-asynchronous-execution)
-3. [How an Async FastAPI Endpoint Works](#3-how-an-async-fastapi-endpoint-works)
-4. [`def` vs `async def` in FastAPI](#4-def-vs-async-def-in-fastapi)
-5. [Why FastAPI Is Fast](#5-why-fastapi-is-fast)
-6. [Blocking the Event Loop](#6-blocking-the-event-loop)
-7. [Async I/O in Real Applications](#7-async-io-in-real-applications)
-8. [Running Independent Operations Concurrently](#8-running-independent-operations-concurrently)
-9. [CPU-Bound Work](#9-cpu-bound-work)
-10. [Dependencies and Async Resource Management](#10-dependencies-and-async-resource-management)
-11. [Database Considerations](#11-database-considerations)
-12. [Thread Pool Behaviour](#12-thread-pool-behaviour)
-13. [Background Tasks](#13-background-tasks)
-14. [Workers, Event Loops, and Scaling](#14-workers-event-loops-and-scaling)
-15. [Testing Async Endpoints](#15-testing-async-endpoints)
-16. [Performance and Reliability Practices](#16-performance-and-reliability-practices)
-17. [Practical Decision Guide](#17-practical-decision-guide)
-18. [Complete Example](#18-complete-example)
-19. [Interview-Ready Mental Model](#19-interview-ready-mental-model)
-20. [Official References](#20-official-references)
-
----
-
 # 1. Core Idea
 
 Most API requests spend a large amount of time **waiting**:

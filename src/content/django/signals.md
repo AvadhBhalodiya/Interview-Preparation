@@ -15,30 +15,6 @@ order: 3
 
 ---
 
-## Index
-
-1. [What Is a Django Signal?](#1-what-is-a-django-signal)
-2. [The Signal Mental Model](#2-the-signal-mental-model)
-3. [Main Parts of a Signal](#3-main-parts-of-a-signal)
-4. [Frequently Used Built-in Signals](#4-frequently-used-built-in-signals)
-5. [Recommended Project Structure](#5-recommended-project-structure)
-6. [Practical `post_save` Example](#6-practical-post_save-example)
-7. [Important Receiver Arguments](#7-important-receiver-arguments)
-8. [`m2m_changed` Example](#8-m2m_changed-example)
-9. [When Signals Are a Good Choice](#9-when-signals-are-a-good-choice)
-10. [When NOT to Use Signals](#10-when-not-to-use-signals)
-11. [Signals and Database Transactions](#11-signals-and-database-transactions)
-12. [Signals vs Service Layer vs Background Tasks](#12-signals-vs-service-layer-vs-background-tasks)
-13. [Custom Signals](#13-custom-signals)
-14. [Synchronous and Asynchronous Receivers](#14-synchronous-and-asynchronous-receivers)
-15. [Common Technical Behaviors](#15-common-technical-behaviors)
-16. [Testing Signal Receivers](#16-testing-signal-receivers)
-17. [Best Practices](#17-best-practices)
-18. [Decision Guide](#18-decision-guide)
-19. [Final Summary](#19-final-summary)
-
----
-
 ## 1. What Is a Django Signal?
 
 A signal is an implementation of the **publish–subscribe** or **observer** pattern.

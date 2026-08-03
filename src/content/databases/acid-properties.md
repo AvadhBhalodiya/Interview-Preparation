@@ -12,24 +12,6 @@ order: 4
 
 ---
 
-## Table of Contents
-
-1. [ACID at a Glance](#1-acid-at-a-glance)
-2. [Transactions: The Foundation of ACID](#2-transactions-the-foundation-of-acid)
-3. [Atomicity](#3-atomicity)
-4. [Consistency](#4-consistency)
-5. [Isolation](#5-isolation)
-6. [Durability](#6-durability)
-7. [Complete ACID Example: Money Transfer](#7-complete-acid-example-money-transfer)
-8. [How Databases Implement ACID](#8-how-databases-implement-acid)
-9. [ACID in Real Application Architecture](#9-acid-in-real-application-architecture)
-10. [Performance and Reliability Trade-offs](#10-performance-and-reliability-trade-offs)
-11. [Practical Development Guidelines](#11-practical-development-guidelines)
-12. [Quick Revision](#12-quick-revision)
-13. [Official References](#13-official-references)
-
----
-
 # 1. ACID at a Glance
 
 **ACID** is a set of four properties that make database transactions reliable:

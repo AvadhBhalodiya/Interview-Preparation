@@ -116,6 +116,10 @@ function CodeBlock({ lang, value }: { lang: string; value: string }) {
 
 export function Markdown({ body, section }: { body: string; section: string }) {
   const components: Components = {
+    // A note's main sections are h1 in most files, h2 in a few, and h4 in one,
+    // so every level down to h4 needs an id — otherwise the table of contents
+    // has nothing to scroll a main-section row to.
+    h1: ({ children }) => <h1 id={slugify(nodeText(children))}>{children}</h1>,
     h2: ({ children }) => {
       const text = nodeText(children)
       const theme = SECTION_THEME[text.trim().toLowerCase()]
@@ -128,6 +132,7 @@ export function Markdown({ body, section }: { body: string; section: string }) {
       )
     },
     h3: ({ children }) => <h3 id={slugify(nodeText(children))}>{children}</h3>,
+    h4: ({ children }) => <h4 id={slugify(nodeText(children))}>{children}</h4>,
     // Strip react-markdown's default <pre> so CodeBlock can supply its own.
     pre: ({ children }) => <>{children}</>,
     code: ({ className, children }) => {
@@ -169,6 +174,21 @@ export function Markdown({ body, section }: { body: string; section: string }) {
         // Unresolvable target: show the text, but don't offer a link that would
         // land on the 404 page. `pnpm check:links` reports these.
         return to ? <Link to={to}>{children}</Link> : <>{children}</>
+      }
+      // In-page anchor. The app runs on HashRouter, so letting the browser
+      // follow it would overwrite the route hash and land on the 404 page.
+      if (href.startsWith('#')) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.preventDefault()
+              document.getElementById(href.slice(1))?.scrollIntoView({ behavior: 'smooth' })
+            }}
+          >
+            {children}
+          </a>
+        )
       }
       return <a href={href}>{children}</a>
     },

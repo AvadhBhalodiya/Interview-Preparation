@@ -10,37 +10,6 @@ order: 1
 
 ---
 
-## Index
-
-1. [Why Serializers Exist](#1-why-serializers-exist)
-2. [The Serializer Flow](#2-the-serializer-flow)
-3. [Serializer vs ModelSerializer](#3-serializer-vs-modelserializer)
-4. [A Practical ModelSerializer Example](#4-a-practical-modelserializer-example)
-5. [Serializer Fields](#5-serializer-fields)
-6. [Field Options](#6-field-options)
-7. [Serialization and Deserialization](#7-serialization-and-deserialization)
-8. [Validation](#8-validation)
-9. [Creating and Updating Objects](#9-creating-and-updating-objects)
-10. [Read-Only and Write-Only Fields](#10-read-only-and-write-only-fields)
-11. [Working with Relationships](#11-working-with-relationships)
-12. [Nested Serializers](#12-nested-serializers)
-13. [SerializerMethodField](#13-serializermethodfield)
-14. [Using `source`](#14-using-source)
-15. [Passing Context](#15-passing-context)
-16. [Partial Updates](#16-partial-updates)
-17. [Handling Multiple Objects with `many=True`](#17-handling-multiple-objects-with-manytrue)
-18. [ListSerializer and Bulk Operations](#18-listserializer-and-bulk-operations)
-19. [Custom Serializer Fields](#19-custom-serializer-fields)
-20. [Custom Input and Output Representations](#20-custom-input-and-output-representations)
-21. [Serializer Performance](#21-serializer-performance)
-22. [Using Serializers in Views](#22-using-serializers-in-views)
-23. [Testing Serializers](#23-testing-serializers)
-24. [Best Practices](#24-best-practices)
-25. [Interview-Focused Summary](#25-interview-focused-summary)
-26. [Official References](#26-official-references)
-
----
-
 # 1. Why Serializers Exist
 
 Django models contain Python objects and database-related types:

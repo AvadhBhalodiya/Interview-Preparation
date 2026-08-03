@@ -22,37 +22,6 @@ It is:
 
 ---
 
-## Index
-
-1. [The Big Picture](#1-the-big-picture)
-2. [What Is an SQL Database?](#2-what-is-an-sql-database)
-   - [Relational data model](#21-relational-data-model)
-   - [Main strengths](#22-main-strengths)
-   - [Common SQL databases](#23-common-sql-databases)
-3. [What Is a NoSQL Database?](#3-what-is-a-nosql-database)
-   - [Document databases](#31-document-databases)
-   - [Key-value databases](#32-key-value-databases)
-   - [Wide-column databases](#33-wide-column-databases)
-   - [Graph databases](#34-graph-databases)
-4. [SQL vs NoSQL: Core Differences](#4-sql-vs-nosql-core-differences)
-5. [When SQL Is Usually the Better Choice](#5-when-sql-is-usually-the-better-choice)
-6. [When NoSQL Is Usually the Better Choice](#6-when-nosql-is-usually-the-better-choice)
-7. [Decision Flow](#7-decision-flow)
-8. [Practical Use Cases](#8-practical-use-cases)
-9. [Data Modeling Example](#9-data-modeling-example)
-   - [SQL model](#91-sql-model)
-   - [Document model](#92-document-model)
-10. [Transactions and Consistency](#10-transactions-and-consistency)
-11. [Scaling SQL and NoSQL](#11-scaling-sql-and-nosql)
-12. [Query Patterns and Indexing](#12-query-patterns-and-indexing)
-13. [Using SQL and NoSQL Together](#13-using-sql-and-nosql-together)
-14. [Practical Selection Checklist](#14-practical-selection-checklist)
-15. [Best Practices](#15-best-practices)
-16. [Key Takeaways](#16-key-takeaways)
-17. [References](#17-references)
-
----
-
 # 1. The Big Picture
 
 An **SQL database** stores data mainly in related tables. Relationships are represented using primary keys, foreign keys, and joins.

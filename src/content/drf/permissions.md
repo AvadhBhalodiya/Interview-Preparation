@@ -17,27 +17,6 @@ A secure API commonly combines permissions with queryset filtering and serialize
 
 ---
 
-## Index
-
-1. [Authentication vs Authorization](#1-authentication-vs-authorization)
-2. [How DRF Permission Checks Work](#2-how-drf-permission-checks-work)
-3. [Configuring Permissions](#3-configuring-permissions)
-4. [Built-in Permission Classes](#4-built-in-permission-classes)
-5. [Custom View-Level Permissions](#5-custom-view-level-permissions)
-6. [Object-Level Permissions](#6-object-level-permissions)
-7. [Important Object-Level Limitations](#7-important-object-level-limitations)
-8. [Production Ownership Pattern](#8-production-ownership-pattern)
-9. [Permissions Based on ViewSet Actions](#9-permissions-based-on-viewset-actions)
-10. [Django Model and Object Permissions](#10-django-model-and-object-permissions)
-11. [Combining Permission Classes](#11-combining-permission-classes)
-12. [Permissions vs Querysets vs Serializers](#12-permissions-vs-querysets-vs-serializers)
-13. [Permission Error Responses](#13-permission-error-responses)
-14. [Testing Permissions](#14-testing-permissions)
-15. [Best Practices](#15-best-practices)
-16. [Practical Summary](#16-practical-summary)
-
----
-
 # 1. Authentication vs Authorization
 
 Authentication and permissions solve different problems.

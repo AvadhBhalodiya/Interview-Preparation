@@ -10,30 +10,6 @@ order: 9
 
 ---
 
-## Index
-
-1. [The Core Idea](#1-the-core-idea)
-2. [Function-Based Views](#2-function-based-views)
-3. [Class-Based Views](#3-class-based-views)
-4. [Request Flow: FBV vs CBV](#4-request-flow-fbv-vs-cbv)
-5. [Building the Same Feature Both Ways](#5-building-the-same-feature-both-ways)
-6. [Handling HTTP Methods](#6-handling-http-methods)
-7. [Built-in Generic Class-Based Views](#7-built-in-generic-class-based-views)
-8. [Authentication and Permissions](#8-authentication-and-permissions)
-9. [Reusing View Logic](#9-reusing-view-logic)
-10. [Dynamic QuerySets and Context](#10-dynamic-querysets-and-context)
-11. [Forms and CRUD Operations](#11-forms-and-crud-operations)
-12. [Async Views](#12-async-views)
-13. [Testing FBVs and CBVs](#13-testing-fbvs-and-cbvs)
-14. [Performance Considerations](#14-performance-considerations)
-15. [How to Choose](#15-how-to-choose)
-16. [Refactoring Between FBVs and CBVs](#16-refactoring-between-fbvs-and-cbvs)
-17. [Best Practices](#17-best-practices)
-18. [Final Mental Model](#18-final-mental-model)
-19. [Official References](#19-official-references)
-
----
-
 # 1. The Core Idea
 
 A Django view is a callable that:

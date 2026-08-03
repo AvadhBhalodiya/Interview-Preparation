@@ -15,41 +15,6 @@ order: 6
 
 ---
 
-## Index
-
-1. [Example Models](#1-example-models)
-2. [Mental Model](#2-mental-model)
-3. [Q Objects](#3-q-objects)
-   - [Why Q Objects Are Needed](#31-why-q-objects-are-needed)
-   - [OR, AND and NOT Conditions](#32-or-and-and-not-conditions)
-   - [Dynamic Query Construction](#33-dynamic-query-construction)
-   - [Q Objects Across Relationships](#34-q-objects-across-relationships)
-4. [F Expressions](#4-f-expressions)
-   - [Database-Side Updates](#41-database-side-updates)
-   - [Comparing Two Fields](#42-comparing-two-fields)
-   - [Arithmetic and Calculated Values](#43-arithmetic-and-calculated-values)
-   - [Handling Expression Types](#44-handling-expression-types)
-   - [Slicing String Fields](#45-slicing-string-fields)
-5. [annotate()](#5-annotate)
-   - [Per-Object Calculations](#51-per-object-calculations)
-   - [Filtering and Ordering by Annotations](#52-filtering-and-ordering-by-annotations)
-   - [Grouping with values()](#53-grouping-with-values)
-   - [Conditional Annotations](#54-conditional-annotations)
-6. [aggregate()](#6-aggregate)
-   - [Whole-QuerySet Summaries](#61-whole-queryset-summaries)
-   - [Multiple Aggregates](#62-multiple-aggregates)
-   - [Aggregating an Annotation](#63-aggregating-an-annotation)
-7. [annotate() vs aggregate()](#7-annotate-vs-aggregate)
-8. [Combining Q, F, annotate() and aggregate()](#8-combining-q-f-annotate-and-aggregate)
-9. [SQL Mental Model](#9-sql-mental-model)
-10. [Important Query-Order Behaviour](#10-important-query-order-behaviour)
-11. [Practical Development Use Cases](#11-practical-development-use-cases)
-12. [Performance and Best Practices](#12-performance-and-best-practices)
-13. [Quick Reference](#13-quick-reference)
-14. [Final Understanding](#14-final-understanding)
-
----
-
 # 1. Example Models
 
 The examples in this guide use a small e-commerce structure.

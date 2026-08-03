@@ -13,31 +13,6 @@ order: 8
 
 ---
 
-## Index
-
-1. [Why Migrations Exist](#1-why-migrations-exist)
-2. [The Core Mental Model](#2-the-core-mental-model)
-3. [Migration Workflow](#3-migration-workflow)
-4. [Anatomy of a Migration File](#4-anatomy-of-a-migration-file)
-5. [How Django Detects Changes](#5-how-django-detects-changes)
-6. [Migration Graph and Dependencies](#6-migration-graph-and-dependencies)
-7. [Schema Migrations](#7-schema-migrations)
-8. [Data Migrations](#8-data-migrations)
-9. [Migration State vs Database State](#9-migration-state-vs-database-state)
-10. [Transactions and Atomic Migrations](#10-transactions-and-atomic-migrations)
-11. [Reversing and Rolling Back Migrations](#11-reversing-and-rolling-back-migrations)
-12. [Common Migration Commands](#12-common-migration-commands)
-13. [Common Issues and Their Solutions](#13-common-issues-and-their-solutions)
-14. [Safe Production Migration Patterns](#14-safe-production-migration-patterns)
-15. [Migration Conflicts in Teams](#15-migration-conflicts-in-teams)
-16. [Squashing Migrations](#16-squashing-migrations)
-17. [Multiple Databases](#17-multiple-databases)
-18. [Best Practices](#18-best-practices)
-19. [Practical End-to-End Example](#19-practical-end-to-end-example)
-20. [Final Mental Model](#20-final-mental-model)
-
----
-
 # 1. Why Migrations Exist
 
 A Django model describes how application data should look:
