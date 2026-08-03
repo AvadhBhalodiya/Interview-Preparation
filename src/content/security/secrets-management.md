@@ -4,91 +4,1505 @@ group: "Access & Data Protection"
 order: 6
 ---
 
-# Secrets Management (Env Vars, Secret Managers)
+# Secrets Management: Environment Variables and Secret Managers
 
-> Secrets - DB passwords, API keys, signing keys - never belong in code or git. Keep them behind a secret manager that encrypts, IAM-scopes, rotates, and audits, and treat plain env vars as the fallback baseline, not the destination.
+> **Category:** Security  
+> **Level:** Intermediate developer  
+> **Last reviewed:** August 2026
 
-## What it is
-- Secrets management is the whole lifecycle of a credential: generating it, storing it, handing it to exactly the service that needs it, rotating it, and auditing every access. Get any one of those wrong and the rest barely matters.
-- A **secret** is anything that grants access: DB passwords, API keys, OAuth client secrets, TLS private keys, JWT signing keys. Non-sensitive config (log levels, feature flags, timeouts) is **not** a secret - don't bury the real ones in that noise, and don't over-protect the boring ones.
+Secrets such as database passwords, API keys, signing keys, access tokens, and private certificates are required by most applications. The security problem is not simply **where to save a secret**. A complete solution must control the secret throughout its lifecycle:
 
-> [!KEY] A secret in git is already **burned** - rotate it, don't just delete it. And a secret you never **rotate** is just a long-lived liability. Treat storage, least-privilege scope, and rotation as one system, not three separate checkboxes.
+- creation
+- storage
+- distribution
+- usage
+- rotation
+- auditing
+- revocation
+- deletion
 
-Where a secret can live, worst to best:
+This guide explains how environment variables and dedicated secret managers fit into that lifecycle, when each approach is appropriate, and how secrets should be handled in real development and production systems.
 
-| Placement | Verdict | Why |
-| --- | --- | --- |
-| Hardcoded in code, committed to git | **Never** | Leaked the instant it lands in history - on every clone, fork, and CI cache. Rotate now, it is burned |
-| Plain env vars | **Baseline only** | 12-factor config, fine for local dev, but **any process can read them** and they surface in logs, `/proc`, and crash dumps |
-| Secret manager (Vault / AWS SM) | **Production default** | **Encrypted, IAM-scoped, rotated, audited**, and injected at runtime |
+---
 
-## Key points
-- **Nothing sensitive in git, ever.** Add `.env` to `.gitignore` before the first commit, then run a scanner (gitleaks, trufflehog, or Yelp's detect-secrets) as **both** a pre-commit hook and a CI gate. Pre-commit catches honest mistakes. CI catches the ones that slipped through with `git commit --no-verify`. A hardcoded key maps to CWE-321 under **A04:2025 Cryptographic Failures**.
-- **A committed secret is a burned secret.** Git keeps it in history and on every clone, fork, and CI cache, so deleting the line changes nothing. Rotate the credential first - that is the actual fix - and clean the history afterward.
-- **Env vars are the baseline, not the goal.** 12-factor says put config in the environment, and for local dev that is fine. But OWASP is blunt: don't use env vars for secrets "unless the other methods are not possible," because every process can read them and they surface in logs, crash dumps, and `/proc/<pid>/environ`. In production, reach for a secret manager.
-- **What a secret manager buys you:** encryption at rest, per-service IAM access, automated rotation, and an audit log of who read which secret and when. The options below trade cost for how much of that they automate.
-- **Least privilege, one set of values per environment.** A service reads only the secrets it owns, and dev/staging/prod use different credentials so a leaked staging password is worthless against prod.
-- **Short-lived beats static.** A dynamic Vault-issued database credential or an assumed IAM role that expires in minutes shrinks the blast radius far more than a static key you rotate once a quarter and forget about. OWASP's line is "use dynamic secrets where possible."
-- **Don't log them, don't send them in the clear.** TLS is the floor for anything crossing a wire (TLS 1.3 per RFC 8446, TLS 1.2 as the minimum). Mask secret values in CI output and keep them out of error trackers and stack traces.
+## Index
 
-> [!TIP] One JSON blob per service (`prod/app/db`) beats scattering 20 individual keys: one IAM policy, one rotation job, one audit line, and the app parses it once at boot.
+1. [What Is a Secret?](#1-what-is-a-secret)
+2. [Configuration vs Secrets](#2-configuration-vs-secrets)
+3. [Why Hardcoded Secrets Are Dangerous](#3-why-hardcoded-secrets-are-dangerous)
+4. [Environment Variables](#4-environment-variables)
+5. [Dedicated Secret Managers](#5-dedicated-secret-managers)
+6. [Environment Variables vs Secret Managers](#6-environment-variables-vs-secret-managers)
+7. [How Applications Receive Secrets](#7-how-applications-receive-secrets)
+8. [Static vs Dynamic Secrets](#8-static-vs-dynamic-secrets)
+9. [Secret Rotation](#9-secret-rotation)
+10. [Identity and Access Control](#10-identity-and-access-control)
+11. [Encryption and Key Management](#11-encryption-and-key-management)
+12. [Secrets in Local Development](#12-secrets-in-local-development)
+13. [Secrets in Docker](#13-secrets-in-docker)
+14. [Secrets in Kubernetes](#14-secrets-in-kubernetes)
+15. [Secrets in CI/CD Pipelines](#15-secrets-in-cicd-pipelines)
+16. [Application Implementation Patterns](#16-application-implementation-patterns)
+17. [Logging, Monitoring, and Auditing](#17-logging-monitoring-and-auditing)
+18. [Secret Leakage Response](#18-secret-leakage-response)
+19. [Practical Architecture](#19-practical-architecture)
+20. [Best-Practice Checklist](#20-best-practice-checklist)
+21. [Key Takeaways](#21-key-takeaways)
 
-The options trade cost and convenience for control and rotation:
+---
 
-| Option | Encryption | Rotation | Best for |
-| --- | --- | --- | --- |
-| **Env vars** | **None** - plaintext in the process | Manual redeploy | Local dev, non-secret config |
-| **AWS Parameter Store** (`SecureString`) | KMS at rest | Manual or a custom Lambda | **Cheap** config plus light secrets |
-| **AWS Secrets Manager** | KMS at rest | **Built-in automatic** | Real production secrets, RDS credentials |
-| **HashiCorp Vault** | Per-engine, at rest | Built-in plus **dynamic short-lived** | Multi-cloud, dynamic DB credentials |
-| **AWS KMS** | It is the key layer others use | Automatic (yearly) | **Encrypting** data / other secrets, not storing them |
+# 1. What Is a Secret?
 
-## Example
-```bash
-# local dev only - .env must be gitignored BEFORE the first commit
-echo ".env" >> .gitignore
-echo "DATABASE_URL=postgres://app:localpass@localhost:5432/app" >> .env
+A **secret** is sensitive information that allows a person, application, or machine to prove identity or gain privileged access.
+
+Common examples include:
+
+| Secret type | Example |
+|---|---|
+| Database credential | PostgreSQL username and password |
+| API key | Payment gateway or map service key |
+| Application signing key | Django `SECRET_KEY` or JWT signing key |
+| OAuth credential | Client secret or refresh token |
+| Cloud credential | Access key and secret access key |
+| Private key | SSH, TLS, or asymmetric signing key |
+| Encryption key | Key used to encrypt application data |
+| Webhook secret | Value used to verify webhook signatures |
+| Service token | Token used for service-to-service communication |
+
+A value is not automatically a secret just because it is stored in an environment variable.
+
+For example:
+
+```env
+APP_ENV=production
+LOG_LEVEL=INFO
+API_BASE_URL=https://api.example.com
 ```
+
+These values are configuration, but they are normally not confidential.
+
+The following values are secrets:
+
+```env
+DATABASE_PASSWORD=super-sensitive-value
+STRIPE_SECRET_KEY=sk_live_xxxxxxxxx
+JWT_PRIVATE_KEY=...
+```
+
+---
+
+# 2. Configuration vs Secrets
+
+Configuration and secrets often enter an application through similar mechanisms, but they have different security requirements.
+
+## 2.1 Configuration
+
+Configuration changes application behavior but does not normally grant access.
+
+Examples:
+
+- environment name
+- port number
+- feature flag
+- log level
+- service URL
+- timeout
+- page size
+- region name
+
+## 2.2 Secrets
+
+Secrets grant access, prove identity, or protect sensitive data.
+
+Examples:
+
+- passwords
+- API keys
+- private keys
+- access tokens
+- encryption keys
+- signing keys
+
+## 2.3 Why the Difference Matters
+
+Configuration needs:
+
+- easy deployment-specific changes
+- validation
+- sensible defaults
+- versioned application behavior
+
+Secrets additionally need:
+
+- encryption
+- strict access control
+- auditing
+- rotation
+- revocation
+- protection from logs and diagnostics
+
+```mermaid
+flowchart LR
+    A[Application settings] --> B{Does exposure grant access<br/>or break security?}
+    B -- No --> C[Normal configuration]
+    B -- Yes --> D[Secret]
+    C --> E[Config file or environment variable]
+    D --> F[Secret manager or secure runtime injection]
+```
+
+---
+
+# 3. Why Hardcoded Secrets Are Dangerous
+
+A hardcoded secret is written directly into source code, a container image, a script, or a committed configuration file.
+
+```python
+# Never do this
+DATABASE_URL = "postgresql://admin:password123@db.example.com/app"
+```
+
+## 3.1 Main Risks
+
+### Repository history
+
+Deleting a secret from the latest commit does not remove it from earlier Git history.
+
+### Broad visibility
+
+Anyone who can clone or inspect the repository may obtain the secret.
+
+### Accidental public exposure
+
+A private repository may later become public, be forked, mirrored, backed up, or copied into another system.
+
+### Difficult rotation
+
+The secret is tightly coupled to an application release. Changing it may require code changes and redeployment.
+
+### Container image leakage
+
+Secrets added during a Docker build may remain in image layers, build logs, or image metadata.
+
+### Reuse across environments
+
+Developers may accidentally use the same credentials in development, staging, and production, increasing the blast radius.
+
+## 3.2 The Repository Safety Test
+
+A well-designed application should be safe if its source repository becomes visible.
+
+The code may reveal:
+
+- secret names
+- secret locations
+- retrieval logic
+- configuration structure
+
+It must not reveal:
+
+- secret values
+- long-lived credentials
+- private keys
+- production access tokens
+
+---
+
+# 4. Environment Variables
+
+Environment variables are key-value pairs provided to a process by the operating system, container runtime, deployment platform, or orchestrator.
+
+```bash
+export DATABASE_HOST=db.internal
+export DATABASE_PASSWORD='sensitive-value'
+python app.py
+```
+
+The application reads them at runtime:
+
 ```python
 import os
 
-# avoid: hardcoded value - the moment this lands in git, the secret is burned
-# DATABASE_URL = "postgres://app:prodpass@db.internal:5432/app"
-
-# baseline: read from the environment; KeyError if missing, which is what you want
-DATABASE_URL = os.environ["DATABASE_URL"]   # no default - fail loud, don't ship a fallback secret
+database_password = os.environ["DATABASE_PASSWORD"]
 ```
-In production that same variable is filled from the manager, not the shell - IAM decides whether the fetch is allowed, not a password sitting in the environment:
+
+## 4.1 Why Environment Variables Are Popular
+
+They are:
+
+- language-independent
+- easy to use
+- supported by most deployment platforms
+- easy to change without modifying source code
+- suitable for separating deployment configuration from code
+
+This is why the Twelve-Factor App methodology recommends storing deployment configuration in the environment.
+
+## 4.2 Important Limitation
+
+An environment variable is primarily a **delivery mechanism**, not a complete secret-management system.
+
+By itself, it does not provide:
+
+- encrypted central storage
+- automatic rotation
+- access auditing
+- version history
+- expiration
+- fine-grained authorization
+- controlled revocation
+
+Someone or something still has to store the value before it becomes an environment variable.
+
+```mermaid
+flowchart LR
+    A[Plaintext file] --> D[Environment variable]
+    B[CI/CD secret store] --> D
+    C[Cloud secret manager] --> D
+    D --> E[Application process]
+```
+
+The security of the environment variable therefore depends heavily on its source and the runtime environment.
+
+## 4.3 Risks of Environment Variables
+
+Environment variables may be exposed through:
+
+- debug endpoints
+- application error reports
+- process inspection
+- system dumps
+- `/proc` on some Linux configurations
+- container inspection commands
+- deployment manifests
+- CI/CD logs
+- support bundles
+- accidental logging of full configuration
+- child processes that inherit the environment
+
+Example of unsafe logging:
+
 ```python
-# prod: fetch from the secret manager at startup; IAM decides if this call is allowed
-import boto3, json
+import os
 
-def load_db_url(secret_id: str) -> str:
-    client = boto3.client("secretsmanager")
-    secret = json.loads(client.get_secret_value(SecretId=secret_id)["SecretString"])
-    return secret["url"]
-
-DATABASE_URL = load_db_url("prod/app/db")
+# Dangerous: may print passwords, tokens, and private keys
+print(dict(os.environ))
 ```
 
-## Interview Q&A
-- **"Where should secrets live?"** Not in code and not in git. Env vars are an acceptable baseline for local dev and simple deploys. For production, a secret manager that encrypts, scopes access with IAM, rotates, and audits. Worth saying out loud: OWASP actively discourages env vars for secrets when a manager is available.
-- **"I committed an API key - can't I just delete it and force-push?"** No. Git history lives on every clone, fork, and CI cache, and `git rm` only removes the file going forward. Anyone who already pulled has it, and bots scrape public pushes within minutes. Rotate the key immediately. Scrubbing history is cleanup, not the fix.
-- **"What does a secret manager give me that env vars don't?"** Encryption at rest, per-service IAM access, automatic rotation, and an audit trail. It also keeps the secret out of the process environment, where a sidecar or a crash dump can pick it up.
-- **"How do you prevent leaks in the first place?"** Three layers: scanners at pre-commit and in CI so secrets never land, least-privilege scoping so any leak is low-value, and short-lived credentials so a leak expires on its own.
+## 4.4 When Environment Variables Are Reasonable
 
-## Gotchas
-> [!WARN] Force-pushing does not un-leak anything. Assume a pushed secret was scraped within minutes and **rotate first, clean history second**. Under pressure people burn an hour rewriting history while the live key is still valid.
+They are commonly acceptable for:
 
-> [!WARN] Never dump `os.environ` into a log line "just for debugging." Env vars leak in unobvious places: stack traces, `docker inspect`, `/proc/<pid>/environ`, and every child process that inherits them.
+- local development with a non-committed `.env` file
+- short-lived test environments
+- low-risk internal applications
+- values injected by a trusted orchestrator
+- platforms where a managed secret is exposed to the process as an environment variable
 
-- SSM Parameter Store's `String` type isn't encrypted - use `SecureString`, and if you need real automatic rotation, that's Secrets Manager's job, not Parameter Store's.
-- A secret manager you never rotate is just an expensive env var. Turn on automatic rotation or it quietly decays back to long-lived static keys.
-- KMS stores keys, not arbitrary secrets. It encrypts and manages the keys that Secrets Manager and `SecureString` use under the hood - don't reach for it as a place to park a raw DB password.
+Even in these situations:
 
-## Revise next
-- [HTTPS / TLS](https-tls-basics.md) (TLS 1.3, RFC 8446)
-- [AWS core services](../devops/aws-core-services.md) (Secrets Manager, IAM roles)
-- [OWASP Top 10:2025](owasp-top-10.md) - A04 Cryptographic Failures, A02 Security Misconfiguration, A03 Software Supply Chain Failures
+- never commit the values
+- use separate secrets per environment
+- keep access narrow
+- avoid printing the environment
+- rotate leaked values immediately
 
-*Reviewed against the OWASP Secrets Management Cheat Sheet, OWASP Top 10:2025 (A04 Cryptographic Failures), and RFC 8446 (TLS 1.3), July 2026.*
+## 4.5 Required vs Optional Values
+
+Fail fast when a required secret is missing.
+
+```python
+import os
+
+def required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Required environment variable is missing: {name}")
+    return value
+
+database_password = required_env("DATABASE_PASSWORD")
+```
+
+Do not provide insecure production defaults:
+
+```python
+# Dangerous
+secret_key = os.getenv("SECRET_KEY", "default-secret-key")
+```
+
+A default value may silently reach production and make every deployment share a predictable secret.
+
+---
+
+# 5. Dedicated Secret Managers
+
+A secret manager is a system built specifically to store, control, retrieve, audit, version, and rotate secrets.
+
+Common solutions include:
+
+| Environment | Common solution |
+|---|---|
+| AWS | AWS Secrets Manager |
+| Google Cloud | Google Cloud Secret Manager |
+| Microsoft Azure | Azure Key Vault |
+| Cloud, hybrid, or on-premises | HashiCorp Vault |
+| Kubernetes | External Secrets Operator, Secrets Store CSI Driver, or platform integrations |
+| CI/CD | Platform-provided encrypted secret store |
+
+## 5.1 Core Capabilities
+
+A dedicated secret manager commonly provides:
+
+### Centralized encrypted storage
+
+Secrets are stored in one controlled system instead of being scattered across servers and files.
+
+### Identity-based access
+
+Applications authenticate using workload identity, IAM roles, managed identities, service accounts, or another machine identity.
+
+### Fine-grained authorization
+
+A service can be permitted to read only the secrets it needs.
+
+### Auditing
+
+The system records who or what requested a secret and when.
+
+### Versioning
+
+Multiple versions can support rotation, rollback, and controlled migration.
+
+### Rotation
+
+The system can help create, activate, and retire credentials.
+
+### Expiration and revocation
+
+Access can be time-bound, and credentials can be disabled after compromise.
+
+### High availability
+
+Managed services generally provide regional durability and availability features.
+
+## 5.2 Runtime Retrieval Flow
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant ID as Workload Identity
+    participant SM as Secret Manager
+    participant DB as Database
+
+    App->>ID: Obtain short-lived identity token
+    ID-->>App: Temporary credential
+    App->>SM: Request database secret
+    SM->>SM: Check IAM policy and audit request
+    SM-->>App: Return secret over TLS
+    App->>DB: Connect using retrieved credential
+```
+
+The application does not need a long-lived cloud access key if the platform gives it a workload identity.
+
+---
+
+# 6. Environment Variables vs Secret Managers
+
+They are not always direct alternatives.
+
+A secret manager controls the **secret lifecycle**. An environment variable may be one of several ways to deliver the secret to the application.
+
+| Area | Environment variable alone | Dedicated secret manager |
+|---|---|---|
+| Primary purpose | Process configuration delivery | Secret lifecycle management |
+| Central encrypted storage | No | Yes |
+| Fine-grained access control | Limited or external | Yes |
+| Access audit trail | Usually no | Yes |
+| Automatic rotation | No | Often supported |
+| Secret versions | No | Usually supported |
+| Expiration | No | Often supported |
+| Runtime API retrieval | Not applicable | Yes |
+| Local simplicity | High | Lower |
+| Production governance | Limited | Strong |
+| Cost and setup | Low | Higher |
+| Best fit | Local development and simple deployment | Production and sensitive systems |
+
+## 6.1 A Practical Maturity Model
+
+### Level 1: Hardcoded secret
+
+```python
+API_KEY = "abc123"
+```
+
+This is unacceptable.
+
+### Level 2: Non-committed `.env` file
+
+```env
+API_KEY=abc123
+```
+
+This is useful for local development but does not solve production governance.
+
+### Level 3: Deployment-platform secret
+
+A CI/CD or hosting platform stores an encrypted value and injects it during deployment.
+
+This is acceptable for many small and medium applications when access control and auditing are sufficient.
+
+### Level 4: Dedicated secret manager
+
+The application or runtime retrieves secrets using workload identity, with auditing and rotation.
+
+This is the preferred production model for sensitive or regulated systems.
+
+### Level 5: Dynamic, short-lived credentials
+
+The secret manager generates credentials on demand with a limited lifetime and automatically revokes them.
+
+This reduces the impact of credential leakage.
+
+---
+
+# 7. How Applications Receive Secrets
+
+There are four common delivery patterns.
+
+## 7.1 Environment Variable Injection
+
+The deployment platform reads a protected secret and sets it as an environment variable.
+
+```mermaid
+flowchart LR
+    SM[Secret Store] --> O[Deployment Platform]
+    O -->|Inject env variable| P[Application Process]
+```
+
+**Advantages**
+
+- simple application code
+- supported by almost every framework
+- easy to adopt
+
+**Limitations**
+
+- the secret remains in the process environment
+- rotation may require a process restart
+- accidental environment logging can expose it
+
+## 7.2 Mounted Secret File
+
+The platform mounts a secret as a file, often in an in-memory or restricted filesystem.
+
+```text
+/run/secrets/database_password
+```
+
+Application code:
+
+```python
+from pathlib import Path
+
+password = Path("/run/secrets/database_password").read_text().strip()
+```
+
+**Advantages**
+
+- not included in the process environment
+- works well for certificates and private keys
+- some platforms update mounted files after rotation
+
+**Limitations**
+
+- file permissions must be correct
+- the application must reload the value
+- copying the file into another location increases exposure
+
+## 7.3 Direct API Retrieval
+
+The application calls the secret manager when it starts or when the value is needed.
+
+```python
+def load_database_secret(secret_client) -> dict:
+    response = secret_client.get_secret_value(SecretId="production/database")
+    return parse_secret(response["SecretString"])
+```
+
+**Advantages**
+
+- strong control and auditing
+- can retrieve current versions
+- supports runtime refresh
+
+**Limitations**
+
+- application depends on the secret manager
+- requires retry, caching, and failure handling
+- excessive calls may add latency and cost
+
+## 7.4 Sidecar or Agent Injection
+
+A local agent authenticates to the secret manager and writes secrets to a shared memory-backed volume.
+
+```mermaid
+flowchart LR
+    SM[Secret Manager] --> A[Sidecar or Agent]
+    A --> V[Restricted Shared Volume]
+    V --> APP[Application]
+```
+
+**Advantages**
+
+- application does not need vendor-specific SDK code
+- the agent can renew leases and refresh secrets
+- useful in Kubernetes and service platforms
+
+**Limitations**
+
+- more infrastructure complexity
+- agent permissions and shared volume security must be managed carefully
+
+---
+
+# 8. Static vs Dynamic Secrets
+
+## 8.1 Static Secret
+
+A static secret exists until someone rotates or deletes it.
+
+Examples:
+
+- a fixed third-party API key
+- a database password created manually
+- a webhook signing secret
+
+```text
+Application -> reads fixed credential -> database
+```
+
+The risk is that a leaked static secret may remain usable for weeks or months.
+
+## 8.2 Dynamic Secret
+
+A dynamic secret is generated when requested and has a limited lifetime.
+
+Examples:
+
+- temporary database username and password
+- short-lived cloud credential
+- time-limited certificate
+- temporary access token
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Vault
+    participant DB
+
+    App->>Vault: Request database access
+    Vault->>DB: Create temporary DB user
+    DB-->>Vault: Temporary credential
+    Vault-->>App: Credential + lease
+    Note over App: Use credential for limited time
+    Vault->>DB: Revoke user when lease expires
+```
+
+## 8.3 Why Dynamic Secrets Are Stronger
+
+Dynamic secrets provide:
+
+- shorter exposure windows
+- easier revocation
+- per-application credentials
+- clearer audit trails
+- reduced secret sharing
+- less manual rotation
+
+They require more operational maturity, but they are valuable for high-risk production systems.
+
+---
+
+# 9. Secret Rotation
+
+Rotation replaces an existing secret with a new one and safely removes the old value.
+
+A secure rotation process must update both sides:
+
+1. the target system that validates the credential
+2. the applications that use the credential
+
+Changing only the value in the secret manager is not enough.
+
+## 9.1 Basic Rotation Flow
+
+```mermaid
+flowchart LR
+    A[Create new secret version] --> B[Update target service]
+    B --> C[Allow application to use new version]
+    C --> D[Verify traffic and health]
+    D --> E[Disable old version]
+    E --> F[Delete old version after safety window]
+```
+
+## 9.2 Zero-Downtime Rotation
+
+When supported, use overlapping credentials:
+
+1. create a second valid credential
+2. publish it as the new secret version
+3. refresh or restart applications
+4. verify successful authentication
+5. revoke the old credential
+
+This is safer than invalidating the old credential first.
+
+## 9.3 Application Considerations
+
+A rotating application should:
+
+- avoid loading a secret only once for its entire lifetime
+- cache values for a controlled period
+- refresh on authentication failure when appropriate
+- support both current and previous versions during migration
+- avoid infinite retry loops
+- expose health signals without exposing secret values
+
+## 9.4 Rotation Frequency
+
+There is no universal interval for every secret. Frequency depends on:
+
+- secret sensitivity
+- blast radius
+- ability to rotate automatically
+- regulatory requirements
+- provider limitations
+- whether the credential is short-lived
+- evidence of compromise
+
+Automatic short-lived credentials are generally safer than manually rotating long-lived passwords on a calendar.
+
+---
+
+# 10. Identity and Access Control
+
+The application needs permission to read a secret. That permission should come from its identity, not from another long-lived secret whenever possible.
+
+## 10.1 Preferred Identity Types
+
+Use platform-native workload identity:
+
+- AWS IAM role
+- Google Cloud service account or workload identity
+- Azure managed identity
+- Kubernetes service account with workload identity federation
+- Vault authentication using Kubernetes, cloud IAM, OIDC, or certificates
+
+Avoid embedding cloud access keys inside the application.
+
+## 10.2 Least Privilege
+
+A payment service may need:
+
+```text
+read: production/payment-provider
+read: production/payment-database
+```
+
+It should not receive:
+
+```text
+read: production/*
+admin: secret-manager
+```
+
+## 10.3 Separate Environments
+
+Development, staging, and production should use:
+
+- different secret values
+- different access policies
+- preferably different accounts, projects, subscriptions, or vault boundaries
+- separate encryption and audit boundaries where practical
+
+A development workload must not be able to read production secrets.
+
+## 10.4 Separate Secrets by Consumer
+
+Avoid sharing one database password across many services.
+
+Prefer:
+
+```text
+orders-service-db-user
+billing-service-db-user
+reporting-service-readonly-user
+```
+
+This improves:
+
+- revocation
+- auditing
+- ownership
+- least privilege
+- incident containment
+
+---
+
+# 11. Encryption and Key Management
+
+Secrets should be encrypted:
+
+- **at rest** while stored
+- **in transit** while being retrieved
+
+Secret managers usually integrate with a Key Management Service (KMS) or hardware-backed key infrastructure.
+
+## 11.1 KMS vs Secret Manager
+
+These services solve related but different problems.
+
+| Service | Main responsibility |
+|---|---|
+| KMS | Protect and perform operations with cryptographic keys |
+| Secret manager | Store and manage secret values and their lifecycle |
+
+A secret manager may use a KMS key to encrypt stored secrets.
+
+```mermaid
+flowchart TD
+    K[KMS master key] -->|Protects| D[Data encryption key]
+    D -->|Encrypts| S[Secret value]
+    I[Application identity] --> SM[Secret Manager]
+    SM -->|Authorization check| S
+```
+
+## 11.2 Envelope Encryption
+
+A common design is:
+
+1. encrypt the secret using a data encryption key
+2. encrypt that data key using a master key in KMS
+3. store the encrypted secret and encrypted data key
+4. decrypt only after an authorized request
+
+Application developers usually use the managed service rather than implementing this themselves.
+
+## 11.3 Do Not Invent Custom Encryption
+
+Encrypting a `.env` file with a key stored beside it does not meaningfully protect the secret.
+
+```text
+config.env.enc
+config-decryption-key.txt
+```
+
+An attacker who gets both files gets the secret.
+
+Key storage, identity, authorization, auditing, and rotation must be designed together.
+
+---
+
+# 12. Secrets in Local Development
+
+Local development should be convenient without encouraging unsafe production practices.
+
+## 12.1 Recommended Local Pattern
+
+Use a non-committed `.env` file containing development-only credentials.
+
+```env
+DATABASE_URL=postgresql://app_dev:local-password@localhost:5432/app
+DJANGO_SECRET_KEY=local-only-random-value
+```
+
+Add it to `.gitignore`:
+
+```gitignore
+.env
+.env.*
+!.env.example
+```
+
+Commit a template without values:
+
+```env
+# .env.example
+DATABASE_URL=
+DJANGO_SECRET_KEY=
+PAYMENT_API_KEY=
+```
+
+## 12.2 Safe Rules
+
+- never place production secrets in a developer `.env`
+- use fake or sandbox third-party credentials
+- use separate local database accounts
+- restrict file permissions where supported
+- do not share `.env` files through chat or email
+- do not include them in bug reports or support bundles
+- scan staged changes before commits
+
+## 12.3 Team Distribution
+
+For teams, distribute development secrets through:
+
+- an approved password manager
+- a development vault
+- a cloud secret manager with developer access
+- a secure onboarding process
+
+Do not use a shared document or repository file as the source of truth.
+
+---
+
+# 13. Secrets in Docker
+
+## 13.1 Do Not Bake Secrets into Images
+
+Unsafe Dockerfile:
+
+```dockerfile
+FROM python:3.13
+
+ARG DATABASE_PASSWORD
+ENV DATABASE_PASSWORD=$DATABASE_PASSWORD
+```
+
+Build arguments and environment values may leak through:
+
+- image history
+- build cache
+- build logs
+- registry access
+- exported image layers
+
+The image should be deployable to any environment without containing environment-specific secrets.
+
+## 13.2 Runtime Environment Injection
+
+```yaml
+services:
+  api:
+    image: example/api:1.0
+    environment:
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+```
+
+This is simple, but the secret may be visible through runtime inspection depending on permissions and platform behavior.
+
+## 13.3 Docker Compose Secret File
+
+```yaml
+services:
+  api:
+    image: example/api:1.0
+    secrets:
+      - database_password
+
+secrets:
+  database_password:
+    file: ./secrets/database_password.txt
+```
+
+The application reads:
+
+```text
+/run/secrets/database_password
+```
+
+The source file must still be protected and must not be committed.
+
+## 13.4 `_FILE` Convention
+
+Some container images support a `_FILE` environment variable:
+
+```yaml
+services:
+  db:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+```
+
+This tells the application to read the value from a mounted file instead of placing the secret directly in an environment variable.
+
+---
+
+# 14. Secrets in Kubernetes
+
+A Kubernetes `Secret` object is intended for sensitive data, but it is not automatically secure merely because its kind is named `Secret`.
+
+Base64 is encoding, not encryption.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: database-secret
+type: Opaque
+data:
+  password: cGFzc3dvcmQ=
+```
+
+Anyone who can read the value can decode it:
+
+```bash
+echo 'cGFzc3dvcmQ=' | base64 --decode
+```
+
+## 14.1 Kubernetes Security Controls
+
+Use:
+
+- encryption at rest for Secret data in `etcd`
+- strict RBAC
+- namespace isolation
+- restricted `list` and `watch` permissions
+- workload identity
+- audit logging
+- secret-store integrations
+- read-only mounted volumes
+- network policies where relevant
+
+Be careful: permission to list Secrets effectively permits reading their values.
+
+## 14.2 Environment Variable Injection
+
+```yaml
+env:
+  - name: DATABASE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: database-secret
+        key: password
+```
+
+This is simple, but the application normally needs a restart to receive an updated environment value.
+
+## 14.3 Volume Mount
+
+```yaml
+volumes:
+  - name: database-secret-volume
+    secret:
+      secretName: database-secret
+
+containers:
+  - name: api
+    volumeMounts:
+      - name: database-secret-volume
+        mountPath: /var/run/app-secrets
+        readOnly: true
+```
+
+A file-based approach may allow secret updates to appear in the mounted volume, but the application must reload the value safely.
+
+## 14.4 External Secret Store Pattern
+
+```mermaid
+flowchart LR
+    CSM[Cloud Secret Manager or Vault] --> CSI[CSI Driver or External Secret Controller]
+    CSI --> KS[Kubernetes Secret or Mounted Volume]
+    KS --> POD[Application Pod]
+```
+
+This keeps the external secret manager as the authoritative source and reduces manual copying.
+
+---
+
+# 15. Secrets in CI/CD Pipelines
+
+CI/CD systems often have broad access to source code, cloud deployments, registries, and production environments. Pipeline secrets are therefore high-value targets.
+
+## 15.1 Common Risks
+
+- printing secrets in logs
+- using untrusted third-party actions or plugins
+- exposing secrets to pull requests from forks
+- storing cloud access keys as long-lived repository secrets
+- passing secrets as command-line arguments
+- uploading secret-containing files as artifacts
+- sharing one credential across every repository
+- running unreviewed code with production secrets
+
+## 15.2 Prefer Workload Identity Federation
+
+Instead of storing a permanent cloud access key in the CI/CD platform:
+
+```text
+CI job -> short-lived OIDC token -> cloud IAM -> temporary deployment access
+```
+
+This removes a long-lived cloud credential from the pipeline secret store.
+
+## 15.3 Avoid Command-Line Exposure
+
+Potentially unsafe:
+
+```bash
+deploy-tool --password "$PRODUCTION_PASSWORD"
+```
+
+Command arguments may appear in process listings or logs.
+
+Prefer:
+
+- standard input when supported
+- a temporary restricted file
+- a provider SDK
+- workload identity
+- platform-native secret injection
+
+## 15.4 Logging Rules
+
+Pipeline code should:
+
+- mask known secret values
+- disable shell tracing around sensitive commands
+- avoid `env`, `printenv`, and full configuration dumps
+- delete temporary secret files
+- prevent secret-containing artifacts from being uploaded
+- use minimal token permissions
+
+Masking is a backup control, not a guarantee. Transformed, encoded, split, or derived values may bypass masking.
+
+---
+
+# 16. Application Implementation Patterns
+
+## 16.1 Central Configuration Object
+
+Read and validate configuration in one place.
+
+```python
+from dataclasses import dataclass
+import os
+
+
+def required(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required configuration: {name}")
+    return value
+
+
+@dataclass(frozen=True)
+class Settings:
+    database_url: str
+    payment_api_key: str
+    environment: str
+
+    @classmethod
+    def from_environment(cls) -> "Settings":
+        return cls(
+            database_url=required("DATABASE_URL"),
+            payment_api_key=required("PAYMENT_API_KEY"),
+            environment=os.getenv("APP_ENV", "development"),
+        )
+```
+
+Benefits:
+
+- consistent validation
+- easier testing
+- fewer scattered environment lookups
+- controlled redaction
+- clear startup failure
+
+## 16.2 Redacted Representation
+
+Do not allow settings objects to expose secrets accidentally.
+
+```python
+from dataclasses import dataclass, field
+
+
+@dataclass
+class DatabaseConfig:
+    host: str
+    username: str
+    password: str = field(repr=False)
+```
+
+Now the password is excluded from the generated representation:
+
+```python
+DatabaseConfig(host="db", username="app", password="secret")
+# DatabaseConfig(host='db', username='app')
+```
+
+## 16.3 Secret Manager Client with Cache
+
+```python
+import json
+import time
+from threading import Lock
+from typing import Any
+
+
+class CachedSecretProvider:
+    def __init__(self, client: Any, ttl_seconds: int = 300) -> None:
+        self.client = client
+        self.ttl_seconds = ttl_seconds
+        self._cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._lock = Lock()
+
+    def get_json_secret(self, secret_id: str) -> dict[str, str]:
+        now = time.monotonic()
+
+        with self._lock:
+            cached = self._cache.get(secret_id)
+            if cached and cached[0] > now:
+                return cached[1]
+
+            response = self.client.get_secret_value(SecretId=secret_id)
+            value = json.loads(response["SecretString"])
+            self._cache[secret_id] = (now + self.ttl_seconds, value)
+            return value
+```
+
+A real implementation should additionally handle:
+
+- retries with exponential backoff
+- provider-specific exceptions
+- credential refresh
+- stale-cache behavior
+- secret version changes
+- metrics without values
+- graceful shutdown
+
+## 16.4 Fail Open vs Fail Closed
+
+For authentication and encryption secrets, failing closed is normally correct.
+
+```text
+Secret unavailable -> reject protected operation
+```
+
+Using an old cached database password for a short controlled period may be acceptable if the application already has a valid connection. Silently switching to a default credential is not acceptable.
+
+The correct failure policy depends on:
+
+- secret purpose
+- security impact
+- availability requirements
+- cache validity
+- whether the old credential has been revoked
+
+## 16.5 Keep Secrets in Memory Briefly
+
+Once retrieved:
+
+- do not write the secret to logs
+- do not serialize it into traces
+- do not return it in API responses
+- do not place it in exception messages
+- avoid unnecessary copies
+- clear temporary files
+- restrict access to the smallest component possible
+
+Complete memory erasure is difficult in garbage-collected languages, so the practical goal is to minimize exposure and lifetime.
+
+---
+
+# 17. Logging, Monitoring, and Auditing
+
+Secret management is incomplete without visibility.
+
+## 17.1 What to Audit
+
+Record:
+
+- secret creation
+- secret updates
+- secret reads
+- access denials
+- policy changes
+- deletion attempts
+- rotation success and failure
+- unusual access locations
+- access by unexpected identities
+- access outside normal deployment windows
+
+## 17.2 What Not to Log
+
+Never log:
+
+- the secret value
+- full authorization headers
+- database URLs containing passwords
+- private keys
+- complete tokens
+- decrypted configuration objects
+
+Unsafe:
+
+```python
+logger.info("Connecting with URL: %s", database_url)
+```
+
+Safer:
+
+```python
+logger.info("Connecting to database host=%s database=%s", host, database_name)
+```
+
+## 17.3 Redaction
+
+Create central redaction for fields such as:
+
+```text
+password
+passwd
+secret
+token
+authorization
+api_key
+private_key
+cookie
+session
+```
+
+Redaction helps, but naming variations and nested payloads mean developers must still avoid logging sensitive objects.
+
+## 17.4 Useful Alerts
+
+Alert on:
+
+- sudden increases in secret reads
+- production secrets read by development identities
+- secret access from a new region or network
+- repeated denied access
+- disabled audit logging
+- secrets approaching expiration
+- failed automatic rotation
+- broad policy grants
+- deleted or scheduled-for-deletion secrets
+
+---
+
+# 18. Secret Leakage Response
+
+Treat a committed or logged secret as compromised, even if the repository or log system is private.
+
+## 18.1 Response Sequence
+
+```mermaid
+flowchart TD
+    A[Secret exposure detected] --> B[Revoke or rotate immediately]
+    B --> C[Identify affected systems and permissions]
+    C --> D[Review audit logs for misuse]
+    D --> E[Remove secret from current files and logs]
+    E --> F[Clean repository history where necessary]
+    F --> G[Deploy updated secret references]
+    G --> H[Add controls to prevent recurrence]
+```
+
+## 18.2 Rotation Comes Before Cleanup
+
+Removing the secret from Git does not invalidate copies that already exist.
+
+Correct priority:
+
+1. revoke or rotate
+2. contain access
+3. inspect for misuse
+4. clean the repository or logs
+5. improve prevention
+
+## 18.3 Investigation Questions
+
+Determine:
+
+- when the secret was exposed
+- who could access the location
+- what systems the secret could access
+- whether it was used unexpectedly
+- whether the credential was shared
+- whether derived credentials or sessions remain active
+- whether customer or regulated data was reachable
+
+## 18.4 Prevention After an Incident
+
+Add:
+
+- pre-commit secret scanning
+- server-side repository scanning
+- CI scanning
+- protected branches
+- shorter-lived credentials
+- narrower permissions
+- automatic rotation
+- better logging redaction
+- developer security guidance
+
+---
+
+# 19. Practical Architecture
+
+Consider a Django or FastAPI service running in a cloud container platform.
+
+## 19.1 Recommended Production Design
+
+```mermaid
+flowchart TD
+    DEV[Developer] -->|Pushes code without secrets| GIT[Git Repository]
+    GIT --> CI[CI/CD Pipeline]
+    CI -->|OIDC federation| IAM[Cloud IAM]
+    IAM -->|Temporary deployment permission| PLATFORM[Container Platform]
+
+    APP[Application Container] -->|Workload identity| IAM
+    APP -->|Read allowed secret| SM[Secret Manager]
+    SM -->|Encrypted secret value| APP
+    APP --> DB[(Database)]
+
+    SM --> AUDIT[Audit Logs]
+    IAM --> AUDIT
+    APP --> OBS[Redacted App Logs and Metrics]
+```
+
+## 19.2 Security Properties
+
+- no secret is committed to Git
+- the CI pipeline uses temporary cloud access
+- the application uses workload identity
+- IAM limits the application to specific secret paths
+- the secret manager records access
+- secrets are encrypted at rest and retrieved over TLS
+- production and staging use separate secrets
+- logs exclude sensitive values
+- rotation can occur without changing source code
+
+## 19.3 Example Secret Naming
+
+```text
+/prod/orders/database
+/prod/orders/payment-provider
+/prod/orders/webhook-signing-key
+
+/staging/orders/database
+/staging/orders/payment-provider
+```
+
+Names should reveal enough operational context but should not contain the secret value itself.
+
+## 19.4 Ownership Metadata
+
+Track metadata such as:
+
+- owner team
+- application
+- environment
+- purpose
+- rotation policy
+- expiration
+- incident contact
+- data classification
+
+This avoids “orphaned” secrets that nobody knows how to rotate.
+
+---
+
+# 20. Best-Practice Checklist
+
+## Storage
+
+- [ ] No secrets are hardcoded in source code.
+- [ ] No production secrets are committed to Git.
+- [ ] Container images do not contain secrets.
+- [ ] Production secrets are stored in an approved secret manager.
+- [ ] Secret values are encrypted at rest and in transit.
+
+## Access
+
+- [ ] Applications use workload identity where possible.
+- [ ] Access follows least privilege.
+- [ ] Development cannot read production secrets.
+- [ ] Each service has its own credentials.
+- [ ] Human access to production secrets is limited and audited.
+
+## Delivery
+
+- [ ] Secrets are injected only at runtime.
+- [ ] Mounted files have restrictive permissions.
+- [ ] Environment variables are not dumped into logs.
+- [ ] Applications fail safely when required secrets are missing.
+- [ ] Temporary secret files are removed.
+
+## Rotation
+
+- [ ] Every secret has an owner.
+- [ ] High-risk secrets have an automated rotation strategy.
+- [ ] Applications can reload or refresh rotated values.
+- [ ] Old versions are revoked after verification.
+- [ ] Emergency rotation is documented and tested.
+
+## CI/CD
+
+- [ ] Pipelines use short-lived identity federation where possible.
+- [ ] Pull requests from untrusted sources cannot read production secrets.
+- [ ] Logs and artifacts are checked for secret exposure.
+- [ ] Third-party actions and plugins are pinned and reviewed.
+- [ ] Pipeline tokens use minimum permissions.
+
+## Monitoring
+
+- [ ] Secret reads and policy changes are audited.
+- [ ] Rotation failures generate alerts.
+- [ ] Unusual access patterns generate alerts.
+- [ ] Logs redact sensitive fields.
+- [ ] Secret scanning runs before and after code reaches the repository.
+
+---
+
+# 21. Key Takeaways
+
+1. **Never hardcode secrets.** Source code, Dockerfiles, scripts, and committed configuration are not secret stores.
+
+2. **Environment variables are useful but limited.** They separate values from code, but they do not provide storage, rotation, auditing, or lifecycle management.
+
+3. **Use a dedicated secret manager in production.** It provides encrypted storage, access control, versions, audit logs, and rotation capabilities.
+
+4. **Prefer workload identity over embedded cloud credentials.** The application should prove its identity through the platform and receive short-lived access.
+
+5. **Use least privilege and separate credentials.** Each service and environment should receive only the secrets it needs.
+
+6. **Prefer short-lived or dynamic credentials.** A credential that expires quickly has a smaller leakage window.
+
+7. **Design rotation before an incident happens.** Rotation must update the provider, applications, caches, and old credential versions safely.
+
+8. **Treat logs, CI/CD, containers, and debugging tools as possible exposure paths.** Secret handling must cover the whole delivery pipeline.
+
+9. **A leaked secret must be revoked, not merely deleted from a file.** Cleanup does not invalidate copies already obtained by an attacker.
+
+10. **Secret management is a lifecycle, not a file format.** Secure storage is only one part of the solution.
+
+---
+
+# Official References
+
+- OWASP Secrets Management Cheat Sheet:  
+  <https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html>
+
+- The Twelve-Factor App — Config:  
+  <https://12factor.net/config>
+
+- AWS Secrets Manager best practices:  
+  <https://docs.aws.amazon.com/secretsmanager/latest/userguide/best-practices.html>
+
+- Google Cloud Secret Manager best practices:  
+  <https://cloud.google.com/secret-manager/docs/best-practices>
+
+- Microsoft Azure Key Vault security guidance:  
+  <https://learn.microsoft.com/azure/key-vault/general/secure-key-vault>
+
+- HashiCorp Vault documentation:  
+  <https://developer.hashicorp.com/vault/docs>
+
+- Kubernetes Secret good practices:  
+  <https://kubernetes.io/docs/concepts/security/secrets-good-practices/>
+
+- Docker Compose secrets:  
+  <https://docs.docker.com/compose/how-tos/use-secrets/>

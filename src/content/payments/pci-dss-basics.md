@@ -4,109 +4,1139 @@ group: "Compliance"
 order: 5
 ---
 
-# PCI-DSS Basics for Backend Engineers
+# PCI DSS Basics for Backend Engineers
 
-> PCI DSS is a contractual security standard binding anyone who stores, processes, or transmits cardholder data, and for a backend engineer almost all of the work is scope reduction - arranging the architecture so a raw card number never reaches your servers - because every system that touches or can affect cardholder data inherits the full weight of the standard.
+> **Category:** Payments & Fintech  
+> **Audience:** Backend engineers with 3+ years of development experience  
+> **Standard covered:** PCI DSS v4.0.1  
+> **Updated:** August 2026
 
-## What it is
-The Payment Card Industry Data Security Standard is published by the PCI Security Standards Council and enforced **contractually** by the card brands through your acquiring bank. It is not legislation. That distinction matters in practice: non-compliance surfaces as fines passed down from the acquirer, higher transaction fees, or losing the ability to accept cards - not as a regulator knocking on the door.
+---
 
-The current version is **v4.0.1**, published June 2024. It replaced v4.0, v3.2.1 was retired on 31 March 2024, and the future-dated v4.x requirements became mandatory on **31 March 2025**. Twelve requirements sit under six control objectives, but the one that decides how much of it lands on you is scope.
+## Index
 
-The distinction the whole standard turns on is **cardholder data (CHD)** against **sensitive authentication data (SAD)**:
+1. [What PCI DSS Is](#1-what-pci-dss-is)
+   - [Why backend engineers should care](#11-why-backend-engineers-should-care)
+   - [Current standard status](#12-current-standard-status)
+2. [Payment Data You Must Recognize](#2-payment-data-you-must-recognize)
+   - [Cardholder Data](#21-cardholder-data-chd)
+   - [Sensitive Authentication Data](#22-sensitive-authentication-data-sad)
+   - [Storage rules](#23-storage-rules-at-a-glance)
+3. [Understanding PCI DSS Scope](#3-understanding-pci-dss-scope)
+   - [Cardholder Data Environment](#31-cardholder-data-environment-cde)
+   - [Systems that can affect security](#32-systems-that-can-affect-cde-security)
+   - [Scope reduction](#33-scope-reduction)
+4. [Recommended Payment Architecture](#4-recommended-payment-architecture)
+   - [Low-scope tokenized flow](#41-low-scope-tokenized-flow)
+   - [Direct card-data flow](#42-direct-card-data-flow)
+5. [The 12 PCI DSS Requirements](#5-the-12-pci-dss-requirements)
+6. [Backend Engineering Controls](#6-backend-engineering-controls)
+   - [Data minimization](#61-data-minimization)
+   - [Encryption and key management](#62-encryption-and-key-management)
+   - [Authentication and authorization](#63-authentication-and-authorization)
+   - [Secure software development](#64-secure-software-development)
+   - [Logging and monitoring](#65-logging-and-monitoring)
+   - [Payment-page security](#66-payment-page-security)
+   - [Vulnerability management](#67-vulnerability-management)
+7. [Practical Backend Patterns](#7-practical-backend-patterns)
+   - [Safe payment API](#71-safe-payment-api)
+   - [Structured logging](#72-structured-logging-with-an-allowlist)
+   - [Webhook verification](#73-webhook-signature-verification)
+   - [Payment data model](#74-payment-data-model)
+8. [Operational Evidence](#8-operational-evidence)
+9. [Validation: SAQ, ROC, AOC, QSA, and ASV](#9-validation-saq-roc-aoc-qsa-and-asv)
+10. [Practical E-commerce Scenario](#10-practical-e-commerce-scenario)
+11. [Backend Engineer Mental Model](#11-backend-engineer-mental-model)
+12. [Implementation Checklist](#12-implementation-checklist)
+13. [Official References](#13-official-references)
 
-| Data element | Category | May you store it after authorization? |
-| --- | --- | --- |
-| **PAN** (the 16-digit card number) | CHD | **Yes**, if rendered unreadable at rest (Req 3.5.1) and masked on display (Req 3.4.1) |
-| Cardholder name, expiry, service code | CHD | **Yes**, protected whenever stored with the PAN |
-| **CVV / CVC2 / CID** | **SAD** | **Never** - Req 3.3.1, not even encrypted |
-| **Full track data** (magnetic stripe or chip equivalent) | **SAD** | **Never** |
-| **PIN / PIN block** | **SAD** | **Never** |
+---
 
-> [!KEY] Scope is the entire game. PCI DSS applies to every system that stores, processes, or transmits cardholder data **and every system connected to or able to affect the security of** that environment. Keep the PAN out of your infrastructure and most of the 12 requirements stop applying to your application servers - which is worth vastly more engineering effort than making a large in-scope environment compliant.
+# 1. What PCI DSS Is
 
-Validation effort scales with volume through merchant levels (roughly: the highest-volume merchants need an onsite assessment by a QSA and a Report on Compliance, everyone else self-assesses), and the **SAQ** you fill in depends on how card data flows:
+**PCI DSS** stands for **Payment Card Industry Data Security Standard**. It is a set of technical and operational security requirements for organizations that store, process, transmit, or can affect the security of payment-card account data.[^1]
 
-| SAQ | Typical setup | Practical meaning |
-| --- | --- | --- |
-| **A** | Fully outsourced e-commerce; card data goes **browser to PSP** | The **target** - fewest questions, smallest scope |
-| **A-EP** | Your page controls the payment form but does not receive card data | Substantially more, because your page can affect the flow |
-| **D** | Your servers touch the PAN | Effectively the **whole standard** |
+It applies across the payment ecosystem, including:
 
-Exact thresholds and level definitions are set by each card brand and interpreted by your acquirer, so confirm yours with them rather than assuming a universal number.
+- Merchants accepting card payments
+- Payment gateways and processors
+- Acquirers and issuers
+- Fintech platforms
+- Payment-related service providers
+- Cloud, hosting, support, or software systems that can affect a Cardholder Data Environment
 
-## Key points
-- **Tokenization plus hosted fields is how scope reduction actually happens.** With Stripe Elements or Checkout, the card number is posted from the customer's browser straight to Stripe over TLS; your backend receives a **token** (`pm_...`) and never sees the PAN. You store the token, brand, last four, and expiry - which are not enough to make a payment anywhere else, so a breach of your database is a much smaller event.
-- **"We use Stripe, so we are out of scope" is wrong, and it is the single most common misconception.** You are still a merchant with SAQ obligations. Since v4.0.1, payment-page script integrity is explicitly in play: Requirement **6.4.3** (every script on the payment page authorized, inventoried, integrity-assured) and **11.6.1** (tamper detection alerting on unauthorized changes to payment-page content and HTTP headers) became effective 31 March 2025. In January 2025 the Council removed those two from SAQ A itself, replacing them with an eligibility criterion that the merchant confirms the site is not susceptible to script-based attacks - merchants who cannot confirm that fall to SAQ A-EP or D, where the requirements still apply in full. The direction of travel is clear: an iframe is no longer a free pass.
-- **The CVV must never be persisted anywhere, and "temporarily" still counts.** Not in a database column, not in a Redis key with a TTL, not in a Celery task argument serialized into the broker, not in a log line. Requirement 3.3.1 prohibits storing SAD after authorization even when encrypted. Broker payloads are the one people forget: a task called with the CVV in `kwargs` writes it to Redis and to any result backend.
-- **Rendering a PAN unreadable is not the same as hashing it.** A PAN has a small, structured keyspace - a known BIN range, a fixed length, and a Luhn check digit - so a plain unsalted SHA-256 of one is brute-forced in seconds. Requirement 3.5.1 wants strong cryptography with proper key management, truncation, index tokens, or **keyed** hashes. Masking on display is a separate control: no more than the BIN and last four visible (Req 3.4.1), and only to people with a documented business need.
-- **Encryption in transit means strong cryptography on open public networks (Req 4), which in practice means TLS done properly.** TLS 1.2 as a floor with 1.3 preferred, valid certificates, HSTS, and no downgrade path. Internal-only traffic is not automatically exempt: a flat network where an app server can reach the cardholder data environment drags that server into scope.
-- **Access control and audit trails are where engineers get caught unprepared.** Requirement 7 is need-to-know least privilege, Requirement 8 is unique per-person IDs with MFA for access into the cardholder data environment, and Requirement 10 wants audit logs of every access to cardholder data and every administrative action, retained for **at least 12 months with at least 3 months immediately available**. Shared service accounts and a `psql` prompt on production with no logging are both findings.
+PCI DSS is not only about database encryption. It covers the complete environment around payment data: networks, APIs, applications, access control, logging, vulnerability management, incident response, third parties, and operational policies.
 
-> [!TIP] Write the redaction into a logging filter and a Sentry `before_send` hook on day one, then add a test that asserts a fake PAN never appears in captured log output. Retrofitting redaction after a card number is already in six months of CloudWatch logs means a log purge, an incident report, and an awkward conversation with your acquirer.
+> **Interview perspective:** PCI DSS is an environment-level security standard. A single encrypted database or a PCI-compliant payment provider does not automatically make the merchant's full implementation compliant.
 
-## Example
-```python
-# What you store after tokenization: enough to show the customer which card
-# they used and to charge it again, and nothing that can be used elsewhere.
-class SavedCard(models.Model):
-    customer     = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    provider_ref = models.CharField(max_length=64, unique=True)  # "pm_1P..." - not a PAN
-    brand        = models.CharField(max_length=20)               # "visa"
-    last4        = models.CharField(max_length=4)                # display only (Req 3.4.1)
-    exp_month    = models.PositiveSmallIntegerField()
-    exp_year     = models.PositiveSmallIntegerField()
-    # Deliberately absent, and a code-review blocker if anyone adds them:
-    #   pan, cvv, track_data - SAD must not be stored after authorization (Req 3.3.1).
+## 1.1 Why backend engineers should care
+
+Backend systems commonly handle:
+
+- Payment initiation
+- Payment-provider tokens
+- Authorization, capture, refund, and cancellation requests
+- Payment webhooks
+- Customer and order references
+- Audit logs
+- Reconciliation data
+- Admin and support operations
+
+A backend design decision can greatly increase or reduce PCI DSS scope. For example, accepting a raw card number through your API brings far more systems into scope than accepting an opaque token created by a payment provider.
+
+## 1.2 Current standard status
+
+As of August 2026:
+
+- **PCI DSS v4.0.1** is the active version of PCI DSS.
+- PCI DSS v4.0 was retired on **31 December 2024**.
+- The future-dated PCI DSS v4.x requirements became effective on **31 March 2025**.
+- PCI DSS v4.0.1 was a limited revision; it did not add or delete requirements from v4.0.[^2]
+
+This matters because controls such as automated log review, stronger e-commerce payment-page protections, targeted risk analyses, and several other v4.x requirements are no longer optional future practices.
+
+---
+
+# 2. Payment Data You Must Recognize
+
+PCI DSS separates payment account data into **Cardholder Data** and **Sensitive Authentication Data**.
+
+```mermaid
+flowchart TD
+    A[Account Data] --> B[Cardholder Data - CHD]
+    A --> C[Sensitive Authentication Data - SAD]
+
+    B --> B1[Primary Account Number - PAN]
+    B --> B2[Cardholder name]
+    B --> B3[Expiration date]
+    B --> B4[Service code]
+
+    C --> C1[Full track data]
+    C --> C2[Card verification code]
+    C --> C3[PIN or PIN block]
 ```
 
-Defence in depth on the way out, because the accidental storage is nearly always a log:
+## 2.1 Cardholder Data (CHD)
 
-```python
-PAN_RE = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
-SENSITIVE_KEYS = {"cvv", "cvc", "card_number", "pan", "track_data", "pin"}
+Cardholder Data includes:
 
-class RedactCardData(logging.Filter):
-    """Last line of defence. The real fix is never putting a PAN in a log call."""
+| Data element | Example | Backend relevance |
+|---|---|---|
+| Primary Account Number | `411111******1111` | The central data element for PCI DSS scope |
+| Cardholder name | `Asha Patel` | CHD when stored with the PAN |
+| Expiration date | `08/29` | Often returned as payment-method metadata |
+| Service code | Track-data field | Usually handled by terminals or processors |
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        # Luhn-check before redacting so ordinary long numbers (order ids,
-        # timestamps concatenated in a trace) are not mangled into noise.
-        record.msg = PAN_RE.sub(lambda m: _mask(m.group()) if _luhn(m.group()) else m.group(), msg)
-        record.args = ()
-        return True
+The **Primary Account Number**, commonly called the card number, is the main factor used to determine whether an environment stores, processes, or transmits cardholder data.
 
+## 2.2 Sensitive Authentication Data (SAD)
 
-def before_send(event, hint):
-    """Sentry scrubs some fields by default; card fields are not among them."""
-    for section in ("request", "extra", "contexts"):
-        _strip_keys(event.get(section), SENSITIVE_KEYS)
-    return event
+Sensitive Authentication Data includes:
+
+| Data element | Examples | Storage rule after authorization |
+|---|---|---|
+| Full track data | Magnetic-stripe or equivalent chip data | Must not be stored |
+| Card verification code | CVV, CVC, CID | Must not be stored |
+| PIN or PIN block | ATM or card PIN data | Must not be stored |
+
+### The most important backend rule
+
+> **Never store CVV/CVC/CID after authorization—even when encrypted.**
+
+This includes storage in:
+
+- Application databases
+- Logs and exception traces
+- Message queues
+- Cache entries
+- Analytics tools
+- Support tickets
+- Request replay systems
+- Backups
+- Data lakes
+
+## 2.3 Storage rules at a glance
+
+| Data | May be stored? | Required treatment |
+|---|---:|---|
+| PAN | Yes, only when necessary | Minimize retention and render it unreadable |
+| Cardholder name | Yes | Protect it when stored with PAN |
+| Expiration date | Yes | Protect it when stored with PAN |
+| Service code | Yes | Protect it when stored with PAN |
+| Full track data | No, after authorization | Make unrecoverable after authorization |
+| CVV/CVC/CID | No, after authorization | Never retain, including encrypted form |
+| PIN/PIN block | No, after authorization | Never retain |
+| Provider token | Usually | Scope depends on token design and surrounding systems |
+| Last four digits | Usually | Still treat as sensitive payment metadata |
+
+Tokenization can reduce the number of systems containing PAN, but it does not automatically make every connected system out of scope. Token reversibility, token-vault access, network connections, administrative access, and the ability to affect payment security must still be evaluated.[^3]
+
+---
+
+# 3. Understanding PCI DSS Scope
+
+PCI DSS scope determines which people, processes, applications, infrastructure, and service providers must meet applicable requirements.
+
+## 3.1 Cardholder Data Environment (CDE)
+
+The **Cardholder Data Environment** includes systems, people, and processes that:
+
+- Store cardholder data
+- Process cardholder data
+- Transmit cardholder data
+- Handle sensitive authentication data
+
+A direct-card-data backend might place all of the following in scope:
+
+```mermaid
+flowchart LR
+    U[Customer Browser] --> LB[Load Balancer]
+    LB --> API[Payment API]
+    API --> Q[Queue]
+    API --> C[Cache]
+    API --> DB[(Payment Database)]
+    API --> PSP[Processor]
+
+    API --> LOG[Logs and APM]
+    DB --> BKP[Backups]
+    ADM[Admin Access] --> API
+    CICD[CI/CD System] --> API
+
+    classDef scope stroke-width:2px;
+    class LB,API,Q,C,DB,LOG,BKP,ADM,CICD scope;
 ```
 
-## Interview Q&A
-- **What is PCI DSS and who enforces it?** A security standard from the PCI Security Standards Council covering the storage, processing, and transmission of cardholder data. It is enforced contractually by the card brands through your acquirer, not by statute, so the consequence of failing it is commercial: fines, penalty pricing, or losing card acceptance.
-- **How do you reduce scope in a Django application?** Never let the PAN reach the server. The browser sends card data directly to the PSP through hosted fields, and your backend gets a token it stores alongside brand, last four, and expiry. That removes the storage, encryption, and key-management requirements from your application tier and moves you toward SAQ A.
-- **What can you never store, and what can you store with protection?** Sensitive authentication data - CVV, full track data, PIN blocks - must never be stored after authorization, encrypted or not. The PAN may be stored if rendered unreadable at rest and masked on display to BIN plus last four for everyone without a business need.
-- **Is hashing a card number enough to satisfy the standard?** Not a plain hash. The PAN keyspace is small and structured enough to brute-force, so a bare SHA-256 is effectively reversible. The standard expects strong cryptography with key management, truncation, index tokens, or keyed hashes - and in practice, tokenizing with the PSP so the question does not arise.
-- **Using Stripe Elements, are you out of scope entirely?** No. You are a lower-scope merchant, not an exempt one. You still validate through an SAQ, and since v4.0.1 the payment page's scripts are explicitly in play through requirements 6.4.3 and 11.6.1 - which the Council removed from SAQ A in January 2025 in favour of an eligibility criterion about script-based attacks, with merchants who cannot meet it dropping to SAQ A-EP or D.
-- **Where do card numbers usually leak in practice?** Not from the database. From application logs, exception trackers capturing request bodies, APM breadcrumbs, Celery task arguments serialized into Redis, and database dumps copied to a developer laptop. Redact at the boundary and test that the redaction holds.
+Even if only the API receives PAN, connected systems may become in scope because they receive the data, can access it, or can affect the security of the API.
 
-## Gotchas
-> [!WARN] **Your logs and your error tracker are storage.** A `logger.info(f"charging {request.data}")` on a payment endpoint writes a PAN and possibly a CVV into CloudWatch, and an unfiltered Sentry event ships the whole request body to a third party. That is a reportable incident, not a code smell. Filter at the logging layer, scrub in `before_send`, and never pass card fields as Celery task arguments - the broker persists them.
+## 3.2 Systems that can affect CDE security
 
-> [!WARN] **Encrypting the CVV does not make storing it acceptable.** Requirement 3.3.1 prohibits retaining sensitive authentication data after authorization regardless of protection. Teams reach for it when building "one-click repeat payment"; the correct answer is a provider token from a [saved payment method or mandate](mandates-recurring.md), which is designed for exactly that flow.
+A system does not need to contain a card number to be relevant to PCI DSS. It may still be in scope when it can affect CDE security.
 
-- **Flat networks quietly expand scope.** Any system that can reach the cardholder data environment is in scope. Segmentation is what keeps your reporting service, your analytics box, and your admin tooling out of the assessment.
-- **Compliance is a state, not a certificate.** An annual SAQ or ROC is a point-in-time attestation; the requirements apply continuously. A quarter of drift between assessments is still non-compliance.
-- **Shared accounts break Requirement 8 and every audit trail built on it.** If four engineers use one `deploy` login, Requirement 10's logs cannot attribute an action to a person. Individual identities plus [role-based access](../security/rbac-vs-abac.md) are prerequisites for the logging requirements, not separate work.
-- **Test data can be real data.** A production dump restored into staging carries live PANs into an environment with weaker controls, and staging is now in scope. Mask on extract, and use the brands' published test card numbers.
+Examples include:
 
-## Revise next
-- **[Mandates and recurring payments](mandates-recurring.md)**: storing a token and a mandate instead of card details, which is what scope reduction enables.
-- **[Secrets management](../security/secrets-management.md)**: key management, rotation, and keeping API keys out of the repo, which Requirement 3 and Requirement 8 both depend on.
-- **[HTTPS and TLS](../security/https-tls-basics.md)**: what "strong cryptography in transit" means concretely for Requirement 4.
-- **[RBAC vs ABAC](../security/rbac-vs-abac.md)**: implementing the need-to-know access model Requirement 7 asks for.
+- Identity provider used by CDE administrators
+- CI/CD pipeline that deploys the payment API
+- Secrets manager containing payment credentials
+- DNS or reverse proxy serving a payment page
+- Monitoring system with privileged agents on CDE hosts
+- Jump server used to access production
+- Source-code repository controlling payment code
+- Web application capable of changing embedded payment scripts
 
-*Reviewed against PCI DSS v4.0.1 (June 2024) and the PCI SSC's January 2025 SAQ A update, July 2026.*
+This is why PCI DSS scoping is broader than running a database search for card numbers.
+
+## 3.3 Scope reduction
+
+The most effective backend strategy is to avoid handling raw card data.
+
+Useful scope-reduction techniques include:
+
+1. **Hosted checkout redirect**  
+   The customer leaves the merchant page and enters card data on the payment provider's hosted page.
+
+2. **Provider-hosted iframe or hosted fields**  
+   Card fields are delivered and controlled by the payment provider rather than the merchant backend.
+
+3. **Client-side tokenization**  
+   The browser sends card data directly to the provider and receives an opaque token.
+
+4. **Network segmentation**  
+   The CDE is isolated from unrelated business systems using enforced and tested controls.
+
+5. **Data minimization**  
+   Store only the provider reference, amount, currency, status, brand, and last four digits needed for operations.
+
+6. **No PAN in internal events**  
+   Queues, analytics events, emails, traces, and logs carry payment identifiers rather than card data.
+
+> **Important:** Segmentation and outsourcing can reduce scope, but the organization must prove that the controls are correctly designed, operating, and tested.
+
+---
+
+# 4. Recommended Payment Architecture
+
+## 4.1 Low-scope tokenized flow
+
+In a preferred design, the merchant backend never receives raw card data.
+
+```mermaid
+sequenceDiagram
+    participant C as Customer Browser
+    participant M as Merchant Backend
+    participant P as PCI-compliant Payment Provider
+    participant D as Merchant Database
+
+    C->>M: Request checkout session
+    M->>P: Create payment session
+    P-->>M: Session/client token
+    M-->>C: Return session/client token
+
+    C->>P: Submit card data directly
+    P-->>C: Return payment-method token
+
+    C->>M: Confirm order with token
+    M->>M: Load trusted order amount
+    M->>P: Create/confirm payment using token + idempotency key
+    P-->>M: Payment result
+    M->>D: Store provider IDs and safe metadata
+
+    P-->>M: Signed webhook
+    M->>M: Verify signature and deduplicate event
+    M->>D: Update final payment state
+```
+
+The merchant stores values such as:
+
+```text
+order_id              = ord_82391
+provider_payment_id   = pay_7fd91...
+payment_method_token  = pm_6a82...
+amount_minor          = 499900
+currency              = INR
+status                = authorized
+brand                 = visa
+last4                 = 1111
+```
+
+The merchant does **not** store:
+
+```text
+pan                    = 4111111111111111
+cvv                    = 123
+full_track_data        = ...
+pin                    = ...
+```
+
+## 4.2 Direct card-data flow
+
+A direct flow sends the raw PAN and CVV through the merchant application.
+
+```mermaid
+sequenceDiagram
+    participant C as Customer Browser
+    participant A as Merchant API
+    participant Q as Internal Queue
+    participant P as Payment Processor
+    participant L as Logging/APM
+
+    C->>A: PAN + expiry + CVV
+    A->>L: Risk of accidental request capture
+    A->>Q: Risk of card data entering queue
+    Q->>P: Authorization request
+    P-->>A: Authorization result
+```
+
+This design increases scope because the application server, network path, middleware, observability stack, deployment process, and supporting infrastructure may all need to be assessed.
+
+Use it only when the business has a strong requirement and the organization is prepared to operate a properly controlled CDE.
+
+---
+
+# 5. The 12 PCI DSS Requirements
+
+PCI DSS groups its controls into 12 main requirements.[^4]
+
+| No. | PCI DSS requirement | Meaning for a backend engineer |
+|---:|---|---|
+| 1 | Install and maintain network security controls | Restrict traffic, isolate the CDE, document connections, and avoid unrestricted inbound or outbound access |
+| 2 | Apply secure configurations to all system components | Remove defaults, harden containers/hosts, disable unnecessary services, and maintain configuration standards |
+| 3 | Protect stored account data | Minimize storage, never retain prohibited SAD, encrypt or tokenize PAN, and manage retention/deletion |
+| 4 | Protect cardholder data with strong cryptography during transmission over open, public networks | Use correctly configured TLS and never send PAN over insecure channels |
+| 5 | Protect all systems and networks from malicious software | Use anti-malware or equivalent controls where applicable and protect users from phishing |
+| 6 | Develop and maintain secure systems and software | Secure SDLC, dependency management, code review, patching, change control, and web-application protection |
+| 7 | Restrict access by business need to know | Use least privilege and deny access by default |
+| 8 | Identify users and authenticate access | Unique identities, strong authentication, MFA, controlled service accounts, and credential lifecycle management |
+| 9 | Restrict physical access to cardholder data | Protect data centers, offices, media, printed records, and payment devices |
+| 10 | Log and monitor access to systems and cardholder data | Centralize audit logs, review security events, alert on anomalies, and retain evidence |
+| 11 | Test security of systems and networks regularly | Vulnerability scans, penetration tests, intrusion detection, file integrity, and payment-page tamper detection |
+| 12 | Support information security with organizational policies and programs | Policies, risk analysis, awareness, scope review, third-party management, and incident response |
+
+The 12 requirements are not isolated tasks. For example, protecting a payment endpoint may involve:
+
+- Requirement 1 for network restrictions
+- Requirement 6 for secure code and WAF controls
+- Requirement 7 for authorization
+- Requirement 8 for administrator MFA
+- Requirement 10 for logging
+- Requirement 11 for security testing
+- Requirement 12 for incident response and third-party management
+
+---
+
+# 6. Backend Engineering Controls
+
+## 6.1 Data minimization
+
+The safest card data is the card data your application never receives.
+
+A backend payment service should normally retain only what the business needs for:
+
+- Reconciliation
+- Refunds
+- Chargebacks
+- Customer support
+- Payment-status reporting
+- Fraud investigation
+
+Prefer storing:
+
+- Internal order and payment IDs
+- Provider payment/customer/payment-method IDs
+- Amount in minor units
+- Currency
+- Payment status
+- Payment method type
+- Card brand and last four digits, when needed
+- Timestamps and business audit information
+
+Avoid collecting a field merely because the payment provider returns it.
+
+### Retention design
+
+A retention policy should answer:
+
+1. What payment data is stored?
+2. Why is each field required?
+3. Where is it stored, including backups and logs?
+4. How long is it retained?
+5. How is it securely deleted?
+6. How is deletion verified?
+
+Deletion should cover primary databases, replicas, caches, exports, archives, object storage, and expired backups according to the organization's documented process.
+
+## 6.2 Encryption and key management
+
+### Data in transit
+
+Use strong cryptography for:
+
+- Browser-to-API communication
+- Service-to-service traffic that carries CHD
+- API-to-processor connections
+- Administrative access
+- Data replication and backup transfer
+
+The engineering focus is not simply “HTTPS is enabled.” Verify:
+
+- Certificates are valid and automatically renewed
+- Weak protocols and cipher suites are disabled
+- Certificate verification is not bypassed
+- Private keys are protected
+- Internal services do not silently downgrade to plaintext
+- Debug settings do not disable TLS checks
+
+### Data at rest
+
+When PAN storage is necessary, render it unreadable using an approved approach such as:
+
+- Strong data-level encryption
+- Tokenization
+- Truncation
+- One-way cryptographic hashing when the business use case does not require recovery
+
+Full-disk encryption is useful, but it may not be sufficient by itself for PAN stored on non-removable systems. Application- or data-level protection is commonly required so that database files, exports, and application access do not expose readable PAN.
+
+### Key management
+
+Encryption is only as strong as its key management.
+
+Use a dedicated KMS or HSM-backed system where appropriate, with:
+
+- Restricted key access
+- Separation between encrypted data and key-encrypting keys
+- Rotation and replacement procedures
+- Versioned keys
+- Audit logging
+- Revocation and compromise response
+- Separate keys across environments
+- No keys committed to source code or container images
+
+```mermaid
+flowchart LR
+    APP[Payment Service] --> KMS[KMS or HSM]
+    APP --> DB[(Encrypted PAN)]
+    KMS -->|Authorized decrypt operation| APP
+
+    DEV[Developer] -. no direct production key .-> KMS
+    LOG[Audit Logs] <-->|Key-use events| KMS
+```
+
+## 6.3 Authentication and authorization
+
+Use separate controls for customers, employees, administrators, and machine identities.
+
+### Human access
+
+- Give every person a unique identity
+- Require MFA for applicable CDE access
+- Use role-based access and least privilege
+- Remove access promptly when roles change
+- Review privileged access regularly
+- Avoid shared administrator accounts
+- Record privileged actions
+
+### Service accounts
+
+- Give each workload its own identity
+- Avoid one shared credential across many services
+- Restrict permissions to the exact API, queue, database, or key required
+- Rotate secrets or use short-lived credentials
+- Prevent interactive login unless explicitly required
+- Monitor unusual use
+
+### Application authorization
+
+A valid login is not sufficient. The backend must still enforce object-level and action-level authorization.
+
+```text
+Customer A must not be able to:
+- refund Customer B's payment
+- retrieve another merchant's transaction
+- change the amount after server-side order calculation
+- call an internal capture endpoint
+```
+
+## 6.4 Secure software development
+
+PCI DSS expects a secure development lifecycle, not only a penetration test before an audit.
+
+A practical development pipeline includes:
+
+```mermaid
+flowchart LR
+    R[Requirements and threat model] --> C[Code]
+    C --> PR[Peer review]
+    PR --> SAST[SAST and secret scan]
+    SAST --> SCA[Dependency scan]
+    SCA --> T[Automated tests]
+    T --> DAST[DAST or API security tests]
+    DAST --> DEP[Controlled deployment]
+    DEP --> MON[Monitoring and vulnerability response]
+```
+
+Engineering controls should include:
+
+- Threat modeling for payment flows
+- Secure coding standards
+- Peer review by someone other than the code author where required
+- Input validation and output encoding
+- Protection against injection, broken access control, SSRF, insecure deserialization, and other common attacks
+- Dependency and container-image scanning
+- Secrets scanning
+- Change approvals and deployment traceability
+- Separation between development, test, and production
+- No production PAN in lower environments
+- Timely remediation of vulnerabilities and security patches
+- Protection for public-facing web applications, commonly through an effective WAF or equivalent automated solution
+
+### Never use production card data for testing
+
+Use:
+
+- Provider test mode
+- Provider-supplied test card numbers
+- Synthetic transaction data
+- Masked fixtures
+- Separate test credentials and webhook secrets
+
+## 6.5 Logging and monitoring
+
+Logs are essential for detection and investigation, but they are also a common route for accidental card-data storage.
+
+### Events worth recording
+
+- Authentication success and failure
+- Administrator actions
+- Permission changes
+- Payment creation, capture, cancellation, and refund transitions
+- Webhook verification failure
+- Duplicate or replayed webhook events
+- Access to protected payment information
+- Changes to security settings
+- Deployment and configuration changes
+- KMS/key-use events
+
+### Values that should not appear in logs
+
+- Full PAN
+- CVV/CVC/CID
+- PIN or track data
+- Raw payment request bodies
+- Authorization headers
+- Session cookies
+- Payment-provider secret keys
+- Decryption keys
+- Unfiltered exception objects containing request data
+
+### PCI DSS log expectations
+
+PCI DSS requires audit logs to support detection and forensic analysis. Important logs for in-scope and critical systems are reviewed at least daily, normally with automated mechanisms. Audit log history is retained for at least **12 months**, with at least the most recent **three months** immediately available for analysis.[^5]
+
+The logging system should protect logs from unauthorized modification and alert when logging, monitoring, segmentation, or other critical security controls fail.
+
+## 6.6 Payment-page security
+
+Modern e-commerce attacks often target browser-side scripts rather than the backend database. Malicious JavaScript can steal card data before it reaches a payment provider.
+
+PCI DSS Requirements **6.4.3** and **11.6.1** focus on payment-page script authorization, integrity, inventory, justification, and detection of unauthorized changes to payment pages and security-impacting HTTP headers.[^6]
+
+For backend and platform teams, this means:
+
+- Maintain an inventory of scripts on payment pages
+- Authorize every script
+- Document why each script is necessary
+- Apply integrity controls where appropriate
+- Restrict third-party scripts
+- Use a strong Content Security Policy where suitable
+- Monitor payment-page content and security headers for tampering
+- Alert and respond to unexpected changes
+- Protect the deployment pipeline that controls payment-page assets
+
+These concerns can still apply when a merchant page embeds a provider-controlled payment form in an iframe. PCI SSC's SAQ A guidance distinguishes embedded payment forms from full redirects and requires merchants using embedded forms to address script-attack eligibility criteria.[^7]
+
+### Redirect versus embedded form
+
+```mermaid
+flowchart TD
+    A[Merchant checkout] --> B{Integration type}
+    B -->|Full redirect| C[Customer enters card data on provider domain]
+    B -->|Embedded iframe or hosted fields| D[Provider field appears inside merchant page]
+
+    C --> E[Merchant page has less direct influence during entry]
+    D --> F[Merchant page scripts may affect payment security]
+```
+
+## 6.7 Vulnerability management
+
+Backend teams should have a defined process to:
+
+1. Discover vulnerabilities
+2. Rank risk
+3. Assign ownership
+4. Remediate within policy timelines
+5. Verify the fix
+6. Retain evidence
+
+Typical activities include:
+
+- Continuous dependency monitoring
+- Operating-system and container scanning
+- Internal vulnerability scans
+- External ASV scans when applicable
+- Annual internal and external penetration testing
+- Additional testing after significant changes
+- Retesting after remediation
+- Segmentation testing when segmentation is used to reduce scope
+
+A “significant change” may include:
+
+- New payment processor
+- New payment API or checkout architecture
+- Major framework upgrade
+- Cloud-network redesign
+- New authentication system
+- New CDE network segment
+- Migration to a different container platform
+
+---
+
+# 7. Practical Backend Patterns
+
+The following examples demonstrate safer engineering patterns. They do not, by themselves, prove PCI DSS compliance.
+
+## 7.1 Safe payment API
+
+This example accepts a provider token, not a card number. The trusted amount is loaded from the server-side order.
+
+```python
+from __future__ import annotations
+
+from typing import Protocol
+
+from fastapi import Depends, FastAPI, Header, HTTPException, status
+from pydantic import BaseModel, Field
+
+app = FastAPI()
+
+
+class ConfirmPaymentRequest(BaseModel):
+    order_id: str = Field(min_length=1, max_length=64)
+    payment_method_token: str = Field(min_length=8, max_length=256)
+
+
+class PaymentResponse(BaseModel):
+    payment_id: str
+    status: str
+
+
+class PaymentProvider(Protocol):
+    async def confirm_payment(
+        self,
+        *,
+        amount_minor: int,
+        currency: str,
+        payment_method_token: str,
+        idempotency_key: str,
+    ) -> dict: ...
+
+
+async def get_payment_provider() -> PaymentProvider:
+    # Resolve a configured provider client from application dependencies.
+    raise NotImplementedError
+
+
+async def load_payable_order(order_id: str) -> dict:
+    # The amount must come from a trusted server-side order record.
+    return {
+        "id": order_id,
+        "amount_minor": 499900,
+        "currency": "INR",
+        "status": "pending",
+    }
+
+
+@app.post("/payments/confirm", response_model=PaymentResponse)
+async def confirm_payment(
+    payload: ConfirmPaymentRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=128),
+    provider: PaymentProvider = Depends(get_payment_provider),
+) -> PaymentResponse:
+    order = await load_payable_order(payload.order_id)
+
+    if order["status"] != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order is not payable",
+        )
+
+    result = await provider.confirm_payment(
+        amount_minor=order["amount_minor"],
+        currency=order["currency"],
+        payment_method_token=payload.payment_method_token,
+        idempotency_key=idempotency_key,
+    )
+
+    # Persist only provider identifiers and required operational metadata.
+    return PaymentResponse(
+        payment_id=result["payment_id"],
+        status=result["status"],
+    )
+```
+
+### Why this pattern is useful
+
+- Raw PAN and CVV do not enter the endpoint
+- The client cannot decide the payable amount
+- An idempotency key protects against duplicate payment attempts
+- The response returns an internal/provider payment identifier
+- Payment-provider code is isolated behind an interface
+
+## 7.2 Structured logging with an allowlist
+
+Redacting known sensitive fields is helpful, but an allowlist is safer because newly added request fields are not logged automatically.
+
+```python
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+logger = logging.getLogger("payments")
+
+ALLOWED_LOG_FIELDS = {
+    "request_id",
+    "merchant_id",
+    "order_id",
+    "payment_id",
+    "provider_event_id",
+    "status",
+    "amount_minor",
+    "currency",
+    "error_code",
+}
+
+
+def payment_log(event: str, **context: Any) -> None:
+    safe_context = {
+        key: value
+        for key, value in context.items()
+        if key in ALLOWED_LOG_FIELDS
+    }
+
+    logger.info(event, extra={"payment_context": safe_context})
+
+
+payment_log(
+    "payment_authorized",
+    request_id="req_83f1",
+    order_id="ord_82391",
+    payment_id="pay_7fd91",
+    status="authorized",
+    amount_minor=499900,
+    currency="INR",
+    # A field such as `card_number` would not be included.
+)
+```
+
+Also configure your framework, reverse proxy, APM agent, and exception reporter so they do not capture full request bodies or secret headers on payment routes.
+
+## 7.3 Webhook signature verification
+
+A payment webhook must be authenticated before it changes payment state.
+
+```python
+from __future__ import annotations
+
+import hashlib
+import hmac
+import time
+
+
+class InvalidWebhookSignature(ValueError):
+    pass
+
+
+def verify_webhook_signature(
+    *,
+    raw_body: bytes,
+    timestamp: int,
+    supplied_signature: str,
+    secret: bytes,
+    tolerance_seconds: int = 300,
+) -> None:
+    now = int(time.time())
+
+    if abs(now - timestamp) > tolerance_seconds:
+        raise InvalidWebhookSignature("Webhook timestamp is outside the allowed window")
+
+    signed_payload = str(timestamp).encode("ascii") + b"." + raw_body
+    expected_signature = hmac.new(
+        secret,
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_signature, supplied_signature):
+        raise InvalidWebhookSignature("Webhook signature is invalid")
+```
+
+A production webhook handler should also:
+
+- Use the payment provider's official signature scheme
+- Verify against the unmodified raw body
+- Reject stale timestamps
+- Deduplicate by provider event ID
+- Make state transitions idempotent
+- Store the minimum event data required
+- Avoid logging the full webhook body
+- Return quickly and process durable work safely
+- Re-fetch critical payment details from the provider when appropriate
+
+## 7.4 Payment data model
+
+A practical merchant-side model can avoid raw card data:
+
+```text
+Payment
+├── id: UUID
+├── merchant_id: UUID
+├── order_id: UUID
+├── provider: string
+├── provider_payment_id: string
+├── provider_customer_id: string | null
+├── provider_payment_method_id: string | null
+├── amount_minor: integer
+├── currency: char(3)
+├── status: enum
+├── card_brand: string | null
+├── card_last4: char(4) | null
+├── idempotency_key_hash: string
+├── failure_code: string | null
+├── authorized_at: timestamp | null
+├── captured_at: timestamp | null
+├── created_at: timestamp
+└── updated_at: timestamp
+```
+
+Do not add `pan`, `cvv`, `track_data`, or `pin` columns.
+
+If a product genuinely requires PAN storage, use a separately designed and assessed vault or processor capability rather than casually adding encrypted columns to the main application database.
+
+---
+
+# 8. Operational Evidence
+
+PCI DSS assessment is evidence-driven. A secure design must be supported by records showing that controls operate over time.
+
+Backend and platform teams may need to provide:
+
+| Area | Example evidence |
+|---|---|
+| Scope | Data-flow diagrams, network diagrams, asset inventory, service inventory |
+| Secure configuration | Hardened baseline, infrastructure-as-code, configuration review |
+| Access control | Role definitions, access approvals, periodic access reviews, termination records |
+| Authentication | MFA configuration, identity-provider policies, service-account inventory |
+| Code security | Pull requests, reviews, secure coding standard, SAST/SCA reports |
+| Vulnerabilities | Scan reports, remediation tickets, patch records, retest results |
+| Penetration testing | Scope, methodology, findings, fixes, verification |
+| Logging | Log sources, review alerts, retention configuration, incident investigations |
+| Encryption | Key architecture, KMS policies, key rotation evidence, certificate inventory |
+| Change management | Change tickets, approvals, deployment records, rollback plans |
+| Incident response | Incident plan, contact list, annual exercise results, lessons learned |
+| Third parties | Provider responsibility matrix, current AOC, annual compliance review |
+| Data retention | Data inventory, retention schedule, deletion jobs, verification records |
+
+### Responsibility matrix
+
+When using a payment provider or cloud service, document who is responsible for each control.
+
+```mermaid
+flowchart LR
+    R[PCI DSS control] --> M{Responsible party}
+    M --> A[Merchant]
+    M --> P[Payment provider]
+    M --> C[Cloud provider]
+    M --> S[Shared responsibility]
+```
+
+A provider's PCI DSS Attestation of Compliance does not automatically cover insecure merchant integration, merchant code, access control, or payment-page scripts.
+
+---
+
+# 9. Validation: SAQ, ROC, AOC, QSA, and ASV
+
+## SAQ — Self-Assessment Questionnaire
+
+An SAQ is a PCI DSS validation tool for eligible organizations. Different SAQs apply to different payment channels and architectures.
+
+Examples of factors that affect SAQ eligibility include:
+
+- Hosted redirect versus embedded iframe
+- Whether payment data is handled electronically
+- Card-present versus card-not-present transactions
+- Use of validated point-to-point encryption
+- Whether the entity is a merchant or service provider
+
+Do not select an SAQ only because it has fewer questions. The organization must meet every eligibility criterion for that SAQ and should confirm the required validation method with its acquirer, payment brand, or compliance-accepting entity.[^8]
+
+## ROC — Report on Compliance
+
+A ROC is a detailed assessment report, generally used by larger organizations or where required by the applicable compliance program.
+
+## AOC — Attestation of Compliance
+
+An AOC is the formal attestation associated with an SAQ or ROC. Organizations often request a payment provider's current AOC as part of third-party due diligence.
+
+## QSA — Qualified Security Assessor
+
+A QSA is an independent assessor qualified by PCI SSC to conduct PCI DSS assessments.
+
+## ASV — Approved Scanning Vendor
+
+An ASV is qualified to perform external vulnerability scanning required by applicable PCI DSS validation programs.
+
+> The payment brands and acquirers manage compliance programs and determine validation obligations. PCI SSC develops standards and qualification programs but does not decide every organization's exact reporting obligation.[^1]
+
+---
+
+# 10. Practical E-commerce Scenario
+
+Consider a subscription platform that accepts card payments through a payment provider.
+
+## Business requirements
+
+- Customer adds a card
+- Platform charges the card monthly
+- Customer can replace the card
+- Support can view the card brand and last four digits
+- Backend receives payment success and failure webhooks
+
+## Recommended design
+
+```mermaid
+flowchart TD
+    UI[Subscription UI] -->|Create setup session| API[Backend API]
+    API --> PSP[Payment Provider]
+    PSP -->|Client token| API
+    API --> UI
+
+    UI -->|Card data directly| PSP
+    PSP -->|Payment method token| UI
+    UI -->|Token only| API
+
+    API -->|Attach token to provider customer| PSP
+    API --> DB[(Store provider IDs + last4)]
+
+    PSP -->|Signed recurring-payment webhook| WH[Webhook Endpoint]
+    WH -->|Verify + deduplicate| DB
+    WH --> LEDGER[Internal Ledger or Billing State]
+```
+
+## Stored merchant data
+
+```json
+{
+  "customer_id": "cus_internal_742",
+  "provider_customer_id": "cus_provider_A82",
+  "provider_payment_method_id": "pm_provider_F91",
+  "brand": "visa",
+  "last4": "1111",
+  "status": "active"
+}
+```
+
+## Engineering controls
+
+- Card entry is provider-hosted
+- Merchant backend receives only provider tokens
+- Monthly amount comes from the subscription plan stored server-side
+- Webhooks are verified and deduplicated
+- Support sees only brand and last four digits
+- Refund permissions are separate from view permissions
+- Production secrets are stored in a secrets manager
+- Payment events use an allowlisted logging schema
+- Provider compliance status and responsibilities are reviewed at least annually
+- Payment-page scripts and headers are monitored when the merchant page can affect embedded payment forms
+
+This design reduces the merchant's exposure while preserving normal billing and support features.
+
+---
+
+# 11. Backend Engineer Mental Model
+
+Use the following sequence whenever reviewing a payment feature:
+
+```mermaid
+flowchart LR
+    A[1. Identify data] --> B[2. Trace the flow]
+    B --> C[3. Define scope]
+    C --> D[4. Minimize data]
+    D --> E[5. Protect access]
+    E --> F[6. Log safely]
+    F --> G[7. Test controls]
+    G --> H[8. Keep evidence]
+```
+
+### 1. Identify data
+
+Is the system handling PAN, CVV, track data, PIN data, a token, or only a provider payment ID?
+
+### 2. Trace the flow
+
+Follow data through the browser, API gateway, application, queue, cache, database, logs, analytics, backups, and third parties.
+
+### 3. Define scope
+
+Include systems that handle card data and systems that can affect CDE security.
+
+### 4. Minimize data
+
+Remove unnecessary collection, transmission, storage, and retention.
+
+### 5. Protect access
+
+Apply segmentation, least privilege, MFA, secure identities, encryption, and key management.
+
+### 6. Log safely
+
+Record security and business events without recording prohibited or unnecessary payment data.
+
+### 7. Test controls
+
+Use code review, automated security testing, vulnerability scans, penetration tests, tamper detection, and incident exercises.
+
+### 8. Keep evidence
+
+Document architecture, decisions, ownership, reviews, tests, changes, and remediation.
+
+---
+
+# 12. Implementation Checklist
+
+## Payment flow
+
+- [ ] Card data is submitted directly to a PCI-compliant payment provider where possible
+- [ ] The backend accepts provider tokens instead of PAN/CVV
+- [ ] Amount and currency come from trusted server-side records
+- [ ] Payment creation, capture, and refund operations are idempotent
+- [ ] Webhooks are signature-verified and deduplicated
+- [ ] Payment-state transitions are validated
+
+## Data protection
+
+- [ ] CVV, track data, and PIN data are never retained after authorization
+- [ ] Stored payment data has a documented business purpose
+- [ ] Retention and secure-deletion processes cover databases, logs, caches, exports, and backups
+- [ ] PAN is tokenized or rendered unreadable when storage is required
+- [ ] Keys are managed outside source code and application configuration files
+
+## Application security
+
+- [ ] Payment endpoints use strict authentication and authorization
+- [ ] Administrative access uses unique identities and MFA
+- [ ] Public-facing payment applications have effective automated attack protection
+- [ ] Dependencies, containers, and hosts are continuously assessed
+- [ ] Security patches and vulnerabilities have defined remediation timelines
+- [ ] Production card data is not used in development or test environments
+
+## Logging and monitoring
+
+- [ ] Payment logs use an allowlist of approved fields
+- [ ] Request bodies and secret headers are not captured on sensitive routes
+- [ ] Privileged access and payment-state changes are auditable
+- [ ] Important logs are reviewed through automated mechanisms
+- [ ] Logs are protected from unauthorized modification
+- [ ] Required log history is retained and available
+
+## E-commerce pages
+
+- [ ] Payment-page scripts are inventoried, authorized, justified, and integrity-protected
+- [ ] Third-party JavaScript is minimized
+- [ ] Payment-page content and security headers are monitored for unauthorized change
+- [ ] Embedded payment forms are reviewed against current SAQ A eligibility guidance
+
+## Operations
+
+- [ ] Current CDE data-flow and network diagrams exist
+- [ ] In-scope assets and service accounts are inventoried
+- [ ] Segmentation controls are tested
+- [ ] Incident response is documented and exercised
+- [ ] Payment providers and other TPSPs have a documented responsibility matrix
+- [ ] Current third-party AOCs and compliance status are reviewed
+- [ ] The required SAQ or ROC path is confirmed with the compliance-accepting entity
+
+---
+
+# 13. Official References
+
+The references below are official PCI Security Standards Council resources.
+
+1. [PCI Data Security Standard overview](https://www.pcisecuritystandards.org/standards/pci-dss/)
+2. [PCI SSC Document Library](https://www.pcisecuritystandards.org/document_library/)
+3. [PCI DSS v4.0.1 publication announcement](https://blog.pcisecuritystandards.org/just-published-pci-dss-v4-0-1)
+4. [Maintaining Payment Security — 12 PCI DSS requirements](https://www.pcisecuritystandards.org/merchants/process/)
+5. [PCI DSS v4.x Resource Hub](https://blog.pcisecuritystandards.org/pci-dss-v4-0-resource-hub)
+6. [Payment Page Security and Preventing E-Skimming](https://blog.pcisecuritystandards.org/new-information-supplement-payment-page-security-and-preventing-e-skimming)
+7. [FAQ 1588 — SAQ A eligibility criteria for scripts](https://www.pcisecuritystandards.org/faqs/1588/)
+8. [PCI DSS v4.0.1 SAQs bulletin](https://www.pcisecuritystandards.org/wp-content/uploads/2024/10/SAQs_for_PCI_DSS_v4.0.1_Bulletin.pdf)
+9. [PCI DSS Tokenization Guidelines](https://www.pcisecuritystandards.org/documents/Tokenization_Guidelines_Info_Supplement.pdf)
+10. [PCI SSC Glossary](https://www.pcisecuritystandards.org/glossary/)
+
+---
+
+## Final takeaway
+
+For a backend engineer, PCI DSS can be reduced to one guiding principle:
+
+> **Keep raw card data out of your systems whenever possible. When a system must handle payment data or can affect its security, minimize access, protect every path, monitor continuously, test regularly, and retain evidence that the controls work.**
+
+---
+
+[^1]: PCI SSC, *PCI Data Security Standard overview*.
+[^2]: PCI SSC, *Just Published: PCI DSS v4.0.1*.
+[^3]: PCI SSC, *PCI DSS Tokenization Guidelines Information Supplement*.
+[^4]: PCI SSC, *Maintaining Payment Security*.
+[^5]: PCI DSS Requirement 10, including audit-log review and retention expectations.
+[^6]: PCI SSC, *Payment Page Security and Preventing E-Skimming*.
+[^7]: PCI SSC FAQ 1588, *How does an e-commerce merchant meet the SAQ A eligibility criteria for scripts?*
+[^8]: PCI SSC, *SAQs for PCI DSS v4.0.1 Now Available*.
