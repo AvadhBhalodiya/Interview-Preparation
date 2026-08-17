@@ -238,16 +238,12 @@ tenant:tenant-42:route:POST:/v1/payments
 
 Prefer the strongest authenticated identity available:
 
-```text
-Authenticated API key
-        ↓
-Authenticated user
-        ↓
-Tenant
-        ↓
-Trusted client IP
-        ↓
-Anonymous fingerprint
+```mermaid
+flowchart TD
+    APIKEY[Authenticated API key] --> USER[Authenticated user]
+    USER --> TENANT[Tenant]
+    TENANT --> IP[Trusted client IP]
+    IP --> ANON[Anonymous fingerprint]
 ```
 
 Do not blindly trust `X-Forwarded-For`. Only accept forwarding headers from known proxies or load balancers.
@@ -421,16 +417,10 @@ It can be implemented as:
 - A policing limiter that rejects overflow.
 - A queue that shapes traffic at a controlled rate.
 
-```text
-Burst traffic
-     │
-     ▼
-┌───────────┐
-│  Bucket   │
-└─────┬─────┘
-      │ Fixed drain rate
-      ▼
- Downstream service
+```mermaid
+flowchart TD
+    BURST[Burst traffic] --> BUCKET[Bucket]
+    BUCKET -->|Fixed drain rate| DOWNSTREAM[Downstream service]
 ```
 
 ### Advantages
@@ -496,17 +486,11 @@ A stateless rate-limit service:
 - Returns one combined decision.
 - Emits metrics and decision reasons.
 
-```text
-Request
-   │
-   ▼
-Local limiter
-   │ allowed
-   ▼
-Global distributed limiter
-   │ allowed
-   ▼
-Application
+```mermaid
+flowchart TD
+    REQ[Request] --> LOCAL[Local limiter]
+    LOCAL -->|Allowed| GLOBAL[Global distributed limiter]
+    GLOBAL -->|Allowed| APP[Application]
 ```
 
 ## 7.3 Why Use Both?
@@ -746,11 +730,12 @@ Do not make three independent calls for three policies.
 
 Use one request:
 
-```text
-Gateway ── one RPC ──> Rate-limit service
-                         ├─ tenant policy
-                         ├─ user policy
-                         └─ route policy
+```mermaid
+flowchart LR
+    GW[Gateway] -->|One RPC| RLS[Rate-limit service]
+    RLS --> TENANT[Tenant policy]
+    RLS --> USER[User policy]
+    RLS --> ROUTE[Route policy]
 ```
 
 This reduces:
@@ -1630,12 +1615,10 @@ Trade-offs:
 
 A global allocator leases tokens to regions. Regions then lease smaller batches to gateways.
 
-```text
-Global quota
-    ↓ regional leases
-Regional quota
-    ↓ gateway leases
-Local request enforcement
+```mermaid
+flowchart TD
+    GLOBAL[Global quota] -->|Regional leases| REGIONAL[Regional quota]
+    REGIONAL -->|Gateway leases| LOCAL[Local request enforcement]
 ```
 
 This hierarchical design minimizes global coordination.
@@ -2345,42 +2328,29 @@ For expensive retries, the system may optionally assign a lower cost to a verifi
 
 A strong design explanation should move in this order:
 
-```text
-Requirements
-    ↓
-Rate-limit identity and dimensions
-    ↓
-Algorithm selection
-    ↓
-Local versus global enforcement
-    ↓
-Stateless service and Redis
-    ↓
-Atomic operation
-    ↓
-Sharding and hot keys
-    ↓
-Failure behavior
-    ↓
-Multi-region trade-offs
-    ↓
-Observability and rollout
+```mermaid
+flowchart TD
+    REQ[Requirements] --> IDENTITY[Rate-limit identity and dimensions]
+    IDENTITY --> ALGO[Algorithm selection]
+    ALGO --> SCOPE[Local versus global enforcement]
+    SCOPE --> SVC[Stateless service and Redis]
+    SVC --> ATOMIC[Atomic operation]
+    ATOMIC --> SHARD[Sharding and hot keys]
+    SHARD --> FAILURE[Failure behavior]
+    FAILURE --> REGION[Multi-region trade-offs]
+    REGION --> OBS[Observability and rollout]
 ```
 
 ## 30.1 Core Design
 
-```text
-Client
-  ↓
-CDN / WAF
-  ↓
-API Gateway
-  ├─ Local token bucket
-  └─ Global rate-limit RPC
-          ↓
-   Stateless limiter
-          ↓
-      Redis Cluster
+```mermaid
+flowchart TD
+    CLIENT[Client] --> EDGE["CDN / WAF"]
+    EDGE --> GW[API Gateway]
+    GW --> BUCKET[Local token bucket]
+    GW --> RPC[Global rate-limit RPC]
+    RPC --> LIMITER[Stateless limiter]
+    LIMITER --> REDIS[(Redis Cluster)]
 ```
 
 ## 30.2 Most Important Design Choices

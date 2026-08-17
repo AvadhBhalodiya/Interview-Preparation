@@ -27,19 +27,28 @@ Without pagination, a large collection can cause:
 
 Pagination divides a large result set into smaller, manageable chunks.
 
-```text
-Without pagination
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant DB
 
-Client ───── GET /orders ─────> API ─────> Database
-Client <──── 500,000 orders ─── API <───── Database
-                    Slow and expensive
+    Note over Client,DB: Without pagination
+    Client->>API: GET /orders
+    API->>DB: Select every matching row
+    DB-->>API: 500,000 rows
+    API-->>Client: 500,000 orders
+    Note over API,DB: Slow and expensive
 ```
 
-```text
-With pagination
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
 
-Client ─── GET /orders?limit=20 ───> API
-Client <────── 20 orders + next ──── API
+    Note over Client,API: With pagination
+    Client->>API: GET /orders?limit=20
+    API-->>Client: 20 orders plus a next pointer
 ```
 
 The two most common approaches are:
@@ -221,11 +230,11 @@ It works well when:
 
 The cost generally increases as the offset grows.
 
-```text
-OFFSET 0        → small amount of skipped work
-OFFSET 10,000   → more skipped work
-OFFSET 500,000  → potentially expensive
-```
+| Offset | Skipped work |
+|---|---|
+| `OFFSET 0` | Small amount of skipped work |
+| `OFFSET 10,000` | More skipped work |
+| `OFFSET 500,000` | Potentially expensive |
 
 ### 2. Inserts can create duplicate results
 
@@ -720,20 +729,12 @@ The payload can be:
 2. Signed using an HMAC.
 3. Encoded using URL-safe Base64.
 
-```text
-Cursor payload
-      │
-      ▼
-JSON serialization
-      │
-      ▼
-HMAC signature
-      │
-      ▼
-Base64URL encoding
-      │
-      ▼
-Opaque cursor string
+```mermaid
+flowchart TD
+    A[Cursor payload] --> B[JSON serialization]
+    B --> C[HMAC signature]
+    C --> D[Base64URL encoding]
+    D --> E[Opaque cursor string]
 ```
 
 ## Why signing matters
@@ -1426,19 +1427,17 @@ The following primary documentation was reviewed for the behavior and design gui
 
 ## Final Summary
 
-```text
-                    OFFSET-BASED
-Client ── page/offset ──> API ── LIMIT + OFFSET ──> Database
-             │
-             ├── Easy numbered pages
-             ├── Easy direct jumps
-             └── Slower and less stable at deep offsets
+```mermaid
+flowchart LR
+    subgraph OFF[Offset-based]
+        OC[Client] -->|page or offset| OA[API]
+        OA -->|LIMIT and OFFSET| OD[(Database)]
+        OA --> OP["Easy numbered pages<br/>Easy direct jumps<br/>Slower and less stable at deep offsets"]
+    end
 
-
-                    CURSOR-BASED
-Client ─── cursor ──────> API ── range/keyset query ──> Database
-             │
-             ├── Efficient sequential traversal
-             ├── Stable during common insert patterns
-             └── No natural arbitrary page jump
+    subgraph CUR[Cursor-based]
+        CC[Client] -->|cursor| CA[API]
+        CA -->|range or keyset query| CD[(Database)]
+        CA --> CP["Efficient sequential traversal<br/>Stable during common insert patterns<br/>No natural arbitrary page jump"]
+    end
 ```

@@ -47,12 +47,17 @@ If this endpoint receives 1,000 requests and the result changes only every few m
 
 With caching:
 
-```text
-First request:
-Request → Database query → Store result in cache → Return response
-
-Later requests:
-Request → Read result from cache → Return response
+```mermaid
+flowchart LR
+    subgraph FIRST[First request]
+        A1[Request] --> B1[Database query]
+        B1 --> C1[Store result in cache]
+        C1 --> D1[Return response]
+    end
+    subgraph LATER[Later requests]
+        A2[Request] --> B2[Read result from cache]
+        B2 --> C2[Return response]
+    end
 ```
 
 The later requests avoid the database query.
@@ -86,12 +91,12 @@ This is the fast path.
 
 A **cache miss** means the value does not exist, has expired, or has been removed.
 
-```text
-Application → Cache → Value missing
-                         ↓
-                      Database
-                         ↓
-                 Store fresh value
+```mermaid
+flowchart TD
+    A[Application] --> B[Cache]
+    B --> C[Value missing]
+    C --> D[(Database)]
+    D --> E[Store fresh value]
 ```
 
 A cache miss is not necessarily an error. It is a normal part of caching.
@@ -252,10 +257,11 @@ CACHES = {
 
 Important limitation:
 
-```text
-Gunicorn worker 1 → Its own local cache
-Gunicorn worker 2 → A different local cache
-Gunicorn worker 3 → Another different local cache
+```mermaid
+flowchart LR
+    W1[Gunicorn worker 1] --> C1[Its own local cache]
+    W2[Gunicorn worker 2] --> C2[A different local cache]
+    W3[Gunicorn worker 3] --> C3[Another different local cache]
 ```
 
 Values are not shared between processes. This can produce inconsistent behavior in production.
@@ -996,14 +1002,11 @@ def update_product(product, validated_data):
 
 Flow:
 
-```text
-Begin transaction
-    ↓
-Update database
-    ↓
-Commit succeeds
-    ↓
-Delete cache entry
+```mermaid
+flowchart TD
+    A[Begin transaction] --> B[Update database]
+    B --> C[Commit succeeds]
+    C --> D[Delete cache entry]
 ```
 
 If the database transaction rolls back, the cache is not invalidated unnecessarily.
@@ -1185,14 +1188,11 @@ Use asynchronous cache APIs inside async views or async services so synchronous 
 
 A **cache stampede**, also called a dogpile, occurs when many requests miss the same key at the same time.
 
-```text
-Cache entry expires
-        ↓
-100 requests arrive together
-        ↓
-All 100 detect a cache miss
-        ↓
-All 100 run the expensive query
+```mermaid
+flowchart TD
+    A[Cache entry expires] --> B[100 requests arrive together]
+    B --> C[All 100 detect a cache miss]
+    C --> D[All 100 run the expensive query]
 ```
 
 This defeats the purpose of caching and can overload the database.
@@ -1514,26 +1514,20 @@ Why this design works:
 
 Django's caching framework provides four main levels:
 
-```text
-Entire site
-    ↓
-Individual view
-    ↓
-Template fragment
-    ↓
-Low-level cached value
+```mermaid
+flowchart TD
+    A[Entire site] --> B[Individual view]
+    B --> C[Template fragment]
+    C --> D[Low-level cached value]
 ```
 
 The most practical production approach is usually:
 
-```text
-Django application
-        ↓
-Shared Redis or Memcached
-        ↓
-Cache-aside reads with controlled TTL
-        ↓
-Explicit invalidation after database commits
+```mermaid
+flowchart TD
+    A[Django application] --> B[Shared Redis or Memcached]
+    B --> C[Cache-aside reads with controlled TTL]
+    C --> D[Explicit invalidation after database commits]
 ```
 
 The essential mental model is:

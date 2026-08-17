@@ -110,12 +110,10 @@ admin.get_permissions()
 
 it searches approximately like this:
 
-```text
-AdminUser
-    ↓ not found
-User
-    ↓ found
-get_permissions()
+```mermaid
+flowchart TD
+    A[AdminUser] -->|Not found| B[User]
+    B -->|Found| C["get_permissions()"]
 ```
 
 In a real class hierarchy, Python uses the class's complete **MRO** for this search.
@@ -232,12 +230,10 @@ super().method()
 
 means:
 
-```text
-Find the current class in the MRO
-            ↓
-Move to the next class
-            ↓
-Search for method from there
+```mermaid
+flowchart TD
+    A[Find the current class in the MRO] --> B[Move to the next class]
+    B --> C[Search for method from there]
 ```
 
 It does **not** mean:
@@ -309,15 +305,12 @@ Output:
 
 Object initialization happens in two logical stages:
 
-```text
-Developer.__init__()
-        |
-        +--> Employee.__init__()
-        |       |
-        |       +--> employee_id
-        |       +--> name
-        |
-        +--> primary_language
+```mermaid
+flowchart TD
+    DEV["Developer.__init__()"] --> EMP["Employee.__init__()"]
+    EMP --> EID[employee_id]
+    EMP --> NAME[name]
+    DEV --> LANG[primary_language]
 ```
 
 Calling `super().__init__()` is not automatically required by Python. It is required when the next implementation in the MRO performs initialization that the object needs.
@@ -688,14 +681,11 @@ BaseService: processing order 501
 
 ### What actually happens
 
-```text
-OrderService.process()
-        ↓ super()
-LoggingMixin.process()
-        ↓ super()
-ValidationMixin.process()
-        ↓ super()
-BaseService.process()
+```mermaid
+flowchart TD
+    A["OrderService.process()"] -->|"super()"| B["LoggingMixin.process()"]
+    B -->|"super()"| C["ValidationMixin.process()"]
+    C -->|"super()"| D["BaseService.process()"]
 ```
 
 Inside `LoggingMixin`, this call:
@@ -768,12 +758,12 @@ Output:
 
 MRO:
 
-```text
-Repository
-    → NamedComponent
-    → CachedComponent
-    → BaseComponent
-    → object
+```mermaid
+flowchart TD
+    A[Repository] --> B[NamedComponent]
+    B --> C[CachedComponent]
+    C --> D[BaseComponent]
+    D --> E[object]
 ```
 
 Each class consumes only the arguments it owns and forwards the remaining keyword arguments.
@@ -882,11 +872,11 @@ Inheritance is suitable when:
 
 Example:
 
-```text
-PaymentMethod
-├── CardPayment
-├── BankTransferPayment
-└── WalletPayment
+```mermaid
+flowchart TD
+    PM[PaymentMethod] --> CARD[CardPayment]
+    PM --> BANK[BankTransferPayment]
+    PM --> WALLET[WalletPayment]
 ```
 
 ## Prefer composition when
@@ -923,10 +913,10 @@ class CheckoutService:
 
 Prefer:
 
-```text
-BaseView
-└── AuthenticatedView
-    └── UserListView
+```mermaid
+flowchart TD
+    A[BaseView] --> B[AuthenticatedView]
+    B --> C[UserListView]
 ```
 
 Be cautious with:

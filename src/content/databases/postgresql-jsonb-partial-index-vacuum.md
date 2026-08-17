@@ -1512,18 +1512,11 @@ PostgreSQL indexes do not normally store tuple visibility information. During a 
 
 VACUUM maintains a visibility map that records pages whose tuples are all visible.
 
-```text
-B-tree index entry
-        |
-        v
-Visibility map says page is all-visible?
-        |
-   +----+----+
-   |         |
-  Yes        No
-   |         |
-Skip heap   Visit heap
-fetch       to check visibility
+```mermaid
+flowchart TD
+    E[B-tree index entry] --> V{Visibility map says<br/>page is all-visible?}
+    V -->|Yes| S[Skip heap fetch]
+    V -->|No| H[Visit heap to check visibility]
 ```
 
 When enough heap pages are marked all-visible, PostgreSQL may use an index-only scan efficiently.

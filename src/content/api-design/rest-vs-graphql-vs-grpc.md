@@ -25,11 +25,11 @@ REST, GraphQL, and gRPC solve similar communication problems, but they are not e
 
 A useful way to remember them is:
 
-```text
-REST     → "Which resource do I want?"
-GraphQL  → "Which exact fields do I want?"
-gRPC     → "Which remote method do I want to call?"
-```
+| Technology | Question it answers |
+|---|---|
+| REST | "Which resource do I want?" |
+| GraphQL | "Which exact fields do I want?" |
+| gRPC | "Which remote method do I want to call?" |
 
 This distinction is important because comparing them only by speed misses the larger architectural trade-offs.
 
@@ -378,17 +378,13 @@ The schema supports:
 
 A GraphQL layer can combine data from several services:
 
-```text
-Product Service
-Inventory Service
-Seller Service
-Review Service
-        │
-        ▼
-    GraphQL API
-        │
-        ▼
- Web / Mobile / Admin
+```mermaid
+flowchart TB
+    PS[Product Service] --> G[GraphQL API]
+    IS[Inventory Service] --> G
+    SS[Seller Service] --> G
+    RS[Review Service] --> G
+    G --> CL["Web / Mobile / Admin"]
 ```
 
 ### Fewer endpoint-specific response models
@@ -633,11 +629,15 @@ rpc GetProduct(GetProductRequest) returns (GetProductResponse);
 
 One request and a stream of responses.
 
-```text
-Client ───── Request ─────> Server
-Client <──── Event 1 ────── Server
-Client <──── Event 2 ────── Server
-Client <──── Event 3 ────── Server
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: Request
+    S-->>C: Event 1
+    S-->>C: Event 2
+    S-->>C: Event 3
 ```
 
 ```protobuf
@@ -649,11 +649,15 @@ rpc WatchInventory(WatchInventoryRequest)
 
 A stream of requests and one response.
 
-```text
-Client ───── Chunk 1 ─────> Server
-Client ───── Chunk 2 ─────> Server
-Client ───── Chunk 3 ─────> Server
-Client <──── Summary ────── Server
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: Chunk 1
+    C->>S: Chunk 2
+    C->>S: Chunk 3
+    S-->>C: Summary
 ```
 
 ```protobuf
@@ -665,11 +669,15 @@ rpc UploadReadings(stream SensorReading)
 
 Both sides send streams independently.
 
-```text
-Client ───── Message A ───> Server
-Client <──── Message B ──── Server
-Client ───── Message C ───> Server
-Client <──── Message D ──── Server
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: Message A
+    S-->>C: Message B
+    C->>S: Message C
+    S-->>C: Message D
 ```
 
 ```protobuf
@@ -715,15 +723,11 @@ response = stub.GetProduct(request, timeout=0.5)
 
 This is especially important in microservice call chains.
 
-```text
-API Gateway
-    │ 1000 ms total budget
-    ▼
-Order Service
-    │ 300 ms budget
-    ├────────> Inventory Service
-    │ 200 ms budget
-    └────────> Payment Service
+```mermaid
+flowchart TB
+    GW[API Gateway] -->|1000 ms total budget| ORD[Order Service]
+    ORD -->|300 ms budget| INV[Inventory Service]
+    ORD -->|200 ms budget| PAY[Payment Service]
 ```
 
 Without deadlines, slow downstream calls can consume threads, connections, memory, and the caller's entire latency budget.
@@ -934,13 +938,12 @@ A cached REST response served from an edge location may outperform an uncached G
 
 GraphQL can reduce client round trips and unnecessary fields, but server work can increase because a single request may fan out to many resolvers.
 
-```text
-One client request
-      │
-      ├── Product DB
-      ├── Seller Service
-      ├── Inventory Service
-      └── Review Service
+```mermaid
+flowchart LR
+    Q[One client request] --> PD[(Product DB)]
+    Q --> SS[Seller Service]
+    Q --> IS[Inventory Service]
+    Q --> RS[Review Service]
 ```
 
 Therefore:
@@ -1093,16 +1096,12 @@ type Product {
 
 Typical process:
 
-```text
-Add new field
-    ↓
-Migrate clients
-    ↓
-Monitor old-field usage
-    ↓
-Deprecate old field
-    ↓
-Remove it only after consumers are ready
+```mermaid
+flowchart TD
+    A[Add new field] --> B[Migrate clients]
+    B --> C[Monitor old-field usage]
+    C --> D[Deprecate old field]
+    D --> E[Remove only after<br/>consumers are ready]
 ```
 
 Be careful when changing nullability:
@@ -1520,16 +1519,16 @@ flowchart TD
 
 A compact decision checklist:
 
-```text
-Need easy public consumption?              → REST
-Need strong HTTP caching?                  → REST
-Need client-selected nested fields?        → GraphQL
-Need one UI API over multiple services?    → GraphQL
-Need native streaming RPC?                 → gRPC
-Need generated cross-language contracts?   → gRPC
-Need internal high-volume communication?   → gRPC
-Unsure and requirements are ordinary?      → REST
-```
+| Requirement | Choice |
+|---|---|
+| Need easy public consumption? | REST |
+| Need strong HTTP caching? | REST |
+| Need client-selected nested fields? | GraphQL |
+| Need one UI API over multiple services? | GraphQL |
+| Need native streaming RPC? | gRPC |
+| Need generated cross-language contracts? | gRPC |
+| Need internal high-volume communication? | gRPC |
+| Unsure and requirements are ordinary? | REST |
 
 ---
 
@@ -1554,11 +1553,11 @@ flowchart LR
 
 A common architecture is:
 
-```text
-External consumers  → REST
-Frontend applications → GraphQL BFF
-Internal services   → gRPC
-```
+| Boundary | Typical API style |
+|---|---|
+| External consumers | REST |
+| Frontend applications | GraphQL BFF |
+| Internal services | gRPC |
 
 This is not a rule, but it reflects the strengths of each approach.
 

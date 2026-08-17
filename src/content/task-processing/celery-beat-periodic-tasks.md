@@ -27,12 +27,18 @@ Common examples include:
 
 Periodic tasks are different from normal asynchronous tasks because they are not triggered directly by a user request or application event.
 
-```text
-Normal asynchronous task
-User action -> Application -> Queue -> Worker
-
-Periodic task
-Clock/Schedule -> Celery Beat -> Queue -> Worker
+```mermaid
+flowchart LR
+    subgraph NORMAL[Normal asynchronous task]
+        U[User action] --> A[Application]
+        A --> Q1[[Queue]]
+        Q1 --> W1[Worker]
+    end
+    subgraph PERIODIC[Periodic task]
+        S["Clock/Schedule"] --> B[Celery Beat]
+        B --> Q2[[Queue]]
+        Q2 --> W2[Worker]
+    end
 ```
 
 The important point is that scheduling and task execution are separate responsibilities.
@@ -66,14 +72,17 @@ Only **one active Beat scheduler should manage a particular schedule**.
 
 Running multiple Beat instances against the same schedule without leader election or another coordination mechanism can publish duplicate tasks.
 
-```text
-Correct
-One Beat -> Broker -> Multiple Workers
-
-Risky
-Beat 1 ----\
-            -> Broker -> Duplicate task messages
-Beat 2 ----/
+```mermaid
+flowchart LR
+    subgraph CORRECT[Correct]
+        B1[One Beat] --> BR1[(Broker)]
+        BR1 --> W1[Multiple Workers]
+    end
+    subgraph RISKY[Risky]
+        B2[Beat 1] --> BR2[(Broker)]
+        B3[Beat 2] --> BR2
+        BR2 --> D[Duplicate task messages]
+    end
 ```
 
 ---
@@ -108,33 +117,11 @@ flowchart LR
 
 ## Simplified flow
 
-```text
-+------------------------+
-| Schedule definitions   |
-| - interval             |
-| - crontab              |
-| - solar                |
-| - database schedule    |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| Celery Beat            |
-| Is this task due now?  |
-+-----------+------------+
-            |
-            | task message
-            v
-+------------------------+
-| Broker                 |
-| Redis / RabbitMQ / SQS |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| Celery Worker          |
-| Executes task          |
-+------------------------+
+```mermaid
+flowchart TB
+    S["Schedule definitions<br/>interval / crontab / solar / database schedule"] --> B["Celery Beat<br/>Is this task due now?"]
+    B -->|task message| BR[("Broker<br/>Redis / RabbitMQ / SQS")]
+    BR --> W["Celery Worker<br/>Executes task"]
 ```
 
 ---
@@ -639,14 +626,12 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 
 Celery settings in Django use the `CELERY_` prefix.
 
-```text
-Celery setting     Django setting
----------------    ----------------------
-timezone           CELERY_TIMEZONE
-beat_schedule      CELERY_BEAT_SCHEDULE
-task_routes        CELERY_TASK_ROUTES
-result_backend     CELERY_RESULT_BACKEND
-```
+| Celery setting | Django setting |
+| --- | --- |
+| timezone | CELERY_TIMEZONE |
+| beat_schedule | CELERY_BEAT_SCHEDULE |
+| task_routes | CELERY_TASK_ROUTES |
+| result_backend | CELERY_RESULT_BACKEND |
 
 ## Example
 
@@ -1004,12 +989,16 @@ Workers may reserve ETA/countdown tasks before their execution time and keep the
 
 For long-term schedules, prefer a durable scheduler design instead of queuing thousands of far-future messages.
 
-```text
-Good
-Database schedule -> Beat checks due time -> Broker -> Worker
-
-Risky at scale
-Publish 500,000 tasks with ETA six months in the future
+```mermaid
+flowchart LR
+    subgraph GOOD[Good]
+        S[Database schedule] --> B[Beat checks due time]
+        B --> BR[(Broker)]
+        BR --> W[Worker]
+    end
+    subgraph RISKY["Risky at scale"]
+        R["Publish 500,000 tasks with ETA six months in the future"]
+    end
 ```
 
 ---
@@ -1125,15 +1114,12 @@ Beat -> process_all_customers
 
 Use a dispatcher and smaller tasks:
 
-```text
-Beat
-  |
-  v
-find_due_customers
-  |
-  +--> process_customer(1)
-  +--> process_customer(2)
-  +--> process_customer(3)
+```mermaid
+flowchart TD
+    B[Beat] --> F[find_due_customers]
+    F --> C1["process_customer(1)"]
+    F --> C2["process_customer(2)"]
+    F --> C3["process_customer(3)"]
 ```
 
 This improves parallelism, retries, monitoring, and failure isolation.
@@ -1374,21 +1360,12 @@ In production, run Beat as a separately managed service.
 
 ## Recommended topology
 
-```text
-                         +------------------+
-                         | One active Beat  |
-                         +--------+---------+
-                                  |
-                                  v
-+-------------+          +------------------+          +------------------+
-| Application | -------> | Broker           | -------> | Worker cluster   |
-+-------------+          | Redis/RabbitMQ   |          | multiple nodes   |
-                         +------------------+          +------------------+
-                                  |
-                                  v
-                         +------------------+
-                         | Result backend   |
-                         +------------------+
+```mermaid
+flowchart LR
+    BEAT[One active Beat] --> BR[("Broker<br/>Redis / RabbitMQ")]
+    APP[Application] --> BR
+    BR --> WC["Worker cluster<br/>multiple nodes"]
+    BR --> RES[(Result backend)]
 ```
 
 ## Systemd example
@@ -1564,12 +1541,12 @@ Schedule it every minute and alert if the timestamp becomes too old.
 
 This verifies more than process existence:
 
-```text
-Beat evaluated schedule
--> Beat published message
--> Broker accepted message
--> Worker consumed message
--> Task executed
+```mermaid
+flowchart TD
+    A[Beat evaluated schedule] --> B[Beat published message]
+    B --> C[Broker accepted message]
+    C --> D[Worker consumed message]
+    D --> E[Task executed]
 ```
 
 ## Logging fields
@@ -1711,12 +1688,12 @@ def delete_expired_tokens() -> int:
 
 ## Use case 2: Daily report generation
 
-```text
-Every day at 7:00 AM
--> Select previous day's data
--> Generate report
--> Store file
--> Send notification
+```mermaid
+flowchart TD
+    A["Every day at 7:00 AM"] --> B["Select previous day's data"]
+    B --> C[Generate report]
+    C --> D[Store file]
+    D --> E[Send notification]
 ```
 
 Use a business key such as:
@@ -1727,12 +1704,12 @@ daily-report:{tenant_id}:{report_date}
 
 ## Use case 3: Payment reconciliation
 
-```text
-Every 15 minutes
--> Read unsettled internal transactions
--> Fetch provider status
--> Reconcile differences
--> Record audit result
+```mermaid
+flowchart TD
+    A[Every 15 minutes] --> B[Read unsettled internal transactions]
+    B --> C[Fetch provider status]
+    C --> D[Reconcile differences]
+    D --> E[Record audit result]
 ```
 
 This task should be idempotent and should not blindly create duplicate ledger entries.
@@ -1741,24 +1718,24 @@ This task should be idempotent and should not blindly create duplicate ledger en
 
 Instead of creating one periodic task per reminder, Beat can run one dispatcher:
 
-```text
-Beat every minute
--> Query reminders where due_at <= now and sent_at is null
--> Lock rows
--> Enqueue individual notification tasks
+```mermaid
+flowchart TD
+    A[Beat every minute] --> B["Query reminders due at or before now where sent_at is null"]
+    B --> C[Lock rows]
+    C --> D[Enqueue individual notification tasks]
 ```
 
 This approach is often more scalable for large numbers of user reminders.
 
 ## Use case 5: External data synchronization
 
-```text
-Beat every 10 minutes
--> Find changed records
--> Create smaller sync tasks
--> Apply rate limits
--> Retry transient failures
--> Record source version
+```mermaid
+flowchart TD
+    A[Beat every 10 minutes] --> B[Find changed records]
+    B --> C[Create smaller sync tasks]
+    C --> D[Apply rate limits]
+    D --> E[Retry transient failures]
+    E --> F[Record source version]
 ```
 
 ## Use case 6: Monthly invoice generation

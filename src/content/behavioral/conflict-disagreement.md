@@ -31,20 +31,12 @@ For example, one developer may prefer releasing a small change quickly, while an
 
 A healthy disagreement can improve a decision when the team discusses it respectfully and uses evidence.
 
-```text
-Different Viewpoints
-        │
-        ▼
-Open Discussion
-        │
-        ▼
-Evidence and Trade-offs
-        │
-        ▼
-Clear Decision
-        │
-        ▼
-Shared Ownership
+```mermaid
+flowchart TD
+    A[Different viewpoints] --> B[Open discussion]
+    B --> C[Evidence and trade-offs]
+    C --> D[Clear decision]
+    D --> E[Shared ownership]
 ```
 
 The objective is not to avoid every disagreement. The objective is to prevent disagreement from becoming personal, unproductive, or harmful to delivery.
@@ -508,17 +500,10 @@ Teams still need a decision.
 
 A practical decision model is:
 
-```text
-Is the decision reversible?
-        │
-   ┌────┴────┐
-   │         │
-  Yes        No
-   │         │
-Run a test   Perform deeper review
-or choose    and involve the
-a time-boxed accountable owner
-approach
+```mermaid
+flowchart TD
+    A{Is the decision reversible?} -->|Yes| B["Run a test or choose<br/>a time-boxed approach"]
+    A -->|No| C["Perform a deeper review and<br/>involve the accountable owner"]
 ```
 
 ## Reversible Decisions

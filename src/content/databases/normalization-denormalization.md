@@ -278,14 +278,11 @@ A table is in **First Normal Form** when:
 
 ### Not in 1NF
 
-```text
-orders
-+----------+-----------+-------------+-------------+-------------+
-| order_id | customer  | product_1   | product_2   | product_3   |
-+----------+-----------+-------------+-------------+-------------+
-| 1001     | Asha      | Keyboard    | Mouse       | NULL        |
-+----------+-----------+-------------+-------------+-------------+
-```
+`orders`
+
+| order_id | customer | product_1 | product_2 | product_3 |
+|---|---|---|---|---|
+| 1001 | Asha | Keyboard | Mouse | NULL |
 
 Problems:
 
@@ -296,22 +293,18 @@ Problems:
 
 ### 1NF Design
 
-```text
-orders
-+----------+-------------+
-| order_id | customer_id |
-+----------+-------------+
-| 1001     | 10          |
-+----------+-------------+
+`orders`
 
-order_items
-+----------+---------+------------+
+| order_id | customer_id |
+|---|---|
+| 1001 | 10 |
+
+`order_items`
+
 | order_id | line_no | product_id |
-+----------+---------+------------+
-| 1001     | 1       | 501        |
-| 1001     | 2       | 502        |
-+----------+---------+------------+
-```
+|---|---|---|
+| 1001 | 1 | 501 |
+| 1001 | 2 | 502 |
 
 ### SQL
 
@@ -1113,20 +1106,15 @@ This structure is excellent for search and filtering, but the relational databas
 
 A common production arrangement is:
 
-```text
-Normalized transactional schema
-        |
-        +--> indexes for common queries
-        |
-        +--> views for reusable query logic
-        |
-        +--> materialized views for expensive reads
-        |
-        +--> summary tables for dashboards
-        |
-        +--> search index for full-text search
-        |
-        +--> warehouse/star schema for analytics
+```mermaid
+flowchart LR
+    N[(Normalized transactional schema)]
+    N --> IX[Indexes for common queries]
+    N --> VW[Views for reusable query logic]
+    N --> MV[Materialized views for expensive reads]
+    N --> ST[Summary tables for dashboards]
+    N --> SI[Search index for full-text search]
+    N --> WH["Warehouse / star schema for analytics"]
 ```
 
 The normalized model protects the meaning of the data. Denormalized models optimize specific access patterns.
@@ -1494,11 +1482,10 @@ Good for:
 
 Use when the same data is requested repeatedly and invalidation is manageable.
 
-```text
-Request -> cache
-           | miss
-           v
-      normalized database
+```mermaid
+flowchart LR
+    REQ[Request] --> C[(Cache)]
+    C -->|Miss| DB[(Normalized database)]
 ```
 
 The database schema remains correct while the cache absorbs repeated reads.

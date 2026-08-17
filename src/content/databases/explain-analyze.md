@@ -50,33 +50,13 @@ They help answer practical questions such as:
 
 A simplified query-processing flow looks like this:
 
-```text
-SQL Query
-   │
-   ▼
-┌───────────────┐
-│ Parser        │  Checks syntax and builds a query structure
-└───────┬───────┘
-        │
-        ▼
-┌───────────────┐
-│ Rewriter      │  Expands views and applies logical rewrites
-└───────┬───────┘
-        │
-        ▼
-┌───────────────┐
-│ Optimizer     │  Evaluates possible access paths and join orders
-└───────┬───────┘
-        │
-        ▼
-┌───────────────┐
-│ Execution Plan│  Selected tree of physical operations
-└───────┬───────┘
-        │
-        ▼
-┌───────────────┐
-│ Executor      │  Runs the selected plan and returns rows
-└───────────────┘
+```mermaid
+flowchart TD
+    Q[SQL query] --> P["Parser<br/>Checks syntax and builds a query structure"]
+    P --> R["Rewriter<br/>Expands views and applies logical rewrites"]
+    R --> O["Optimizer<br/>Evaluates possible access paths and join orders"]
+    O --> EP["Execution plan<br/>Selected tree of physical operations"]
+    EP --> EX["Executor<br/>Runs the selected plan and returns rows"]
 ```
 
 The optimizer usually makes decisions using:
@@ -613,16 +593,12 @@ If explicit sort nodes are required first, their cost must be considered as part
 
 ## 8.4 Join Diagram
 
-```text
-                 JOIN STRATEGY
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-        ▼              ▼              ▼
-  Nested Loop       Hash Join      Merge Join
-  Small outer       Equality       Sorted inputs
-  Indexed inner     Large inputs   Large inputs
-  Repeated lookup   Hash table     Ordered walk
+```mermaid
+flowchart TD
+    S{Join strategy?}
+    S --> NL["Nested Loop<br/>Small outer<br/>Indexed inner<br/>Repeated lookup"]
+    S --> HJ["Hash Join<br/>Equality<br/>Large inputs<br/>Hash table"]
+    S --> MJ["Merge Join<br/>Sorted inputs<br/>Large inputs<br/>Ordered walk"]
 ```
 
 No join type is universally best. The correct choice depends on row counts, indexes, data distribution, available memory, and query shape.
@@ -1078,26 +1054,15 @@ Possible improvements:
 
 Use a measured process rather than guessing.
 
-```text
-Slow Query
-    │
-    ▼
-Capture Baseline
-    │
-    ▼
-EXPLAIN ANALYZE + BUFFERS
-    │
-    ▼
-Find High Work / Bad Estimates
-    │
-    ▼
-Change One Relevant Thing
-    │
-    ▼
-Run the Same Test Again
-    │
-    ▼
-Compare Time, Rows, Loops, I/O
+```mermaid
+flowchart TD
+    A[Slow query] --> B[Capture baseline]
+    B --> C["EXPLAIN ANALYZE + BUFFERS"]
+    C --> D["Find high work / bad estimates"]
+    D --> E[Change one relevant thing]
+    E --> F[Run the same test again]
+    F --> G["Compare time, rows, loops, I/O"]
+    G --> D
 ```
 
 ## Step 1: Capture the Exact Query

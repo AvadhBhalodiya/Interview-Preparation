@@ -69,22 +69,31 @@ flowchart LR
 
 The same feature can be tested with different boundaries:
 
-```text
-Unit test
-┌─────────────────────┐
-│ Order Service       │──> Mock repository
-│ discount calculation│──> Fake payment client
-└─────────────────────┘
+```mermaid
+flowchart TB
+    subgraph UNIT[Unit test]
+        OS[Order Service<br/>discount calculation]
+        MOCKREPO[Mock repository]
+        FAKEPAY[Fake payment client]
+        OS --> MOCKREPO
+        OS --> FAKEPAY
+    end
 
-Integration test
-┌──────────────────────────────────────┐
-│ API + Service + Real Test Database   │
-└──────────────────────────────────────┘
+    subgraph INT[Integration test]
+        IAPI[API]
+        ISVC[Service]
+        IDB[(Real test database)]
+        IAPI --> ISVC --> IDB
+    end
 
-E2E test
-┌────────────────────────────────────────────────────┐
-│ Browser → API → Service → Database → Result in UI  │
-└────────────────────────────────────────────────────┘
+    subgraph E2E[E2E test]
+        BROWSER[Browser]
+        EAPI[API]
+        ESVC[Service]
+        EDB[(Database)]
+        RESULT[Result in UI]
+        BROWSER --> EAPI --> ESVC --> EDB --> RESULT
+    end
 ```
 
 The labels are sometimes used differently across teams. Therefore, teams should document their test boundaries instead of relying only on names.
@@ -320,18 +329,16 @@ async def test_create_user_persists_user(test_database) -> None:
 
 This test may execute:
 
-```text
-HTTP request
-   ↓
-FastAPI router
-   ↓
-Pydantic validation
-   ↓
-Service
-   ↓
-Repository
-   ↓
-Real test database
+```mermaid
+flowchart TD
+    REQ[HTTP request]
+    ROUTER[FastAPI router]
+    VALIDATION[Pydantic validation]
+    SERVICE[Service]
+    REPO[Repository]
+    DB[(Real test database)]
+
+    REQ --> ROUTER --> VALIDATION --> SERVICE --> REPO --> DB
 ```
 
 It is an integration test because several real application layers are working together.
@@ -421,14 +428,18 @@ An end-to-end test validates a complete workflow through the application from an
 
 For a web application, an E2E test commonly executes:
 
-```text
-Browser
-  → Frontend
-  → Backend API
-  → Business services
-  → Database
-  → Response
-  → Updated browser UI
+```mermaid
+flowchart TD
+    BROWSER[Browser]
+    FRONTEND[Frontend]
+    API[Backend API]
+    SERVICES[Business services]
+    DB[(Database)]
+    RESPONSE[Response]
+    UI[Updated browser UI]
+
+    BROWSER --> FRONTEND --> API --> SERVICES --> DB
+    DB --> RESPONSE --> UI
 ```
 
 The test should focus on observable behavior rather than internal implementation details.
@@ -703,12 +714,15 @@ Reduce this risk with:
 
 If testing `OrderService`, mock its external collaborators—not `OrderService` itself.
 
-```text
-Correct:
-OrderService → MockPaymentGateway
+```mermaid
+flowchart LR
+    subgraph RIGHT[Correct]
+        OS[OrderService] --> MPG[MockPaymentGateway]
+    end
 
-Incorrect:
-MockOrderService → assert mocked value
+    subgraph WRONG[Incorrect]
+        MOS[MockOrderService] --> AV[Assert mocked value]
+    end
 ```
 
 The second test verifies only the mock configuration.
@@ -831,16 +845,15 @@ flowchart LR
 
 Run tests in roughly this order:
 
-```text
-Fast and precise
-      ↓
-Unit tests
-      ↓
-Integration tests
-      ↓
-E2E tests
-      ↓
-Slow and broad
+```mermaid
+flowchart TD
+    FAST[Fast and precise]
+    UNIT[Unit tests]
+    INT[Integration tests]
+    E2E[E2E tests]
+    SLOW[Slow and broad]
+
+    FAST --> UNIT --> INT --> E2E --> SLOW
 ```
 
 There is little value in spending 20 minutes on E2E tests when a unit test can identify the failure in seconds.

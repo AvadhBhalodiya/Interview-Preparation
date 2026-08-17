@@ -19,18 +19,13 @@ A **CI/CD pipeline** is an automated workflow that takes a software change from 
 
 A typical pipeline performs the following work:
 
-```text
-Developer pushes code
-        ↓
-Compile or package the application
-        ↓
-Run automated checks and tests
-        ↓
-Create a versioned artifact or Docker image
-        ↓
-Deploy it to an environment
-        ↓
-Verify application health
+```mermaid
+flowchart TD
+    A[Developer Pushes Code] --> B[Compile or Package the Application]
+    B --> C[Run Automated Checks and Tests]
+    C --> D[Create a Versioned Artifact or Docker Image]
+    D --> E[Deploy It to an Environment]
+    E --> F[Verify Application Health]
 ```
 
 The main purpose is to make software delivery:
@@ -179,10 +174,11 @@ Common triggers are:
 
 A common setup is:
 
-```text
-Pull request → Validation pipeline
-Merge to main → Staging deployment
-Version tag → Production deployment
+```mermaid
+flowchart LR
+    A[Pull Request] --> B[Validation Pipeline]
+    C[Merge to Main] --> D[Staging Deployment]
+    E[Version Tag] --> F[Production Deployment]
 ```
 
 ## 4.2 Stage
@@ -538,12 +534,12 @@ Use it for non-critical internal systems or development environments.
 
 Instances or containers are replaced gradually.
 
-```text
-Step 1: [Old] [Old] [Old] [New]
-Step 2: [Old] [Old] [New] [New]
-Step 3: [Old] [New] [New] [New]
-Step 4: [New] [New] [New] [New]
-```
+| Step | Instance 1 | Instance 2 | Instance 3 | Instance 4 |
+|---|---|---|---|---|
+| Step 1 | Old | Old | Old | New |
+| Step 2 | Old | Old | New | New |
+| Step 3 | Old | New | New | New |
+| Step 4 | New | New | New | New |
 
 **Advantages**
 
@@ -587,12 +583,12 @@ After validating green, traffic is switched from blue to green.
 
 A small percentage of traffic is sent to the new version first.
 
-```text
-Initial:  95% old | 5% new
-Next:     75% old | 25% new
-Next:     50% old | 50% new
-Final:     0% old | 100% new
-```
+| Stage | Old | New |
+|---|---|---|
+| Initial | 95% | 5% |
+| Next | 75% | 25% |
+| Next | 50% | 50% |
+| Final | 0% | 100% |
 
 Metrics are monitored during each step.
 
@@ -610,14 +606,11 @@ Metrics are monitored during each step.
 
 Feature flags separate **deployment** from **feature release**.
 
-```text
-Deploy code with feature disabled
-                ↓
-Enable for internal users
-                ↓
-Enable for 5% of users
-                ↓
-Increase gradually
+```mermaid
+flowchart TD
+    A[Deploy Code with Feature Disabled] --> B[Enable for Internal Users]
+    B --> C[Enable for 5% of Users]
+    C --> D[Increase Gradually]
 ```
 
 This allows a team to deploy code safely without immediately exposing the feature to everyone.
@@ -778,10 +771,11 @@ Scan the final image before production deployment.
 
 A practical policy may be:
 
-```text
-Critical vulnerability → Block deployment
-High vulnerability     → Block or require approved exception
-Medium vulnerability   → Track and remediate
+```mermaid
+flowchart LR
+    A[Critical Vulnerability] --> B[Block Deployment]
+    C[High Vulnerability] --> D[Block or Require Approved Exception]
+    E[Medium Vulnerability] --> F[Track and Remediate]
 ```
 
 The policy should account for whether the vulnerable package is used, whether a fix is available, and the risk of the target environment.
@@ -851,12 +845,10 @@ Amazon ECR stores versioned container images.
 
 Typical image flow:
 
-```text
-CodeBuild or GitHub Actions
-        ↓ docker push
-Amazon ECR
-        ↓ image reference
-Amazon ECS / EKS / Lambda
+```mermaid
+flowchart TD
+    A[CodeBuild or GitHub Actions] -- docker push --> B[Amazon ECR]
+    B -- image reference --> C["Amazon ECS / EKS / Lambda"]
 ```
 
 ECR can perform image vulnerability scanning. Enhanced scanning integrates with Amazon Inspector and can continuously update findings as new vulnerabilities are discovered.
@@ -901,18 +893,13 @@ flowchart LR
 
 Runs when a pull request is opened or updated.
 
-```text
-Checkout
-  ↓
-Install dependencies
-  ↓
-Lint + type check
-  ↓
-Unit tests
-  ↓
-Integration tests
-  ↓
-Optional Docker build validation
+```mermaid
+flowchart TD
+    A[Checkout] --> B[Install Dependencies]
+    B --> C[Lint + Type Check]
+    C --> D[Unit Tests]
+    D --> E[Integration Tests]
+    E --> F[Optional Docker Build Validation]
 ```
 
 It should not deploy untrusted pull-request code to production.
@@ -921,32 +908,24 @@ It should not deploy untrusted pull-request code to production.
 
 Runs after approved code is merged.
 
-```text
-Build immutable image
-  ↓
-Scan image
-  ↓
-Push to ECR
-  ↓
-Deploy to staging
-  ↓
-Run smoke/integration tests
+```mermaid
+flowchart TD
+    A[Build Immutable Image] --> B[Scan Image]
+    B --> C[Push to ECR]
+    C --> D[Deploy to Staging]
+    D --> E["Run Smoke/Integration Tests"]
 ```
 
 ## 12.4 Production Release Pipeline
 
 Triggered by an approved release tag or manual promotion.
 
-```text
-Select already-tested image digest
-  ↓
-Production approval
-  ↓
-Update ECS service
-  ↓
-Monitor health and alarms
-  ↓
-Complete or roll back
+```mermaid
+flowchart TD
+    A[Select Already-Tested Image Digest] --> B[Production Approval]
+    B --> C[Update ECS Service]
+    C --> D[Monitor Health and Alarms]
+    D --> E[Complete or Roll Back]
 ```
 
 ---
@@ -1247,11 +1226,12 @@ Benefits:
 
 Use different roles for different activities.
 
-```text
-CI test role       → Read test resources only
-Image publisher    → Push to specific ECR repositories
-Staging deployer   → Update staging services
-Production deployer→ Update approved production services
+```mermaid
+flowchart LR
+    A[CI Test Role] --> B[Read Test Resources Only]
+    C[Image Publisher] --> D[Push to Specific ECR Repositories]
+    E[Staging Deployer] --> F[Update Staging Services]
+    G[Production Deployer] --> H[Update Approved Production Services]
 ```
 
 The build role should not automatically have administrator access.
@@ -1401,10 +1381,11 @@ Use:
 
 In a monorepo, run only affected pipelines when practical.
 
-```text
-frontend/** changed → Run frontend pipeline
-backend/** changed  → Run backend pipeline
-infra/** changed    → Run infrastructure validation
+```mermaid
+flowchart LR
+    A["frontend/** changed"] --> B[Run Frontend Pipeline]
+    C["backend/** changed"] --> D[Run Backend Pipeline]
+    E["infra/** changed"] --> F[Run Infrastructure Validation]
 ```
 
 Shared changes should still trigger all dependent components.
@@ -1499,15 +1480,17 @@ Avoid sending alerts that only say “deployment failed” without context.
 
 ## 21.1 Basic Team Pipeline
 
-```text
-Pull Request:
-Lint → Unit Tests → Build Validation
-
-Main Branch:
-Build Image → Push ECR → Deploy Staging → Smoke Test
-
-Production:
-Manual Approval → Deploy → Health Check
+```mermaid
+flowchart LR
+    subgraph PR[Pull Request]
+        A[Lint] --> B[Unit Tests] --> C[Build Validation]
+    end
+    subgraph MAIN[Main Branch]
+        D[Build Image] --> E[Push ECR] --> F[Deploy Staging] --> G[Smoke Test]
+    end
+    subgraph PROD[Production]
+        H[Manual Approval] --> I[Deploy] --> J[Health Check]
+    end
 ```
 
 This is suitable for many small and medium application teams.
@@ -1533,31 +1516,25 @@ flowchart LR
 
 ## 21.3 AWS-Native Pipeline
 
-```text
-GitHub / S3 / external source
-              ↓
-       AWS CodePipeline
-              ↓
-       AWS CodeBuild
-              ↓
-         Amazon ECR
-              ↓
-    ECS rolling deployment
-       or CodeDeploy blue/green
-              ↓
-    CloudWatch health signals
+```mermaid
+flowchart TD
+    A["GitHub / S3 / External Source"] --> B[AWS CodePipeline]
+    B --> C[AWS CodeBuild]
+    C --> D[Amazon ECR]
+    D --> E["ECS Rolling Deployment<br/>or CodeDeploy Blue/Green"]
+    E --> F[CloudWatch Health Signals]
 ```
 
 ## 21.4 GitHub-Orchestrated AWS Pipeline
 
-```text
-GitHub Actions
-├── Test on managed runner
-├── Authenticate to AWS using OIDC
-├── Build Docker image
-├── Push image to ECR
-├── Render ECS task definition
-└── Update ECS service
+```mermaid
+flowchart TD
+    A[GitHub Actions] --> B[Test on Managed Runner]
+    B --> C[Authenticate to AWS Using OIDC]
+    C --> D[Build Docker Image]
+    D --> E[Push Image to ECR]
+    E --> F[Render ECS Task Definition]
+    F --> G[Update ECS Service]
 ```
 
 Both designs are valid. The choice depends on team familiarity, compliance, integration needs, cost, and operational ownership.
@@ -1592,23 +1569,24 @@ A CI/CD pipeline automates the movement of a code change from source control to 
 
 ## 22.4 Final Flow to Remember
 
-```text
-Code Change
-   ↓
-Continuous Integration
-   ├── Build
-   ├── Lint
-   ├── Test
-   └── Scan
-   ↓
-Immutable Artifact
-   ↓
-Continuous Delivery / Deployment
-   ├── Deploy to staging
-   ├── Verify
-   ├── Approve or automatically promote
-   ├── Deploy safely to production
-   └── Monitor and roll back when required
+```mermaid
+flowchart TD
+    A[Code Change] --> CI
+    subgraph CI[Continuous Integration]
+        B[Build]
+        C[Lint]
+        D[Test]
+        E[Scan]
+    end
+    CI --> F[Immutable Artifact]
+    F --> CD
+    subgraph CD["Continuous Delivery / Deployment"]
+        G[Deploy to Staging]
+        H[Verify]
+        I[Approve or Automatically Promote]
+        J[Deploy Safely to Production]
+        K[Monitor and Roll Back When Required]
+    end
 ```
 
 ---

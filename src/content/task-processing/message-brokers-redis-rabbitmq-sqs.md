@@ -26,20 +26,19 @@ For example, consider an API that performs all of these operations during a sing
 4. Updates analytics.
 5. Notifies an external system.
 
-```text
-Client
-  |
-  v
-API Server
-  |
-  +--> Create order
-  +--> Generate invoice
-  +--> Send email
-  +--> Update analytics
-  +--> Call external service
-  |
-  v
-Response
+```mermaid
+flowchart TD
+    C[Client] --> A[API Server]
+    A --> W1[Create order]
+    A --> W2[Generate invoice]
+    A --> W3[Send email]
+    A --> W4[Update analytics]
+    A --> W5[Call external service]
+    W1 --> R[Response]
+    W2 --> R
+    W3 --> R
+    W4 --> R
+    W5 --> R
 ```
 
 This design creates several problems:
@@ -143,10 +142,11 @@ def generate_invoice(invoice_id: int) -> None:
 
 Multiple workers can consume from the same queue.
 
-```text
-                    +--> Worker 1
-Queue: invoices ----+--> Worker 2
-                    +--> Worker 3
+```mermaid
+flowchart LR
+    Q[["Queue: invoices"]] --> W1[Worker 1]
+    Q --> W2[Worker 2]
+    Q --> W3[Worker 3]
 ```
 
 This is called the **competing consumers** pattern. Each task is normally processed by one worker.
@@ -159,10 +159,12 @@ A result backend stores task state or return values.
 
 Possible states include:
 
-```text
-PENDING -> STARTED -> SUCCESS
-                   -> FAILURE
-                   -> RETRY
+```mermaid
+flowchart LR
+    P[PENDING] --> S[STARTED]
+    S --> OK[SUCCESS]
+    S --> F[FAILURE]
+    S --> R[RETRY]
 ```
 
 The result backend and broker are separate concepts.
@@ -823,17 +825,11 @@ NACK + no requeue   -> drop or dead-letter
 
 Avoid immediate infinite requeue loops.
 
-```text
-Message fails
-    |
-    v
-Requeue immediately
-    |
-    v
-Same worker receives it again
-    |
-    v
-CPU and broker resources are consumed continuously
+```mermaid
+flowchart TD
+    A[Message fails] --> B[Requeue immediately]
+    B --> C[Same worker receives it again]
+    C --> D[CPU and broker resources are consumed continuously]
 ```
 
 Use delayed retries, a delivery limit, or dead-letter routing instead.
@@ -1447,15 +1443,22 @@ Amazon SQS
 
 ## 7.3 Architecture Complexity
 
-```text
-Redis:
-Producer -> Redis queue -> Worker
-
-RabbitMQ:
-Publisher -> Exchange -> Binding -> Queue -> Consumer
-
-SQS:
-Producer -> SQS queue <- Polling consumer
+```mermaid
+flowchart LR
+    subgraph REDIS[Redis]
+        P1[Producer] --> Q1[[Redis queue]]
+        Q1 --> W1[Worker]
+    end
+    subgraph RABBIT[RabbitMQ]
+        P2[Publisher] --> EX{Exchange}
+        EX --> BN[Binding]
+        BN --> Q2[[Queue]]
+        Q2 --> C2[Consumer]
+    end
+    subgraph AWSSQS[SQS]
+        P3[Producer] --> Q3[[SQS queue]]
+        C3[Polling consumer] --> Q3
+    end
 ```
 
 RabbitMQ has more concepts, but those concepts provide more control.
@@ -1797,18 +1800,12 @@ Define the production retry policy explicitly instead of relying only on a defau
 
 SQS naturally retries when a message is not deleted.
 
-```text
-Receive
-  |
-  +--> Success -> Delete
-  |
-  +--> Failure -> Do not delete
-                   |
-                   v
-            Visibility expires
-                   |
-                   v
-                Retry
+```mermaid
+flowchart TD
+    R[Receive] -->|Success| D[Delete]
+    R -->|Failure| N[Do not delete]
+    N --> V[Visibility expires]
+    V --> RT[Retry]
 ```
 
 Use:

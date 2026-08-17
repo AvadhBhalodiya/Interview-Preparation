@@ -43,16 +43,20 @@ Monitoring and logging help answer different questions:
 
 A mature production system does not collect data only for historical analysis. It turns telemetry into **actionable signals**.
 
-```text
-Application activity
-        │
-        ├── Metrics ──> Health and trends
-        ├── Logs ─────> Detailed event history
-        ├── Traces ───> Request flow and latency
-        └── Errors ───> Stack trace and code context
-                         │
-                         ▼
-                  Alerts and response
+```mermaid
+flowchart TD
+    A[Application activity] --> M[Metrics]
+    A --> L[Logs]
+    A --> T[Traces]
+    A --> E[Errors]
+    M --> MD[Health and trends]
+    L --> LD[Detailed event history]
+    T --> TR[Request flow and latency]
+    E --> ED[Stack trace and code context]
+    MD --> AR[Alerts and response]
+    LD --> AR
+    TR --> AR
+    ED --> AR
 ```
 
 ---
@@ -185,21 +189,16 @@ An event represents a meaningful state change, such as:
 
 An alert is a notification generated when a rule or condition is matched.
 
-```text
-Telemetry
-   │
-   ▼
-Evaluation rule
-   │
-   ├── Healthy ──> No notification
-   │
-   └── Breached ─> Alert
-                    │
-                    ├── Email
-                    ├── Slack / Teams
-                    ├── PagerDuty
-                    ├── Incident platform
-                    └── Automated action
+```mermaid
+flowchart TD
+    T[Telemetry] --> ER{Rule breached?}
+    ER -->|No| N[No notification]
+    ER -->|Yes| AL[Alert]
+    AL --> EM[Email]
+    AL --> SL["Slack / Teams"]
+    AL --> PD[PagerDuty]
+    AL --> IP[Incident platform]
+    AL --> AA[Automated action]
 ```
 
 The objective is not to alert on every error. The objective is to alert when human attention or automated remediation is required.
@@ -223,19 +222,14 @@ It can collect and work with:
 
 CloudWatch is especially useful for infrastructure and AWS-native workloads.
 
-```text
-AWS Resources
-EC2 | ECS | EKS | Lambda | RDS | ALB | SQS
-                  │
-                  ▼
-          Amazon CloudWatch
-     ┌────────┬────────┬─────────┐
-     │Metrics │ Logs   │ Traces  │
-     └────────┴────────┴─────────┘
-                  │
-         ┌────────┴─────────┐
-         ▼                  ▼
-     Dashboards           Alarms
+```mermaid
+flowchart TD
+    RES["AWS Resources<br/>EC2 | ECS | EKS | Lambda | RDS | ALB | SQS"] --> CW[Amazon CloudWatch]
+    CW --> MET[Metrics]
+    CW --> LOG[Logs]
+    CW --> TRC[Traces]
+    CW --> DASH[Dashboards]
+    CW --> ALM[Alarms]
 ```
 
 ---
@@ -514,23 +508,13 @@ Composite alarms reduce noise when one metric by itself is not enough to indicat
 
 ### Log-based alarm flow
 
-```text
-Application log
-      │
-      ▼
-CloudWatch Log Group
-      │
-      ▼
-Metric Filter
-      │
-      ▼
-CloudWatch Metric
-      │
-      ▼
-CloudWatch Alarm
-      │
-      ▼
-SNS / Incident notification
+```mermaid
+flowchart TD
+    A[Application log] --> B[CloudWatch Log Group]
+    B --> C[Metric Filter]
+    C --> D[CloudWatch Metric]
+    D --> E[CloudWatch Alarm]
+    E --> F["SNS / Incident notification"]
 ```
 
 Example metric filter idea:
@@ -600,18 +584,17 @@ EC2 publishes CPU-related metrics by default, but operating-system memory and di
 
 ### Simplified agent flow
 
-```text
-EC2 host
-├── System metrics
-├── Application logs
-└── Traces
-       │
-       ▼
-CloudWatch Agent
-       │
-       ├── CloudWatch Metrics
-       ├── CloudWatch Logs
-       └── Trace destination
+```mermaid
+flowchart TD
+    H[EC2 host] --> SM[System metrics]
+    H --> APL[Application logs]
+    H --> TR[Traces]
+    SM --> CA[CloudWatch Agent]
+    APL --> CA
+    TR --> CA
+    CA --> CM[CloudWatch Metrics]
+    CA --> CL[CloudWatch Logs]
+    CA --> TRD[Trace destination]
 ```
 
 A CloudWatch agent configuration is JSON and can contain sections such as:
@@ -649,18 +632,15 @@ OpenTelemetry is an open standard for generating and exporting:
 
 A modern architecture can instrument applications with OpenTelemetry and route telemetry to CloudWatch or another compatible backend.
 
-```text
-Application
-    │
-    ▼
-OpenTelemetry SDK / Collector
-    │
-    ├── Metrics
-    ├── Logs
-    └── Traces
-           │
-           ▼
-      CloudWatch
+```mermaid
+flowchart TD
+    A[Application] --> OTEL["OpenTelemetry SDK / Collector"]
+    OTEL --> M[Metrics]
+    OTEL --> L[Logs]
+    OTEL --> T[Traces]
+    M --> CW[CloudWatch]
+    L --> CW
+    T --> CW
 ```
 
 OpenTelemetry reduces vendor-specific instrumentation and is especially useful in environments containing multiple languages or observability backends.
@@ -683,27 +663,27 @@ It is strongest when developers need to understand:
 
 Sentry can work with error monitoring, tracing, performance data, logs, release information, and other debugging context depending on the selected SDK and product configuration.
 
-```text
-Application
-    │
-    ▼
-Sentry SDK
-    │
-    ├── Exception
-    ├── Stack trace
-    ├── Request context
-    ├── Breadcrumbs
-    ├── Tags
-    ├── Release
-    └── Trace data
-           │
-           ▼
-        Sentry
-           │
-           ├── Issue grouping
-           ├── Ownership
-           ├── Alerts
-           └── Debugging workflow
+```mermaid
+flowchart TD
+    A[Application] --> SDK[Sentry SDK]
+    SDK --> EX[Exception]
+    SDK --> ST[Stack trace]
+    SDK --> RC[Request context]
+    SDK --> BC[Breadcrumbs]
+    SDK --> TG[Tags]
+    SDK --> RL[Release]
+    SDK --> TRD[Trace data]
+    EX --> SN[Sentry]
+    ST --> SN
+    RC --> SN
+    BC --> SN
+    TG --> SN
+    RL --> SN
+    TRD --> SN
+    SN --> IG[Issue grouping]
+    SN --> OW[Ownership]
+    SN --> AL[Alerts]
+    SN --> DW[Debugging workflow]
 ```
 
 ---
@@ -1000,17 +980,13 @@ The container platform or logging driver is responsible for collecting and forwa
 
 Avoid writing only to internal container files because containers are disposable.
 
-```text
-Application
-   │
-   ├── STDOUT: informational logs
-   └── STDERR: errors
-          │
-          ▼
-Docker logging driver
-          │
-          ▼
-CloudWatch Logs
+```mermaid
+flowchart TD
+    A[Application] --> SO["STDOUT: informational logs"]
+    A --> SE["STDERR: errors"]
+    SO --> D[Docker logging driver]
+    SE --> D
+    D --> CW[CloudWatch Logs]
 ```
 
 ---
@@ -1715,17 +1691,11 @@ Monitor:
 
 Saturation often predicts an incident before customers see failures.
 
-```text
-Queue depth rising
-        │
-        ▼
-Worker capacity insufficient
-        │
-        ▼
-Processing delay increases
-        │
-        ▼
-Oldest message age breaches SLO
+```mermaid
+flowchart TD
+    A[Queue depth rising] --> B[Worker capacity insufficient]
+    B --> C[Processing delay increases]
+    C --> D[Oldest message age breaches SLO]
 ```
 
 ---

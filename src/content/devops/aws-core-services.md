@@ -52,27 +52,18 @@ flowchart LR
     Compute --> Monitoring[Monitoring]
     Database --> Monitoring
     Queue --> Monitoring
-
-    Compute:::aws
-    Database:::aws
-    Storage:::aws
-    Queue:::aws
-    Worker:::aws
-    Registry:::aws
-    Monitoring:::aws
-
-    classDef aws fill:#f5f5f5,stroke:#333,stroke-width:1px;
 ```
 
 AWS service mapping:
 
-```text
-Compute Layer       → EC2 or ECS
-Database Layer      → RDS
-Object Storage      → S3
-Async Queue         → SQS
-Container Registry  → ECR
-Monitoring          → CloudWatch
+```mermaid
+flowchart LR
+    Compute[Compute Layer] --> EC2[EC2 or ECS]
+    Database[Database Layer] --> RDS[RDS]
+    Storage[Object Storage] --> S3[S3]
+    Queue[Async Queue] --> SQS[SQS]
+    Registry[Container Registry] --> ECR[ECR]
+    Monitoring[Monitoring] --> CW[CloudWatch]
 ```
 
 ---
@@ -218,20 +209,11 @@ A security group is **stateful**:
 
 Example:
 
-```text
-Internet
-   |
-   v
-ALB Security Group
-Inbound: 443 from 0.0.0.0/0
-   |
-   v
-Application Security Group
-Inbound: 8000 only from ALB Security Group
-   |
-   v
-RDS Security Group
-Inbound: 5432 only from Application Security Group
+```mermaid
+flowchart TD
+    Internet[Internet] --> ALB["ALB Security Group<br/>Inbound: 443 from 0.0.0.0/0"]
+    ALB --> App["Application Security Group<br/>Inbound: 8000 only from ALB Security Group"]
+    App --> RDS["RDS Security Group<br/>Inbound: 5432 only from Application Security Group"]
 ```
 
 Avoid opening application and database ports to the whole internet.
@@ -428,11 +410,11 @@ Lifecycle rules automate storage management.
 
 Example policy:
 
-```text
-Day 0     → Store in S3 Standard
-Day 30    → Move to Standard-IA
-Day 90    → Move to Glacier Flexible Retrieval
-Day 365   → Delete, when business retention permits
+```mermaid
+flowchart TD
+    A[Store in S3 Standard] -->|Day 30| B[Move to Standard-IA]
+    B -->|Day 90| C[Move to Glacier Flexible Retrieval]
+    C -->|Day 365| D["Delete, when business retention permits"]
 ```
 
 Common uses:
@@ -797,20 +779,12 @@ Understand:
 
 Amazon Elastic Container Registry, or **ECR**, is a managed registry for Docker and Open Container Initiative images and artifacts.
 
-```text
-Source Code
-   |
-   v
-Docker Build
-   |
-   v
-Container Image
-   |
-   v
-Amazon ECR Repository
-   |
-   v
-ECS Deployment
+```mermaid
+flowchart TD
+    Source[Source Code] --> Build[Docker Build]
+    Build --> Image[Container Image]
+    Image --> ECR[Amazon ECR Repository]
+    ECR --> Deploy[ECS Deployment]
 ```
 
 Each AWS account has a private ECR registry in supported Regions. Inside the registry, teams create repositories for their applications.
@@ -919,23 +893,13 @@ ECR supports image vulnerability scanning.
 
 Scanning does not automatically fix a vulnerable image. The normal remediation flow is:
 
-```text
-Finding detected
-      |
-      v
-Update base image or dependency
-      |
-      v
-Rebuild image
-      |
-      v
-Run tests
-      |
-      v
-Push a new immutable image
-      |
-      v
-Deploy new task revision
+```mermaid
+flowchart TD
+    Finding[Finding Detected] --> Update[Update Base Image or Dependency]
+    Update --> Rebuild[Rebuild Image]
+    Rebuild --> Test[Run Tests]
+    Test --> Push[Push a New Immutable Image]
+    Push --> Deploy[Deploy New Task Revision]
 ```
 
 ## 6.7 Lifecycle Policies
@@ -1223,14 +1187,11 @@ With `awsvpc` network mode, each task receives an elastic network interface and 
 
 Typical flow:
 
-```text
-Internet
-   |
-Application Load Balancer
-   |
-ECS Task Security Group
-   |
-RDS Security Group
+```mermaid
+flowchart TD
+    Internet[Internet] --> ALB[Application Load Balancer]
+    ALB --> ECS[ECS Task Security Group]
+    ECS --> RDS[RDS Security Group]
 ```
 
 For a public API:

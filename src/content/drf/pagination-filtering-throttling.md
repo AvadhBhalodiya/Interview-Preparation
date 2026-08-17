@@ -150,17 +150,11 @@ The default model ordering contains `id` as a tie-breaker. This produces determi
 
 Pagination divides a large queryset into smaller responses.
 
-```text
-Complete filtered queryset
-        |
-        v
-Ordered records
-        |
-        v
-Pagination selects one slice
-        |
-        v
-Serializer processes only that slice
+```mermaid
+flowchart TD
+    A[Complete filtered queryset] --> B[Ordered records]
+    B --> C[Pagination selects one slice]
+    C --> D[Serializer processes only that slice]
 ```
 
 DRF includes three main pagination styles:
@@ -438,17 +432,11 @@ ordering = ("-created_at", "-id")
 
 ### Cursor behavior
 
-```text
-First request
-    |
-    v
-Server returns records + next cursor
-    |
-    v
-Client sends the returned cursor
-    |
-    v
-Server continues from that position
+```mermaid
+flowchart TD
+    A[First request] --> B[Server returns records<br/>+ next cursor]
+    B --> C[Client sends the returned cursor]
+    C --> D[Server continues from that position]
 ```
 
 The client must treat the cursor as opaque. It should not manually create, modify, or decode it as part of normal API usage.
@@ -544,14 +532,10 @@ Use this carefully. An unpaginated JSON endpoint may become unsafe as data grows
 
 For large exports, a separate export workflow is usually better:
 
-```text
-Client requests export
-        |
-        v
-Background job generates CSV/XLSX
-        |
-        v
-Client downloads generated file
+```mermaid
+flowchart TD
+    A[Client requests export] --> B["Background job generates CSV/XLSX"]
+    B --> C[Client downloads generated file]
 ```
 
 ---
@@ -592,29 +576,11 @@ With `ListAPIView`, `ListModelMixin`, or a normal ViewSet list action, DRF handl
 
 ## 3.6 Choosing a Pagination Style
 
-```text
-Does the UI display page numbers?
-        |
-       Yes
-        |
-        v
-PageNumberPagination
-
-
-Does the client require limit and offset values?
-        |
-       Yes
-        |
-        v
-LimitOffsetPagination
-
-
-Is the dataset very large and frequently changing?
-        |
-       Yes
-        |
-        v
-CursorPagination
+```mermaid
+flowchart TD
+    A{Does the UI display page numbers?} -->|Yes| B[PageNumberPagination]
+    C{Does the client require<br/>limit and offset values?} -->|Yes| D[LimitOffsetPagination]
+    E{Is the dataset very large<br/>and frequently changing?} -->|Yes| F[CursorPagination]
 ```
 
 ### Comparison
@@ -642,23 +608,13 @@ GET /api/products/?status=active&category=electronics
 
 The processing idea is:
 
-```text
-All records
-    |
-    v
-Mandatory user/tenant restriction
-    |
-    v
-Client-selected filters
-    |
-    v
-Search
-    |
-    v
-Ordering
-    |
-    v
-Pagination
+```mermaid
+flowchart TD
+    A[All records] --> B["Mandatory user/tenant restriction"]
+    B --> C[Client-selected filters]
+    C --> D[Search]
+    D --> E[Ordering]
+    E --> F[Pagination]
 ```
 
 DRF filtering commonly uses:
@@ -1157,21 +1113,12 @@ Stable default ordering is important for predictable pagination.
 
 Throttling controls how frequently a client may call an API.
 
-```text
-Incoming request
-       |
-       v
-Identify user or IP
-       |
-       v
-Check request history in cache
-       |
-   +---+---+
-   |       |
-Allowed  Limit exceeded
-   |       |
-   v       v
-Run view  HTTP 429
+```mermaid
+flowchart TD
+    A[Incoming request] --> B[Identify user or IP]
+    B --> C{Check request history in cache}
+    C -->|Allowed| D[Run view]
+    C -->|Limit exceeded| E[HTTP 429]
 ```
 
 Typical uses:
@@ -1506,24 +1453,19 @@ CACHES = {
 
 Why a shared cache matters:
 
-```text
-Without shared cache:
-
-App instance A -> its own request history
-App instance B -> different request history
-
-Result:
-The limit is not global across instances.
-
-
-With shared Redis:
-
-App instance A ----\
-                    -> one shared request history
-App instance B ----/
-
-Result:
-All instances check the same throttle data.
+```mermaid
+flowchart LR
+    subgraph LOCAL[Without shared cache]
+        LA[App instance A] --> LH[(Its own request history)]
+        LB[App instance B] --> LI[(Different request history)]
+        LH --> LRES[The limit is not global<br/>across instances]
+        LI --> LRES
+    end
+    subgraph SHARED[With shared Redis]
+        SA[App instance A] --> SH[(One shared request history)]
+        SB[App instance B] --> SH
+        SH --> SRES[All instances check<br/>the same throttle data]
+    end
 ```
 
 ### Dedicated throttle cache
@@ -1804,58 +1746,17 @@ Actual processing:
 
 # 7. Request Processing Flow
 
-```text
-┌────────────────────────────────────────────────────────────┐
-│ GET /api/products/?status=active&ordering=-price           │
-└──────────────────────────────┬─────────────────────────────┘
-                               │
-                               v
-┌────────────────────────────────────────────────────────────┐
-│ Authentication                                             │
-│ Determine request.user and request.auth                    │
-└──────────────────────────────┬─────────────────────────────┘
-                               │
-                               v
-┌────────────────────────────────────────────────────────────┐
-│ Permissions                                                │
-│ Is the user allowed to access this endpoint?               │
-└──────────────────────────────┬─────────────────────────────┘
-                               │
-                               v
-┌────────────────────────────────────────────────────────────┐
-│ Throttling                                                 │
-│ Has this user or IP exceeded a configured request rate?    │
-└──────────────┬────────────────────────────────┬────────────┘
-               │ Allowed                        │ Exceeded
-               v                                v
-┌─────────────────────────────┐      ┌────────────────────────┐
-│ get_queryset()              │      │ HTTP 429               │
-│ Enforce user/tenant scope   │      │ Too Many Requests      │
-└──────────────┬──────────────┘      └────────────────────────┘
-               │
-               v
-┌─────────────────────────────┐
-│ Filter backends             │
-│ Filter, search, and order   │
-└──────────────┬──────────────┘
-               │
-               v
-┌─────────────────────────────┐
-│ Pagination                  │
-│ Select one result slice     │
-└──────────────┬──────────────┘
-               │
-               v
-┌─────────────────────────────┐
-│ Serializer                  │
-│ Convert model objects       │
-│ into response data          │
-└──────────────┬──────────────┘
-               │
-               v
-┌─────────────────────────────┐
-│ HTTP response               │
-└─────────────────────────────┘
+```mermaid
+flowchart TD
+    A["GET /api/products/?status=active&ordering=-price"] --> B["Authentication<br/>Determine request.user and request.auth"]
+    B --> C["Permissions<br/>Is the user allowed to access this endpoint?"]
+    C --> D{"Throttling<br/>Has this user or IP exceeded a configured request rate?"}
+    D -->|Allowed| E["get_queryset()<br/>Enforce user/tenant scope"]
+    D -->|Exceeded| F["HTTP 429<br/>Too Many Requests"]
+    E --> G["Filter backends<br/>Filter, search, and order"]
+    G --> H["Pagination<br/>Select one result slice"]
+    H --> I["Serializer<br/>Convert model objects into response data"]
+    I --> J[HTTP response]
 ```
 
 ## Responsibility mapping

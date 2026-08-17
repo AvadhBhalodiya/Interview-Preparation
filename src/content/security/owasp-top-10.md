@@ -267,16 +267,12 @@ def get_invoice(
 
 For each protected endpoint, test at least:
 
-```text
-Unauthenticated user
-        ↓
-Authenticated user without permission
-        ↓
-Authenticated user with permission
-        ↓
-User from another tenant
-        ↓
-Administrator or service account
+```mermaid
+flowchart TD
+    A[Unauthenticated user] --> B[Authenticated user<br/>without permission]
+    B --> C[Authenticated user<br/>with permission]
+    C --> D[User from another tenant]
+    D --> E[Administrator or service account]
 ```
 
 A useful authorization test matrix is:
@@ -1007,16 +1003,12 @@ sequenceDiagram
 
 Recommended approach:
 
-```text
-Password received over TLS
-        ↓
-Adaptive password hash verification
-        ↓
-Rate limit and attack detection
-        ↓
-MFA or step-up authentication where required
-        ↓
-New session identifier after successful login
+```mermaid
+flowchart TD
+    A[Password received over TLS] --> B[Adaptive password hash verification]
+    B --> C[Rate limit and attack detection]
+    C --> D[MFA or step-up authentication<br/>where required]
+    D --> E[New session identifier<br/>after successful login]
 ```
 
 Password rules should support secure user behavior rather than forcing predictable patterns. Use blocklists for known compromised passwords and allow password managers.
@@ -1387,22 +1379,18 @@ An application may:
 
 ### Fail Open
 
-```text
-Authorization service unavailable
-        ↓
-Application assumes access is allowed
-        ↓
-Protected action continues
+```mermaid
+flowchart TD
+    A[Authorization service unavailable] --> B[Application assumes access is allowed]
+    B --> C[Protected action continues]
 ```
 
 ### Fail Closed
 
-```text
-Authorization service unavailable
-        ↓
-Application cannot verify permission
-        ↓
-Protected action is denied or safely deferred
+```mermaid
+flowchart TD
+    A[Authorization service unavailable] --> B[Application cannot verify permission]
+    B --> C[Protected action is denied<br/>or safely deferred]
 ```
 
 For security-sensitive decisions, inability to verify should normally result in denial, not approval.
@@ -1811,15 +1799,15 @@ Use this compact checklist during normal development.
 
 ## 18.2 Compact Mental Model
 
-```text
-Identity       → Who is making the request?
-Authorization  → Are they allowed to do this action on this resource?
-Validation     → Is the input structurally and semantically acceptable?
-Integrity      → Can this code or data be trusted?
-Confidentiality→ Is sensitive data protected?
-Resilience     → Does the system fail safely?
-Visibility     → Can attacks be detected and investigated?
-```
+| Concern | Question to ask |
+|---|---|
+| Identity | Who is making the request? |
+| Authorization | Are they allowed to do this action on this resource? |
+| Validation | Is the input structurally and semantically acceptable? |
+| Integrity | Can this code or data be trusted? |
+| Confidentiality | Is sensitive data protected? |
+| Resilience | Does the system fail safely? |
+| Visibility | Can attacks be detected and investigated? |
 
 ## 18.3 Final Architecture View
 

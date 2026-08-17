@@ -28,16 +28,12 @@ In a payment flow, your application may say:
 
 Reconciliation verifies that all these records agree.
 
-```text
-Business expectation
-        ↓
-Payment provider activity
-        ↓
-Settlement report
-        ↓
-Bank statement
-        ↓
-Internal accounting ledger
+```mermaid
+flowchart TD
+    EXP[Business expectation] --> PSP[Payment provider activity]
+    PSP --> SET[Settlement report]
+    SET --> BANK[Bank statement]
+    BANK --> LEDGER[Internal accounting ledger]
 ```
 
 A simple reconciliation equation is:
@@ -158,15 +154,14 @@ For the example:
 
 Providers commonly combine multiple payment-related entries into a single bank transfer.
 
-```text
-Payment A   +₹1,000
-Payment B   +₹2,000
-Refund C      -₹500
-Fees           -₹60
-Tax            -₹10.80
-----------------------
-Bank payout  +₹2,429.20
-```
+| Line item | Amount |
+|---|---:|
+| Payment A | +₹1,000 |
+| Payment B | +₹2,000 |
+| Refund C | -₹500 |
+| Fees | -₹60 |
+| Tax | -₹10.80 |
+| **Bank payout** | **+₹2,429.20** |
 
 The bank may contain only the final ₹2,429.20 credit. Therefore, matching every payment directly to a bank line is not always possible. The reconciliation process must understand the settlement batch.
 
@@ -268,16 +263,12 @@ This ensures that the system's accounting representation matches external realit
 
 Platforms frequently split customer money among merchants, sellers, drivers, vendors, brokers, or connected accounts.
 
-```text
-Customer collection
-    ↓
-Platform fee
-    ↓
-Tax / reserve / adjustment
-    ↓
-Partner payable
-    ↓
-Partner payout
+```mermaid
+flowchart TD
+    COLLECT[Customer collection] --> FEE[Platform fee]
+    FEE --> ADJ["Tax / reserve / adjustment"]
+    ADJ --> PAYABLE[Partner payable]
+    PAYABLE --> PAYOUT[Partner payout]
 ```
 
 The platform must reconcile both sides:
@@ -500,10 +491,11 @@ Actual capture B: ₹400
 
 Several transactions match one settlement or bank credit.
 
-```text
-Payment A ₹1,000 ┐
-Payment B ₹2,000 ├── Settlement ₹3,500 before deductions
-Payment C   ₹500 ┘
+```mermaid
+flowchart LR
+    A[Payment A ₹1,000] --> S[Settlement ₹3,500<br/>before deductions]
+    B[Payment B ₹2,000] --> S
+    C[Payment C ₹500] --> S
 ```
 
 ## 7.4 Many-to-Many
@@ -655,15 +647,14 @@ Example from the merchant's perspective:
 
 When fuzzy or multi-field matching is unavoidable, compute a confidence score.
 
-```text
-Exact provider ID       +60
-Exact amount            +20
-Exact currency          +10
-Date within 1 day        +5
-Matching merchant ref    +5
---------------------------------
-Total                   100
-```
+| Signal | Points |
+|---|---:|
+| Exact provider ID | +60 |
+| Exact amount | +20 |
+| Exact currency | +10 |
+| Date within 1 day | +5 |
+| Matching merchant ref | +5 |
+| **Total** | **100** |
 
 Suggested policy:
 
@@ -737,16 +728,13 @@ Total successful refunds <= Captured amount
 
 A chargeback may occur weeks or months after the original payment. Keep the original transaction link.
 
-```text
-Original payment
-    ↓
-Dispute opened
-    ↓
-Provisional debit
-    ↓
-Won / lost
-    ↓
-Reversal or final debit
+```mermaid
+flowchart TD
+    PAY[Original payment] --> OPEN[Dispute opened]
+    OPEN --> PROV[Provisional debit]
+    PROV --> OUTCOME{Won or lost?}
+    OUTCOME -->|Won| REV[Reversal]
+    OUTCOME -->|Lost| FINAL[Final debit]
 ```
 
 Reconciliation must handle both the dispute event and the related balance movement.
@@ -1198,14 +1186,13 @@ Total gross:
 
 Calculation:
 
-```text
-Gross captures             ₹3,500.00
-Less refund                  ₹500.00
-Less fees                     ₹70.00
-Less tax                      ₹12.60
-------------------------------------
-Expected settlement         ₹2,917.40
-```
+| Line item | Amount |
+|---|---:|
+| Gross captures | ₹3,500.00 |
+| Less refund | ₹500.00 |
+| Less fees | ₹70.00 |
+| Less tax | ₹12.60 |
+| **Expected settlement** | **₹2,917.40** |
 
 ## 13.3 Provider Settlement Report
 
@@ -1621,12 +1608,10 @@ Use:
 
 A person who creates a manual adjustment should not always be able to approve it.
 
-```text
-Analyst creates adjustment
-        ↓
-Finance approver reviews evidence
-        ↓
-System posts approved ledger entry
+```mermaid
+flowchart TD
+    ANALYST[Analyst creates adjustment] --> APPROVER[Finance approver<br/>reviews evidence]
+    APPROVER --> POST[System posts approved<br/>ledger entry]
 ```
 
 ## 18.5 Sensitive Data

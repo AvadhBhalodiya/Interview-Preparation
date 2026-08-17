@@ -304,12 +304,10 @@ def fetch_data():
 
 Think of it in three layers:
 
-```text
-retry(max_attempts=3)
-        ↓
-actual decorator
-        ↓
-wrapper
+```mermaid
+flowchart TD
+    A["retry(max_attempts=3)"] --> B[Actual decorator]
+    B --> C[Wrapper]
 ```
 
 ## General Structure
@@ -1972,18 +1970,27 @@ def class_decorator(cls: T) -> T:
 
 ## Final Mental Model
 
-```text
-Function decorator:
-    function -> decorator -> wrapped/replacement function
+```mermaid
+flowchart LR
+    subgraph FUNC[Function decorator]
+        F1[Function] --> F2[Decorator]
+        F2 --> F3[Wrapped or replacement function]
+    end
 
-Class decorator:
-    class -> decorator -> modified/replacement class
+    subgraph CLS[Class decorator]
+        C1[Class] --> C2[Decorator]
+        C2 --> C3[Modified or replacement class]
+    end
 
-Decorator factory:
-    configuration -> decorator -> target -> replacement
+    subgraph FACT[Decorator factory]
+        D1[Configuration] --> D2[Decorator]
+        D2 --> D3[Target]
+        D3 --> D4[Replacement]
+    end
 
-Stacked decorators:
-    apply bottom-up, execute wrappers outside-in
+    subgraph STACK[Stacked decorators]
+        S1[Apply bottom-up] --> S2[Execute wrappers outside-in]
+    end
 ```
 
 The main idea is not the `@` symbol. The main idea is **callable transformation and reassignment**.

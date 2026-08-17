@@ -180,20 +180,12 @@ However, if `__enter__()` itself raises an exception, that context manager's `__
 
 ## Call sequence
 
-```text
-Create manager
-      |
-      v
-Call __enter__()
-      |
-      v
-Execute block
-      |
-      v
-Call __exit__()
-      |
-      v
-Continue or propagate exception
+```mermaid
+flowchart TD
+    A[Create manager] --> B["Call __enter__()"]
+    B --> C[Execute block]
+    C --> D["Call __exit__()"]
+    D --> E[Continue or propagate exception]
 ```
 
 ---
@@ -625,18 +617,13 @@ class Transaction:
 
 Flow:
 
-```text
-Enter context
-    |
-    v
-Begin transaction
-    |
-    v
-Run database operations
-    |
-    +---- success ----> commit
-    |
-    +---- failure ----> rollback ----> re-raise original exception
+```mermaid
+flowchart TD
+    A[Enter context] --> B[Begin transaction]
+    B --> C[Run database operations]
+    C -->|Success| D[Commit]
+    C -->|Failure| E[Rollback]
+    E --> F[Re-raise original exception]
 ```
 
 Because `__exit__()` returns `None`, a failure is not suppressed.
@@ -708,14 +695,10 @@ def example():
 
 Execution:
 
-```text
-Code before yield
-      |
-      v
-with block executes
-      |
-      v
-Code after yield
+```mermaid
+flowchart TD
+    A[Code before yield] --> B[with block executes]
+    B --> C[Code after yield]
 ```
 
 ## Important rule: yield exactly once

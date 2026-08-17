@@ -24,16 +24,18 @@ However, two different questions must be answered:
 
 Test coverage mainly helps answer the first question. Test quality answers the second.
 
-```text
-                    Test Suite Confidence
-                            |
-              +-------------+-------------+
-              |                           |
-       Coverage breadth              Test strength
-    "What was executed?"       "Was behaviour verified?"
-              |                           |
-     Lines, branches, paths      Assertions, edge cases,
-                                isolation, determinism
+```mermaid
+flowchart TD
+    CONFIDENCE[Test Suite Confidence]
+    BREADTH["Coverage breadth<br/>What was executed?"]
+    STRENGTH["Test strength<br/>Was behaviour verified?"]
+    MEASURES["Lines, branches, paths"]
+    QUALITIES["Assertions, edge cases,<br/>isolation, determinism"]
+
+    CONFIDENCE --> BREADTH
+    CONFIDENCE --> STRENGTH
+    BREADTH --> MEASURES
+    STRENGTH --> QUALITIES
 ```
 
 A healthy project needs both.
@@ -211,14 +213,18 @@ def can_withdraw(balance: int, amount: int) -> bool:
 
 Important branches include:
 
-```text
-amount <= 0
-├── True  -> reject
-└── False -> continue
+```mermaid
+flowchart TD
+    ZERO{Amount is zero or negative?}
+    OVER{Amount is greater than balance?}
+    REJECT1[Reject]
+    REJECT2[Reject]
+    ALLOW[Allow]
 
-amount > balance
-├── True  -> reject
-└── False -> allow
+    ZERO -- True --> REJECT1
+    ZERO -- False --> OVER
+    OVER -- True --> REJECT2
+    OVER -- False --> ALLOW
 ```
 
 A stronger test set is:
@@ -296,18 +302,20 @@ def process_order(paid: bool, in_stock: bool) -> str:
 
 Possible paths:
 
-```text
-Start
-  |
-  v
-Paid?
-├── No  -> payment_required
-└── Yes
-      |
-      v
-   In stock?
-   ├── No  -> backorder
-   └── Yes -> ready
+```mermaid
+flowchart TD
+    START[Start]
+    PAID{Paid?}
+    STOCK{In stock?}
+    REQUIRED[payment_required]
+    BACKORDER[backorder]
+    READY[ready]
+
+    START --> PAID
+    PAID -- No --> REQUIRED
+    PAID -- Yes --> STOCK
+    STOCK -- No --> BACKORDER
+    STOCK -- Yes --> READY
 ```
 
 Path coverage becomes expensive as decisions increase.
@@ -601,11 +609,14 @@ Use broader end-to-end tests intentionally, but do not make every test a complet
 
 A clear test commonly follows the **Arrange–Act–Assert** structure.
 
-```text
-Arrange -> Prepare inputs and dependencies
-Act     -> Execute the behaviour
-Assert  -> Verify the result
-Cleanup -> Restore external state when necessary
+```mermaid
+flowchart LR
+    ARRANGE[Arrange<br/>Prepare inputs and dependencies]
+    ACT[Act<br/>Execute the behaviour]
+    ASSERT[Assert<br/>Verify the result]
+    CLEANUP[Cleanup<br/>Restore external state when necessary]
+
+    ARRANGE --> ACT --> ASSERT --> CLEANUP
 ```
 
 Example:
@@ -625,17 +636,14 @@ def test_premium_customer_receives_ten_percent_discount():
 
 The visual flow is:
 
-```text
-Known starting state
-        |
-        v
- Perform one action
-        |
-        v
-Observe final state
-        |
-        v
-Compare with expected behaviour
+```mermaid
+flowchart TD
+    START[Known starting state]
+    ACTION[Perform one action]
+    OBSERVE[Observe final state]
+    COMPARE[Compare with expected behaviour]
+
+    START --> ACTION --> OBSERVE --> COMPARE
 ```
 
 Other naming styles include:
@@ -713,18 +721,28 @@ The stronger tests are:
 
 A good test suite covers more than normal input.
 
-```text
-Input space
-   |
-   +-- Normal values
-   +-- Boundary values
-   +-- Empty or missing values
-   +-- Invalid values
-   +-- Very large values
-   +-- Duplicate values
-   +-- Permission failures
-   +-- Dependency failures
-   +-- Concurrent operations
+```mermaid
+flowchart LR
+    IN[Input space]
+    NORMAL[Normal values]
+    BOUND[Boundary values]
+    EMPTY[Empty or missing values]
+    INVALID[Invalid values]
+    LARGE[Very large values]
+    DUP[Duplicate values]
+    PERM[Permission failures]
+    DEP[Dependency failures]
+    CONC[Concurrent operations]
+
+    IN --> NORMAL
+    IN --> BOUND
+    IN --> EMPTY
+    IN --> INVALID
+    IN --> LARGE
+    IN --> DUP
+    IN --> PERM
+    IN --> DEP
+    IN --> CONC
 ```
 
 Example requirement:
@@ -768,17 +786,14 @@ Independent tests can run:
 
 ## Common sources of coupling
 
-```text
-Test A creates shared record
-        |
-        v
-Test B modifies shared record
-        |
-        v
-Test C expects original record
-        |
-        v
-Failure depends on execution order
+```mermaid
+flowchart TD
+    A[Test A creates shared record]
+    B[Test B modifies shared record]
+    C[Test C expects original record]
+    F[Failure depends on execution order]
+
+    A --> B --> C --> F
 ```
 
 ## Better isolation techniques
@@ -1012,15 +1027,18 @@ Mocks are useful when a dependency is:
 
 Example boundary:
 
-```text
-PaymentService
-      |
-      +-- Application logic
-      |
-      +-- PaymentGateway interface
-                 |
-                 +-- Real Stripe adapter
-                 +-- Fake gateway in unit tests
+```mermaid
+flowchart TD
+    PS[PaymentService]
+    APP[Application logic]
+    IFACE[PaymentGateway interface]
+    REAL[Real Stripe adapter]
+    FAKE[Fake gateway in unit tests]
+
+    PS --> APP
+    PS --> IFACE
+    IFACE --> REAL
+    IFACE --> FAKE
 ```
 
 Example:
@@ -1227,15 +1245,17 @@ def is_adult(age: int) -> bool:
 
 Then it runs the test suite.
 
-```text
-Mutant introduced
-      |
-      v
-Run tests
-  |
-  +-- Tests fail -> Mutant killed
-  |
-  +-- Tests pass -> Mutant survived
+```mermaid
+flowchart TD
+    MUT[Mutant introduced]
+    RUN[Run tests]
+    RESULT{Do the tests fail?}
+    KILLED[Mutant killed]
+    SURVIVED[Mutant survived]
+
+    MUT --> RUN --> RESULT
+    RESULT -- Yes --> KILLED
+    RESULT -- No --> SURVIVED
 ```
 
 A surviving mutant may indicate that the tests do not distinguish the intended behaviour from the broken behaviour.
@@ -1505,20 +1525,20 @@ Ask:
 
 Example:
 
-```text
-Missing line: payment.py:72
-        |
-        v
-Code: handling gateway timeout
-        |
-        v
-Risk: user may retry and be charged twice
-        |
-        v
-Tests needed:
-- timeout response
-- idempotency key reuse
-- retry without duplicate charge
+```mermaid
+flowchart TD
+    LINE["Missing line: payment.py:72"]
+    CODE["Code: handling gateway timeout"]
+    RISK["Risk: user may retry and be charged twice"]
+    NEEDED[Tests needed]
+    T1[Timeout response]
+    T2[Idempotency key reuse]
+    T3[Retry without duplicate charge]
+
+    LINE --> CODE --> RISK --> NEEDED
+    NEEDED --> T1
+    NEEDED --> T2
+    NEEDED --> T3
 ```
 
 Coverage becomes valuable when it triggers this kind of analysis.
@@ -1529,27 +1549,24 @@ Coverage becomes valuable when it triggers this kind of analysis.
 
 A typical pipeline:
 
-```text
-Developer pushes code
-        |
-        v
-Install dependencies
-        |
-        v
-Run unit + integration tests
-        |
-        v
-Collect coverage
-        |
-        +-- Tests fail ----------> Block merge
-        |
-        +-- Coverage below rule -> Block or require review
-        |
-        v
-Publish report
-        |
-        v
-Deploy after all checks pass
+```mermaid
+flowchart TD
+    PUSH[Developer pushes code]
+    INSTALL[Install dependencies]
+    RUN["Run unit + integration tests"]
+    COLLECT[Collect coverage]
+    FAILED{Did any test fail?}
+    BELOW{Coverage below rule?}
+    BLOCK[Block merge]
+    REVIEW[Block or require review]
+    REPORT[Publish report]
+    DEPLOY[Deploy after all checks pass]
+
+    PUSH --> INSTALL --> RUN --> COLLECT --> FAILED
+    FAILED -- Yes --> BLOCK
+    FAILED -- No --> BELOW
+    BELOW -- Yes --> REVIEW
+    BELOW -- No --> REPORT --> DEPLOY
 ```
 
 Example GitHub Actions workflow:

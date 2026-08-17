@@ -28,20 +28,10 @@ Redis is an in-memory data store commonly used as:
 
 Redis stores data primarily in memory, which makes reads and writes extremely fast. It also provides useful data structures such as strings, hashes, lists, sets, sorted sets, streams, JSON, time series, geospatial indexes, and probabilistic structures.
 
-```text
-Traditional database
-    |
-    | Durable, relational, complex queries
-    | Usually slower than memory access
-    v
-PostgreSQL / MySQL / MongoDB
-
-Redis
-    |
-    | Fast, temporary or frequently accessed data
-    | Atomic operations, TTL, rich data structures
-    v
-Cache / Sessions / Counters / Queues / Real-time state
+```mermaid
+flowchart TD
+    T[Traditional database] -->|"Durable, relational, complex queries<br/>Usually slower than memory access"| P[("PostgreSQL / MySQL / MongoDB")]
+    R[(Redis)] -->|"Fast, temporary or frequently accessed data<br/>Atomic operations, TTL, rich data structures"| U["Cache / Sessions / Counters / Queues / Real-time state"]
 ```
 
 Redis usually complements the primary database rather than replacing it.
@@ -262,14 +252,10 @@ This prevents repeated database queries for invalid or nonexistent IDs.
 
 A cache stampede occurs when a popular key expires and many requests query the database at the same time.
 
-```text
-Popular key expires
-        |
-        v
-100 requests miss the cache
-        |
-        v
-100 database queries run together
+```mermaid
+flowchart TD
+    E[Popular key expires] --> M[100 requests miss the cache]
+    M --> Q[100 database queries run together]
 ```
 
 Common protections:
@@ -522,13 +508,11 @@ rank = redis_client.zrevrank(
 
 Redis automatically maintains score order.
 
-```text
-Score     Member
---------------------
-995       user:103
-920       user:101
-895       user:102
-```
+| Score | Member |
+|---|---|
+| 995 | `user:103` |
+| 920 | `user:101` |
+| 895 | `user:102` |
 
 The application does not need to repeatedly sort the full dataset.
 

@@ -705,14 +705,10 @@ user = User.objects.get(email="developer@example.com")
 
 ### Practical rule
 
-```text
-Model relationship declaration
-        |
-        +--> settings.AUTH_USER_MODEL
-
-Runtime Python code
-        |
-        +--> get_user_model()
+```mermaid
+flowchart LR
+    A[Model relationship declaration] --> B["settings.AUTH_USER_MODEL"]
+    C[Runtime Python code] --> D["get_user_model()"]
 ```
 
 ---
@@ -1113,12 +1109,10 @@ class Migration(migrations.Migration):
 
 Django dynamically resolves the configured user model.
 
-```text
-articles.0001_initial
-        |
-        +--> depends on settings.AUTH_USER_MODEL
-                         |
-                         +--> accounts.0001_initial
+```mermaid
+flowchart TD
+    A["articles.0001_initial"] -->|Depends on| B["settings.AUTH_USER_MODEL"]
+    B --> C["accounts.0001_initial"]
 ```
 
 If the user model is created in a later migration, dependency resolution may fail.
@@ -1476,33 +1470,16 @@ flowchart TD
 
 ### Request-level flow
 
-```text
-Client sends email and password
-              |
-              v
-      Django login/API view
-              |
-              v
-         authenticate()
-              |
-              v
-    Configured auth backend
-              |
-              v
- User.objects.get(email=...)
-              |
-              v
-       check_password()
-              |
-       +------+------+
-       |             |
-     Valid         Invalid
-       |             |
-       v             v
-Return user       Return None
-       |
-       v
-Create session or issue API token
+```mermaid
+flowchart TD
+    A[Client sends email and password] --> B["Django login/API view"]
+    B --> C["authenticate()"]
+    C --> D[Configured auth backend]
+    D --> E["User.objects.get(email=...)"]
+    E --> F{"check_password()"}
+    F -->|Valid| G[Return user]
+    F -->|Invalid| H[Return None]
+    G --> I[Create session or issue API token]
 ```
 
 ---
@@ -1526,17 +1503,14 @@ Create session or issue API token
 
 ## Practical Mental Model
 
-```text
-AUTH_USER_MODEL
-      |
-      v
-Defines which database model represents a user
-      |
-      +--> Authentication identifies this model
-      +--> Sessions load this model
-      +--> Permissions attach to this model
-      +--> Admin manages this model
-      +--> Other models reference this model
+```mermaid
+flowchart TD
+    A[AUTH_USER_MODEL] --> B[Defines which database model represents a user]
+    B --> C[Authentication identifies this model]
+    B --> D[Sessions load this model]
+    B --> E[Permissions attach to this model]
+    B --> F[Admin manages this model]
+    B --> G[Other models reference this model]
 ```
 
 The most important architectural decision is not simply adding fields. It is ensuring that every part of the project depends on the **configured user model**, rather than being hard-coded to Django's default implementation.

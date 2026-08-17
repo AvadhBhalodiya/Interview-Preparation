@@ -1579,16 +1579,16 @@ sequenceDiagram
 
 When debugging a ViewSet, ask where the behavior belongs:
 
-```text
-URL problem?             → Router or URL configuration
-Wrong action?            → HTTP-method mapping
-Wrong records?           → get_queryset()
-Object not found?        → lookup field or tenant filtering
-Unauthorized?            → authentication or permission
-Invalid request body?    → serializer validation
-Wrong save behavior?     → perform_create/perform_update
-Wrong response shape?    → serializer or action override
-```
+| Symptom | Where to look |
+| --- | --- |
+| URL problem | Router or URL configuration |
+| Wrong action | HTTP-method mapping |
+| Wrong records | `get_queryset()` |
+| Object not found | Lookup field or tenant filtering |
+| Unauthorized | Authentication or permission |
+| Invalid request body | Serializer validation |
+| Wrong save behavior | `perform_create`/`perform_update` |
+| Wrong response shape | Serializer or action override |
 
 ---
 
@@ -1772,14 +1772,14 @@ def approve(self, request, pk=None):
 
 A good separation is:
 
-```text
-ViewSet      → HTTP coordination
-Serializer   → Input validation and representation
-Service      → Business use case
-Model        → Domain state and persistence rules
-Permission   → Access decision
-QuerySet     → Data visibility and query optimization
-```
+| Layer | Responsibility |
+| --- | --- |
+| ViewSet | HTTP coordination |
+| Serializer | Input validation and representation |
+| Service | Business use case |
+| Model | Domain state and persistence rules |
+| Permission | Access decision |
+| QuerySet | Data visibility and query optimization |
 
 ---
 
@@ -2061,20 +2061,13 @@ flowchart TD
 
 # 22. Final Summary
 
-```text
-ViewSet
-├── Groups related API actions
-├── Uses list/create/retrieve/update/destroy
-├── Can use generic QuerySet and serializer behavior
-└── Can expose custom actions with @action
-
-Router
-├── Registers a URL prefix and ViewSet
-├── Maps HTTP methods to ViewSet actions
-├── Generates collection and detail routes
-├── Generates route names from basename
-└── Includes routes for custom actions
-```
+| `ViewSet` | `Router` |
+| --- | --- |
+| Groups related API actions | Registers a URL prefix and a ViewSet |
+| Uses `list`/`create`/`retrieve`/`update`/`destroy` | Maps HTTP methods to ViewSet actions |
+| Can use generic QuerySet and serializer behavior | Generates collection and detail routes |
+| Can expose custom actions with `@action` | Generates route names from `basename` |
+| — | Includes routes for custom actions |
 
 The most common implementation is:
 

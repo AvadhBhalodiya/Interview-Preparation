@@ -1380,18 +1380,13 @@ IsSupportAgent
 
 A production API may use all of these together:
 
-```text
-Authentication
-    ↓
-Global permission
-    ↓
-Queryset visibility
-    ↓
-Object-level permission
-    ↓
-Serializer validation
-    ↓
-Business/service-layer checks
+```mermaid
+flowchart TD
+    A[Authentication] --> B[Global permission]
+    B --> C[Queryset visibility]
+    C --> D[Object-level permission]
+    D --> E[Serializer validation]
+    E --> F["Business/service-layer checks"]
 ```
 
 Each layer protects a different part of the request.

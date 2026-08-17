@@ -16,23 +16,14 @@ In many frameworks, developers manually write and maintain API documentation. Th
 
 FastAPI follows a different approach:
 
-```text
-Python route declaration
-        +
-Type hints and validation rules
-        +
-Pydantic request/response models
-        +
-Metadata and security dependencies
-        |
-        v
-Generated OpenAPI schema
-        |
-        +------------------+
-        |                  |
-        v                  v
-   Swagger UI            ReDoc
- Interactive testing   Readable reference
+```mermaid
+flowchart TD
+    A[Python route declaration] --> S[Generated OpenAPI schema]
+    B[Type hints and validation rules] --> S
+    C["Pydantic request/response models"] --> S
+    D[Metadata and security dependencies] --> S
+    S --> E[Swagger UI<br/>Interactive testing]
+    S --> F[ReDoc<br/>Readable reference]
 ```
 
 You define the API contract in Python, and FastAPI generates the machine-readable and human-readable documentation from the same source.
@@ -156,9 +147,9 @@ flowchart TD
     D[Pydantic models] --> G
     E[response_model] --> G
     F[Security dependencies] --> G
-    G --> H[/openapi.json]
-    H --> I[/docs - Swagger UI]
-    H --> J[/redoc - ReDoc]
+    G --> H["/openapi.json"]
+    H --> I["/docs - Swagger UI"]
+    H --> J["/redoc - ReDoc"]
 ```
 
 ## Common sources of schema information
@@ -412,12 +403,12 @@ Use examples that look realistic but contain no real secrets or personal data.
 
 Avoid using one database model for every purpose.
 
-```text
-ProductCreate   -> fields accepted from the client
-ProductUpdate   -> fields that may be changed
-ProductResponse -> fields returned to the client
-ProductDB       -> internal persistence representation
-```
+| Model | Purpose |
+| --- | --- |
+| `ProductCreate` | Fields accepted from the client |
+| `ProductUpdate` | Fields that may be changed |
+| `ProductResponse` | Fields returned to the client |
+| `ProductDB` | Internal persistence representation |
 
 Example:
 
@@ -834,20 +825,12 @@ async def read_profile(
 
 Swagger UI understands that `/profile` requires a bearer token.
 
-```text
-Open Swagger UI
-      |
-      v
-Click Authorize
-      |
-      v
-Enter token or complete OAuth2 flow
-      |
-      v
-Swagger UI adds Authorization header
-      |
-      v
-Execute secured endpoint
+```mermaid
+flowchart TD
+    A[Open Swagger UI] --> B[Click Authorize]
+    B --> C[Enter token or<br/>complete OAuth2 flow]
+    C --> D[Swagger UI adds<br/>Authorization header]
+    D --> E[Execute secured endpoint]
 ```
 
 ## 12.2 API key header example
@@ -977,16 +960,12 @@ Swagger UI and ReDoc normally load JavaScript and CSS assets from external CDNs.
 
 High-level approach:
 
-```text
-Disable default docs routes
-        |
-Mount local static assets
-        |
-Create custom /docs route
-        |
-Return get_swagger_ui_html(...)
-        |
-Point JavaScript and CSS URLs to local files
+```mermaid
+flowchart TD
+    A[Disable default docs routes] --> B[Mount local static assets]
+    B --> C["Create custom /docs route"]
+    C --> D["Return get_swagger_ui_html(...)"]
+    D --> E[Point JavaScript and CSS<br/>URLs to local files]
 ```
 
 Simplified example:
@@ -1206,18 +1185,11 @@ fastapi run main.py --root-path /service-a
 
 ## Conceptual request flow
 
-```text
-Client request:
-/api-prefix/docs
-        |
-        v
-Reverse proxy removes /api-prefix
-        |
-        v
-FastAPI receives /docs
-        |
-        v
-OpenAPI and docs URLs use root_path information
+```mermaid
+flowchart TD
+    A["Client request: /api-prefix/docs"] --> B["Reverse proxy removes /api-prefix"]
+    B --> C["FastAPI receives /docs"]
+    C --> D["OpenAPI and docs URLs use root_path information"]
 ```
 
 Also ensure the proxy forwards trusted scheme and host information correctly. Otherwise, generated URLs may use an incorrect host or `http` instead of `https`.
@@ -1309,14 +1281,11 @@ def test_create_product_contract_is_documented():
 
 A schema snapshot can reveal accidental contract changes.
 
-```text
-Generate openapi.json
-        |
-Compare with approved snapshot
-        |
-        +-- No change -> pass
-        |
-        +-- Changed -> review diff
+```mermaid
+flowchart TD
+    A["Generate openapi.json"] --> B[Compare with approved snapshot]
+    B -->|No change| C[Pass]
+    B -->|Changed| D[Review diff]
 ```
 
 Do not blindly reject every change. Some schema changes are intentional and should update the approved contract.
@@ -1342,14 +1311,10 @@ Do not consider Swagger UI only a testing page. The schema may be consumed by fr
 
 ## 21.2 Use dedicated response models
 
-```text
-Database object
-     |
-     v
-Response model filtering
-     |
-     v
-Public JSON response
+```mermaid
+flowchart TD
+    A[Database object] --> B[Response model filtering]
+    B --> C[Public JSON response]
 ```
 
 This prevents internal or sensitive fields from leaking into public responses.
@@ -1697,26 +1662,20 @@ Hidden from OpenAPI:
 
 ## Core mental model
 
-```text
-FastAPI declarations
-        |
-        v
-OpenAPI schema
-        |
-        +-----------------------+
-        |                       |
-        v                       v
-Swagger UI                  ReDoc
-Interactive testing         API reference
+```mermaid
+flowchart TD
+    A[FastAPI declarations] --> B[OpenAPI schema]
+    B --> C[Swagger UI<br/>Interactive testing]
+    B --> D[ReDoc<br/>API reference]
 ```
 
 ## Default paths
 
-```text
-/docs         -> Swagger UI
-/redoc        -> ReDoc
-/openapi.json -> Raw OpenAPI schema
-```
+| Path | Serves |
+| --- | --- |
+| `/docs` | Swagger UI |
+| `/redoc` | ReDoc |
+| `/openapi.json` | Raw OpenAPI schema |
 
 ## Most useful declarations
 

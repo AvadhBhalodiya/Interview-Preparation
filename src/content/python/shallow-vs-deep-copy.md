@@ -835,7 +835,7 @@ Structure:
 
 ```mermaid
 flowchart LR
-    A["data list"] --> A
+    A["data list"] -->|"element 0 refers back to the list itself"| A
 ```
 
 A naive recursive copy would run forever.
@@ -1162,19 +1162,21 @@ copied = copy.deepcopy(original)
 
 ## Final Mental Model
 
-```text
-Assignment:
-new variable ───────► original object
+```mermaid
+flowchart LR
+    subgraph ASSIGN[Assignment]
+        A1[New variable] --> A2[Original object]
+    end
 
-Shallow copy:
-new variable ───────► new outer object
-                          │
-                          └────► shared nested objects
+    subgraph SHALLOW[Shallow copy]
+        S1[New variable] --> S2[New outer object]
+        S2 --> S3[Shared nested objects]
+    end
 
-Deep copy:
-new variable ───────► new outer object
-                          │
-                          └────► new nested objects
+    subgraph DEEP[Deep copy]
+        D1[New variable] --> D2[New outer object]
+        D2 --> D3[New nested objects]
+    end
 ```
 
 > [!KEY]

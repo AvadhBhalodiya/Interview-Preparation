@@ -49,14 +49,14 @@ Assume the policy is:
 5 requests per 10 seconds per user
 ```
 
-```text
-Request 1  -> Allowed
-Request 2  -> Allowed
-Request 3  -> Allowed
-Request 4  -> Allowed
-Request 5  -> Allowed
-Request 6  -> Rejected with 429 Too Many Requests
-```
+| Request | Result |
+|---|---|
+| Request 1 | Allowed |
+| Request 2 | Allowed |
+| Request 3 | Allowed |
+| Request 4 | Allowed |
+| Request 5 | Allowed |
+| Request 6 | Rejected with 429 Too Many Requests |
 
 After sufficient capacity becomes available again, the user can continue making requests.
 
@@ -95,11 +95,11 @@ Suppose an API can safely process 10,000 requests per minute. Without per-client
 
 ### 2.4 Enforce Commercial Plans
 
-```text
-Free plan       -> 100 requests/hour
-Standard plan   -> 1,000 requests/hour
-Enterprise plan -> 10,000 requests/hour
-```
+| Plan | Limit |
+|---|---|
+| Free | 100 requests/hour |
+| Standard | 1,000 requests/hour |
+| Enterprise | 10,000 requests/hour |
 
 This is commonly called a **quota**, although quota and rate are not exactly the same concept.
 
@@ -107,11 +107,11 @@ This is commonly called a **quota**, although quota and rate are not exactly the
 
 Not every request has the same cost.
 
-```text
-GET /users/123          -> inexpensive
-POST /reports/generate  -> expensive
-POST /ai/analyse        -> very expensive
-```
+| Request | Relative cost |
+|---|---|
+| `GET /users/123` | Inexpensive |
+| `POST /reports/generate` | Expensive |
+| `POST /ai/analyse` | Very expensive |
 
 A good API can apply stricter or weighted limits to expensive operations.
 
@@ -235,12 +235,12 @@ Best for:
 
 ### Recommended Layered Approach
 
-```text
-Edge limit        -> Protect the public entry point
-Gateway limit     -> Enforce general API policies
-Application limit -> Enforce business-specific policies
-Downstream limit  -> Protect expensive dependencies
-```
+| Layer | Responsibility |
+|---|---|
+| Edge limit | Protect the public entry point |
+| Gateway limit | Enforce general API policies |
+| Application limit | Enforce business-specific policies |
+| Downstream limit | Protect expensive dependencies |
 
 One limiter is rarely sufficient for a large production system.
 
@@ -674,25 +674,14 @@ Concurrency limiting is especially useful for:
 
 ### Practical Selection Guide
 
-```text
-Need the simplest counter?
-    -> Fixed window
-
-Need exact rolling-window enforcement?
-    -> Sliding window log
-
-Need a memory-efficient rolling approximation?
-    -> Sliding window counter
-
-Need controlled bursts with a stable average rate?
-    -> Token bucket
-
-Need constant downstream traffic?
-    -> Leaky bucket
-
-Need to protect long-running workers?
-    -> Concurrency limiter
-```
+| Requirement | Algorithm |
+|---|---|
+| The simplest counter | Fixed window |
+| Exact rolling-window enforcement | Sliding window log |
+| A memory-efficient rolling approximation | Sliding window counter |
+| Controlled bursts with a stable average rate | Token bucket |
+| Constant downstream traffic | Leaky bucket |
+| Protection for long-running workers | Concurrency limiter |
 
 A mature API may use more than one algorithm at the same time.
 
@@ -835,12 +824,12 @@ if response.status_code == 429:
 
 When `Retry-After` is absent, use exponential backoff.
 
-```text
-Attempt 1 -> wait about 1 second
-Attempt 2 -> wait about 2 seconds
-Attempt 3 -> wait about 4 seconds
-Attempt 4 -> wait about 8 seconds
-```
+| Attempt | Wait before retrying |
+|---|---|
+| 1 | About 1 second |
+| 2 | About 2 seconds |
+| 3 | About 4 seconds |
+| 4 | About 8 seconds |
 
 Add random jitter so many clients do not retry simultaneously.
 
@@ -1129,11 +1118,11 @@ The example should be extended with:
 
 Not all requests should necessarily cost one unit.
 
-```text
-GET /products             -> 1 unit
-GET /analytics/report     -> 5 units
-POST /ai/generate         -> 20 units
-```
+| Request | Cost |
+|---|---|
+| `GET /products` | 1 unit |
+| `GET /analytics/report` | 5 units |
+| `POST /ai/generate` | 20 units |
 
 A token bucket supports this naturally because each request can consume a different number of tokens.
 
@@ -1193,24 +1182,24 @@ The short window limits bursts, while the longer windows enforce sustained usage
 
 The gateway can protect external traffic, but internal service-to-service calls may multiply.
 
-```text
-1 client request
-    -> Order service
-        -> 5 inventory calls
-        -> 3 pricing calls
-        -> 2 notification calls
+```mermaid
+flowchart LR
+    A[1 client request] --> B[Order service]
+    B --> C[5 inventory calls]
+    B --> D[3 pricing calls]
+    B --> E[2 notification calls]
 ```
 
 One external request can produce many internal requests.
 
 ### 13.2 Apply Limits Near the Protected Resource
 
-```text
-Public API gateway -> client fairness
-Order service      -> business operation limit
-AI service         -> inference/concurrency limit
-Third-party adapter-> vendor quota protection
-```
+| Component | Limit purpose |
+|---|---|
+| Public API gateway | Client fairness |
+| Order service | Business operation limit |
+| AI service | Inference and concurrency limit |
+| Third-party adapter | Vendor quota protection |
 
 ### 13.3 Avoid Double-Counting Retries
 
@@ -1405,14 +1394,14 @@ flowchart TD
 
 ### Suggested Policies
 
-```text
-Unauthenticated endpoints -> trusted-IP fixed or token bucket
-Authenticated API         -> user/API-key token bucket
-Multi-tenant SaaS         -> tenant + user limits
-Expensive async work      -> request rate + concurrency limit
-Third-party integrations  -> outbound token bucket
-Billing plans             -> short-term rate + long-term quota
-```
+| Scenario | Suggested policy |
+|---|---|
+| Unauthenticated endpoints | Trusted-IP fixed window or token bucket |
+| Authenticated API | User or API-key token bucket |
+| Multi-tenant SaaS | Tenant + user limits |
+| Expensive async work | Request rate + concurrency limit |
+| Third-party integrations | Outbound token bucket |
+| Billing plans | Short-term rate + long-term quota |
 
 ### Decision Sequence
 
@@ -1544,12 +1533,12 @@ Restricts active operations rather than requests per time window.
 
 ### HTTP Behaviour
 
-```text
-Client exceeded assigned rate -> 429 Too Many Requests
-General service overload       -> 503 Service Unavailable
-Retry guidance                 -> Retry-After
-Machine-readable error         -> application/problem+json
-```
+| Situation | Response |
+|---|---|
+| Client exceeded assigned rate | `429 Too Many Requests` |
+| General service overload | `503 Service Unavailable` |
+| Retry guidance | `Retry-After` |
+| Machine-readable error | `application/problem+json` |
 
 ### Distributed-System Principle
 

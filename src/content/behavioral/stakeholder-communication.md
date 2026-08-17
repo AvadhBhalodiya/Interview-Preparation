@@ -122,16 +122,15 @@ Not every stakeholder needs the same amount of communication.
 
 A simple way to classify stakeholders is by their **influence** and **interest**.
 
-```text
-                         HIGH INFLUENCE
-                               |
-          Keep Satisfied       |       Manage Closely
-                               |
-LOW INTEREST ------------------+------------------ HIGH INTEREST
-                               |
-          Monitor              |       Keep Informed
-                               |
-                         LOW INFLUENCE
+```mermaid
+quadrantChart
+    title Stakeholder influence and interest
+    x-axis Low interest --> High interest
+    y-axis Low influence --> High influence
+    quadrant-1 Manage closely
+    quadrant-2 Keep satisfied
+    quadrant-3 Monitor
+    quadrant-4 Keep informed
 ```
 
 ### Manage Closely
@@ -407,16 +406,12 @@ Then explain the solution:
 
 A useful communication framework is:
 
-```text
-Problem
-   ↓
-Impact
-   ↓
-Options
-   ↓
-Recommendation
-   ↓
-Next Step
+```mermaid
+flowchart TD
+    A[Problem] --> B[Impact]
+    B --> C[Options]
+    C --> D[Recommendation]
+    D --> E[Next step]
 ```
 
 ### Example
@@ -550,18 +545,13 @@ A useful risk update contains:
 5. What decision or help is needed?
 6. When will the next update be shared?
 
-```text
-Issue
-  ↓
-Impact
-  ↓
-Action Taken
-  ↓
-Options
-  ↓
-Required Support
-  ↓
-Next Update
+```mermaid
+flowchart TD
+    A[Issue] --> B[Impact]
+    B --> C[Action taken]
+    C --> D[Options]
+    D --> E[Required support]
+    E --> F[Next update]
 ```
 
 ## 9.2 Example: Delay Communication
@@ -814,14 +804,11 @@ Say:
 
 A useful approach is:
 
-```text
-Observation
-   ↓
-Impact
-   ↓
-Need
-   ↓
-Request
+```mermaid
+flowchart TD
+    A[Observation] --> B[Impact]
+    B --> C[Need]
+    C --> D[Request]
 ```
 
 Example:
@@ -888,16 +875,12 @@ Focus on:
 - Roles.
 - Decision owners.
 
-```text
-Requirement
-   ↓
-Technical Approach
-   ↓
-Estimate
-   ↓
-Dependencies
-   ↓
-Delivery Plan
+```mermaid
+flowchart TD
+    A[Requirement] --> B[Technical approach]
+    B --> C[Estimate]
+    C --> D[Dependencies]
+    D --> E[Delivery plan]
 ```
 
 ## 14.3 Development Phase
@@ -1084,18 +1067,13 @@ A strong example should show more than “I kept everyone updated.” It should 
 
 You can organize the experience using this flow:
 
-```text
-Context
-   ↓
-Stakeholder Challenge
-   ↓
-Your Communication Approach
-   ↓
-Decision or Alignment
-   ↓
-Outcome
-   ↓
-Learning
+```mermaid
+flowchart TD
+    A[Context] --> B[Stakeholder challenge]
+    B --> C[Your communication approach]
+    C --> D[Decision or alignment]
+    D --> E[Outcome]
+    E --> F[Learning]
 ```
 
 ## 16.2 Example Scenario
@@ -1200,16 +1178,12 @@ A strong developer communicates by:
 
 The most useful communication pattern to remember is:
 
-```text
-What happened?
-      ↓
-Why does it matter?
-      ↓
-What are the options?
-      ↓
-What do I recommend?
-      ↓
-Who needs to do what next?
+```mermaid
+flowchart TD
+    A[What happened?] --> B[Why does it matter?]
+    B --> C[What are the options?]
+    C --> D[What do I recommend?]
+    D --> E[Who needs to do what next?]
 ```
 
 Effective stakeholder communication does not require complex vocabulary or frequent meetings. It requires clarity, empathy, timing, ownership, and a focus on helping people make good decisions.

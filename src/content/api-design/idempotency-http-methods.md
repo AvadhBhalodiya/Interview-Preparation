@@ -101,15 +101,15 @@ Distributed systems regularly experience uncertain outcomes:
 - The client does not know whether the operation succeeded.
 - The client retries the request.
 
-```text
-Client                         Server
-  |                               |
-  |------ Create payment -------->|
-  |                               | Payment created
-  |<----- Response lost -------- X|
-  |                               |
-  |------ Retry request --------->|
-  |                               |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: Create payment
+    S->>S: Payment created
+    S--xC: Response lost in transit
+    C->>S: Retry request
 ```
 
 Without idempotency, the retry could create:
@@ -169,22 +169,25 @@ These methods are not safe because they request state changes, but they are idem
 
 ## 3.3 Relationship
 
-```text
-                 HTTP Method Properties
+```mermaid
+flowchart TD
+    subgraph IDEM[Idempotent]
+        subgraph SAFE[Safe and idempotent]
+            G[GET]
+            H[HEAD]
+            O[OPTIONS]
+            T[TRACE]
+            Q[QUERY]
+        end
+        P[PUT]
+        D[DELETE]
+    end
 
-                  +------------------+
-                  |   Idempotent      |
-                  |                  |
-                  |  PUT   DELETE    |
-      +-----------+------------------+
-      | Safe and Idempotent          |
-      |                              |
-      | GET  HEAD  OPTIONS  TRACE    |
-      | QUERY                        |
-      +------------------------------+
-
-Non-idempotent by specification:
-POST, PATCH, CONNECT
+    subgraph NON[Non-idempotent by specification]
+        PO[POST]
+        PA[PATCH]
+        CO[CONNECT]
+    end
 ```
 
 A useful rule is:
@@ -240,10 +243,17 @@ GET /users/42
 
 Repeating the request does not ask the server to modify the user.
 
-```text
-GET /users/42  -> Read user
-GET /users/42  -> Read user again
-GET /users/42  -> Read user again
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: GET /users/42
+    S-->>C: Read user
+    C->>S: GET /users/42
+    S-->>C: Read user again
+    C->>S: GET /users/42
+    S-->>C: Read user again
 ```
 
 ### Important Detail
@@ -327,10 +337,17 @@ Content-Type: application/json
 
 Repeating the identical request produces the same intended resource state:
 
-```text
-Request 1 -> User 42 has representation X
-Request 2 -> User 42 still has representation X
-Request 3 -> User 42 still has representation X
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: PUT /users/42 with representation X
+    S-->>C: User 42 has representation X
+    C->>S: PUT /users/42 with representation X
+    S-->>C: User 42 still has representation X
+    C->>S: PUT /users/42 with representation X
+    S-->>C: User 42 still has representation X
 ```
 
 ### Why PUT Is Not Safe
@@ -369,10 +386,17 @@ DELETE /users/42
 
 Possible responses:
 
-```text
-First request  -> 204 No Content
-Second request -> 404 Not Found
-Third request  -> 404 Not Found
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: DELETE /users/42
+    S-->>C: 204 No Content
+    C->>S: DELETE /users/42
+    S-->>C: 404 Not Found
+    C->>S: DELETE /users/42
+    S-->>C: 404 Not Found
 ```
 
 The status codes can differ, but the intended final state is the same:
@@ -505,10 +529,17 @@ Content-Type: application/json
 
 Repeated requests may create multiple orders:
 
-```text
-Request 1 -> Order 501 created
-Request 2 -> Order 502 created
-Request 3 -> Order 503 created
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: POST /orders
+    S-->>C: Order 501 created
+    C->>S: POST /orders
+    S-->>C: Order 502 created
+    C->>S: POST /orders
+    S-->>C: Order 503 created
 ```
 
 Therefore, `POST` is not guaranteed to be idempotent.
@@ -787,36 +818,16 @@ For financial operations, “set balance to X” is usually not an acceptable re
 
 A robust server should process duplicate requests atomically.
 
-```text
-Client
-  |
-  | POST /payments
-  | Idempotency-Key: payment-abc-123
-  v
-API Server
-  |
-  |-- Look up key within tenant + endpoint scope
-  |
-  +-- Key not found -----------------------------+
-  |                                              |
-  |   Reserve key atomically                     |
-  |   Validate request fingerprint               |
-  |   Execute business transaction               |
-  |   Store response/status                      |
-  |   Return response                            |
-  |                                              |
-  +-- Key found and completed -------------------+
-  |                                              |
-  |   Verify same request fingerprint            |
-  |   Return stored response                     |
-  |                                              |
-  +-- Key found and processing ------------------+
-  |                                              |
-  |   Wait, return 409, or return 202            |
-  |                                              |
-  +-- Same key but different payload ------------+
-                                                 |
-      Reject request, usually as a conflict      |
+```mermaid
+flowchart TD
+    C["Client<br/>POST /payments<br/>Idempotency-Key: payment-abc-123"] --> API[API Server]
+    API --> LOOK[Look up key within tenant + endpoint scope]
+    LOOK --> D{Key state?}
+
+    D -->|Not found| NF["Reserve key atomically<br/>Validate request fingerprint<br/>Execute business transaction<br/>Store response and status<br/>Return response"]
+    D -->|Found and completed| FC["Verify same request fingerprint<br/>Return stored response"]
+    D -->|Found and processing| FP["Wait, return 409, or return 202"]
+    D -->|Same key, different payload| DP[Reject request, usually as a conflict]
 ```
 
 ## 8.1 First Request
@@ -965,19 +976,27 @@ A short TTL such as a few minutes may be insufficient for mobile clients, asynch
 
 Idempotency is not only about sequential retries. Two identical requests can arrive at the same time.
 
-```text
-Request A ----+
-              +----> Server ----> Create one payment
-Request B ----+
+```mermaid
+flowchart LR
+    A[Request A] --> S[Server]
+    B[Request B] --> S
+    S --> P[Create one payment]
 ```
 
 Without atomic coordination:
 
-```text
-Request A checks key -> not found
-Request B checks key -> not found
-Request A creates payment
-Request B creates payment
+```mermaid
+sequenceDiagram
+    participant A as Request A
+    participant B as Request B
+    participant S as Server
+
+    A->>S: Check idempotency key
+    S-->>A: Not found
+    B->>S: Check idempotency key
+    S-->>B: Not found
+    A->>S: Create payment
+    B->>S: Create payment
 ```
 
 This is a race condition.
@@ -1085,25 +1104,14 @@ Idempotency enables safer retries, but retries still need control.
 
 ## 12.1 Typical Retry Decision
 
-```text
-Request failed
-    |
-    v
-Was any response received?
-    |
-    +-- Yes --> Inspect status and API contract
-    |
-    +-- No  --> Outcome may be unknown
-                    |
-                    v
-             Is operation retry-safe?
-                    |
-           +--------+--------+
-           |                 |
-          Yes                No
-           |                 |
-      Retry with         Check operation
-      backoff            status or reconcile
+```mermaid
+flowchart TD
+    F[Request failed] --> A{Was any response received?}
+    A -->|Yes| INSPECT[Inspect status and API contract]
+    A -->|No| UNKNOWN[Outcome may be unknown]
+    UNKNOWN --> B{Is the operation retry-safe?}
+    B -->|Yes| RETRY[Retry with backoff]
+    B -->|No| RECON[Check operation status or reconcile]
 ```
 
 ## 12.2 Usually Retryable Situations
@@ -1124,11 +1132,15 @@ Always inspect API-specific behavior.
 
 Avoid immediate retry loops.
 
-```text
-Attempt 1 -> wait about 1 second
-Attempt 2 -> wait about 2 seconds
-Attempt 3 -> wait about 4 seconds
-Attempt 4 -> wait about 8 seconds
+```mermaid
+flowchart TD
+    A1[Attempt 1] --> W1[Wait about 1 second]
+    W1 --> A2[Attempt 2]
+    A2 --> W2[Wait about 2 seconds]
+    W2 --> A3[Attempt 3]
+    A3 --> W3[Wait about 4 seconds]
+    W3 --> A4[Attempt 4]
+    A4 --> W4[Wait about 8 seconds]
 ```
 
 Add random jitter so thousands of clients do not retry at exactly the same time.
@@ -1291,15 +1303,11 @@ Content-Type: application/json
 
 Consumer flow:
 
-```text
-Receive event
-    |
-    v
-Insert event_id into processed_events
-    |
-    +-- Insert succeeds -> Process event
-    |
-    +-- Unique conflict -> Already processed; return success
+```mermaid
+flowchart TD
+    R[Receive event] --> I[(Insert event_id into processed_events)]
+    I -->|Insert succeeds| P[Process event]
+    I -->|Unique conflict| S[Already processed, return success]
 ```
 
 Database rule:
@@ -1538,18 +1546,19 @@ idempotent unless the API adds protection.
 
 ## 17.4 Practical Production Rule
 
-```text
-For payments, orders, bookings, inventory adjustments, webhooks, and jobs:
+```mermaid
+flowchart TD
+    subgraph SCOPE["For payments, orders, bookings, inventory adjustments, webhooks, and jobs"]
+        M[HTTP method semantics]
+        K[Idempotency key or unique operation ID]
+        AC[Atomic database constraint]
+        RR[Retry and reconciliation strategy]
+    end
 
-HTTP method semantics
-        +
-Idempotency key or unique operation ID
-        +
-Atomic database constraint
-        +
-Retry and reconciliation strategy
-        =
-Reliable duplicate-safe processing
+    M --> OUT[Reliable duplicate-safe processing]
+    K --> OUT
+    AC --> OUT
+    RR --> OUT
 ```
 
 ---

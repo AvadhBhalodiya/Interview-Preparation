@@ -15,6 +15,10 @@ export default defineConfig({
         // Split rarely-changing vendors into their own cacheable chunks so the
         // entry stays small and updates invalidate less. (react-markdown +
         // highlight.js already live in the lazy NotePage chunk.)
+        // mermaid is deliberately absent: it is dynamic-imported from
+        // lib/mermaidRender.ts and code-splits its own per-diagram-type
+        // renderers, so naming it here would flatten ~10 lazy chunks (cytoscape,
+        // katex, the gantt/mindmap parsers) back into one eager download.
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           motion: ['motion'],

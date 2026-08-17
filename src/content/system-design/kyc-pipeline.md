@@ -514,11 +514,14 @@ sequenceDiagram
 
 After required evidence is available, independent checks can run in parallel:
 
-```text
-Document verification ─┐
-Liveness and face match ├─> Aggregate findings -> Risk -> Decision
-Watchlist screening ────┤
-Duplicate detection ────┘
+```mermaid
+flowchart LR
+    DOC[Document verification] --> AGG[Aggregate findings]
+    LIVE[Liveness and face match] --> AGG
+    WATCH[Watchlist screening] --> AGG
+    DUP[Duplicate detection] --> AGG
+    AGG --> RISK[Risk]
+    RISK --> DECISION[Decision]
 ```
 
 If these checks take 2.0 s, 3.5 s, 1.0 s, and 1.5 s:
@@ -2437,15 +2440,15 @@ Example:
 
 Use one trace/correlation ID across:
 
-```text
-HTTP request
--> case
--> workflow
--> check task
--> vendor call
--> result event
--> decision
--> webhook
+```mermaid
+flowchart TD
+    HTTP[HTTP request] --> KYCCASE[Case]
+    KYCCASE --> WF[Workflow]
+    WF --> TASK[Check task]
+    TASK --> VENDOR[Vendor call]
+    VENDOR --> EVENT[Result event]
+    EVENT --> DECISION[Decision]
+    DECISION --> HOOK[Webhook]
 ```
 
 Do not attach raw PII to tracing spans.
@@ -3062,16 +3065,16 @@ A strong explanation can follow this order.
 
 Focus on:
 
-```text
-Client
--> API and secure upload
--> Case service
--> Workflow orchestrator
--> Verification services
--> Event bus
--> Risk and decision engine
--> Manual review
--> Audit and notifications
+```mermaid
+flowchart TD
+    CLIENT[Client] --> API[API and secure upload]
+    API --> KYCCASE[Case service]
+    KYCCASE --> WF[Workflow orchestrator]
+    WF --> VERIFY[Verification services]
+    VERIFY --> BUS[[Event bus]]
+    BUS --> RISK[Risk and decision engine]
+    RISK --> REVIEW[Manual review]
+    REVIEW --> AUDIT[Audit and notifications]
 ```
 
 ## 27.3 Explain why it is asynchronous

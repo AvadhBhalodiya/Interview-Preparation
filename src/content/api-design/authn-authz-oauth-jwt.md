@@ -40,18 +40,16 @@ A successful login does **not** automatically mean that the user can access ever
 
 For example:
 
-```text
-Alice successfully logs in.
-        ↓
-Alice is authenticated.
-        ↓
-Alice requests DELETE /users/42.
-        ↓
-The API checks whether Alice has permission to delete user 42.
-        ↓
-Alice is not an administrator.
-        ↓
-Request is rejected with 403 Forbidden.
+```mermaid
+flowchart TD
+    A[Alice successfully logs in]
+    B[Alice is authenticated]
+    C["Alice requests DELETE /users/42"]
+    D[API checks whether Alice may<br/>delete user 42]
+    E[Alice is not an administrator]
+    F[Request rejected with<br/>403 Forbidden]
+
+    A --> B --> C --> D --> E --> F
 ```
 
 ---
@@ -193,16 +191,15 @@ This is commonly called **object-level** or **resource-level authorization**.
 
 Authorization requires a known principal in most systems:
 
-```text
-Credential
-    ↓
-Authentication
-    ↓
-Identity / Principal
-    ↓
-Authorization policy
-    ↓
-Allow or deny
+```mermaid
+flowchart TD
+    A[Credential]
+    B[Authentication]
+    C["Identity / Principal"]
+    D[Authorization policy]
+    E[Allow or deny]
+
+    A --> B --> C --> D --> E
 ```
 
 Some public endpoints intentionally allow anonymous access, but that is still an authorization decision defined by policy.
@@ -251,14 +248,14 @@ Problems:
 
 ### OAuth approach
 
-```text
-User authenticates directly with the cloud provider.
-        ↓
-User approves limited access.
-        ↓
-Reporting application receives an access token.
-        ↓
-Token permits only the approved operations.
+```mermaid
+flowchart TD
+    A[User authenticates directly<br/>with the cloud provider]
+    B[User approves limited access]
+    C[Reporting application<br/>receives an access token]
+    D[Token permits only<br/>the approved operations]
+
+    A --> B --> C --> D
 ```
 
 OAuth supports:
@@ -445,12 +442,14 @@ The **Client Credentials** grant is used for machine-to-machine communication wh
 
 Example:
 
-```text
-Invoice Worker
-      ↓ authenticates as itself
-Authorization Server
-      ↓ issues service access token
-Payments API
+```mermaid
+flowchart TD
+    W[Invoice Worker]
+    AS[Authorization Server]
+    P[Payments API]
+
+    W -->|Authenticates as itself| AS
+    AS -->|Issues service access token| P
 ```
 
 Token request:
@@ -1203,10 +1202,16 @@ Best for:
 
 Authorization depends on relationships.
 
-```text
-User ──member_of──> Team
-Team ──owns────────> Project
-Project ──contains─> Document
+```mermaid
+flowchart LR
+    U[User]
+    T[Team]
+    P[Project]
+    D[Document]
+
+    U -->|member_of| T
+    T -->|owns| P
+    P -->|contains| D
 ```
 
 A user may read a document because they are a member of the team that owns its project.

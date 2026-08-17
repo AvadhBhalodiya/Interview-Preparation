@@ -28,13 +28,9 @@ For example:
 
 Access control is part of **authorization**, not authentication.
 
-```text
-Authentication
-"Who are you?"
-        |
-        v
-Authorization
-"What are you allowed to do?"
+```mermaid
+flowchart TD
+    A["Authentication<br/>Who are you?"] --> B["Authorization<br/>What are you allowed to do?"]
 ```
 
 Two commonly used authorization models are:
@@ -135,11 +131,11 @@ Document
 
 The relationship between a user and one or more roles.
 
-```text
-Alice -> Admin
-Bob   -> Developer
-Carol -> Viewer
-```
+| User | Assigned role |
+|---|---|
+| Alice | Admin |
+| Bob | Developer |
+| Carol | Viewer |
 
 ### Role–Permission Assignment
 
@@ -225,20 +221,11 @@ flowchart BT
 
 Example:
 
-```text
-Viewer
-└── project.read
-
-Developer inherits Viewer
-├── project.read
-└── task.update
-
-Project Manager inherits Developer
-├── project.read
-├── task.update
-├── project.create
-└── task.assign
-```
+| Role | Inherits | Effective permissions |
+|---|---|---|
+| Viewer | — | project.read |
+| Developer | Viewer | project.read, task.update |
+| Project Manager | Developer | project.read, task.update, project.create, task.assign |
 
 Role hierarchy reduces duplicate permission assignments, but deep hierarchies can become difficult to understand.
 
@@ -815,12 +802,12 @@ Production Deployer
 
 RBAC can handle the broad functional permissions:
 
-```text
-Tenant Admin -> user.manage
-Project Manager -> project.update
-Developer -> task.update
-Production Deployer -> deployment.create
-```
+| Role | Functional permission |
+|---|---|
+| Tenant Admin | user.manage |
+| Project Manager | project.update |
+| Developer | task.update |
+| Production Deployer | deployment.create |
 
 But additional checks are still required:
 
@@ -874,11 +861,11 @@ AND environment.current_date > subject.contract_expiry
 
 Use RBAC for broad capabilities:
 
-```text
-Developer -> task.update
-Project Manager -> project.update
-Tenant Admin -> user.manage
-```
+| Role | Broad capability |
+|---|---|
+| Developer | task.update |
+| Project Manager | project.update |
+| Tenant Admin | user.manage |
 
 Then use ABAC for contextual restrictions:
 
@@ -1436,12 +1423,12 @@ Sensitive attributes must come from trusted sources.
 
 Examples:
 
-```text
-tenant_id -> server-controlled identity record
-role -> identity provider or authorization database
-device_trusted -> device-management service
-clearance -> approved HR/security source
-```
+| Attribute | Trusted source |
+|---|---|
+| tenant_id | Server-controlled identity record |
+| role | Identity provider or authorization database |
+| device_trusted | Device-management service |
+| clearance | Approved HR/security source |
 
 Never trust values such as these directly from request JSON:
 

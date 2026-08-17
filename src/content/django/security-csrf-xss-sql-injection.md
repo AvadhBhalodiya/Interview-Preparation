@@ -597,19 +597,11 @@ The browser displays the string instead of executing it.
 
 ## Escaping Flow
 
-```text
-Untrusted value
-    "<script>alert('XSS')</script>"
-                |
-                v
-Django template auto-escaping
-                |
-                v
-Escaped HTML
-    "&lt;script&gt;alert..."
-                |
-                v
-Browser displays text
+```mermaid
+flowchart TD
+    A["Untrusted value<br/>a script tag in the submitted text"] --> B[Django template auto-escaping]
+    B --> C["Escaped HTML<br/>tags become character entities"]
+    C --> D[Browser displays text]
 ```
 
 Django commonly escapes dangerous HTML characters such as:
@@ -897,17 +889,11 @@ Think of CSP as defense in depth.
 
 ## 3.10 XSS Mental Model
 
-```text
-Untrusted data entering the application
-                |
-                v
-Store as ordinary data
-                |
-                v
-Escape for the output context
-                |
-                v
-Browser treats it as data, not code
+```mermaid
+flowchart TD
+    A[Untrusted data entering the application] --> B[Store as ordinary data]
+    B --> C[Escape for the output context]
+    C --> D["Browser treats it as data, not code"]
 ```
 
 The main rule is:
@@ -1327,11 +1313,11 @@ flowchart TD
 
 ### Easy memory rule
 
-```text
-CSRF  -> Can this browser perform this action?
-XSS   -> Will this data execute as browser code?
-SQLi  -> Can this input modify the SQL query structure?
-```
+| Attack | The question it asks |
+| --- | --- |
+| CSRF | Can this browser perform this action? |
+| XSS | Will this data execute as browser code? |
+| SQLi | Can this input modify the SQL query structure? |
 
 ---
 
@@ -1626,16 +1612,16 @@ This test confirms that the payload is treated as a literal field value.
 
 Useful security assertions include:
 
-```text
-Missing CSRF token       -> 403
-Invalid CSRF token       -> 403
-Untrusted HTML           -> rendered as text
-Unauthorized user        -> 302, 401, or 403
-Unexpected sort field    -> rejected or replaced with default
-Oversized input          -> validation error
-Webhook bad signature    -> 403
-Sensitive page over HTTP -> redirected to HTTPS
-```
+| Situation | Expected result |
+| --- | --- |
+| Missing CSRF token | `403` |
+| Invalid CSRF token | `403` |
+| Untrusted HTML | Rendered as text |
+| Unauthorized user | `302`, `401`, or `403` |
+| Unexpected sort field | Rejected or replaced with default |
+| Oversized input | Validation error |
+| Webhook bad signature | `403` |
+| Sensitive page over HTTP | Redirected to HTTPS |
 
 ---
 
@@ -1768,20 +1754,12 @@ Security protection also depends on using a supported Django release and applyin
 
 Recommended operational flow:
 
-```text
-Security advisory released
-        |
-        v
-Review affected Django versions
-        |
-        v
-Upgrade dependency
-        |
-        v
-Run tests and deployment checks
-        |
-        v
-Deploy patched version
+```mermaid
+flowchart TD
+    A[Security advisory released] --> B[Review affected Django versions]
+    B --> C[Upgrade dependency]
+    C --> D[Run tests and deployment checks]
+    D --> E[Deploy patched version]
 ```
 
 Pin dependencies deliberately and use an automated dependency scanner in CI.

@@ -18,23 +18,12 @@ A Django view is a callable that:
 2. Executes application logic.
 3. Returns an HTTP response.
 
-```text
-Browser / API Client
-        |
-        | HTTP Request
-        v
-   Django URLconf
-        |
-        | selects a view
-        v
-  Function or Class
-        |
-        | business logic, database access, rendering
-        v
-   HttpResponse
-        |
-        v
-Browser / API Client
+```mermaid
+flowchart TD
+    A["Browser / API Client"] -->|HTTP Request| B[Django URLconf]
+    B -->|Selects a view| C[Function or Class]
+    C -->|"Business logic, database access, rendering"| D[HttpResponse]
+    D --> E["Browser / API Client"]
 ```
 
 The two common implementations are:
@@ -110,22 +99,14 @@ urlpatterns = [
 
 ## 2.2 How an FBV Works
 
-```text
-Request
-   |
-   v
-book_list(request)
-   |
-   +--> validate request
-   |
-   +--> query database
-   |
-   +--> prepare context
-   |
-   +--> render template
-   |
-   v
-HttpResponse
+```mermaid
+flowchart TD
+    A[Request] --> B["book_list(request)"]
+    B --> C[Validate request]
+    C --> D[Query database]
+    D --> E[Prepare context]
+    E --> F[Render template]
+    F --> G[HttpResponse]
 ```
 
 Everything is visible in one function. This makes FBVs easy to read when the workflow is small or highly custom.
@@ -255,29 +236,20 @@ path("books/", BookListView.as_view())
 
 Conceptually, `as_view()` does this:
 
-```text
-URL Resolver
-    |
-    v
-BookListView.as_view()
-    |
-    | returns a callable
-    v
-Create BookListView instance
-    |
-    v
-setup(request, *args, **kwargs)
-    |
-    v
-dispatch(request, *args, **kwargs)
-    |
-    +--> GET  -> get()
-    +--> POST -> post()
-    +--> PUT  -> put()
-    +--> DELETE -> delete()
-    |
-    v
-HttpResponse
+```mermaid
+flowchart TD
+    A[URL Resolver] --> B["BookListView.as_view()"]
+    B -->|Returns a callable| C[Create BookListView instance]
+    C --> D["setup(request, *args, **kwargs)"]
+    D --> E["dispatch(request, *args, **kwargs)"]
+    E -->|GET| F["get()"]
+    E -->|POST| G["post()"]
+    E -->|PUT| H["put()"]
+    E -->|DELETE| I["delete()"]
+    F --> J[HttpResponse]
+    G --> J
+    H --> J
+    I --> J
 ```
 
 A new view instance is used for each request, so request-specific state can be stored on `self`.
@@ -399,20 +371,12 @@ Django's actual implementation includes supported-method checks and related fram
 
 ## 4.3 Main Structural Difference
 
-```text
-FBV
-└── One function
-    ├── GET branch
-    ├── POST branch
-    └── shared logic
-
-CBV
-└── One class
-    ├── get()
-    ├── post()
-    ├── shared methods
-    └── inherited/mixin behavior
-```
+| FBV — one function | CBV — one class |
+| --- | --- |
+| GET branch | `get()` |
+| POST branch | `post()` |
+| Shared logic | Shared methods |
+| — | Inherited/mixin behavior |
 
 ---
 
@@ -674,16 +638,12 @@ path(
 
 ## 7.4 Generic View Mental Model
 
-```text
-Generic View
-    |
-    +--> default workflow supplied by Django
-    |
-    +--> configuration through attributes
-    |
-    +--> customization through hook methods
-    |
-    +--> reusable behavior through mixins
+```mermaid
+flowchart TD
+    A[Generic View] --> B[Default workflow supplied by Django]
+    A --> C[Configuration through attributes]
+    A --> D[Customization through hook methods]
+    A --> E[Reusable behavior through mixins]
 ```
 
 A generic CBV is useful when its default workflow closely matches the feature. When extensive overrides are needed, a simpler `View` subclass or an FBV may be clearer.
@@ -766,20 +726,12 @@ class BookUpdateView(
 
 Python uses the Method Resolution Order, or MRO, to determine which implementation runs next.
 
-```text
-BookUpdateView
-    |
-    v
-LoginRequiredMixin
-    |
-    v
-PermissionRequiredMixin
-    |
-    v
-UpdateView
-    |
-    v
-Other parent classes and mixins
+```mermaid
+flowchart TD
+    A[BookUpdateView] --> B[LoginRequiredMixin]
+    B --> C[PermissionRequiredMixin]
+    C --> D[UpdateView]
+    D --> E[Other parent classes and mixins]
 ```
 
 ## 8.4 Applying a Decorator to a CBV
@@ -881,19 +833,11 @@ This is often preferable because an object outside the user's queryset naturally
 
 Both styles support reuse:
 
-```text
-FBV reuse
-└── functions
-    ├── decorators
-    ├── service functions
-    └── utility functions
-
-CBV reuse
-└── object-oriented components
-    ├── mixins
-    ├── parent classes
-    └── overridable methods
-```
+| FBV reuse — functions | CBV reuse — object-oriented components |
+| --- | --- |
+| Decorators | Mixins |
+| Service functions | Parent classes |
+| Utility functions | Overridable methods |
 
 Use a mixin for view-specific reusable behavior. Use service functions for domain or business logic that should not depend on the view layer.
 
@@ -1151,21 +1095,17 @@ class ValidAsyncView(View):
 
 Async is helpful when the view spends time waiting for async I/O.
 
-```text
-Good async use
-Request
-   |
-   +--> await external service
-   +--> await another async operation
-   |
-Response
-
-CPU-heavy work
-Request
-   |
-   +--> expensive CPU calculation
-   |
-Response
+```mermaid
+flowchart TD
+    subgraph GOOD["Good async use"]
+        A1[Request] --> B1[Await external service]
+        B1 --> C1[Await another async operation]
+        C1 --> D1[Response]
+    end
+    subgraph CPU["CPU-heavy work"]
+        A2[Request] --> B2[Expensive CPU calculation]
+        B2 --> C2[Response]
+    end
 ```
 
 CPU-heavy work should usually be optimized, moved to background processing, or handled with an architecture designed for such workloads.
@@ -1296,14 +1236,13 @@ Choosing FBV or CBV usually does not create a meaningful application-level perfo
 
 Database queries, template rendering, external API calls, caching, and serialization normally have a much larger impact.
 
-```text
-Typical request cost
-├── database queries       -> often significant
-├── external API calls     -> often significant
-├── template/serialization -> can be significant
-├── middleware             -> depends on project
-└── FBV vs CBV dispatch    -> usually not the main concern
-```
+| Typical request cost | Impact |
+| --- | --- |
+| Database queries | Often significant |
+| External API calls | Often significant |
+| Template / serialization | Can be significant |
+| Middleware | Depends on project |
+| FBV vs CBV dispatch | Usually not the main concern |
 
 Choose the style that produces clearer and more maintainable code. Optimize actual bottlenecks after measuring them.
 
@@ -1355,19 +1294,12 @@ flowchart TD
 
 Start from the feature's shape:
 
-```text
-Standard pattern + small customization
-    -> Generic CBV
-
-Small custom workflow
-    -> FBV
-
-Multiple methods + reusable view behavior
-    -> CBV
-
-Generic CBV requires many hard-to-follow overrides
-    -> Simplify with base View or FBV
-```
+| Feature shape | Choose |
+| --- | --- |
+| Standard pattern + small customization | Generic CBV |
+| Small custom workflow | FBV |
+| Multiple methods + reusable view behavior | CBV |
+| Generic CBV requires many hard-to-follow overrides | Simplify with base `View` or FBV |
 
 ---
 

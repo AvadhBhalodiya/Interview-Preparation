@@ -689,16 +689,12 @@ Django’s ORM and migrations are integrated into the framework.
 
 A Django model acts as the primary definition of persisted application data:
 
-```text
-Model change
-    ↓
-makemigrations
-    ↓
-Migration file
-    ↓
-migrate
-    ↓
-Database schema updated
+```mermaid
+flowchart TD
+    A[Model change] --> B[makemigrations]
+    B --> C[Migration file]
+    C --> D[migrate]
+    D --> E[Database schema updated]
 ```
 
 Django is particularly productive when the domain has:
@@ -974,14 +970,11 @@ Neither framework prevents bad architecture.
 
 FastAPI applications are normally deployed as ASGI applications using a server such as Uvicorn or another compatible process setup.
 
-```text
-Load Balancer
-    ↓
-ASGI Processes
-    ↓
-FastAPI Application
-    ↓
-Database / Cache / External Services
+```mermaid
+flowchart TD
+    LB[Load Balancer] --> P[ASGI Processes]
+    P --> A[FastAPI Application]
+    A --> D["Database / Cache / External Services"]
 ```
 
 Use multiple processes or containers for CPU utilization and availability.
@@ -993,14 +986,11 @@ Django can run through:
 - WSGI for traditional synchronous applications
 - ASGI for asynchronous capabilities
 
-```text
-Load Balancer
-    ↓
-WSGI or ASGI Processes
-    ↓
-Django Application
-    ↓
-Database / Cache / Task Workers
+```mermaid
+flowchart TD
+    LB[Load Balancer] --> P[WSGI or ASGI Processes]
+    P --> A[Django Application]
+    A --> D["Database / Cache / Task Workers"]
 ```
 
 ## Scaling Principles Shared by Both
@@ -1200,16 +1190,12 @@ Do not start with benchmark charts.
 
 FastAPI route functions and Django/DRF views should coordinate work, not contain the entire domain.
 
-```text
-Request
-    ↓
-Endpoint / View
-    ↓
-Application or Service Layer
-    ↓
-Domain Rules
-    ↓
-Repository / ORM / Integration
+```mermaid
+flowchart TD
+    A[Request] --> B["Endpoint / View"]
+    B --> C[Application or Service Layer]
+    C --> D[Domain Rules]
+    D --> E["Repository / ORM / Integration"]
 ```
 
 ## 18.3 Do Not Force Async Everywhere

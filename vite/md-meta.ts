@@ -31,6 +31,11 @@ const ONE_LINE = /^>\s*(?:⚡\s*)?(?:In one line:)?\s*(.+)$/m
 function toPlainText(md: string): string {
   return md
     .replace(/<!--[\s\S]*?-->/g, ' ')
+    // Mermaid is the one fence whose BODY is dropped, unlike the rule below.
+    // Diagram source is syntax, not prose: keeping it put ~7,800 lines of
+    // `flowchart LR` / `A --> B` into the haystack, so searching "graph" or
+    // "end" matched a hundred notes on markup the reader never sees.
+    .replace(/```mermaid\b[\s\S]*?```/g, ' ')
     .replace(/```[a-zA-Z0-9+-]*\n?/g, ' ') // fence markers + language label
     .replace(/^>\s*\[![^\]]*\]\s*/gm, ' ') // callout tags: > [!TIP]
     .replace(/^>\s?/gm, ' ') // blockquote markers

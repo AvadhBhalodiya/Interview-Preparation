@@ -62,11 +62,9 @@ user = {"name": "Aarav"}
 
 Conceptually:
 
-```text
-+--------+          +--------------------+
-| user   | -------> | {"name": "Aarav"} |
-+--------+          +--------------------+
-   name                     object
+```mermaid
+flowchart LR
+    NAME[user<br/>name] --> OBJ["{'name': 'Aarav'}<br/>object"]
 ```
 
 Assigning another variable does not copy the dictionary:
@@ -78,18 +76,10 @@ backup = user
 
 Now both names refer to the same object:
 
-```text
-+--------+
-| user   | ---------+
-+--------+          |
-                    v
-             +--------------------+
-             | {"name": "Aarav"} |
-             +--------------------+
-                    ^
-+--------+          |
-| backup | ---------+
-+--------+
+```mermaid
+flowchart LR
+    USER[user] --> OBJ["{'name': 'Aarav'}"]
+    BACKUP[backup] --> OBJ
 ```
 
 Therefore:
@@ -293,16 +283,16 @@ print(alias)
 
 The list still exists because `alias` still references it.
 
-```text
-Before del:
+```mermaid
+flowchart LR
+    subgraph BEFORE[Before del]
+        N1[numbers] --> L1["[1, 2, 3]"]
+        A1[alias] --> L1
+    end
 
-numbers ----+
-            +----> [1, 2, 3]
-alias ------+
-
-After del numbers:
-
-alias -----------> [1, 2, 3]
+    subgraph AFTER[After del numbers]
+        A2[alias] --> L2["[1, 2, 3]"]
+    end
 ```
 
 The object becomes eligible for immediate deallocation only when its last strong reference is removed.
@@ -363,15 +353,12 @@ second.link = first
 
 Reference graph:
 
-```text
-first  ----->  Node("first")
-                  |
-                  v
-              Node("second")
-                  |
-                  +------------> Node("first")
-
-second -----> Node("second")
+```mermaid
+flowchart TD
+    F[first] --> N1["Node('first')"]
+    N1 --> N2["Node('second')"]
+    N2 --> N1
+    S[second] --> N2
 ```
 
 Now remove the external names:
@@ -383,13 +370,12 @@ del second
 
 The two objects are unreachable from the application, but each one is still referenced by the other.
 
-```text
-No application references
-
-+---------------+       +----------------+
-| Node("first") | ----> | Node("second") |
-|               | <---- |                |
-+---------------+       +----------------+
+```mermaid
+flowchart LR
+    subgraph CYCLE[No application references]
+        N1["Node('first')"] --> N2["Node('second')"]
+        N2 --> N1
+    end
 ```
 
 Their reference counts are not zero.
@@ -861,12 +847,15 @@ class Node:
 
 Diagram:
 
-```text
-Strong reference:
-Parent --------------------> Child
+```mermaid
+flowchart LR
+    subgraph STRONG[Strong reference]
+        P1[Parent] --> C1[Child]
+    end
 
-Weak reference:
-Parent < - - - - - - - - - Child
+    subgraph WEAK[Weak reference]
+        C2[Child] -.-> P2[Parent]
+    end
 ```
 
 Use weak references when the relationship is observational or secondary.
@@ -1632,26 +1621,14 @@ flowchart TD
 
 ## Memory-management layers
 
-```text
-Application ownership
-        |
-        v
-Python references
-        |
-        v
-Reference counting
-        |
-        v
-Cyclic garbage collector
-        |
-        v
-CPython memory allocator
-        |
-        v
-Native libraries and system allocator
-        |
-        v
-Operating-system process memory
+```mermaid
+flowchart TD
+    A[Application ownership] --> B[Python references]
+    B --> C[Reference counting]
+    C --> D[Cyclic garbage collector]
+    D --> E[CPython memory allocator]
+    E --> F[Native libraries and system allocator]
+    F --> G[Operating-system process memory]
 ```
 
 A memory issue can exist at any of these layers.
@@ -1694,25 +1671,20 @@ A memory issue can exist at any of these layers.
 
 ## Compact Revision Diagram
 
-```text
-                    PYTHON MEMORY MANAGEMENT
-                              |
-             +----------------+----------------+
-             |                                 |
-             v                                 v
-     Reference Counting                Cyclic Garbage Collector
-             |                                 |
-     Fast, usually immediate            Periodic graph analysis
-             |                                 |
-     Handles refcount == 0              Handles unreachable cycles
-             |                                 |
-             +----------------+----------------+
-                              |
-                              v
-                    Object memory reclaimed
-                              |
-                              v
-                Memory may be reused internally
+```mermaid
+flowchart TD
+    ROOT[Python memory management] --> RC[Reference counting]
+    ROOT --> GC[Cyclic garbage collector]
+
+    RC --> RC1[Fast, usually immediate]
+    RC1 --> RC2["Handles refcount == 0"]
+
+    GC --> GC1[Periodic graph analysis]
+    GC1 --> GC2[Handles unreachable cycles]
+
+    RC2 --> REC[Object memory reclaimed]
+    GC2 --> REC
+    REC --> REUSE[Memory may be reused internally]
 ```
 
 ---

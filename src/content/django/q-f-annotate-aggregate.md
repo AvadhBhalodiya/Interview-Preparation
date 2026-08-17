@@ -142,14 +142,12 @@ erDiagram
 
 Think of the four features as different parts of an SQL query.
 
-```text
-Django ORM feature                 Approximate SQL responsibility
------------------------------------------------------------------
-Q(...)                             WHERE conditions
-F("field")                        Reference to a database column
-annotate(...)                      SELECT calculated_value / GROUP BY
-aggregate(...)                     Final summary result
-```
+| Django ORM feature | Approximate SQL responsibility |
+| --- | --- |
+| `Q(...)` | `WHERE` conditions |
+| `F("field")` | Reference to a database column |
+| `annotate(...)` | `SELECT calculated_value` / `GROUP BY` |
+| `aggregate(...)` | Final summary result |
 
 A typical reporting query may flow like this:
 
@@ -354,15 +352,13 @@ customers = Customer.objects.filter(
 
 Why `distinct()` may be needed:
 
-```text
-One customer
-   |
-   +-- Paid order 1
-   +-- Paid order 2
-
-A JOIN can return the same customer row twice.
-`distinct()` removes duplicate customer results.
+```mermaid
+flowchart TD
+    A[One customer] --> B[Paid order 1]
+    A --> C[Paid order 2]
 ```
+
+A JOIN can return the same customer row twice. `distinct()` removes duplicate customer results.
 
 ### Mixing `Q` objects and keyword arguments
 
@@ -533,14 +529,14 @@ Django creates the required join and compares the two columns.
 
 `F` expressions support arithmetic operations such as:
 
-```text
-+    addition
--    subtraction
-*    multiplication
-/    division
-%    modulo
-**   power, where supported by the database
-```
+| Operator | Meaning |
+| --- | --- |
+| `+` | Addition |
+| `-` | Subtraction |
+| `*` | Multiplication |
+| `/` | Division |
+| `%` | Modulo |
+| `**` | Power, where supported by the database |
 
 Calculate the line total for each order item:
 
@@ -668,13 +664,11 @@ for customer in customers:
 
 Conceptual result:
 
-```text
-Customer object        Temporary annotation
-------------------------------------------------
-Aarav                   order_count = 5
-Meera                   order_count = 2
-Riya                    order_count = 0
-```
+| Customer object | Temporary annotation |
+| --- | --- |
+| Aarav | `order_count = 5` |
+| Meera | `order_count = 2` |
+| Riya | `order_count = 0` |
 
 `order_count` is not a column in the `customer` table. It exists only in this query result.
 
@@ -1027,14 +1021,11 @@ result = (
 
 Processing flow:
 
-```text
-Orders
-  |
-  +-- annotate item_count for every order
-  |
-  +-- aggregate average_items across those counts
-  |
-  +-- return one dictionary
+```mermaid
+flowchart TD
+    A[Orders] --> B[Annotate item_count for every order]
+    B --> C[Aggregate average_items across those counts]
+    C --> D[Return one dictionary]
 ```
 
 Another example: total calculated stock across products.
@@ -1123,14 +1114,14 @@ result = eligible_orders.aggregate(
 
 ## Responsibility of Each Feature
 
-```text
-Q(...)                     status is paid OR shipped
-customer__is_active=True   normal AND condition
-F("total_amount")          reference the total_amount column
-F("paid_amount")           reference the paid_amount column
-annotate(...)               calculate outstanding amount per order
-aggregate(...)              sum all outstanding amounts
-```
+| Expression | Responsibility |
+| --- | --- |
+| `Q(...)` | Status is paid OR shipped |
+| `customer__is_active=True` | Normal AND condition |
+| `F("total_amount")` | Reference the `total_amount` column |
+| `F("paid_amount")` | Reference the `paid_amount` column |
+| `annotate(...)` | Calculate outstanding amount per order |
+| `aggregate(...)` | Sum all outstanding amounts |
 
 ## Processing Diagram
 
@@ -1249,12 +1240,14 @@ Meaning:
 
 The later filter does not automatically redefine the earlier annotation.
 
-```text
-filter() -> annotate()
-Rows are filtered before calculation.
-
-annotate() -> filter()
-Calculation is created before the later filter.
+```mermaid
+flowchart LR
+    subgraph EARLY["Rows are filtered before calculation"]
+        A["filter()"] --> B["annotate()"]
+    end
+    subgraph LATE["Calculation is created before the later filter"]
+        C["annotate()"] --> D["filter()"]
+    end
 ```
 
 > [!IMPORTANT]

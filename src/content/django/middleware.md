@@ -48,20 +48,12 @@ class SimpleMiddleware:
 
 ### Core idea
 
-```text
-Incoming Request
-      │
-      ▼
-  Middleware
-      │
-      ▼
-     View
-      │
-      ▼
-  Middleware
-      │
-      ▼
-Outgoing Response
+```mermaid
+flowchart TD
+    A[Incoming Request] --> B[Middleware]
+    B --> C[View]
+    C --> D[Middleware]
+    D --> E[Outgoing Response]
 ```
 
 Middleware should generally handle **cross-cutting concerns**—behavior shared across multiple endpoints—not business logic belonging to one feature.
@@ -142,22 +134,21 @@ MIDDLEWARE = [
 
 The request enters from top to bottom. The response returns from bottom to top.
 
-```text
-REQUEST PHASE                         RESPONSE PHASE
-
-Client                                   Client
-  │                                        ▲
-  ▼                                        │
-Middleware A  ───────────────────────── Middleware A
-  │                                        ▲
-  ▼                                        │
-Middleware B  ───────────────────────── Middleware B
-  │                                        ▲
-  ▼                                        │
-Middleware C  ───────────────────────── Middleware C
-  │                                        ▲
-  ▼                                        │
- View  ───────────── creates response ──────┘
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Middleware A
+    participant B as Middleware B
+    participant M as Middleware C
+    participant V as View
+    C->>A: Request phase
+    A->>B: Request phase
+    B->>M: Request phase
+    M->>V: Request phase
+    V-->>M: Creates response
+    M-->>B: Response phase
+    B-->>A: Response phase
+    A-->>C: Response phase
 ```
 
 The effective execution order is:
@@ -408,17 +399,12 @@ class MaintenanceModeMiddleware:
 
 ### Short-circuit flow
 
-```text
-Request
-  │
-  ▼
-Middleware A
-  │
-  ▼
-Maintenance Middleware ─────► 503 Response
-  │                              │
-  X View is not called           ▼
-                         Middleware A response phase
+```mermaid
+flowchart TD
+    A[Request] --> B[Middleware A]
+    B --> C[Maintenance Middleware]
+    C -->|View is not called| D[503 Response]
+    D --> E[Middleware A response phase]
 ```
 
 Only middleware layers that received the request will receive the returning response.
@@ -636,18 +622,13 @@ class RequestTimingMiddleware:
 
 #### Flow
 
-```text
-Request arrives
-    │
-    ├── Record start time
-    │
-    ├── Run remaining middleware and view
-    │
-    ├── Calculate elapsed time
-    │
-    ├── Add Server-Timing header
-    │
-    └── Return response
+```mermaid
+flowchart TD
+    A[Request arrives] --> B[Record start time]
+    B --> C[Run remaining middleware and view]
+    C --> D[Calculate elapsed time]
+    D --> E[Add Server-Timing header]
+    E --> F[Return response]
 ```
 
 For complete observability, use middleware alongside metrics and tracing systems rather than relying only on application logs.
@@ -856,12 +837,16 @@ def wrap_streaming_content(content):
 
 ### Why this matters
 
-```text
-Normal HttpResponse
-[Complete body already available in memory]
-
-StreamingHttpResponse
-[chunk 1] → [chunk 2] → [chunk 3] → ...
+```mermaid
+flowchart LR
+    subgraph NORMAL["Normal HttpResponse"]
+        A[Complete body already available in memory]
+    end
+    subgraph STREAM["StreamingHttpResponse"]
+        B[chunk 1] --> C[chunk 2]
+        C --> D[chunk 3]
+        D --> E["..."]
+    end
 ```
 
 Middleware that performs compression, body transformation, hashing, logging, or content inspection must explicitly handle streaming responses. Streaming content can be synchronous or asynchronous, so a wrapper must match the iterator type.
@@ -1168,28 +1153,18 @@ Key points:
 
 ### Mental model
 
-```text
-Request
-  ↓
-[Security]
-  ↓
-[Session]
-  ↓
-[Authentication]
-  ↓
-[Custom Middleware]
-  ↓
-[View]
-  ↑
-[Custom Middleware]
-  ↑
-[Authentication]
-  ↑
-[Session]
-  ↑
-[Security]
-  ↑
-Response
+```mermaid
+flowchart TD
+    A[Request] --> B[Security]
+    B --> C[Session]
+    C --> D[Authentication]
+    D --> E[Custom Middleware]
+    E --> F[View]
+    F --> G[Custom Middleware]
+    G --> H[Authentication]
+    H --> I[Session]
+    I --> J[Security]
+    J --> K[Response]
 ```
 
 ---

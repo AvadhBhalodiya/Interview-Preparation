@@ -304,28 +304,18 @@ The template decides:
 
 A Django request usually follows this path:
 
-```text
-Client
-  ↓
-Web Server
-  ↓
-WSGI or ASGI Application
-  ↓
-Request Middleware
-  ↓
-URL Resolver
-  ↓
-View
-  ↓
-Model / Service / External Systems
-  ↓
-Template Rendering or Response Construction
-  ↓
-Response Middleware
-  ↓
-WSGI or ASGI Server
-  ↓
-Client
+```mermaid
+flowchart TD
+    A[Client] --> B[Web Server]
+    B --> C[WSGI or ASGI Application]
+    C --> D[Request Middleware]
+    D --> E[URL Resolver]
+    E --> F[View]
+    F --> G["Model / Service / External Systems"]
+    G --> H[Template Rendering or Response Construction]
+    H --> I[Response Middleware]
+    I --> J[WSGI or ASGI Server]
+    J --> K[Client]
 ```
 
 ## 4.1 Complete Flow Diagram
@@ -462,12 +452,12 @@ def request_example(request):
 
 Example values:
 
-```text
-request.method  -> "GET"
-request.path    -> "/products/"
-request.GET     -> {"category": "laptop"}
-request.user    -> authenticated user or AnonymousUser
-```
+| Attribute | Example value |
+| --- | --- |
+| `request.method` | `"GET"` |
+| `request.path` | `"/products/"` |
+| `request.GET` | `{"category": "laptop"}` |
+| `request.user` | Authenticated user or `AnonymousUser` |
 
 Some request attributes, such as `request.user` or `request.session`, are attached by middleware.
 
@@ -492,34 +482,24 @@ MIDDLEWARE = [
 
 On the request path, middleware runs from top to bottom.
 
-```text
-SecurityMiddleware
-        ↓
-SessionMiddleware
-        ↓
-CommonMiddleware
-        ↓
-CsrfViewMiddleware
-        ↓
-AuthenticationMiddleware
-        ↓
-View
+```mermaid
+flowchart TD
+    A[SecurityMiddleware] --> B[SessionMiddleware]
+    B --> C[CommonMiddleware]
+    C --> D[CsrfViewMiddleware]
+    D --> E[AuthenticationMiddleware]
+    E --> F[View]
 ```
 
 On the response path, it runs in reverse.
 
-```text
-View
-        ↓
-AuthenticationMiddleware
-        ↓
-CsrfViewMiddleware
-        ↓
-CommonMiddleware
-        ↓
-SessionMiddleware
-        ↓
-SecurityMiddleware
+```mermaid
+flowchart TD
+    A[View] --> B[AuthenticationMiddleware]
+    B --> C[CsrfViewMiddleware]
+    C --> D[CommonMiddleware]
+    D --> E[SessionMiddleware]
+    E --> F[SecurityMiddleware]
 ```
 
 A middleware can return a response before the request reaches the view.
@@ -652,18 +632,13 @@ urlpatterns = [
 
 Simplified class-based flow:
 
-```text
-URL Resolver
-    ↓
-ProductDetailView.as_view()
-    ↓
-View instance
-    ↓
-dispatch(request)
-    ↓
-get(), post(), put(), delete(), etc.
-    ↓
-HttpResponse
+```mermaid
+flowchart TD
+    A[URL Resolver] --> B["ProductDetailView.as_view()"]
+    B --> C[View instance]
+    C --> D["dispatch(request)"]
+    D --> E["get(), post(), put(), delete(), etc."]
+    E --> F[HttpResponse]
 ```
 
 ---
@@ -678,20 +653,14 @@ product = Product.objects.get(id=product_id)
 
 Conceptually:
 
-```text
-View
-  ↓
-Django ORM
-  ↓
-SQL query
-  ↓
-Database
-  ↓
-Rows
-  ↓
-Model objects
-  ↓
-View
+```mermaid
+flowchart TD
+    A[View] --> B[Django ORM]
+    B --> C[SQL query]
+    C --> D[(Database)]
+    D --> E[Rows]
+    E --> F[Model objects]
+    F --> G[View]
 ```
 
 Example SQL generated conceptually:
@@ -1291,16 +1260,12 @@ Errors can occur in middleware, URL resolution, views, models, or template rende
 
 When no URL pattern matches, Django returns a 404 response.
 
-```text
-Request
-  ↓
-URL Resolver
-  ↓
-No match
-  ↓
-404 Handler
-  ↓
-HttpResponse with status 404
+```mermaid
+flowchart TD
+    A[Request] --> B[URL Resolver]
+    B --> C[No match]
+    C --> D[404 Handler]
+    D --> E[HttpResponse with status 404]
 ```
 
 ## 10.2 Object Not Found
@@ -1367,18 +1332,13 @@ def page_not_found(request, exception):
 
 # 11.1 WSGI Flow
 
-```text
-Client
-  ↓
-WSGI Server
-  ↓
-Django synchronous handler
-  ↓
-Synchronous middleware
-  ↓
-Synchronous view
-  ↓
-Response
+```mermaid
+flowchart TD
+    A[Client] --> B[WSGI Server]
+    B --> C[Django synchronous handler]
+    C --> D[Synchronous middleware]
+    D --> E[Synchronous view]
+    E --> F[Response]
 ```
 
 WSGI is suitable for standard synchronous Django applications.
@@ -1387,18 +1347,13 @@ WSGI is suitable for standard synchronous Django applications.
 
 # 11.2 ASGI Flow
 
-```text
-Client
-  ↓
-ASGI Server
-  ↓
-Django asynchronous handler
-  ↓
-Async-capable middleware
-  ↓
-Sync or async view
-  ↓
-Response
+```mermaid
+flowchart TD
+    A[Client] --> B[ASGI Server]
+    B --> C[Django asynchronous handler]
+    C --> D[Async-capable middleware]
+    D --> E[Sync or async view]
+    E --> F[Response]
 ```
 
 ASGI is useful when an application needs:
@@ -1604,16 +1559,12 @@ Avoid keeping the user waiting while a request performs:
 
 A better flow is:
 
-```text
-Request
-  ↓
-Validate input
-  ↓
-Create job record
-  ↓
-Enqueue background task
-  ↓
-Return 202 Accepted or redirect
+```mermaid
+flowchart TD
+    A[Request] --> B[Validate input]
+    B --> C[Create job record]
+    C --> D[Enqueue background task]
+    D --> E[Return 202 Accepted or redirect]
 ```
 
 ---
@@ -1731,20 +1682,14 @@ class ProductListViewTests(TestCase):
 
 This test covers:
 
-```text
-Test Client
-  ↓
-URL Resolver
-  ↓
-Middleware
-  ↓
-View
-  ↓
-ORM
-  ↓
-Template
-  ↓
-HttpResponse
+```mermaid
+flowchart TD
+    A[Test Client] --> B[URL Resolver]
+    B --> C[Middleware]
+    C --> D[View]
+    D --> E[ORM]
+    E --> F[Template]
+    F --> G[HttpResponse]
 ```
 
 ## 14.2 Test Redirect Behavior
@@ -1798,12 +1743,12 @@ Query-count tests help detect performance regressions in the request cycle.
 
 ## Architecture Summary
 
-```text
-Model    = Data and domain behavior
-Template = Presentation
-View     = Request coordination and response creation
-Django   = Framework-level controller responsibilities
-```
+| Layer | Responsibility |
+| --- | --- |
+| Model | Data and domain behavior |
+| Template | Presentation |
+| View | Request coordination and response creation |
+| Django | Framework-level controller responsibilities |
 
 ## Request/Response Summary
 

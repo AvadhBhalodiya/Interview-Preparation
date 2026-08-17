@@ -733,16 +733,14 @@ Low access frequency  = eviction candidate
 
 ## Example
 
-```text
-Key                Approximate access frequency
-------------------------------------------------
-product:popular            9500
-category:phones            3100
-product:average             120
-product:rare                  4
+| Key | Approximate access frequency |
+|---|---|
+| `product:popular` | 9500 |
+| `category:phones` | 3100 |
+| `product:average` | 120 |
+| `product:rare` | 4 |
 
-Likely LFU candidate: product:rare
-```
+Likely LFU candidate: `product:rare`
 
 ## Suitable Workloads
 
@@ -784,22 +782,18 @@ Assume a product was extremely popular last month but is no longer requested.
 
 Without decay:
 
-```text
-Past popularity remains forever
-        ↓
-Old hot key stays protected
-        ↓
-Newly popular data may be evicted
+```mermaid
+flowchart TD
+    P[Past popularity remains forever] --> O[Old hot key stays protected]
+    O --> N[Newly popular data may be evicted]
 ```
 
 With decay:
 
-```text
-Past access count gradually loses weight
-        ↓
-Old hot key becomes less protected
-        ↓
-Cache adapts to current traffic
+```mermaid
+flowchart TD
+    P[Past access count gradually loses weight] --> O[Old hot key becomes less protected]
+    O --> C[Cache adapts to current traffic]
 ```
 
 ---
@@ -910,12 +904,10 @@ B is strongly protected because it is frequently used.
 
 ## Simple Decision Rule
 
-```text
-Does "recently used" predict future demand?
-    Yes -> LRU
-
-Does long-term or repeated popularity predict future demand?
-    Yes -> LFU
+```mermaid
+flowchart TD
+    Q1{Does recently used<br/>predict future demand?} -->|Yes| LRU[LRU]
+    Q2{Does long-term or repeated popularity<br/>predict future demand?} -->|Yes| LFU[LFU]
 ```
 
 When uncertain, begin with `allkeys-lru`, observe hit rate and evictions, and compare against `allkeys-lfu` using production-like load tests.
@@ -1610,14 +1602,11 @@ Separate instances reduce unintended data loss and simplify capacity planning.
 
 For cache-aside:
 
-```text
-Redis unavailable
-        ↓
-Read from source database
-        ↓
-Return response
-        ↓
-Log and monitor cache failure
+```mermaid
+flowchart TD
+    R[Redis unavailable] --> D[(Source database)]
+    D -->|Read| RE[Return response]
+    RE --> L[Log and monitor cache failure]
 ```
 
 Do not let a non-critical cache become a mandatory dependency unless the business design intentionally requires it.

@@ -39,15 +39,12 @@ local message
 
 The name `message` exists in several scopes. Python uses the nearest available binding, so the local value wins.
 
-```text
-inner() local scope
-        │
-        │ message found here
-        ▼
-"local message"
+```mermaid
+flowchart TD
+    A["inner() local scope"] -->|message found here| B["local message"]
+```
 
 Enclosing and global scopes are not searched further.
-```
 
 This nearest-binding behavior is summarized by the **LEGB rule**.
 
@@ -341,19 +338,13 @@ counter = counter + 1
 
 Because the function assigns to `counter`, Python classifies `counter` as local. The earlier `print(counter)` therefore tries to read the local variable before it has received a value.
 
-```text
-Compile-time scope decision:
-
-Assignment to counter exists in function
-              │
-              ▼
-Treat counter as local throughout function
-              │
-              ▼
-Read happens before local assignment
-              │
-              ▼
-UnboundLocalError
+```mermaid
+flowchart TD
+    subgraph CT[Compile-time scope decision]
+        A[Assignment to counter exists in function] --> B[Treat counter as local throughout function]
+        B --> C[Read happens before local assignment]
+        C --> D[UnboundLocalError]
+    end
 ```
 
 ## 4.2 Mutation Is Different from Rebinding
@@ -473,16 +464,13 @@ Output:
 
 State flow:
 
-```text
-create_counter() call
-        │
-        ├── count = 0
-        │
-        └── returns increment
-                 │
-                 ├── call 1: count becomes 1
-                 ├── call 2: count becomes 2
-                 └── call 3: count becomes 3
+```mermaid
+flowchart TD
+    CALL["create_counter() call"] --> COUNT["count = 0"]
+    CALL --> INC[Returns increment]
+    INC --> C1["Call 1: count becomes 1"]
+    INC --> C2["Call 2: count becomes 2"]
+    INC --> C3["Call 3: count becomes 3"]
 ```
 
 ### `nonlocal` requires an enclosing binding
@@ -512,16 +500,23 @@ def update() -> None:
 
 ## 5.3 `global` vs `nonlocal` Resolution
 
-```text
-Module namespace
-└── global name
+```mermaid
+flowchart LR
+    subgraph MOD[Module namespace]
+        GN[global name]
+    end
 
-outer() local namespace
-└── enclosing name
+    subgraph OUTER["outer() local namespace"]
+        EN[enclosing name]
+    end
 
-    inner() local namespace
-    ├── global name    ──► module namespace
-    └── nonlocal name  ──► nearest enclosing function namespace
+    subgraph INNER["inner() local namespace"]
+        DG[global name]
+        DN[nonlocal name]
+    end
+
+    DG --> MOD
+    DN --> OUTER
 ```
 
 ---
@@ -563,15 +558,10 @@ Output:
 
 Although each call to `create_multiplier()` has completed, the returned inner function still remembers its own `factor`.
 
-```text
-create_multiplier(2)               create_multiplier(3)
-        │                                   │
-        ▼                                   ▼
-┌──────────────────┐                ┌──────────────────┐
-│ double function  │                │ triple function  │
-│ remembers factor │                │ remembers factor │
-│ factor = 2       │                │ factor = 3       │
-└──────────────────┘                └──────────────────┘
+```mermaid
+flowchart TD
+    M2["create_multiplier(2)"] --> DBL["double function<br/>remembers factor<br/>factor = 2"]
+    M3["create_multiplier(3)"] --> TRP["triple function<br/>remembers factor<br/>factor = 3"]
 ```
 
 ## 6.1 Free Variables
@@ -663,12 +653,13 @@ Output:
 
 Conceptually:
 
-```text
-Function object: double
-├── code: multiply's executable code
-├── globals: module namespace reference
-└── closure cells
-    └── factor ──► 2
+```mermaid
+flowchart TD
+    FN["Function object: double"] --> CODE["code: multiply's executable code"]
+    FN --> GLOB["globals: module namespace reference"]
+    FN --> CELLS[closure cells]
+    CELLS --> FACTOR[factor]
+    FACTOR --> VAL[2]
 ```
 
 Direct access to attributes such as `__closure__` is useful for learning, debugging, frameworks, and tooling. Business logic should not normally depend on these implementation details.
@@ -711,15 +702,17 @@ Actual result:
 
 All lambdas close over the same `number` variable. By the time they run, the loop has completed and `number` contains `2`.
 
-```text
-Loop execution:
+```mermaid
+flowchart TD
+    subgraph LOOP[Loop execution]
+        N0["number = 0"] --> L0[Lambda references variable number]
+        N1["number = 1"] --> L1[Lambda references same variable number]
+        N2["number = 2"] --> L2[Lambda references same variable number]
+    end
 
-number = 0 ──► lambda references variable number
-number = 1 ──► lambda references same variable number
-number = 2 ──► lambda references same variable number
-
-Later calls:
-All lambdas read the current value of number: 2
+    L0 --> LATER["Later calls: all lambdas read the current value of number: 2"]
+    L1 --> LATER
+    L2 --> LATER
 ```
 
 ## 8.2 Fix with a Default Argument
@@ -874,17 +867,13 @@ def add(left: int, right: int) -> int:
 
 Closure structure:
 
-```text
-@log_calls
-    │
-    ▼
-log_calls(add)
-    │
-    ├── function ──► original add function
-    │
-    └── returns wrapper
-             │
-             └── remembers function through closure
+```mermaid
+flowchart TD
+    DEC["@log_calls"] --> CALL["log_calls(add)"]
+    CALL --> FN[function]
+    FN --> ORIG[Original add function]
+    CALL --> WRAP[Returns wrapper]
+    WRAP --> CLOSURE[Remembers function through closure]
 ```
 
 ## 9.4 Dependency Configuration
@@ -950,12 +939,12 @@ print(counter_b())  # 101
 print(counter_b())  # 102
 ```
 
-```text
-counter_a closure              counter_b closure
-└── count = 2                  └── count = 102
+| Closure | Captured `count` |
+|---|---|
+| `counter_a` | 2 |
+| `counter_b` | 102 |
 
 The state is not shared.
-```
 
 ---
 

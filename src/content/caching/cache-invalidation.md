@@ -27,12 +27,10 @@ Cache invalidation ensures that the next request receives fresh data instead of 
 
 ## Simple definition
 
-```text
-Data changes in the source of truth
-             ↓
-Old cached data becomes invalid
-             ↓
-Delete, expire, update, or bypass the cached value
+```mermaid
+flowchart TD
+    S[Data changes in the source of truth] --> I[Old cached data becomes invalid]
+    I --> A["Delete, expire, update, or bypass the cached value"]
 ```
 
 ---
@@ -52,13 +50,12 @@ The application must handle situations such as:
 
 The central problem is **consistency**:
 
-```text
-How fresh must the cached data be?
+**How fresh must the cached data be?**
 
-Strong freshness ───────────────────────── Eventual freshness
-More coordination                          Better performance
-Higher complexity                          Simpler design
-```
+| Strong freshness | Eventual freshness |
+|---|---|
+| More coordination | Better performance |
+| Higher complexity | Simpler design |
 
 Most application caches use **eventual consistency** with a bounded stale period.
 
@@ -68,16 +65,9 @@ Most application caches use **eventual consistency** with a bounded stale period
 
 Before designing invalidation, clearly define the system that owns the authoritative data.
 
-```text
-┌───────────────────┐
-│ Primary Database  │  ← Source of truth
-└─────────┬─────────┘
-          │
-          │ Cached copy
-          ▼
-┌───────────────────┐
-│ Redis             │  ← Disposable derived data
-└───────────────────┘
+```mermaid
+flowchart TB
+    DB[(Primary Database<br/>Source of truth)] -->|Cached copy| R[(Redis<br/>Disposable derived data)]
 ```
 
 For a normal cache-aside design:
@@ -113,12 +103,10 @@ DEL product:101 product:102 product:103
 
 Typical use:
 
-```text
-Update database record
-        ↓
-Delete its Redis cache key
-        ↓
-Next read rebuilds the cache
+```mermaid
+flowchart TD
+    U[Update database record] --> D[Delete its Redis cache key]
+    D --> R[Next read rebuilds the cache]
 ```
 
 ## 4.2 Delete large values with `UNLINK`
@@ -198,16 +186,12 @@ This is useful for:
 
 Redis client-side caching can track keys read by an application connection. When another client modifies a tracked key, Redis sends an invalidation message to clients that previously read it.
 
-```text
-Application instance A reads product:101
-             ↓
-A stores it in local process memory
-             ↓
-Application instance B updates product:101 in Redis
-             ↓
-Redis sends an invalidation message to A
-             ↓
-A removes its local copy
+```mermaid
+flowchart TD
+    A["Application instance A reads product:101"] --> L[A stores it in local process memory]
+    L --> B["Application instance B updates product:101 in Redis"]
+    B --> M[Redis sends an invalidation message to A]
+    M --> R[A removes its local copy]
 ```
 
 This is mainly useful for an **L1 local-memory cache** placed in front of Redis.
@@ -568,16 +552,13 @@ A simple Pub/Sub subscriber can miss messages while disconnected.
 
 For critical invalidation, use durable delivery:
 
-```text
-Database transaction
-       ├── Update business record
-       └── Insert outbox event
-                    ↓
-             Background publisher
-                    ↓
-        Durable queue or Redis Stream
-                    ↓
-             Cache invalidator
+```mermaid
+flowchart TB
+    T[Database transaction] --> U[Update business record]
+    T --> O[Insert outbox event]
+    O --> P[Background publisher]
+    P --> Q[[Durable queue or Redis Stream]]
+    Q --> I[Cache invalidator]
 ```
 
 The outbox record and business update are committed in the same database transaction, preventing the event from being silently lost between two systems.
@@ -608,14 +589,14 @@ Possible protections:
 
 When a popular key expires or is invalidated, many requests may simultaneously query the database.
 
-```text
-             Cache key expires
-                    ↓
-       ┌────────────┼────────────┐
-       ↓            ↓            ↓
-   Request A    Request B    Request C
-       ↓            ↓            ↓
-     Database     Database     Database
+```mermaid
+flowchart TD
+    E[Cache key expires] --> A[Request A]
+    E --> B[Request B]
+    E --> C[Request C]
+    A --> D1[(Database)]
+    B --> D2[(Database)]
+    C --> D3[(Database)]
 ```
 
 This is called a **cache stampede** or **thundering herd**.
@@ -624,10 +605,12 @@ This is called a **cache stampede** or **thundering herd**.
 
 Only one request rebuilds the value.
 
-```text
-Request A gets lock → loads DB → fills cache
-Request B waits or retries
-Request C waits or retries
+```mermaid
+flowchart TD
+    A[Request A] -->|Gets lock| D[(Database)]
+    D -->|Loads value| F[Fills cache]
+    B[Request B] --> W[Waits or retries]
+    C[Request C] --> W
 ```
 
 Acquire a short lock:
@@ -821,13 +804,17 @@ class ProductCacheService:
 
 ## 10.2 Important behavior
 
-```text
-GET product
-    ├── Cache hit  → return Redis value
-    └── Cache miss → read DB → cache with TTL → return
+```mermaid
+flowchart TD
+    G[GET product] --> Q{Cache hit?}
+    Q -->|Hit| RV[Return Redis value]
+    Q -->|Miss| RD[(Database)]
+    RD --> CT[Cache with TTL]
+    CT --> RET[Return]
 
-UPDATE product
-    └── update DB → commit → delete Redis key
+    U[UPDATE product] -->|Update| UD[(Database)]
+    UD --> CM[Commit]
+    CM --> DEL[Delete Redis key]
 ```
 
 ## 10.3 Handling invalidation failure
@@ -932,21 +919,14 @@ For normal request flows, prefer:
 
 Some applications use two cache layers:
 
-```text
-┌─────────────────────────────┐
-│ Application Instance        │
-│ L1: Local in-memory cache   │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ L2: Shared Redis cache      │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Primary database            │
-└─────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph APP[Application Instance]
+        L1["L1: Local in-memory cache"]
+    end
+
+    L1 --> L2[("L2: Shared Redis cache")]
+    L2 --> DB[(Primary database)]
 ```
 
 Deleting only the Redis key is insufficient if application instances still hold local copies.

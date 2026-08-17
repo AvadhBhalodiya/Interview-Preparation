@@ -107,6 +107,35 @@
      sampling real painted pixels, not by estimating. */
   --orb-field: 0.16;
   --orb-field-calm: 0.06;
+
+  /* Mermaid diagram roles (src/lib/mermaidRoles.ts classifies each node into
+     one of these, src/lib/mermaidTheme.ts reads them back at render time).
+     Light theme = saturated fill + white label; every pair below was measured
+     against #ffffff and clears AA, the tightest being --mm-queue at 4.92:1.
+     Borders are derived in JS by darkening the fill 25%, so only the fill is
+     declared here. Several are existing tokens on purpose — the diagrams
+     should sit inside the palette, not beside it. */
+  --mm-client: #1d4ed8; /* 6.70:1 — client, user, browser, request */
+  --mm-edge: #4f46e5; /* 6.29:1 — gateway, load balancer, proxy (= --accent) */
+  --mm-service: #7c3aed; /* 5.70:1 — service, api, worker, handler */
+  --mm-store: #0f7a4d; /* 5.37:1 — database, table, shard, object storage */
+  --mm-cache: #b45309; /* 5.02:1 — redis, cache, cdn (= --warning) */
+  --mm-queue: #a16207; /* 4.92:1 — queue, broker, topic, task */
+  --mm-external: #0e7490; /* 5.36:1 — provider, third party, webhook */
+  --mm-decision: #9333ea; /* 5.38:1 — {rhombus} branch points */
+  --mm-ok: #15803d; /* 5.02:1 — success, 200, committed */
+  --mm-error: #b91c1c; /* 6.47:1 — failure, 429, timeout, DLQ */
+  /* The most-used colour on the site: ~44% of nodes are plain process steps
+     that match no keyword. Deliberately a considered slate, not a fallback
+     grey — see the note in mermaidRoles.ts before "improving" the coverage. */
+  --mm-neutral: #475569; /* 7.58:1 */
+
+  --mm-label: #ffffff; /* text on a filled node */
+  --mm-surface: #ffffff; /* diagram canvas */
+  --mm-line: #565a66; /* edges / connectors (= --text-secondary) */
+  --mm-text: #2b2d33; /* edge labels, titles (= --text) */
+  --mm-cluster-bg: #f4f6f9; /* subgraph fill */
+  --mm-cluster-border: #d2d7e0;
 }
 
 html[data-theme='dark'] {
@@ -182,6 +211,29 @@ html[data-theme='dark'] {
   --orb-e: color-mix(in srgb, var(--accent) 65%, var(--bg));
   --orb-field: 0.19;
   --orb-field-calm: 0.06;
+
+  /* Diagram roles, dark. The relationship inverts here: pastel fill + near-black
+     label, which is how the fills stay bright enough to read as colour against
+     #1c1d24 while the label keeps a large margin (weakest is --mm-error at
+     6.79:1 on #12131a, the rest are 8.4:1 and up). Same role order as light. */
+  --mm-client: #93b4fc; /* 8.97:1 */
+  --mm-edge: #a5abfa; /* 8.65:1 (= --accent-hover) */
+  --mm-service: #c4a5fb; /* 8.93:1 */
+  --mm-store: #6fcf97; /* 9.74:1 (= --success) */
+  --mm-cache: #f2c55c; /* 11.39:1 (= --warning) */
+  --mm-queue: #e8b563; /* 9.90:1 */
+  --mm-external: #7dd3e0; /* 10.82:1 (= --hl-builtin) */
+  --mm-decision: #d8b4fe; /* 10.48:1 */
+  --mm-ok: #86efac; /* 13.19:1 */
+  --mm-error: #f2777a; /* 6.79:1 (= --danger) */
+  --mm-neutral: #a3b0c2; /* 8.42:1 */
+
+  --mm-label: #12131a; /* text on a filled node (= --accent-contrast) */
+  --mm-surface: #1c1d24;
+  --mm-line: #8b8d99;
+  --mm-text: #d6d7de;
+  --mm-cluster-bg: #22242c;
+  --mm-cluster-border: #2e3039;
 }
 
 /* Map semantic vars → Tailwind color tokens (utilities like bg-surface / text-fg). */
@@ -628,6 +680,137 @@ html[data-theme='dark'] {
   .code-card.is-diagram code {
     line-height: 1.5;
     font-size: 0.86rem;
+  }
+
+  /* ------------------------------------------------------------------------
+     Rendered mermaid diagrams (.diagram-card, emitted by MermaidDiagram.tsx).
+     Shares the code-card silhouette on purpose — same radius, border and top
+     gradient hairline — so a diagram reads as a sibling of the code blocks
+     around it rather than a foreign widget. Colour comes from the --mm-* role
+     variables, applied to the SVG by the classifier, not from here.
+  ------------------------------------------------------------------------ */
+  .diagram-card {
+    position: relative;
+    margin: 1.25rem 0;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--mm-surface);
+    overflow: hidden;
+  }
+  .diagram-card::after {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: var(--grad);
+    opacity: 0.7;
+  }
+  .diagram-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4rem 0.55rem 0.4rem 0.95rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  }
+  /* The rendered SVG is a button so the whole diagram is one large target for
+     "expand" — the useful gesture on a 68ch column — while the header keeps
+     small explicit controls for everything else. */
+  .diagram-body {
+    display: block;
+    width: 100%;
+    padding: 1rem;
+    background: none;
+    border: 0;
+    cursor: zoom-in;
+    /* Wide `flowchart LR` diagrams are the norm (334 of 538); let them scroll
+       here rather than shrink to illegibility, and expand for the real view. */
+    overflow-x: auto;
+  }
+  .diagram-body svg {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    height: auto;
+  }
+  /* mermaid emits foreignObject labels that inherit from .prose otherwise. */
+  .diagram-body svg foreignObject div,
+  .diagram-stage svg foreignObject div {
+    font-family: var(--font-sans);
+    line-height: 1.35;
+  }
+  .diagram-skeleton {
+    height: 9rem;
+    background: linear-gradient(
+      100deg,
+      var(--surface-hover) 30%,
+      color-mix(in srgb, var(--surface-hover) 55%, var(--surface)) 50%,
+      var(--surface-hover) 70%
+    );
+    background-size: 200% 100%;
+    animation: diagram-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes diagram-shimmer {
+    to {
+      background-position: -200% 0;
+    }
+  }
+  .diagram-err {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    color: var(--danger);
+  }
+  .diagram-card pre {
+    margin: 0;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    background: var(--bg);
+  }
+  .diagram-card pre code {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    line-height: 1.5;
+    white-space: pre;
+    color: var(--text);
+    background: none;
+  }
+  .copy-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .copy-btn:disabled:hover {
+    color: var(--text-secondary);
+    border-color: var(--border);
+  }
+
+  /* fullscreen viewer (DiagramOverlay.tsx) */
+  .diagram-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .diagram-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .diagram-stage {
+    touch-action: none; /* the pinch/pan handler owns the gesture in here */
+  }
+  .diagram-stage svg {
+    max-width: none !important; /* undo mermaid's useMaxWidth so zoom can exceed 100% */
+    height: auto;
   }
 
   /* tables (wrapped in .table-wrap.not-prose) */

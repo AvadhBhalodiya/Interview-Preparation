@@ -27,22 +27,11 @@ Content-Type: application/json
 
 FastAPI separates this request into three parameter sources:
 
-```text
-┌────────────────────────────────────────────────────────────┐
-│ PUT /products/42?notify=true                               │
-├────────────────────────────────────────────────────────────┤
-│ Path parameter                                             │
-│   product_id = 42                                          │
-│                                                            │
-│ Query parameter                                            │
-│   notify = true                                            │
-│                                                            │
-│ Request body                                               │
-│   name  = "Mechanical Keyboard"                            │
-│   price = 89.99                                            │
-│   stock = 20                                               │
-└────────────────────────────────────────────────────────────┘
-```
+| Source in `PUT /products/42?notify=true` | Values |
+| --- | --- |
+| Path parameter | `product_id = 42` |
+| Query parameter | `notify = true` |
+| Request body | `name = "Mechanical Keyboard"`, `price = 89.99`, `stock = 20` |
 
 These parameter types have different purposes.
 
@@ -85,13 +74,11 @@ async def update_product(
 
 FastAPI identifies the source of each value as follows:
 
-```text
-Function parameter                  FastAPI interpretation
-──────────────────────────────────────────────────────────
-product_id matches {product_id}  →  Path parameter
-notify is a simple type          →  Query parameter
-product is a Pydantic model      →  Request body
-```
+| Function parameter | FastAPI interpretation |
+| --- | --- |
+| `product_id` matches `{product_id}` | Path parameter |
+| `notify` is a simple type | Query parameter |
+| `product` is a Pydantic model | Request body |
 
 The corresponding request is:
 
@@ -622,23 +609,13 @@ Content-Type: application/json
 
 FastAPI performs the following work:
 
-```text
-JSON request
-    │
-    ▼
-Parse JSON
-    │
-    ▼
-Validate fields using Pydantic
-    │
-    ▼
-Convert compatible values to Python types
-    │
-    ▼
-Create ProductCreate instance
-    │
-    ▼
-Call endpoint function
+```mermaid
+flowchart TD
+    A[JSON request] --> B[Parse JSON]
+    B --> C[Validate fields using Pydantic]
+    C --> D[Convert compatible values<br/>to Python types]
+    D --> E[Create ProductCreate instance]
+    E --> F[Call endpoint function]
 ```
 
 ## Accessing Body Fields
@@ -1206,11 +1183,11 @@ Simplified response structure:
 
 The `loc` field identifies where the problem occurred:
 
-```text
-["path", "product_id"]    → path parameter
-["query", "limit"]        → query parameter
-["body", "price"]         → request-body field
-```
+| `loc` value | Meaning |
+| --- | --- |
+| `["path", "product_id"]` | Path parameter |
+| `["query", "limit"]` | Query parameter |
+| `["body", "price"]` | Request-body field |
 
 This predictable structure is useful for frontend form handling, API clients, logging, and automated tests.
 
@@ -1521,11 +1498,11 @@ limit: Annotated[int, Query(ge=1, le=100)] = 20
 
 It separates:
 
-```text
-Python type       → int
-FastAPI metadata  → Query(ge=1, le=100)
-Default value     → 20
-```
+| Part | Value |
+| --- | --- |
+| Python type | `int` |
+| FastAPI metadata | `Query(ge=1, le=100)` |
+| Default value | `20` |
 
 ## Separate Input and Output Models
 
@@ -1618,12 +1595,12 @@ search
 
 ## Source Detection
 
-```text
-Matches {name} in route       → Path
-Simple scalar                 → Query
-Pydantic model                → Body
-Explicit Path()/Query()/Body()→ Explicit source
-```
+| Function parameter | Detected source |
+| --- | --- |
+| Matches `{name}` in the route | Path |
+| Simple scalar | Query |
+| Pydantic model | Body |
+| Explicit `Path()`/`Query()`/`Body()` | Explicit source |
 
 ## Compact Example
 
@@ -1656,15 +1633,13 @@ async def update_product(
 
 ## Decision Guide
 
-```text
-Does the value identify a resource?
-    Yes → Path parameter
-
-Does it filter, sort, search, paginate, or control the response?
-    Yes → Query parameter
-
-Does it represent structured data being created or changed?
-    Yes → Request body
+```mermaid
+flowchart TD
+    A{"Does the value identify a resource?"} -->|Yes| B[Path parameter]
+    A -->|No| C{"Does it filter, sort, search, paginate,<br/>or control the response?"}
+    C -->|Yes| D[Query parameter]
+    C -->|No| E{"Does it represent structured data<br/>being created or changed?"}
+    E -->|Yes| F[Request body]
 ```
 
 ## Final Mental Model

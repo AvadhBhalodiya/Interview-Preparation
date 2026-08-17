@@ -331,16 +331,14 @@ Prepare approximately **six to eight strong stories** from your real experience.
 
 Consider a story about migrating a service from synchronous processing to a queue.
 
-```text
-                     +-------------------+
-                     | Queue Migration   |
-                     +-------------------+
-                        /      |      \
-                       /       |       \
-              Scalability   Ownership   Collaboration
-                  |             |             |
-            Better load     Proposed and   Coordinated API,
-            handling        drove change   DevOps, and QA
+```mermaid
+flowchart TD
+    A[Queue migration] --> B[Scalability]
+    A --> C[Ownership]
+    A --> D[Collaboration]
+    B --> E["Better load<br/>handling"]
+    C --> F["Proposed and<br/>drove the change"]
+    D --> G["Coordinated API,<br/>DevOps, and QA"]
 ```
 
 The story can be adapted depending on what the interviewer is evaluating. However, the facts should remain consistent.
@@ -403,11 +401,11 @@ Do not present a fake weakness that ends in effortless success. A mature answer 
 
 A useful structure is:
 
-```text
-What happened
-    -> What I owned
-    -> How I corrected it
-    -> What process or behavior changed afterward
+```mermaid
+flowchart TD
+    A[What happened] --> B[What I owned]
+    B --> C[How I corrected it]
+    C --> D["What process or behavior<br/>changed afterward"]
 ```
 
 ### Example direction

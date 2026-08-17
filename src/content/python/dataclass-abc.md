@@ -300,14 +300,10 @@ print(second_cart.items)
 
 ## How `default_factory` Works
 
-```text
-ShoppingCart(customer_id=1)
-             |
-             v
-default_factory=list
-             |
-             v
-Creates a new [] for this instance
+```mermaid
+flowchart TD
+    A["ShoppingCart(customer_id=1)"] --> B["default_factory=list"]
+    B --> C["Creates a new [] for this instance"]
 ```
 
 You can also use custom factory functions:
@@ -1311,12 +1307,10 @@ class CorrectExample(ABC):
 
 Think of it as:
 
-```text
-Outer behavior decorator
-    -> @classmethod / @staticmethod / @property
-
-Inner abstract marker
-    -> @abstractmethod
+```mermaid
+flowchart TD
+    OUTER[Outer behavior decorator] --> ODEC["@classmethod / @staticmethod / @property"]
+    INNER[Inner abstract marker] --> IDEC["@abstractmethod"]
 ```
 
 ---
@@ -2031,22 +2025,22 @@ class Clock(Protocol):
 
 Prefer shallow hierarchies:
 
-```text
-Notification
-├── EmailNotification
-└── SmsNotification
+```mermaid
+flowchart TD
+    NOTIF[Notification] --> EMAIL[EmailNotification]
+    NOTIF --> SMS[SmsNotification]
 ```
 
 Avoid designs such as:
 
-```text
-Object
-└── BaseEntity
-    └── AuditableEntity
-        └── CommunicationEntity
-            └── Notification
-                └── ExternalNotification
-                    └── EmailNotification
+```mermaid
+flowchart TD
+    A[Object] --> B[BaseEntity]
+    B --> C[AuditableEntity]
+    C --> D[CommunicationEntity]
+    D --> E[Notification]
+    E --> F[ExternalNotification]
+    F --> G[EmailNotification]
 ```
 
 Deep inheritance makes construction, method resolution, and change impact harder to understand.

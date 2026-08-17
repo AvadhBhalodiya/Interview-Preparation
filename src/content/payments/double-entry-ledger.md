@@ -1511,16 +1511,16 @@ Alert when:
 
 One support query should trace the full path:
 
-```text
-customer order
-→ payment intent
-→ processor charge
-→ webhook event
-→ ledger transaction
-→ journal entries
-→ settlement
-→ bank statement line
-→ merchant payout
+```mermaid
+flowchart TD
+    ORD[Customer order] --> PI[Payment intent]
+    PI --> CHG[Processor charge]
+    CHG --> EVT[Webhook event]
+    EVT --> TXN[Ledger transaction]
+    TXN --> JE[Journal entries]
+    JE --> SET[Settlement]
+    SET --> BSL[Bank statement line]
+    BSL --> PO[Merchant payout]
 ```
 
 Use stable correlation IDs across services.

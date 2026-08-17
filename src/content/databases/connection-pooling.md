@@ -161,22 +161,16 @@ When code asks the pool for a connection:
 - If the maximum size has been reached, the caller waits.
 - If no connection becomes available before the acquisition timeout, the pool raises an error.
 
-```text
-Acquire request
-      |
-      v
-Idle connection available? ---- Yes ---> Return it
-      |
-      No
-      v
-Below maximum capacity? -------- Yes ---> Create connection
-      |
-      No
-      v
-Wait in queue
-      |
-      v
-Timed out? --------------------- Yes ---> Raise pool timeout
+```mermaid
+flowchart TD
+    A[Acquire request] --> I{Idle connection available?}
+    I -->|Yes| R[Return it]
+    I -->|No| M{Below maximum capacity?}
+    M -->|Yes| CR[Create connection]
+    M -->|No| W[[Wait in queue]]
+    W --> T{Timed out?}
+    T -->|Yes| E[Raise pool timeout]
+    T -->|No| R
 ```
 
 ---
@@ -698,12 +692,16 @@ After the database reaches an efficient concurrency level, additional connection
 
 A pool should apply backpressure before the database becomes unstable.
 
-```text
-Small pool:
-Application queue -> Controlled DB concurrency
+```mermaid
+flowchart LR
+    subgraph SM[Small pool]
+        SA[[Application queue]] --> SB[Controlled DB concurrency]
+    end
 
-Oversized pool:
-Little app queue -> Too much DB concurrency -> Slower database
+    subgraph OV[Oversized pool]
+        OA[[Little app queue]] --> OB[Too much DB concurrency]
+        OB --> OC[Slower database]
+    end
 ```
 
 ---
@@ -731,20 +729,12 @@ PgBouncer can return a PostgreSQL server connection to its pool at different bou
 
 A server connection remains assigned to one client for the complete client session.
 
-```text
-Client connects
-    |
-    v
-Server connection assigned
-    |
-    v
-Many transactions
-    |
-    v
-Client disconnects
-    |
-    v
-Server connection returned
+```mermaid
+flowchart TD
+    C[Client connects] --> A[Server connection assigned]
+    A --> T[Many transactions]
+    T --> D[Client disconnects]
+    D --> R[Server connection returned]
 ```
 
 ### Characteristics
@@ -1777,23 +1767,23 @@ Perform only database-related work while holding the transaction.
 
 Avoid:
 
-```text
-BEGIN
-    -> Query database
-    -> Call payment API
-    -> Upload file
-    -> Send email
-COMMIT
+```mermaid
+flowchart TD
+    B[BEGIN] --> Q[Query database]
+    Q --> P[Call payment API]
+    P --> U[Upload file]
+    U --> S[Send email]
+    S --> C[COMMIT]
 ```
 
 Prefer:
 
-```text
-Call external dependencies
-    -> BEGIN
-    -> Read/write required database state
-    -> COMMIT
-    -> Publish follow-up work safely
+```mermaid
+flowchart TD
+    E[Call external dependencies] --> B[BEGIN]
+    B --> S["Read/write required database state"]
+    S --> C[COMMIT]
+    C --> P[Publish follow-up work safely]
 ```
 
 For workflows requiring consistency across systems, use patterns such as an outbox rather than keeping a database transaction open during remote calls.

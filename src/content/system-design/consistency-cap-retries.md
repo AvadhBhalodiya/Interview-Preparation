@@ -16,23 +16,13 @@ order: 1
 
 These three topics are connected:
 
-```text
-Distributed data
-      │
-      ▼
-Replication creates consistency trade-offs
-      │
-      ▼
-Network failures make request outcomes uncertain
-      │
-      ▼
-Clients retry uncertain operations
-      │
-      ▼
-Retries can repeat side effects
-      │
-      ▼
-Idempotency prevents duplicate business effects
+```mermaid
+flowchart TD
+    DATA[Distributed data] --> REPL[Replication creates consistency trade-offs]
+    REPL --> NET[Network failures make request outcomes uncertain]
+    NET --> RETRY[Clients retry uncertain operations]
+    RETRY --> SIDE[Retries can repeat side effects]
+    SIDE --> IDEM[Idempotency prevents duplicate business effects]
 ```
 
 A distributed system cannot assume that:
@@ -270,17 +260,14 @@ During a network partition, a replicated system cannot guarantee both:
 
 The system must choose what a particular operation does while communication is unavailable.
 
-```text
-                    Network partition
-                           │
-            ┌──────────────┴──────────────┐
-            │                             │
-      Preserve consistency          Preserve availability
-            │                             │
- Reject, delay, or time out       Accept requests on both sides
- some operations                  and reconcile later
-            │                             │
-          CP behavior                   AP behavior
+```mermaid
+flowchart TD
+    PART[Network partition] --> CONS[Preserve consistency]
+    PART --> AVAIL[Preserve availability]
+    CONS --> REJECT["Reject, delay, or time out<br/>some operations"]
+    AVAIL --> ACCEPT[Accept requests on both sides<br/>and reconcile later]
+    REJECT --> CP[CP behavior]
+    ACCEPT --> AP[AP behavior]
 ```
 
 ### The most important interpretation
@@ -414,15 +401,19 @@ Even without a partition, strong consistency often requires coordination between
 
 For a globally distributed service:
 
-```text
-Strong consistency:
-Client → local region → remote quorum → response
-                              ↑
-                       coordination cost
+```mermaid
+flowchart LR
+    subgraph STRONG[Strong consistency]
+        C1[Client] --> REG1[Local region]
+        REG1 -->|Coordination cost| QUORUM[Remote quorum]
+        QUORUM --> RESP1[Response]
+    end
 
-Lower-latency consistency:
-Client → local region → response
-                    └→ replicate asynchronously
+    subgraph FAST[Lower-latency consistency]
+        C2[Client] --> REG2[Local region]
+        REG2 --> RESP2[Response]
+        REG2 --> ASYNC[Replicate asynchronously]
+    end
 ```
 
 PACELC is useful because most system-design decisions happen while the network is slow but not fully partitioned.
@@ -1073,14 +1064,15 @@ Recommended rules:
 
 Example state machine:
 
-```text
-created
-  │
-  ▼
-processing
-  ├──► succeeded
-  ├──► failed_final
-  └──► unknown ──► reconciling ──► succeeded / failed_final
+```mermaid
+flowchart TD
+    CREATED[created] --> PROCESSING[processing]
+    PROCESSING --> SUCCEEDED[succeeded]
+    PROCESSING --> FAILED[failed_final]
+    PROCESSING --> UNKNOWN[unknown]
+    UNKNOWN --> RECONCILING[reconciling]
+    RECONCILING --> SUCCEEDED
+    RECONCILING --> FAILED
 ```
 
 An `unknown` state is better than incorrectly marking a payment as failed and charging again.
@@ -1178,16 +1170,12 @@ COMMIT;
 
 A publisher later sends outbox events. Because publishing may be retried, consumers still need idempotency using the event ID.
 
-```text
-Database transaction
-    ├── Update domain state
-    └── Insert outbox event
-                │
-                ▼
-      At-least-once publisher
-                │
-                ▼
-       Idempotent consumers
+```mermaid
+flowchart TD
+    TX[Database transaction] --> STATE[Update domain state]
+    TX --> OUTBOX[Insert outbox event]
+    OUTBOX --> PUB[At-least-once publisher]
+    PUB --> CONSUMERS[Idempotent consumers]
 ```
 
 Outbox and inbox patterns work together to provide reliable, effectively-once business processing.

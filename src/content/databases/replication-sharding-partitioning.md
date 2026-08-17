@@ -129,16 +129,13 @@ The exact commit timing depends on whether replication is synchronous or asynchr
 
 One primary accepts writes and one or more replicas receive changes.
 
-```text
-                  ┌─────────────┐
-Writes ──────────▶│   Primary   │
-                  └──────┬──────┘
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-       ┌─────────────┐       ┌─────────────┐
-Reads  │  Replica A  │       │  Replica B  │
-       └─────────────┘       └─────────────┘
+```mermaid
+flowchart TD
+    W[Writes] --> P[(Primary)]
+    P --> A[(Replica A)]
+    P --> B[(Replica B)]
+    A --> R[Reads]
+    B --> R
 ```
 
 This is the most common topology for relational databases.
@@ -167,10 +164,10 @@ This can improve regional write availability, but conflict handling becomes sign
 
 Copies are placed in different regions.
 
-```text
-India Primary ───────▶ Singapore Replica
-       │
-       └─────────────▶ Europe Replica
+```mermaid
+flowchart LR
+    IN[(India Primary)] --> SG[(Singapore Replica)]
+    IN --> EU[(Europe Replica)]
 ```
 
 This improves disaster recovery and regional reads, but network latency affects replication delay and synchronous commit latency.
@@ -258,14 +255,10 @@ Physical replication copies low-level storage changes or database log records.
 - Often requires compatible database versions and storage formats
 - Commonly used for hot standby replicas
 
-```text
-Primary storage changes
-        │
-        ▼
-WAL / transaction log
-        │
-        ▼
-Standby replays low-level changes
+```mermaid
+flowchart TD
+    P[Primary storage changes] --> W[["WAL / transaction log"]]
+    W --> S[Standby replays low-level changes]
 ```
 
 ### Logical Replication
@@ -280,16 +273,10 @@ Logical replication copies higher-level changes such as inserted, updated and de
 - May support replication between different major versions
 - Schema changes often require separate coordination
 
-```text
-INSERT order...
-UPDATE customer...
-DELETE session...
-        │
-        ▼
-Logical change stream
-        │
-        ▼
-Subscriber applies row-level changes
+```mermaid
+flowchart TD
+    W["INSERT order<br/>UPDATE customer<br/>DELETE session"] --> S[[Logical change stream]]
+    S --> A[Subscriber applies row-level changes]
 ```
 
 | Area | Physical Replication | Logical Replication |
@@ -1661,20 +1648,21 @@ Shard 3: customers Q–Z
 
 ### Combined Production Design
 
-```text
-Application
-   │
-   ▼
-Shard router
-   │
-   ├── Shard 1 primary ──▶ replicas
-   │      └── monthly table partitions
-   │
-   ├── Shard 2 primary ──▶ replicas
-   │      └── monthly table partitions
-   │
-   └── Shard 3 primary ──▶ replicas
-          └── monthly table partitions
+```mermaid
+flowchart TD
+    APP[Application] --> RT[Shard router]
+
+    RT --> S1[(Shard 1 primary)]
+    RT --> S2[(Shard 2 primary)]
+    RT --> S3[(Shard 3 primary)]
+
+    S1 --> R1[(Replicas)]
+    S2 --> R2[(Replicas)]
+    S3 --> R3[(Replicas)]
+
+    S1 --> P1[Monthly table partitions]
+    S2 --> P2[Monthly table partitions]
+    S3 --> P3[Monthly table partitions]
 ```
 
 The most important distinction is:

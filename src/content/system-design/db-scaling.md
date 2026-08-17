@@ -48,24 +48,20 @@ Adding infrastructure before identifying the cause can make the system more expe
 
 The database needs more CPU or memory to execute queries.
 
-```text
-More requests
-    ↓
-More query execution
-    ↓
-Higher CPU and memory pressure
+```mermaid
+flowchart TD
+    REQ[More requests] --> EXEC[More query execution]
+    EXEC --> PRESSURE[Higher CPU and memory pressure]
 ```
 
 ### Storage growth
 
 Tables, indexes, WAL/binlogs, backups, and historical data keep increasing.
 
-```text
-More records
-    ↓
-Larger tables and indexes
-    ↓
-More disk usage and slower maintenance
+```mermaid
+flowchart TD
+    RECORDS[More records] --> TABLES[Larger tables and indexes]
+    TABLES --> DISK[More disk usage and slower maintenance]
 ```
 
 ### Throughput growth
@@ -293,18 +289,18 @@ Unlike a very large `OFFSET`, cursor pagination does not require the database to
 
 Instead of sending many tiny operations:
 
-```text
-1,000 records
-→ 1,000 network round trips
-→ 1,000 transactions
+```mermaid
+flowchart LR
+    RECORDS["1,000 records"] --> TRIPS["1,000 network round trips"]
+    TRIPS --> TX["1,000 transactions"]
 ```
 
 Batch them:
 
-```text
-1,000 records
-→ 10 batches of 100
-→ 10 transactions
+```mermaid
+flowchart LR
+    RECORDS["1,000 records"] --> BATCHES[10 batches of 100]
+    BATCHES --> TX[10 transactions]
 ```
 
 Batching reduces:
@@ -494,12 +490,10 @@ The TTL provides an additional upper bound on staleness but should not be the on
 
 A cache stampede happens when a popular key expires and many requests query the database simultaneously.
 
-```text
-Popular key expires
-        ↓
-500 requests miss the cache
-        ↓
-500 database queries for the same value
+```mermaid
+flowchart TD
+    EXPIRE[Popular key expires] --> MISS[500 requests miss the cache]
+    MISS --> QUERIES[500 database queries for the same value]
 ```
 
 Protection options include:
@@ -793,16 +787,12 @@ def shard_for_customer(customer_id: int, shard_count: int) -> int:
 
 Request flow:
 
-```text
-API request
-    ↓
-Extract customer_id
-    ↓
-Calculate or look up shard
-    ↓
-Connect to that shard
-    ↓
-Execute query
+```mermaid
+flowchart TD
+    REQ[API request] --> EXTRACT[Extract customer_id]
+    EXTRACT --> LOOKUP[Calculate or look up shard]
+    LOOKUP --> CONNECT[Connect to that shard]
+    CONNECT --> QUERY[Execute query]
 ```
 
 ## 11.2 Choosing a shard key
@@ -920,10 +910,12 @@ FROM orders;
 
 A sharded implementation may be:
 
-```text
-Shard 1 subtotal ─┐
-Shard 2 subtotal ─┼→ aggregation service → global total
-Shard 3 subtotal ─┘
+```mermaid
+flowchart LR
+    S1[Shard 1 subtotal] --> AGG[Aggregation service]
+    S2[Shard 2 subtotal] --> AGG
+    S3[Shard 3 subtotal] --> AGG
+    AGG --> TOTAL[Global total]
 ```
 
 For frequently needed totals, stream changes into a materialized aggregate rather than scanning every shard for each request.
@@ -1482,10 +1474,11 @@ Do not rely on stale cache for:
 - Payment state
 - Order ownership
 
-```text
-Product read
-→ Redis hit: return
-→ Redis miss: query PostgreSQL and populate cache
+```mermaid
+flowchart TD
+    READ[Product read] --> HIT{Redis hit?}
+    HIT -->|Yes| RETURN[Return cached value]
+    HIT -->|No| PG[Query PostgreSQL and populate cache]
 ```
 
 ## Phase 3: Add read replicas
@@ -1608,13 +1601,13 @@ Load tests should reproduce:
 
 For large schema changes:
 
-```text
-Add new nullable field
-→ deploy code supporting old and new schema
-→ backfill in controlled batches
-→ validate
-→ enforce constraint
-→ remove old path later
+```mermaid
+flowchart TD
+    ADD[Add new nullable field] --> DEPLOY[Deploy code supporting old and new schema]
+    DEPLOY --> BACKFILL[Backfill in controlled batches]
+    BACKFILL --> VALIDATE[Validate]
+    VALIDATE --> ENFORCE[Enforce constraint]
+    ENFORCE --> REMOVE[Remove old path later]
 ```
 
 Avoid a single massive transaction that locks a critical table.
@@ -1645,14 +1638,14 @@ Periodically verify:
 
 ## Observe the complete request path
 
-```text
-API latency
-→ connection-pool wait
-→ database execution
-→ lock wait
-→ replica lag
-→ cache latency
-→ queue lag
+```mermaid
+flowchart TD
+    API[API latency] --> POOL[Connection-pool wait]
+    POOL --> EXEC[Database execution]
+    EXEC --> LOCK[Lock wait]
+    LOCK --> LAG[Replica lag]
+    LAG --> CACHE[Cache latency]
+    CACHE --> QLAG[Queue lag]
 ```
 
 Database execution time may be low while requests wait for connections or locks.

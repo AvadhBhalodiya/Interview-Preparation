@@ -50,24 +50,16 @@ flowchart LR
 
 A simplified internal flow looks like this:
 
-```text
-Incoming request
-      |
-      v
-Authentication class checks credentials
-      |
-      +-- Credentials valid ------> Set request.user/request.auth
-      |
-      +-- No credentials ---------> Continue as AnonymousUser
-      |
-      +-- Invalid credentials ----> Raise AuthenticationFailed
-      |
-      v
-Permission classes check access
-      |
-      +-- Allowed ----------------> Execute view
-      |
-      +-- Denied -----------------> Return 401 or 403
+```mermaid
+flowchart TD
+    A[Incoming request] --> B[Authentication class<br/>checks credentials]
+    B -->|Credentials valid| C["Set request.user/request.auth"]
+    B -->|No credentials| D[Continue as AnonymousUser]
+    B -->|Invalid credentials| E[Raise AuthenticationFailed]
+    C --> F[Permission classes check access]
+    D --> F
+    F -->|Allowed| G[Execute view]
+    F -->|Denied| H[Return 401 or 403]
 ```
 
 ## `request.user` and `request.auth`
@@ -917,14 +909,10 @@ curl \
 
 This is a central JWT trade-off:
 
-```text
-No database lookup for every token
-                |
-                v
-Fast and portable verification
-                |
-                v
-Immediate access-token revocation becomes harder
+```mermaid
+flowchart TD
+    A[No database lookup for every token] --> B[Fast and portable verification]
+    B --> C[Immediate access-token revocation<br/>becomes harder]
 ```
 
 Remove expired blacklist records regularly:
@@ -1155,19 +1143,15 @@ REST_FRAMEWORK = {
 
 DRF tries the classes in order.
 
-```text
-Request
-  |
-  v
-SessionAuthentication
-  |
-  +-- Authenticated? --> Stop
-  |
-  +-- Not attempted --> Try JWTAuthentication
-                            |
-                            +-- Authenticated? --> Stop
-                            |
-                            +-- No valid credentials --> Anonymous/deny
+```mermaid
+flowchart TD
+    A[Request] --> B[SessionAuthentication]
+    B --> C{Authenticated?}
+    C -->|Yes| D[Stop and use this identity]
+    C -->|Not attempted| E[Try JWTAuthentication]
+    E --> F{Authenticated?}
+    F -->|Yes| D
+    F -->|No valid credentials| G["Anonymous/deny"]
 ```
 
 ### Order matters
@@ -1206,18 +1190,20 @@ A practical combination is:
 
 ## Conceptual comparison
 
-```text
-SESSION
-Client cookie ---> Server session store ---> User
-                    Server controls state
-
-TOKEN
-Client token ----> Token database row -----> User
-                    Simple persistent key
-
-JWT
-Client JWT ------> Signature validation ----> Claims/User
-                    Expiry built into token
+```mermaid
+flowchart LR
+    subgraph SESS[Session]
+        SC[Client cookie] --> SS[(Server session store<br/>Server controls state)]
+        SS --> SU[User]
+    end
+    subgraph TOK[DRF Token]
+        TC[Client token] --> TR[(Token database row<br/>Simple persistent key)]
+        TR --> TU[User]
+    end
+    subgraph JWT[JWT]
+        JC[Client JWT] --> JV[Signature validation<br/>Expiry built into token]
+        JV --> JU["Claims/User"]
+    end
 ```
 
 ---
@@ -1230,14 +1216,10 @@ Choose **Session Authentication**.
 
 Example:
 
-```text
-Django templates / same-site frontend
-                |
-                v
-Session cookie + CSRF token
-                |
-                v
-DRF API
+```mermaid
+flowchart TD
+    A["Django templates / same-site frontend"] --> B["Session cookie + CSRF token"]
+    B --> C[DRF API]
 ```
 
 Why:

@@ -193,19 +193,19 @@ while True:
 
 ```mermaid
 sequenceDiagram
-    participant Loop as for loop
+    participant FL as for loop
     participant Iterable
     participant Iterator
 
-    Loop->>Iterable: iter(iterable)
-    Iterable-->>Loop: iterator
-    Loop->>Iterator: next(iterator)
-    Iterator-->>Loop: item 1
-    Loop->>Iterator: next(iterator)
-    Iterator-->>Loop: item 2
-    Loop->>Iterator: next(iterator)
-    Iterator-->>Loop: StopIteration
-    Note over Loop: Loop ends normally
+    FL->>Iterable: iter(iterable)
+    Iterable-->>FL: iterator
+    FL->>Iterator: next(iterator)
+    Iterator-->>FL: item 1
+    FL->>Iterator: next(iterator)
+    Iterator-->>FL: item 2
+    FL->>Iterator: next(iterator)
+    Iterator-->>FL: StopIteration
+    Note over FL: Loop ends normally
 ```
 
 In normal application code, you should let the `for` loop handle `StopIteration` rather than catching it yourself.
@@ -270,20 +270,12 @@ Output:
 
 State changes after every call:
 
-```text
-Initial state: current = 3
-      next()
-          ↓
-Return 3, store current = 2
-      next()
-          ↓
-Return 2, store current = 1
-      next()
-          ↓
-Return 1, store current = 0
-      next()
-          ↓
-Raise StopIteration
+```mermaid
+flowchart TD
+    A["Initial state: current = 3"] -->|"next()"| B["Return 3, store current = 2"]
+    B -->|"next()"| C["Return 2, store current = 1"]
+    C -->|"next()"| D["Return 1, store current = 0"]
+    D -->|"next()"| E[Raise StopIteration]
 ```
 
 The same behavior is much shorter with a generator:
@@ -601,17 +593,12 @@ Imported 2 records
 
 Conceptually:
 
-```text
-Caller
-  │
-  ▼
-Parent generator
-  │  yield from
-  ▼
-Child iterable/generator
-  │
-  ├── yields values directly to caller
-  └── returns final value to parent generator
+```mermaid
+flowchart TD
+    CALLER[Caller] --> PARENT[Parent generator]
+    PARENT -->|yield from| CHILD["Child iterable/generator"]
+    CHILD --> VALUES[Yields values directly to caller]
+    CHILD --> RETVAL[Returns final value to parent generator]
 ```
 
 `yield from` is more than a shorter `for` loop: it also delegates generator operations such as `send()`, `throw()`, and `close()` when supported by the delegated generator.
@@ -642,18 +629,14 @@ for line in error_lines(Path("application.log")):
 
 Flow:
 
-```text
-Open file
-   ↓
-Read one line
-   ↓
-Is it an error line?
-   ├── No  → read next line
-   └── Yes → yield line → pause
-                         ↓
-                    caller processes it
-                         ↓
-                    resume generator
+```mermaid
+flowchart TD
+    A[Open file] --> B[Read one line]
+    B --> C{Is it an error line?}
+    C -->|No| B
+    C -->|Yes| D[Yield line and pause]
+    D --> E[Caller processes it]
+    E --> F[Resume generator]
 ```
 
 The file remains open while the generator is being consumed. The `with` block exits when the generator finishes, is closed, or encounters an exception.
@@ -808,16 +791,16 @@ print(generator.send(5))    # 15
 
 Flow:
 
-```text
-next(generator)
-      ↓
-yield total (0) ────────────→ caller receives 0
-      ↑
-send(10) makes value = 10
-      ↓
-total becomes 10
-      ↓
-yield total (10) ───────────→ caller receives 10
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Gen as Generator
+
+    Caller->>Gen: next(generator)
+    Gen-->>Caller: yield total (0)
+    Caller->>Gen: send(10) sets value = 10
+    Gen->>Gen: total becomes 10
+    Gen-->>Caller: yield total (10)
 ```
 
 A newly created generator must first be advanced to its initial `yield`. This is normally done with `next(generator)` or `generator.send(None)`.
@@ -995,12 +978,20 @@ squares = (number * number for number in range(1_000_000))
 
 The generator stores its execution state and computes values incrementally.
 
-```text
-List
-Input ──→ compute all values ──→ store all values ──→ consume
+```mermaid
+flowchart LR
+    subgraph LIST[List]
+        L1[Input] --> L2[Compute all values]
+        L2 --> L3[Store all values]
+        L3 --> L4[Consume]
+    end
 
-Generator
-Input ──→ compute one value ──→ consume ──→ compute next value ──→ ...
+    subgraph GEN[Generator]
+        G1[Input] --> G2[Compute one value]
+        G2 --> G3[Consume]
+        G3 --> G4[Compute next value]
+        G4 --> G3
+    end
 ```
 
 ### When generators help

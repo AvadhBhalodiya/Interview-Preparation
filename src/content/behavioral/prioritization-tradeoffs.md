@@ -34,17 +34,11 @@ A developer may need to choose between:
 
 Good prioritization is not about working faster on everything. It is about focusing effort on the work that creates the most value or reduces the most important risk.
 
-```text
-Many possible tasks
-        |
-        v
-Evaluate value, urgency, risk, and effort
-        |
-        v
-Select the most important work
-        |
-        v
-Delay, delegate, reduce, or reject lower-priority work
+```mermaid
+flowchart TD
+    A[Many possible tasks] --> B["Evaluate value, urgency,<br/>risk, and effort"]
+    B --> C[Select the most important work]
+    C --> D["Delay, delegate, reduce, or reject<br/>lower-priority work"]
 ```
 
 ---
@@ -239,20 +233,12 @@ Some tasks unlock or block other work.
 
 For example:
 
-```text
-Database schema
-      |
-      v
-Backend API
-      |
-      v
-Frontend integration
-      |
-      v
-End-to-end testing
-      |
-      v
-Release
+```mermaid
+flowchart TD
+    A[Database schema] --> B[Backend API]
+    B --> C[Frontend integration]
+    C --> D[End-to-end testing]
+    D --> E[Release]
 ```
 
 The schema work may not provide direct user value, but it becomes a priority because several other tasks depend on it.
@@ -267,14 +253,15 @@ No single model works for every situation. A good developer uses the simplest mo
 
 This is one of the simplest and most useful models.
 
-```text
-                         EFFORT
-                  Low                  High
-            +----------------+----------------+
-High Impact | Quick Wins     | Major Projects |
-            +----------------+----------------+
-Low Impact  | Fill-ins       | Avoid / Defer  |
-            +----------------+----------------+
+```mermaid
+quadrantChart
+    title Impact versus effort
+    x-axis Low effort --> High effort
+    y-axis Low impact --> High impact
+    quadrant-1 Major projects
+    quadrant-2 Quick wins
+    quadrant-3 Fill-ins
+    quadrant-4 Avoid or defer
 ```
 
 ### Quick Wins
@@ -406,16 +393,10 @@ A good trade-off decision should answer four questions:
 
 Prefer reversible decisions when uncertainty is high.
 
-```text
-Low uncertainty + High confidence
-            |
-            v
-Long-term architectural decision
-
-High uncertainty + Low confidence
-            |
-            v
-Small, reversible experiment
+```mermaid
+flowchart TD
+    A["Low uncertainty<br/>High confidence"] --> B[Long-term architectural decision]
+    C["High uncertainty<br/>Low confidence"] --> D["Small, reversible experiment"]
 ```
 
 Examples of reversible decisions:
@@ -507,17 +488,11 @@ Speed and quality are not always opposites.
 
 The better trade-off is often to reduce scope while protecting critical quality.
 
-```text
-Fixed Deadline
-      |
-      v
-Reduce optional scope
-      |
-      v
-Keep security, correctness, tests, and rollback
-      |
-      v
-Deliver smaller reliable release
+```mermaid
+flowchart TD
+    A[Fixed deadline] --> B[Reduce optional scope]
+    B --> C["Keep security, correctness,<br/>tests, and rollback"]
+    C --> D[Deliver smaller reliable release]
 ```
 
 For example, instead of skipping tests to release five features, deliver the two highest-value features with proper validation and monitoring.
@@ -766,29 +741,15 @@ Examples:
 - Added a technical-debt allocation
 - Documented decision criteria
 
-```text
-Situation
-   |
-   v
-Competing priorities and constraints
-   |
-   v
-Task
-   |
-   v
-Your responsibility
-   |
-   v
-Action
-   |
-   v
-Evidence-based prioritization and communication
-   |
-   v
-Result
-   |
-   v
-Measurable impact and learning
+```mermaid
+flowchart TD
+    A[Situation] --> B["Competing priorities<br/>and constraints"]
+    B --> C[Task]
+    C --> D[Your responsibility]
+    D --> E[Action]
+    E --> F["Evidence-based prioritization<br/>and communication"]
+    F --> G[Result]
+    G --> H["Measurable impact<br/>and learning"]
 ```
 
 ---
@@ -958,26 +919,14 @@ Trade-offs are unavoidable in software development. Strong developers make them 
 
 A practical decision process is:
 
-```text
-Understand the requests
-        |
-        v
-Measure impact, urgency, risk, effort, and dependencies
-        |
-        v
-Compare realistic options
-        |
-        v
-Recommend a priority
-        |
-        v
-Explain what will be delayed or reduced
-        |
-        v
-Add mitigation and review points
-        |
-        v
-Communicate and document the decision
+```mermaid
+flowchart TD
+    A[Understand the requests] --> B["Measure impact, urgency, risk,<br/>effort, and dependencies"]
+    B --> C[Compare realistic options]
+    C --> D[Recommend a priority]
+    D --> E["Explain what will be delayed<br/>or reduced"]
+    E --> F[Add mitigation and review points]
+    F --> G["Communicate and document<br/>the decision"]
 ```
 
 For behavioral interviews, a strong prioritization example should demonstrate:

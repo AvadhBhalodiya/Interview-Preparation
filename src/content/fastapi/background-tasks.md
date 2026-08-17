@@ -47,37 +47,25 @@ FastAPI handles both forms.
 
 Without a background task, the client waits for every operation:
 
-```text
-Client
-  |
-  | POST /users
-  v
-FastAPI
-  |
-  | Save user
-  | Send email        <-- client is still waiting
-  | Write audit log
-  v
-Response
+```mermaid
+flowchart TD
+    C[Client] -->|"POST /users"| F[FastAPI]
+    F --> S[Save user]
+    S --> E[Send email while<br/>the client waits]
+    E --> A[Write audit log]
+    A --> R[Response]
 ```
 
 With `BackgroundTasks`, FastAPI can respond earlier:
 
-```text
-Client
-  |
-  | POST /users
-  v
-FastAPI
-  |
-  | Save user
-  | Register tasks
-  v
-Response returned
-  |
-  +----> Send email
-  |
-  +----> Write audit log
+```mermaid
+flowchart TD
+    C[Client] -->|"POST /users"| F[FastAPI]
+    F --> S[Save user]
+    S --> T[Register tasks]
+    T --> R[Response returned]
+    R --> E[Send email]
+    R --> A[Write audit log]
 ```
 
 Typical use cases include:
@@ -310,11 +298,11 @@ Declaring a function with `async def` does not automatically make blocking code 
 
 A better rule is:
 
-```text
-Async library with awaitable methods  -> async def
-Blocking/synchronous library          -> def
-CPU-heavy work                         -> separate worker system
-```
+| Kind of work | How to declare it |
+| --- | --- |
+| Async library with awaitable methods | `async def` |
+| Blocking or synchronous library | `def` |
+| CPU-heavy work | Separate worker system |
 
 ---
 
@@ -368,20 +356,12 @@ async def create_order(
 
 Conceptually:
 
-```text
-Dependency adds task
-        |
-        v
-Endpoint adds task
-        |
-        v
-FastAPI merges them into one BackgroundTasks collection
-        |
-        v
-Response is sent
-        |
-        v
-Collected tasks execute
+```mermaid
+flowchart TD
+    A[Dependency adds task] --> B[Endpoint adds task]
+    B --> C[FastAPI merges them into one<br/>BackgroundTasks collection]
+    C --> D[Response is sent]
+    D --> E[Collected tasks execute]
 ```
 
 This is useful for cross-cutting operations such as:
@@ -423,26 +403,18 @@ async def complete_order(
 
 Starlette executes registered tasks in order.
 
-```text
-Task 1
-  |
-  | success
-  v
-Task 2
-  |
-  | success
-  v
-Task 3
+```mermaid
+flowchart TD
+    T1[Task 1] -->|success| T2[Task 2]
+    T2 -->|success| T3[Task 3]
 ```
 
 If an earlier task raises an unhandled exception, later tasks may not execute.
 
-```text
-Task 1: success
-  |
-Task 2: exception
-  |
-Task 3: not executed
+```mermaid
+flowchart TD
+    T1["Task 1: success"] --> T2["Task 2: exception"]
+    T2 --> T3["Task 3: not executed"]
 ```
 
 Therefore, avoid placing several unrelated critical operations into one background-task chain without appropriate exception handling.
@@ -1037,16 +1009,10 @@ Remember these rules:
 
 Final decision rule:
 
-```text
-Small + local + best-effort
-        |
-        v
-FastAPI BackgroundTasks
-
-Long-running + critical + retryable + distributed
-        |
-        v
-Durable queue and worker
+```mermaid
+flowchart TD
+    A["Small + local + best-effort"] --> B[FastAPI BackgroundTasks]
+    C["Long-running + critical<br/>+ retryable + distributed"] --> D[Durable queue and worker]
 ```
 
 ---

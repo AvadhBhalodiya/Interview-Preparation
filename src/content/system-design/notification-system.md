@@ -404,17 +404,11 @@ Responsibilities:
 
 The API should not wait for providers to send the message.
 
-```text
-Client request
-      |
-      v
-Persist notification
-      |
-      v
-Publish async job
-      |
-      v
-Return 202 Accepted
+```mermaid
+flowchart TD
+    REQ[Client request] --> PERSIST[Persist notification]
+    PERSIST --> PUBLISH[Publish async job]
+    PUBLISH --> ACCEPT[Return 202 Accepted]
 ```
 
 Returning asynchronously improves availability and latency.
@@ -1480,11 +1474,11 @@ Validate before publishing:
 
 Resolution order:
 
-```text
-en-IN
-  -> en
-     -> tenant default
-        -> platform default
+```mermaid
+flowchart TD
+    LOCALE[en-IN] --> LANG[en]
+    LANG --> TENANT[Tenant default]
+    TENANT --> PLATFORM[Platform default]
 ```
 
 Locale should be decided using user preference, not only device language.
@@ -1548,12 +1542,12 @@ Do not enqueue ten million messages in one database transaction.
 
 Use chunking:
 
-```text
-Audience query
-    -> produce recipient pages
-    -> create notification chunks
-    -> publish gradually
-    -> apply global and provider rate limits
+```mermaid
+flowchart TD
+    QUERY[Audience query] --> PAGES[Produce recipient pages]
+    PAGES --> CHUNKS[Create notification chunks]
+    CHUNKS --> PUBLISH[Publish gradually]
+    PUBLISH --> LIMITS[Apply global and provider rate limits]
 ```
 
 Campaign metadata should be separate from individual recipient delivery records.
@@ -1831,13 +1825,13 @@ spread them from 09:00:00 to 09:10:00.
 
 ## Scenario 1: Provider Is Down
 
-```text
-Worker calls provider
-    -> timeout / 503
-    -> circuit breaker opens
-    -> message is retried with backoff
-    -> optional provider failover
-    -> lower-priority traffic is paused
+```mermaid
+flowchart TD
+    CALL[Worker calls provider] --> TIMEOUT["Timeout / 503"]
+    TIMEOUT --> BREAKER[Circuit breaker opens]
+    BREAKER --> RETRY[Message is retried with backoff]
+    RETRY --> FAILOVER[Optional provider failover]
+    FAILOVER --> PAUSE[Lower-priority traffic is paused]
 ```
 
 The ingestion API should continue accepting requests while durable queues absorb the backlog.
@@ -1993,13 +1987,13 @@ Provider acceptance is measurable by your system. Final delivery may depend on c
 
 Use a correlation chain:
 
-```text
-business_event_id
-    -> notification_id
-        -> channel_message_id
-            -> attempt_id
-                -> provider_message_id
-                    -> provider_event_id
+```mermaid
+flowchart TD
+    BIZ[business_event_id] --> NOTIF[notification_id]
+    NOTIF --> CHAN[channel_message_id]
+    CHAN --> ATTEMPT[attempt_id]
+    ATTEMPT --> PMSG[provider_message_id]
+    PMSG --> PEVT[provider_event_id]
 ```
 
 Include these identifiers in structured logs.

@@ -727,17 +727,11 @@ except OrderServiceError:
 
 A useful layered design is:
 
-```text
-Database/HTTP library exception
-            │
-            ▼
-Repository or gateway exception
-            │
-            ▼
-Domain/application exception
-            │
-            ▼
-API, CLI, or worker response
+```mermaid
+flowchart TD
+    A["Database/HTTP library exception"] --> B[Repository or gateway exception]
+    B --> C["Domain/application exception"]
+    C --> D["API, CLI, or worker response"]
 ```
 
 Example:
@@ -1026,12 +1020,10 @@ logger.error("Job processing failed", exc_info=True)
 
 Repeatedly logging and re-raising the same exception at every layer creates duplicate log entries.
 
-```text
-Repository logs error
-    ↓
-Service logs the same error
-    ↓
-API middleware logs the same error
+```mermaid
+flowchart TD
+    A[Repository logs error] --> B[Service logs the same error]
+    B --> C[API middleware logs the same error]
 ```
 
 A cleaner approach is:
@@ -1319,20 +1311,11 @@ finally:
 
 ## Control flow
 
-```text
-try succeeds
-    ├── else runs
-    └── finally runs
-
-try raises matching exception
-    ├── matching except runs
-    └── finally runs
-
-try raises unhandled exception
-    ├── no matching except runs
-    ├── finally runs
-    └── exception propagates
-```
+| `try` outcome | What runs |
+|---|---|
+| Succeeds | `else` runs, then `finally` |
+| Raises a matching exception | The matching `except` runs, then `finally` |
+| Raises an unhandled exception | No `except` matches, `finally` runs, then the exception propagates |
 
 ## Key rules
 

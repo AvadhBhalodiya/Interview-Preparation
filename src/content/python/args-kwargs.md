@@ -480,25 +480,17 @@ create_account(
 
 ## Unpacking diagram
 
-```text
-List/Tuple unpacking
+```mermaid
+flowchart TD
+    subgraph LIST["List/Tuple unpacking"]
+        V["values = [10, 20, 30]"] --> STAR["*values"]
+        STAR --> FCALL["function(10, 20, 30)"]
+    end
 
-values = [10, 20, 30]
-
-          *values
-             │
-             ▼
-function(10, 20, 30)
-
-
-Dictionary unpacking
-
-options = {"timeout": 10, "debug": True}
-
-          **options
-              │
-              ▼
-function(timeout=10, debug=True)
+    subgraph DICT[Dictionary unpacking]
+        O["options = {'timeout': 10, 'debug': True}"] --> DSTAR["**options"]
+        DSTAR --> DCALL["function(timeout=10, debug=True)"]
+    end
 ```
 
 ## Multiple unpackings
@@ -548,16 +540,14 @@ def example(
 
 ## General order
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ 1. Positional-only parameters              before `/`        │
-│ 2. Positional-or-keyword parameters                         │
-│ 3. Default parameters                                        │
-│ 4. `*args`                                                   │
-│ 5. Keyword-only parameters                 after `*args`     │
-│ 6. `**kwargs`                                                │
-└──────────────────────────────────────────────────────────────┘
-```
+| Order | Parameter kind | Marker |
+|---|---|---|
+| 1 | Positional-only parameters | Before `/` |
+| 2 | Positional-or-keyword parameters | — |
+| 3 | Default parameters | — |
+| 4 | `*args` | — |
+| 5 | Keyword-only parameters | After `*args` |
+| 6 | `**kwargs` | — |
 
 A commonly used form is:
 
@@ -734,14 +724,15 @@ result = configure(
 
 Python binds values in this order:
 
-```text
-1. "payment-api"  ─────────▶ service
-2. "production"   ─────────▶ environment
-3. "metrics"      ─┐
-4. "tracing"      ─┴───────▶ features tuple
-5. debug=True     ─────────▶ debug
-6. workers=4      ─┐
-7. timeout=30     ─┴───────▶ settings dictionary
+```mermaid
+flowchart LR
+    A1["'payment-api'"] --> SERVICE[service]
+    A2["'production'"] --> ENVIRON[environment]
+    A3["'metrics'"] --> FEATURES[features tuple]
+    A4["'tracing'"] --> FEATURES
+    A5["debug=True"] --> DEBUG[debug]
+    A6["workers=4"] --> SETTINGS[settings dictionary]
+    A7["timeout=30"] --> SETTINGS
 ```
 
 Result:
@@ -989,18 +980,10 @@ wrapper(10, 20, enabled=True)
 
 ## Forwarding flow
 
-```text
-Caller
-  │
-  │ wrapper(10, 20, enabled=True)
-  ▼
-wrapper
-  │ args   = (10, 20)
-  │ kwargs = {"enabled": True}
-  │
-  │ target(*args, **kwargs)
-  ▼
-target(10, 20, enabled=True)
+```mermaid
+flowchart TD
+    CALLER[Caller] -->|"wrapper(10, 20, enabled=True)"| WRAP["wrapper<br/>args = (10, 20)<br/>kwargs = {'enabled': True}"]
+    WRAP -->|"target(*args, **kwargs)"| TARGET["target(10, 20, enabled=True)"]
 ```
 
 This pattern appears frequently in:

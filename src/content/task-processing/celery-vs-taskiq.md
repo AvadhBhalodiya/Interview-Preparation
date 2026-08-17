@@ -31,26 +31,21 @@ Common examples include:
 
 Without a task queue:
 
-```text
-Client
-  |
-  | HTTP request
-  v
-Web API ----> Slow operation ----> Response after 20 seconds
+```mermaid
+flowchart TD
+    C[Client] -->|HTTP request| A[Web API]
+    A --> S[Slow operation]
+    S --> R[Response after 20 seconds]
 ```
 
 With a task queue:
 
-```text
-Client
-  |
-  | HTTP request
-  v
-Web API ----> Broker ----> Background worker
-  |
-  | Immediate response: "Task accepted"
-  v
-Client receives task ID
+```mermaid
+flowchart TD
+    C[Client] -->|HTTP request| A[Web API]
+    A --> B[(Broker)]
+    B --> W[Background worker]
+    A -->|"Immediate response: Task accepted"| C2[Client receives task ID]
 ```
 
 The API sends a small task message to a **broker**. A separate **worker** reads that message and performs the actual work.
@@ -176,20 +171,16 @@ celery -A tasks worker --loglevel=INFO
 
 ## Celery Mental Model
 
-```text
-Normal function call:
-add(10, 20)
-    |
-    +--> Executes immediately in the current process
-
-Celery call:
-add.delay(10, 20)
-    |
-    +--> Serializes task message
-          |
-          +--> Sends message to broker
-                |
-                +--> Celery worker executes task later
+```mermaid
+flowchart TD
+    subgraph NORM[Normal function call]
+        N1["add(10, 20)"] --> N2[Executes immediately in the current process]
+    end
+    subgraph CEL[Celery call]
+        C1["add.delay(10, 20)"] --> C2[Serializes task message]
+        C2 --> C3[Sends message to broker]
+        C3 --> C4[Celery worker executes task later]
+    end
 ```
 
 ---
@@ -244,16 +235,12 @@ taskiq worker tasks:broker
 
 ## Taskiq Mental Model
 
-```text
-await add.kiq(10, 20)
-    |
-    +--> Async producer sends task message
-          |
-          +--> Broker stores or forwards message
-                |
-                +--> Async Taskiq worker receives it
-                      |
-                      +--> Directly awaits async task
+```mermaid
+flowchart TD
+    A["await add.kiq(10, 20)"] --> B[Async producer sends task message]
+    B --> C[Broker stores or forwards message]
+    C --> D[Async Taskiq worker receives it]
+    D --> E[Directly awaits async task]
 ```
 
 Taskiq is especially natural when the rest of the application already uses:
@@ -313,13 +300,16 @@ Celery 5.6 documents these built-in worker pools:
 
 The default is normally `prefork`.
 
-```text
-Celery main worker process
-    |
-    +-- Child process 1 --> Task
-    +-- Child process 2 --> Task
-    +-- Child process 3 --> Task
-    +-- Child process 4 --> Task
+```mermaid
+flowchart TB
+    M[Celery main worker process] --> C1[Child process 1]
+    M --> C2[Child process 2]
+    M --> C3[Child process 3]
+    M --> C4[Child process 4]
+    C1 --> T1[Task]
+    C2 --> T2[Task]
+    C3 --> T3[Task]
+    C4 --> T4[Task]
 ```
 
 ### Why Prefork Is Useful
@@ -366,15 +356,13 @@ This is acceptable for isolated cases, but it is not the same as a persistent na
 
 Taskiq is built around `asyncio`.
 
-```text
-Taskiq worker process
-    |
-    +-- Event loop
-          |
-          +-- Async task A waits for HTTP response
-          +-- Async task B waits for database
-          +-- Async task C waits for storage
-          +-- Event loop continues other work
+```mermaid
+flowchart TB
+    W[Taskiq worker process] --> L[Event loop]
+    L --> A[Async task A waits for HTTP response]
+    L --> B[Async task B waits for database]
+    L --> C[Async task C waits for storage]
+    L --> D[Event loop continues other work]
 ```
 
 An async task can directly await asynchronous libraries:
@@ -462,14 +450,18 @@ The current `taskiq-redis` package provides different Redis broker strategies.
 - Supports acknowledgements
 - Better option when task durability matters
 
-```text
-Pub/Sub or List Queue:
-Broker --> Worker receives message --> Worker crashes
-                                     --> Message may be lost
-
-Redis Stream:
-Broker --> Worker receives message --> Worker crashes
-                                     --> Unacknowledged message can be recovered
+```mermaid
+flowchart TD
+    subgraph PS["Pub/Sub or List Queue"]
+        P1[(Broker)] --> P2[Worker receives message]
+        P2 --> P3[Worker crashes]
+        P3 --> P4[Message may be lost]
+    end
+    subgraph RS[Redis Stream]
+        S1[(Broker)] --> S2[Worker receives message]
+        S2 --> S3[Worker crashes]
+        S3 --> S4[Unacknowledged message can be recovered]
+    end
 ```
 
 Do not select a broker only because setup is easy. Confirm its delivery and acknowledgement behavior.
@@ -580,20 +572,11 @@ Taskiq's smart retry middleware supports:
 
 ## Retry Timeline
 
-```text
-Attempt 1 --> fails
-   |
-   +-- wait 10 seconds
-
-Attempt 2 --> fails
-   |
-   +-- wait about 20 seconds + jitter
-
-Attempt 3 --> fails
-   |
-   +-- wait about 40 seconds + jitter
-
-Attempt 4 --> succeeds
+```mermaid
+flowchart TD
+    A1[Attempt 1 fails] -->|wait 10 seconds| A2[Attempt 2 fails]
+    A2 -->|wait about 20 seconds + jitter| A3[Attempt 3 fails]
+    A3 -->|wait about 40 seconds + jitter| A4[Attempt 4 succeeds]
 ```
 
 Jitter prevents thousands of failed tasks from retrying at exactly the same moment.
@@ -707,10 +690,11 @@ workflow.apply_async()
 
 Execute tasks in parallel.
 
-```text
-          +--> Task A
-Start ----+--> Task B
-          +--> Task C
+```mermaid
+flowchart LR
+    S[Start] --> A[Task A]
+    S --> B[Task B]
+    S --> C[Task C]
 ```
 
 ```python
@@ -728,10 +712,14 @@ job.apply_async()
 
 Execute a callback after all parallel tasks finish.
 
-```text
-          +--> Task A --+
-Start ----+--> Task B --+--> Final callback
-          +--> Task C --+
+```mermaid
+flowchart LR
+    S[Start] --> A[Task A]
+    S --> B[Task B]
+    S --> C[Task C]
+    A --> F[Final callback]
+    B --> F
+    C --> F
 ```
 
 ```python
@@ -1212,13 +1200,12 @@ Examples:
 
 Taskiq can efficiently run many async operations while they wait for I/O.
 
-```text
-One worker event loop
-    |
-    +-- Task A waits for API
-    +-- Task B waits for DB
-    +-- Task C waits for S3
-    +-- Task D continues running
+```mermaid
+flowchart TB
+    L[One worker event loop] --> A[Task A waits for API]
+    L --> B[Task B waits for DB]
+    L --> C[Task C waits for S3]
+    L --> D[Task D continues running]
 ```
 
 ## 16.2 CPU-Bound Workloads
@@ -1477,13 +1464,17 @@ Assume that retries and duplicate deliveries can occur.
 
 Do not publish a task that references a database record before the transaction commits.
 
-```text
-Wrong:
-Create order --> Publish task --> Transaction rolls back
-                                --> Worker cannot find order
-
-Correct:
-Create order --> Commit transaction --> Publish task
+```mermaid
+flowchart TD
+    subgraph WRONG[Wrong]
+        W1[Create order] --> W2[Publish task]
+        W2 --> W3[Transaction rolls back]
+        W3 --> W4[Worker cannot find order]
+    end
+    subgraph RIGHT[Correct]
+        R1[Create order] --> R2[Commit transaction]
+        R2 --> R3[Publish task]
+    end
 ```
 
 ## 21.4 Use Separate Queues

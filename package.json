@@ -11,13 +11,15 @@
     "preview": "vite preview",
     "check:links": "node scripts/check-links.mjs",
     "check:structure": "node scripts/check-structure.mjs",
-    "check": "pnpm check:structure && pnpm check:links"
+    "check:mermaid": "node scripts/check-mermaid.mjs",
+    "check": "pnpm check:structure && pnpm check:links && pnpm check:mermaid"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
     "@netlify/blobs": "^10.7.10",
     "highlight.js": "^11.11.1",
     "js-yaml": "^4.1.0",
+    "mermaid": "^11.16.1",
     "motion": "^12.42.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -34,6 +36,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
     "netlify-cli": "^27.0.0",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.6.3",

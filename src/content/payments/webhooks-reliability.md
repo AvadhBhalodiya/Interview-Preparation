@@ -330,18 +330,18 @@ This can fail if middleware:
 
 Correct sequence:
 
-```text
-Read raw bytes
-    → Verify signature
-        → Parse JSON
+```mermaid
+flowchart TD
+    RAW[Read raw bytes] --> VERIFY[Verify signature]
+    VERIFY --> PARSE[Parse JSON]
 ```
 
 Incorrect sequence:
 
-```text
-Parse JSON
-    → Re-serialize body
-        → Verify signature
+```mermaid
+flowchart TD
+    PARSE[Parse JSON] --> RESERIAL[Re-serialize body]
+    RESERIAL --> VERIFY[Verify signature]
 ```
 
 Stripe explicitly requires the unmodified raw request body for signature verification.[^stripe-signature]
@@ -786,11 +786,11 @@ Prefer this decision order:
 
 For thin events or ordering-sensitive updates:
 
-```text
-Webhook says payment changed
-    → Verify and persist event
-        → Worker fetches payment from provider API
-            → Apply current provider state idempotently
+```mermaid
+flowchart TD
+    HOOK[Webhook says payment changed] --> PERSIST[Verify and persist event]
+    PERSIST --> FETCH[Worker fetches payment<br/>from provider API]
+    FETCH --> APPLY[Apply current provider<br/>state idempotently]
 ```
 
 This reduces dependence on event order, but introduces API rate limits and temporary network failures. Use it selectively or cache the result within the event-processing transaction boundary.

@@ -72,12 +72,11 @@ Without versioning, a breaking server change can cause:
 
 API versioning creates a controlled migration period:
 
-```text
-Existing clients ───────────────► API v1
-                                      │
-                                      │ migration period
-                                      ▼
-Updated clients  ───────────────► API v2
+```mermaid
+flowchart TD
+    EC[Existing clients] --> V1[API v1]
+    V1 -->|migration period| V2[API v2]
+    UC[Updated clients] --> V2
 ```
 
 The main objective is not to preserve old code forever. It is to give clients a predictable and well-communicated path to migrate.
@@ -789,10 +788,13 @@ Avoid copying the entire application for every version.
 
 A better design is:
 
-```text
-V1 request ──► V1 schema ──┐
-                           ├──► Shared service ──► Repository
-V2 request ──► V2 schema ──┘
+```mermaid
+flowchart LR
+    R1[V1 request] --> S1[V1 schema]
+    R2[V2 request] --> S2[V2 schema]
+    S1 --> SV[Shared service]
+    S2 --> SV
+    SV --> RP[Repository]
 ```
 
 Only version the layers that are actually different.
@@ -911,12 +913,12 @@ app.include_router(v2_router)
 
 The database model and service are shared. Only the external schemas and route adapters differ.
 
-```text
-Customer database record
-        │
-        ├──► V1 adapter ──► address: "Ahmedabad, Gujarat, India"
-        │
-        └──► V2 adapter ──► address: { city, state, country }
+```mermaid
+flowchart LR
+    R[(Customer database record)] --> A1[V1 adapter]
+    R --> A2[V2 adapter]
+    A1 --> O1["address: Ahmedabad, Gujarat, India"]
+    A2 --> O2["address: {city, state, country}"]
 ```
 
 This prevents duplicated business logic and makes old versions easier to maintain.
@@ -1146,17 +1148,11 @@ For important partner or microservice integrations, consumer-driven contract tes
 
 Typical flow:
 
-```text
-Consumer expectations
-        │
-        ▼
-Contract repository
-        │
-        ▼
-Provider CI verification
-        │
-        ▼
-Deployment allowed or blocked
+```mermaid
+flowchart TD
+    A[Consumer expectations] --> B[Contract repository]
+    B --> C[Provider CI verification]
+    C --> D[Deployment allowed or blocked]
 ```
 
 ## Monitoring
@@ -1272,10 +1268,13 @@ def parse_v2_payment(payload: dict) -> Money:
 
 Both contracts are converted into the same internal domain model:
 
-```text
-V1 payload ──► V1 adapter ──┐
-                            ├──► Money domain model ──► Payment service
-V2 payload ──► V2 adapter ──┘
+```mermaid
+flowchart LR
+    P1[V1 payload] --> A1[V1 adapter]
+    P2[V2 payload] --> A2[V2 adapter]
+    A1 --> M[Money domain model]
+    A2 --> M
+    M --> S[Payment service]
 ```
 
 This is cleaner than maintaining separate payment business logic for every version.

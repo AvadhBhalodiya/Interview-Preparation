@@ -79,7 +79,11 @@ export default function NotePage() {
             className="prose sm:prose-lg"
             style={{ '--bold-color': sectionIcon(note.section).color } as CSSProperties}
           >
-            {body === null ? <BodySkeleton /> : <Markdown body={body} section={note.section} />}
+            {body === null ? (
+              <BodySkeleton />
+            ) : (
+              <Markdown body={body} section={note.section} title={note.slug} />
+            )}
           </div>
           <PrevNext prev={prev} next={next} />
         </motion.div>

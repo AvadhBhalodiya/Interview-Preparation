@@ -123,24 +123,16 @@ A query works with **sets of rows**. Each clause transforms one set into another
 
 A simplified logical processing order is:
 
-```text
-FROM / JOIN
-    ↓
-ON
-    ↓
-WHERE
-    ↓
-GROUP BY
-    ↓
-HAVING
-    ↓
-SELECT
-    ↓
-DISTINCT
-    ↓
-ORDER BY
-    ↓
-LIMIT / OFFSET / FETCH
+```mermaid
+flowchart TD
+    A["FROM / JOIN"] --> B[ON]
+    B --> C[WHERE]
+    C --> D[GROUP BY]
+    D --> E[HAVING]
+    E --> F[SELECT]
+    F --> G[DISTINCT]
+    G --> H[ORDER BY]
+    H --> I["LIMIT / OFFSET / FETCH"]
 ```
 
 This order explains several important behaviors:
@@ -959,12 +951,10 @@ The query returns orders above the average for their own customer.
 
 #### Conceptual evaluation
 
-```text
-Outer row: order 101, customer 1
-    ↓
-Inner query: average orders for customer 1
-    ↓
-Compare order 101 to that average
+```mermaid
+flowchart TD
+    O["Outer row: order 101, customer 1"] --> I["Inner query: average orders for customer 1"]
+    I --> C[Compare order 101 to that average]
 ```
 
 Logically, the inner query is evaluated in the context of each outer row. Physically, the optimizer may decorrelate or transform it into a different plan.
@@ -1226,16 +1216,12 @@ ORDER BY h.total_spent DESC;
 
 #### Data-flow view
 
-```text
-orders
-  ↓ filter completed
-completed_orders
-  ↓ group by customer
-customer_totals
-  ↓ filter total
-high_value_customers
-  ↓ join customer name
-final result
+```mermaid
+flowchart TD
+    O[orders] -->|Filter completed| CO[completed_orders]
+    CO -->|Group by customer| CT[customer_totals]
+    CT -->|Filter total| HV[high_value_customers]
+    HV -->|Join customer name| FR[Final result]
 ```
 
 Each CTE should represent a useful logical step. Too many one-line CTEs can fragment a simple query, while one giant CTE can hide the workflow. Prefer meaningful boundaries.

@@ -41,47 +41,26 @@ A renderer can then convert this dictionary into JSON.
 
 A serializer also works in the opposite direction. It accepts request data, validates it, converts it into suitable Python values, and can create or update an object.
 
-```text
-Outgoing response
-
-Django model instance
-        │
-        ▼
-    Serializer
-        │
-        ▼
-Primitive Python data
-        │
-        ▼
-   JSON renderer
-        │
-        ▼
-    HTTP response
+```mermaid
+flowchart TD
+    subgraph OUTBOUND[Outgoing response]
+        A[Django model instance] --> B[Serializer]
+        B --> C[Primitive Python data]
+        C --> D[JSON renderer]
+        D --> E[HTTP response]
+    end
 ```
 
-```text
-Incoming request
-
-JSON request body
-        │
-        ▼
-      Parser
-        │
-        ▼
-Primitive Python data
-        │
-        ▼
-    Serializer
-  validation + conversion
-        │
-        ▼
- validated_data
-        │
-        ▼
- create() / update()
-        │
-        ▼
-Django model instance
+```mermaid
+flowchart TD
+    subgraph INBOUND[Incoming request]
+        A[JSON request body] --> B[Parser]
+        B --> C[Primitive Python data]
+        C --> D[Serializer<br/>validation + conversion]
+        D --> E[validated_data]
+        E --> F["create() / update()"]
+        F --> G[Django model instance]
+    end
 ```
 
 A useful mental model is:
@@ -96,24 +75,14 @@ Serializer = Data transformation + Validation + Object creation/update
 
 A serializer commonly moves through the following stages:
 
-```text
-request.data
-    │
-    ▼
-Serializer(data=request.data)
-    │
-    ▼
-serializer.is_valid()
-    │
-    ├── Invalid ──► serializer.errors
-    │
-    └── Valid ───► serializer.validated_data
-                        │
-                        ▼
-                  serializer.save()
-                        │
-                        ▼
-                 create() or update()
+```mermaid
+flowchart TD
+    A[request.data] --> B["Serializer(data=request.data)"]
+    B --> C{"serializer.is_valid()"}
+    C -->|Invalid| D[serializer.errors]
+    C -->|Valid| E[serializer.validated_data]
+    E --> F["serializer.save()"]
+    F --> G["create() or update()"]
 ```
 
 Example:
@@ -278,14 +247,14 @@ class ProductSerializer(serializers.ModelSerializer):
 
 DRF automatically maps model fields to serializer fields. For example:
 
-```text
-models.CharField          → serializers.CharField
-models.TextField          → serializers.CharField
-models.DecimalField       → serializers.DecimalField
-models.BooleanField       → serializers.BooleanField
-models.DateTimeField      → serializers.DateTimeField
-models.ForeignKey         → serializers.PrimaryKeyRelatedField
-```
+| Model field | Serializer field |
+| --- | --- |
+| `models.CharField` | `serializers.CharField` |
+| `models.TextField` | `serializers.CharField` |
+| `models.DecimalField` | `serializers.DecimalField` |
+| `models.BooleanField` | `serializers.BooleanField` |
+| `models.DateTimeField` | `serializers.DateTimeField` |
+| `models.ForeignKey` | `serializers.PrimaryKeyRelatedField` |
 
 ## 4.3 Example input
 
@@ -564,11 +533,11 @@ print(serializer.validated_data)
 
 Notice the conversion:
 
-```text
-"89.99"       → Decimal("89.99")
-2             → Category model instance
-"KB-1001"     → validated string
-```
+| Input value | Converted to |
+| --- | --- |
+| `"89.99"` | `Decimal("89.99")` |
+| `2` | `Category` model instance |
+| `"KB-1001"` | Validated string |
 
 ## 7.3 Key serializer properties
 
@@ -597,26 +566,14 @@ response_data = serializer.data
 
 DRF supports validation at several levels.
 
-```text
-Raw input
-   │
-   ▼
-Field conversion and built-in validation
-   │
-   ▼
-Field validators
-   │
-   ▼
-validate_<field_name>()
-   │
-   ▼
-Object-level validators
-   │
-   ▼
-validate()
-   │
-   ▼
-validated_data
+```mermaid
+flowchart TD
+    A[Raw input] --> B[Field conversion and<br/>built-in validation]
+    B --> C[Field validators]
+    C --> D["validate_[field_name]()"]
+    D --> E[Object-level validators]
+    E --> F["validate()"]
+    F --> G[validated_data]
 ```
 
 ## 8.1 Built-in field validation
@@ -2339,21 +2296,14 @@ A DRF serializer converts complex objects into primitive data for responses and 
 
 ## 25.2 The most important lifecycle
 
-```text
-Serializer(data=request.data)
-        │
-        ▼
-is_valid()
-        │
-        ├── errors
-        └── validated_data
-                 │
-                 ▼
-               save()
-                 │
-        ┌────────┴────────┐
-        ▼                 ▼
-    create()           update()
+```mermaid
+flowchart TD
+    A["Serializer(data=request.data)"] --> B{"is_valid()"}
+    B --> C[errors]
+    B --> D[validated_data]
+    D --> E["save()"]
+    E --> F["create()"]
+    E --> G["update()"]
 ```
 
 ## 25.3 Key distinctions
@@ -2373,27 +2323,23 @@ ModelSerializer
 
 ## 25.4 Validation levels
 
-```text
-Field configuration
-        ↓
-Reusable field validators
-        ↓
-validate_<field>()
-        ↓
-Meta.validators
-        ↓
-validate()
+```mermaid
+flowchart TD
+    A[Field configuration] --> B[Reusable field validators]
+    B --> C["validate_[field]()"]
+    C --> D[Meta.validators]
+    D --> E["validate()"]
 ```
 
 ## 25.5 Relationship choices
 
-```text
-Primary key     → compact and easy to write
-String          → readable but read-only
-Slug            → readable identifier
-Hyperlink       → resource-oriented representation
-Nested object   → rich output, more complex writes
-```
+| Representation | Trade-off |
+| --- | --- |
+| Primary key | Compact and easy to write |
+| String | Readable but read-only |
+| Slug | Readable identifier |
+| Hyperlink | Resource-oriented representation |
+| Nested object | Rich output, more complex writes |
 
 ## 25.6 Performance rule
 
@@ -2406,52 +2352,30 @@ DRF does not automatically add `select_related()` or `prefetch_related()` based 
 
 ## 25.7 Practical decision guide
 
-```text
-Does the payload closely represent one model?
-        │
-        ├── Yes → Start with ModelSerializer
-        │
-        └── No  → Start with Serializer
-
-Does read output differ greatly from write input?
-        │
-        ├── Yes → Consider separate read/write serializers
-        │
-        └── No  → One serializer may be sufficient
-
-Does the serializer access related objects?
-        │
-        ├── Yes → Optimize the queryset
-        │
-        └── No  → Normal queryset may be sufficient
-
-Does saving involve a complex workflow?
-        │
-        ├── Yes → Consider a service/domain layer
-        │
-        └── No  → create()/update() may be enough
+```mermaid
+flowchart TD
+    A{Does the payload closely<br/>represent one model?} -->|Yes| B[Start with ModelSerializer]
+    A -->|No| C[Start with Serializer]
+    D{Does read output differ<br/>greatly from write input?} -->|Yes| E["Consider separate read/write serializers"]
+    D -->|No| F[One serializer may be sufficient]
+    G{Does the serializer access<br/>related objects?} -->|Yes| H[Optimize the queryset]
+    G -->|No| I[Normal queryset may be sufficient]
+    J{Does saving involve<br/>a complex workflow?} -->|Yes| K["Consider a service/domain layer"]
+    J -->|No| L["create()/update() may be enough"]
 ```
 
 ## 25.8 Final mental model
 
-```text
-Request JSON
-    ↓
-Parser
-    ↓
-Serializer validation
-    ↓
-validated_data
-    ↓
-Application/model operation
-    ↓
-Model/object
-    ↓
-Serializer representation
-    ↓
-Renderer
-    ↓
-Response JSON
+```mermaid
+flowchart TD
+    A[Request JSON] --> B[Parser]
+    B --> C[Serializer validation]
+    C --> D[validated_data]
+    D --> E["Application/model operation"]
+    E --> F["Model/object"]
+    F --> G[Serializer representation]
+    G --> H[Renderer]
+    H --> I[Response JSON]
 ```
 
 A well-designed serializer creates a clear and safe boundary between external API data and internal application objects.

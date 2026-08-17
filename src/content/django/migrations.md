@@ -30,14 +30,10 @@ However, changing a Python class does not directly change an existing database t
 
 Django migrations connect these two worlds:
 
-```text
-Django model definitions
-          │
-          ▼
-Migration files
-          │
-          ▼
-Database schema
+```mermaid
+flowchart TD
+    A[Django model definitions] --> B[Migration files]
+    B --> C[(Database schema)]
 ```
 
 Migrations are needed to safely perform changes such as:
@@ -1363,10 +1359,10 @@ status = models.CharField(
 
 Preferred for meaningful production data:
 
-```text
-Add nullable field
-→ Populate data
-→ Make field non-nullable
+```mermaid
+flowchart TD
+    A[Add nullable field] --> B[Populate data]
+    B --> C[Make field non-nullable]
 ```
 
 ### Option C: Database-level strategy
@@ -1510,18 +1506,13 @@ Typical reasons:
 
 Prevention:
 
-```text
-Production-like backup
-        ↓
-Restore to staging
-        ↓
-Run migration
-        ↓
-Measure duration and locks
-        ↓
-Validate data
-        ↓
-Plan production deployment
+```mermaid
+flowchart TD
+    A[Production-like backup] --> B[Restore to staging]
+    B --> C[Run migration]
+    C --> D[Measure duration and locks]
+    D --> E[Validate data]
+    E --> F[Plan production deployment]
 ```
 
 ---
@@ -1858,12 +1849,14 @@ Create a clean test database and run the full migration chain.
 
 For critical systems, test both paths:
 
-```text
-Fresh installation:
-empty database → latest schema
-
-Upgrade:
-previous production schema → latest schema
+```mermaid
+flowchart LR
+    subgraph FRESH["Fresh installation"]
+        A[(Empty database)] --> B[Latest schema]
+    end
+    subgraph UPGRADE[Upgrade]
+        C[Previous production schema] --> D[Latest schema]
+    end
 ```
 
 ## 18.3 Production practices

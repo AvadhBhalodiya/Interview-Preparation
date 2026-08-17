@@ -27,20 +27,12 @@ Here, the string `"Guest"` is the default value of `name`.
 
 Default arguments make parameters optional, but their evaluation timing is important:
 
-```text
-Module is loaded
-      │
-      ▼
-Python executes the def statement
-      │
-      ▼
-Default expressions are evaluated once
-      │
-      ▼
-Default objects are stored with the function
-      │
-      ▼
-Future calls reuse those stored objects
+```mermaid
+flowchart TD
+    A[Module is loaded] --> B[Python executes the def statement]
+    B --> C[Default expressions are evaluated once]
+    C --> D[Default objects are stored with the function]
+    D --> E[Future calls reuse those stored objects]
 ```
 
 ---
@@ -75,28 +67,26 @@ The calls are unintentionally sharing the same list.
 
 ### Expected Mental Model
 
-```text
-Call 1 ──► new [] ──► ['apple']
-Call 2 ──► new [] ──► ['banana']
-Call 3 ──► new [] ──► ['mango']
+```mermaid
+flowchart LR
+    C1[Call 1] --> N1["new []"]
+    N1 --> R1["['apple']"]
+
+    C2[Call 2] --> N2["new []"]
+    N2 --> R2["['banana']"]
+
+    C3[Call 3] --> N3["new []"]
+    N3 --> R3["['mango']"]
 ```
 
 ### Actual Python Behaviour
 
-```text
-Function definition
-        │
-        ▼
-   one shared []
-        │
-        ├── Call 1 appends 'apple'
-        │      ['apple']
-        │
-        ├── Call 2 appends 'banana'
-        │      ['apple', 'banana']
-        │
-        └── Call 3 appends 'mango'
-               ['apple', 'banana', 'mango']
+```mermaid
+flowchart TD
+    DEF[Function definition] --> SHARED["One shared []"]
+    SHARED --> C1["Call 1 appends 'apple'<br/>['apple']"]
+    SHARED --> C2["Call 2 appends 'banana'<br/>['apple', 'banana']"]
+    SHARED --> C3["Call 3 appends 'mango'<br/>['apple', 'banana', 'mango']"]
 ```
 
 This behaviour is commonly called the **mutable default argument bug**, although it is a consequence of Python's defined function semantics rather than an interpreter defect.
@@ -531,10 +521,16 @@ print(frontend.members)  # []
 
 ### How `default_factory` Works
 
-```text
-Team() call 1 ──► list() ──► independent list A
-Team() call 2 ──► list() ──► independent list B
-Team() call 3 ──► list() ──► independent list C
+```mermaid
+flowchart LR
+    C1["Team() call 1"] --> LA["list()"]
+    LA --> RA[Independent list A]
+
+    C2["Team() call 2"] --> LB["list()"]
+    LB --> RB[Independent list B]
+
+    C3["Team() call 3"] --> LC["list()"]
+    LC --> RC[Independent list C]
 ```
 
 For a dictionary or set:

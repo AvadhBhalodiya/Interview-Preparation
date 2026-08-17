@@ -30,16 +30,11 @@ In most systems:
 - **The database** provides durable storage and is usually the source of truth.
 - **The application or cache layer** coordinates reads, writes, expiration, and invalidation.
 
-```text
-Client
-  |
-  v
-Application
-  | \
-  |  \
-  v   v
-Redis Database
-Fast  Durable
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|Fast| R[(Redis)]
+    A -->|Durable| D[(Database)]
 ```
 
 Redis can also become the immediate system of record in a write-behind design, but this requires stronger durability, replication, recovery, and operational controls.
@@ -85,50 +80,25 @@ Only data that is actually requested enters the cache.
 
 ### Cache hit
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | GET product:42
-  v
-Redis
-  |
-  | Value found
-  v
-Application -> Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|"GET product:42"| R[(Redis)]
+    R -->|Value found| A2[Application]
+    A2 -->|Response| C2[Client]
 ```
 
 ### Cache miss
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | GET product:42
-  v
-Redis
-  |
-  | Miss
-  v
-Application
-  |
-  | SELECT product WHERE id = 42
-  v
-Database
-  |
-  | Product data
-  v
-Application
-  |
-  | SET product:42 <data> EX 300
-  v
-Redis
-
-Application -> Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|"GET product:42"| R[(Redis)]
+    R -->|Miss| A2[Application]
+    A2 -->|"SELECT product WHERE id = 42"| D[(Database)]
+    D -->|Product data| A3[Application]
+    A3 -->|"SET product:42 value EX 300"| R2[(Redis)]
+    A3 -->|Response| C2[Client]
 ```
 
 ### Read pseudocode
@@ -157,26 +127,13 @@ The safest common cache-aside write flow is:
 2. Delete the related Redis key.
 3. Let the next read reload fresh data.
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | UPDATE product
-  v
-Database
-  |
-  | Commit succeeds
-  v
-Application
-  |
-  | DEL product:42
-  v
-Redis
-  |
-  v
-Response to Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|UPDATE product| D[(Database)]
+    D -->|Commit succeeds| A2[Application]
+    A2 -->|"DEL product:42"| R[(Redis)]
+    R --> RESP[Response to Client]
 ```
 
 Why delete instead of immediately updating the cache?
@@ -350,27 +307,14 @@ A practical database-authoritative sequence is:
 
 ## 3.1 Write Flow
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | Update durable record
-  v
-Database
-  |
-  | Commit succeeds
-  v
-Application
-  |
-  | SET product:42 <new-value> EX 300
-  v
-Redis
-  |
-  | Success
-  v
-Application -> Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|Update durable record| D[(Database)]
+    D -->|Commit succeeds| A2[Application]
+    A2 -->|"SET product:42 new-value EX 300"| R[(Redis)]
+    R -->|Success| A3[Application]
+    A3 -->|Response| C2[Client]
 ```
 
 This is often described as **write-through at the application layer**.
@@ -381,19 +325,12 @@ A dedicated write-through cache provider may expose only the cache interface to 
 
 Because successful writes also refresh Redis, later reads are likely to hit a warm cache.
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | GET product:42
-  v
-Redis
-  |
-  | Updated value found
-  v
-Application -> Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|"GET product:42"| R[(Redis)]
+    R -->|Updated value found| A2[Application]
+    A2 -->|Response| C2[Client]
 ```
 
 A cache miss still needs a fallback, usually the same read behavior as cache-aside.
@@ -526,38 +463,22 @@ The trade-off is significant: Redis and the asynchronous pipeline now participat
 
 ## 4.1 Write Flow
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | Write latest value
-  v
-Redis
-  |
-  | Record persistence event
-  v
-Redis Stream
-  |
-  | Acknowledge request quickly
-  v
-Client
+```mermaid
+flowchart TD
+    subgraph REQ[Request path]
+        C[Client] --> A[Application]
+        A -->|Write latest value| R[(Redis)]
+        R -->|Record persistence event| S[(Redis Stream)]
+        S -->|Acknowledge request quickly| C2[Client]
+    end
 
-Later:
+    subgraph LATER["Later, asynchronously"]
+        S2[(Redis Stream)] --> W[Worker]
+        W -->|UPSERT / UPDATE| D[(Database)]
+        D -->|Commit| ACK[Worker acknowledges stream entry]
+    end
 
-Redis Stream
-  |
-  v
-Worker
-  |
-  | UPSERT / UPDATE
-  v
-Database
-  |
-  | Commit
-  v
-Worker acknowledges stream entry
+    S -.-> S2
 ```
 
 The database is eventually consistent with Redis.
@@ -566,19 +487,12 @@ The database is eventually consistent with Redis.
 
 Reads normally come from Redis because Redis may contain a value that has not yet reached the database.
 
-```text
-Client
-  |
-  v
-Application
-  |
-  | GET product:42
-  v
-Redis
-  |
-  | Latest value
-  v
-Application -> Client
+```mermaid
+flowchart TD
+    C[Client] --> A[Application]
+    A -->|"GET product:42"| R[(Redis)]
+    R -->|Latest value| A2[Application]
+    A2 -->|Response| C2[Client]
 ```
 
 Reading directly from the database during the delay can return an older value.
@@ -757,17 +671,12 @@ Consumer groups maintain a pending entries list for delivered but unacknowledged
 
 Conceptual flow:
 
-```text
-Main Stream
-    |
-    v
-Consumer Group
-    |
-    +--> Success -> XACK
-    |
-    +--> Temporary failure -> Retry
-    |
-    +--> Repeated failure -> Dead-letter Stream
+```mermaid
+flowchart TD
+    M[(Main Stream)] --> CG[Consumer Group]
+    CG -->|Success| ACK[XACK]
+    CG -->|Temporary failure| RETRY[Retry]
+    CG -->|Repeated failure| DLQ[(Dead-letter Stream)]
 ```
 
 ### Redis Enterprise write-behind
@@ -862,11 +771,12 @@ Mitigations:
 
 A hot key expires and many requests miss simultaneously.
 
-```text
-             +--> Database query
-100 requests +--> Database query
-             +--> Database query
-             +--> ...
+```mermaid
+flowchart LR
+    REQ[100 concurrent requests] --> Q1[Database query]
+    REQ --> Q2[Database query]
+    REQ --> Q3[Database query]
+    REQ --> Q4[... one per request]
 ```
 
 Mitigations:
@@ -978,24 +888,15 @@ Use:
 
 Use the following decision flow:
 
-```text
-Is the database required to confirm every write?
-               |
-          +----+----+
-          |         |
-         Yes        No
-          |          |
-Can cache be populated      Can temporary DB lag
-only when data is read?     and async recovery be accepted?
-          |                        |
-      +---+---+                +---+---+
-      |       |                |       |
-     Yes      No              Yes      No
-      |       |                |       |
-Cache-Aside  Write-Through   Write-Behind
-                                 |
-                          Otherwise keep the
-                          database synchronous
+```mermaid
+flowchart TD
+    A{Is the database required to confirm every write?}
+    A -->|Yes| B{Can the cache be populated only when data is read?}
+    A -->|No| C{Can temporary DB lag and async recovery be accepted?}
+    B -->|Yes| CA[Cache-Aside]
+    B -->|No| WT[Write-Through]
+    C -->|Yes| WB[Write-Behind]
+    C -->|No| SYNC[Keep the database synchronous]
 ```
 
 ## Prefer Cache-Aside When
@@ -1209,47 +1110,26 @@ Large systems often use more than one caching strategy.
 
 Example e-commerce platform:
 
-```text
-                            +----------------------+
-                            | Product Read API     |
-                            | Cache-Aside          |
-                            +----------+-----------+
-                                       |
-                       +---------------+---------------+
-                       |                               |
-                       v                               v
-                    Redis                         PostgreSQL
-              product/catalog cache              source of truth
+```mermaid
+flowchart TD
+    subgraph Cache-Aside
+        PR[Product Read API]
+        PR --> PRR[(Redis<br/>product / catalog cache)]
+        PR --> PRD[(PostgreSQL<br/>source of truth)]
+    end
 
+    subgraph Write-Through
+        PU[Profile Update API]
+        PU -->|DB commit + cache refresh| PUR[(Redis<br/>warm profile)]
+        PU -->|DB commit + cache refresh| PUD[(PostgreSQL<br/>durable profile)]
+    end
 
-                            +----------------------+
-                            | Profile Update API   |
-                            | Write-Through        |
-                            +----------+-----------+
-                                       |
-                              DB commit + cache refresh
-                                       |
-                       +---------------+---------------+
-                       |                               |
-                       v                               v
-                    Redis                         PostgreSQL
-                    warm profile                  durable profile
-
-
-                            +----------------------+
-                            | Analytics API        |
-                            | Write-Behind         |
-                            +----------+-----------+
-                                       |
-                                       v
-                                    Redis
-                              counters + stream
-                                       |
-                                       v
-                              Async worker batch
-                                       |
-                                       v
-                               Analytics database
+    subgraph Write-Behind
+        AN[Analytics API]
+        AN --> ANR[(Redis<br/>counters + stream)]
+        ANR --> ANW[Async worker batch]
+        ANW --> AND[(Analytics database)]
+    end
 ```
 
 A realistic strategy map might be:

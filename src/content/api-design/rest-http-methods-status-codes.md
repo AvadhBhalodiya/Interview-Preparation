@@ -48,25 +48,15 @@ A system can use HTTP without being RESTful. Similarly, merely returning JSON ov
 
 A REST API exposes **resources**. A client sends an HTTP request asking the server to operate on a resource.
 
-```text
-Client
-  |
-  |  GET /api/orders/ORD-101
-  |  Accept: application/json
-  v
-API Server
-  |
-  |  Finds the order resource
-  |  Creates a JSON representation
-  v
-HTTP/1.1 200 OK
-Content-Type: application/json
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as API Server
 
-{
-  "id": "ORD-101",
-  "status": "confirmed",
-  "total": 2499
-}
+    C->>S: GET /api/orders/ORD-101, Accept application/json
+    Note over S: Find the order resource,<br/>build a JSON representation
+    S-->>C: 200 OK, Content-Type application/json
+    S-->>C: Body with id, status and total
 ```
 
 The URL identifies the resource.  
@@ -239,10 +229,13 @@ Server responsibilities
 
 The frontend and backend can evolve independently as long as the API contract remains compatible.
 
-```text
-React Web App ─┐
-Flutter App   ─┼──> REST API ───> Database / Services
-Partner App   ─┘
+```mermaid
+flowchart LR
+    W[React Web App] --> API[REST API]
+    F[Flutter App] --> API
+    P[Partner App] --> API
+    API --> DB[(Database)]
+    API --> SVC[Downstream Services]
 ```
 
 ---
@@ -289,10 +282,12 @@ Statelessness means each request is independently understandable.
 
 Any available application instance can handle the request:
 
-```text
-                 ┌── API Instance A
-Client -> LB ----┼── API Instance B
-                 └── API Instance C
+```mermaid
+flowchart LR
+    C[Client] --> LB[Load Balancer]
+    LB --> A[API Instance A]
+    LB --> B[API Instance B]
+    LB --> D[API Instance C]
 ```
 
 This improves horizontal scalability and failover.
@@ -394,18 +389,13 @@ Many real-world APIs use resource-oriented HTTP design without fully implementin
 
 A client does not need to know whether it is communicating directly with the origin server or through intermediaries.
 
-```text
-Client
-  |
-CDN
-  |
-API Gateway
-  |
-Load Balancer
-  |
-Application Service
-  |
-Database
+```mermaid
+flowchart TD
+    C[Client] --> CDN[CDN]
+    CDN --> GW[API Gateway]
+    GW --> LB[Load Balancer]
+    LB --> APP[Application Service]
+    APP --> DB[(Database)]
 ```
 
 Layers can provide:
@@ -2057,14 +2047,11 @@ Do not use `501` simply because a planned application feature has not yet been d
 
 A gateway or proxy received an invalid response from an upstream server.
 
-```text
-Client
-  |
-API Gateway
-  |
-  | invalid upstream response
-  v
-Payment Service
+```mermaid
+flowchart TD
+    C[Client] --> GW[API Gateway]
+    GW --> P[Payment Service]
+    P -->|invalid upstream response| GW
 ```
 
 Response:
@@ -2421,14 +2408,23 @@ Avoid unnecessarily large `Vary` sets because they reduce cache efficiency.
 
 Two clients read the same version:
 
-```text
-Current resource version: v7
+```mermaid
+sequenceDiagram
+    participant A as Client A
+    participant B as Client B
+    participant API as API
 
-Client A reads v7
-Client B reads v7
+    A->>API: Read resource
+    API-->>A: Version v7
 
-Client A updates -> v8
-Client B updates based on old v7 -> may overwrite A
+    B->>API: Read resource
+    API-->>B: Version v7
+
+    A->>API: Update based on v7
+    API-->>A: Now at v8
+
+    B->>API: Update based on the old v7
+    API-->>B: May overwrite the change from Client A
 ```
 
 ---
@@ -2630,18 +2626,13 @@ Use expansion carefully because uncontrolled expansion can produce:
 
 ## 19.1 Authentication Flow
 
-```text
-Client sends credentials
-        |
-        v
-Can identity be verified?
-  | Yes              | No
-  v                  v
-Check permission   401 Unauthorized
-  |
-  +-- allowed ------> process request
-  |
-  +-- denied -------> 403 Forbidden
+```mermaid
+flowchart TD
+    A[Client sends credentials] --> B{Can identity be verified?}
+    B -->|No| C[401 Unauthorized]
+    B -->|Yes| D{Is the action permitted?}
+    D -->|Allowed| E[Process request]
+    D -->|Denied| F[403 Forbidden]
 ```
 
 ---
@@ -3076,23 +3067,28 @@ def delete_user(user_id: UUID) -> Response:
 
 ### Flow represented by the example
 
-```text
-POST /users
-  -> 201 Created
-  -> Location + ETag
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as User API
 
-GET /users/{id}
-  -> 200 OK
-  -> ETag
+    C->>API: POST /users
+    API-->>C: 201 Created, Location and ETag
 
-PATCH /users/{id}
-  -> requires If-Match
-  -> 428 when missing
-  -> 412 when stale
-  -> 200 when updated
+    C->>API: GET /users/{id}
+    API-->>C: 200 OK, ETag
 
-DELETE /users/{id}
-  -> 204 No Content
+    C->>API: PATCH /users/{id} without If-Match
+    API-->>C: 428 Precondition Required
+
+    C->>API: PATCH /users/{id} with a stale If-Match
+    API-->>C: 412 Precondition Failed
+
+    C->>API: PATCH /users/{id} with the current If-Match
+    API-->>C: 200 OK, new ETag
+
+    C->>API: DELETE /users/{id}
+    API-->>C: 204 No Content
 ```
 
 In a production system, replace the in-memory dictionary with a transactional persistence layer and ensure that the version check and update happen atomically.
@@ -3222,14 +3218,14 @@ The maturity model is a learning tool, not the formal definition of REST. REST i
 
 # 25. Quick Revision Summary
 
-```text
-REST
-├── Client-server separation
-├── Stateless requests
-├── Cacheable responses
-├── Uniform interface
-├── Layered system
-└── Code on demand (optional)
+```mermaid
+flowchart TD
+    REST[REST] --> CS[Client-server separation]
+    REST --> ST[Stateless requests]
+    REST --> CA[Cacheable responses]
+    REST --> UI[Uniform interface]
+    REST --> LS[Layered system]
+    REST --> COD[Code on demand - optional]
 ```
 
 ```text

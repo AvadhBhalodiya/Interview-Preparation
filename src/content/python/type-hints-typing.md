@@ -2028,7 +2028,7 @@ flowchart TD
     D -->|Concrete mutable container| E[list / dict / set]
     D -->|Read-only behavior| F[Sequence / Mapping / Iterable]
     A --> G{Several possible types?}
-    G -->|Yes| H[Union with |]
+    G -->|Yes| H["Union with |"]
     A --> I{Structured dictionary?}
     I -->|Yes| J[TypedDict]
     A --> K{Behavior-based dependency?}

@@ -261,14 +261,11 @@ print(frontend.members)  # []
 
 Keep initialization predictable:
 
-```text
-Validate input
-    ↓
-Normalize input
-    ↓
-Assign object state
-    ↓
-Leave expensive I/O to explicit methods or services
+```mermaid
+flowchart TD
+    A[Validate input] --> B[Normalize input]
+    B --> C[Assign object state]
+    C --> D[Leave expensive I/O to explicit methods or services]
 ```
 
 For example, prefer this:
@@ -1266,22 +1263,19 @@ The first style verifies the same public syntax used by application code.
 
 ## Call Flow Summary
 
-```text
-ClassName(arguments)
-    └── __new__ creates the instance
-         └── __init__ initializes its state
+```mermaid
+flowchart TD
+    CN["ClassName(arguments)"] --> NEW["__new__ creates the instance"]
+    NEW --> INIT["__init__ initializes its state"]
 
-print(object) / str(object)
-    └── __str__
-         └── falls back to __repr__ when __str__ is absent
+    PRN["print(object) or str(object)"] --> STR["__str__"]
+    STR --> FALLBACK["Falls back to __repr__ when __str__ is absent"]
 
-repr(object) / f"{object!r}"
-    └── __repr__
+    RPR["repr(object) or an f-string with !r"] --> REPR["__repr__"]
 
-left == right
-    └── left.__eq__(right)
-         ├── True or False
-         └── NotImplemented → Python tries comparison fallback
+    EQ["left == right"] --> CALL["left.__eq__(right)"]
+    CALL --> BOOL[True or False]
+    CALL --> NI["NotImplemented, so Python tries the comparison fallback"]
 ```
 
 ## Compact Example

@@ -23,24 +23,13 @@ Python supports multiple concurrency approaches:
 
 The GIL mainly affects **threads executing Python code inside CPython**.
 
-```text
-Python concurrency
-│
-├── threading
-│   └── Affected by the GIL in normal CPython
-│
-├── multiprocessing
-│   └── Separate process and separate interpreter
-│
-├── asyncio
-│   └── Cooperative concurrency, usually one thread
-│
-├── isolated interpreters
-│   └── Separate interpreter state
-│
-└── free-threaded CPython
-    └── Optional build where the GIL can be disabled
-```
+| Approach | Behaviour |
+|---|---|
+| `threading` | Affected by the GIL in normal CPython |
+| `multiprocessing` | Separate process and separate interpreter |
+| `asyncio` | Cooperative concurrency, usually one thread |
+| Isolated interpreters | Separate interpreter state |
+| Free-threaded CPython | Optional build where the GIL can be disabled |
 
 The most important practical idea is:
 
@@ -66,12 +55,11 @@ Only one thread executes Python bytecode at a time
 
 Suppose a program creates three threads:
 
-```text
-Python process
-│
-├── Thread A
-├── Thread B
-└── Thread C
+```mermaid
+flowchart TD
+    PROC[Python process] --> TA[Thread A]
+    PROC --> TB[Thread B]
+    PROC --> TC[Thread C]
 ```
 
 All three threads exist, but they compete for the same interpreter lock.
@@ -166,14 +154,10 @@ The GIL historically provided a relatively simple model for extension authors wh
 
 ## Main Trade-off
 
-```text
-Simpler interpreter implementation
-              +
-Large native-extension ecosystem
-              |
-              v
-Limited parallel execution of Python bytecode
-inside one GIL-enabled interpreter
+```mermaid
+flowchart TD
+    A[Simpler interpreter implementation] --> C[Limited parallel execution of Python bytecode<br/>inside one GIL-enabled interpreter]
+    B[Large native-extension ecosystem] --> C
 ```
 
 ---
@@ -300,12 +284,10 @@ Common examples:
 
 Typical flow:
 
-```text
-Small amount of Python work
-            ↓
-Wait for network, database, or file
-            ↓
-Small amount of Python work
+```mermaid
+flowchart TD
+    A[Small amount of Python work] --> B[Wait for network, database, or file]
+    B --> C[Small amount of Python work]
 ```
 
 Threads are useful because another thread can run while one thread is waiting.
@@ -325,12 +307,10 @@ Common examples:
 
 Typical flow:
 
-```text
-Python calculation
-        ↓
-More Python calculation
-        ↓
-More Python calculation
+```mermaid
+flowchart TD
+    A[Python calculation] --> B[More Python calculation]
+    B --> C[More Python calculation]
 ```
 
 In a normal GIL-enabled interpreter, adding threads may not improve CPU-bound pure-Python work.
@@ -656,14 +636,13 @@ Native extension code may release the GIL while performing work that does not ne
 
 Conceptually:
 
-```text
-Thread A
-│
-├── Acquires GIL
-├── Calls native function
-├── Native function releases GIL
-├── Native calculation runs
-└── Reacquires GIL before returning to Python
+```mermaid
+flowchart TD
+    THR[Thread A] --> A[Acquires GIL]
+    A --> B[Calls native function]
+    B --> C[Native function releases GIL]
+    C --> D[Native calculation runs]
+    D --> E[Reacquires GIL before returning to Python]
 ```
 
 While Thread A is running native code without the GIL, another thread may execute.
@@ -704,16 +683,11 @@ CPython now supports an optional build where the GIL can be disabled.
 
 ## 12.1 Version Status
 
-```text
-Python 3.12 and earlier
-└── Traditional GIL-enabled CPython
-
-Python 3.13
-└── Optional experimental free-threaded build
-
-Python 3.14
-└── Optional officially supported free-threaded build
-```
+| Python version | Free-threaded support |
+|---|---|
+| 3.12 and earlier | Traditional GIL-enabled CPython |
+| 3.13 | Optional experimental free-threaded build |
+| 3.14 | Optional officially supported free-threaded build |
 
 The standard CPython build remains GIL-enabled by default.
 
@@ -872,21 +846,13 @@ flowchart TD
 
 ## Simple Selection Guide
 
-```text
-Network/API/database waiting
-        → asyncio or threads
-
-File I/O
-        → threads
-
-Pure-Python CPU calculation
-        → processes
-
-CPU work using a native library
-        → benchmark threads and processes
-
-Free-threaded CPython available
-        → verify compatibility, then benchmark threads
+```mermaid
+flowchart LR
+    NET["Network/API/database waiting"] --> NETC[asyncio or threads]
+    FILE["File I/O"] --> FILEC[threads]
+    CPU[Pure-Python CPU calculation] --> CPUC[processes]
+    NATIVE[CPU work using a native library] --> NATIVEC[Benchmark threads and processes]
+    FREE[Free-threaded CPython available] --> FREEC[Verify compatibility, then benchmark threads]
 ```
 
 ---
@@ -929,14 +895,11 @@ High-level APIs provide:
 
 Prefer this design:
 
-```text
-Input
-  ↓
-Independent worker
-  ↓
-Result
-  ↓
-Coordinator
+```mermaid
+flowchart TD
+    A[Input] --> B[Independent worker]
+    B --> C[Result]
+    C --> D[Coordinator]
 ```
 
 Avoid this design when possible:

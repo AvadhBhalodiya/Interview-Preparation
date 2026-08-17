@@ -28,18 +28,12 @@ External data must never be trusted directly.
 
 Pydantic provides a structured boundary between raw input and application code.
 
-```text
-Untrusted client data
-        │
-        ▼
-Pydantic validation
-        │
-        ├── Invalid ──► Structured validation error
-        │
-        └── Valid ────► Typed Python object
-                              │
-                              ▼
-                       Business logic
+```mermaid
+flowchart TD
+    A[Untrusted client data] --> B[Pydantic validation]
+    B -->|Invalid| C[Structured validation error]
+    B -->|Valid| D[Typed Python object]
+    D --> E[Business logic]
 ```
 
 A Pydantic model gives FastAPI:
@@ -644,20 +638,12 @@ For rules involving the complete object, an `after` model validator is usually c
 
 Pydantic v2 validators support different execution modes.
 
-```text
-Raw input
-   │
-   ▼
-Before validator
-   │
-   ▼
-Pydantic type validation and conversion
-   │
-   ▼
-After validator
-   │
-   ▼
-Validated value
+```mermaid
+flowchart TD
+    A[Raw input] --> B[Before validator]
+    B --> C[Pydantic type validation<br/>and conversion]
+    C --> D[After validator]
+    D --> E[Validated value]
 ```
 
 ## `mode="after"`
@@ -1125,20 +1111,10 @@ Returned JSON:
 
 The password and internal fields are excluded.
 
-```text
-UserCreate
-├── username
-├── email
-└── password
-        │
-        ▼
-Business logic / database
-        │
-        ▼
-UserResponse
-├── id
-├── username
-└── email
+```mermaid
+flowchart TD
+    A["UserCreate<br/>username, email, password"] --> B["Business logic / database"]
+    B --> C["UserResponse<br/>id, username, email"]
 ```
 
 Response models provide:
@@ -1948,21 +1924,12 @@ Rules that usually belong in a service or domain layer:
 
 Pydantic should not become a hidden database or network-access layer.
 
-```text
-Pydantic validation
-    │
-    ├── Data shape
-    ├── Type correctness
-    ├── Local field rules
-    └── Cross-field consistency
-
-Service/domain validation
-    │
-    ├── Database state
-    ├── Permissions
-    ├── External services
-    └── Business workflow rules
-```
+| Pydantic validation | Service or domain validation |
+| --- | --- |
+| Data shape | Database state |
+| Type correctness | Permissions |
+| Local field rules | External services |
+| Cross-field consistency | Business workflow rules |
 
 ## Prefer declarative constraints before custom validators
 

@@ -31,15 +31,12 @@ For example:
 
 The sender does not directly call the receiver.
 
-```text
-User.save()
-    │
-    ▼
-post_save signal
-    │
-    ├──► create_user_profile()
-    ├──► write_audit_entry()
-    └──► update_metrics()
+```mermaid
+flowchart TD
+    A["User.save()"] --> B[post_save signal]
+    B --> C["create_user_profile()"]
+    B --> D["write_audit_entry()"]
+    B --> E["update_metrics()"]
 ```
 
 This creates loose coupling between the sender and receivers, but it also hides the execution flow from the code that performs `User.save()`.
@@ -449,25 +446,21 @@ You may not control the code that creates or updates the model, but you still ne
 
 Example:
 
-```text
-Third-party authentication app creates user
-                    │
-                    ▼
-             post_save(User)
-                    │
-                    ▼
-Your optional analytics app records signup
+```mermaid
+flowchart TD
+    A[Third-party authentication app creates user] --> B["post_save(User)"]
+    B --> C[Your optional analytics app records signup]
 ```
 
 ### 9.2 Multiple Independent Observers
 
 A single event may be relevant to several independent modules:
 
-```text
-User logged in
-├── security audit
-├── analytics counter
-└── device-history tracker
+```mermaid
+flowchart TD
+    A[User logged in] --> B[Security audit]
+    A --> C[Analytics counter]
+    A --> D[Device-history tracker]
 ```
 
 None of these observers is required to complete authentication itself.
@@ -554,11 +547,11 @@ Receivers may run in registration order, but application correctness should not 
 
 Bad design:
 
-```text
-post_save(Order)
-├── Receiver A must create invoice first
-├── Receiver B must read that invoice second
-└── Receiver C must send email last
+```mermaid
+flowchart TD
+    A["post_save(Order)"] --> B[Receiver A must create invoice first]
+    A --> C[Receiver B must read that invoice second]
+    A --> D[Receiver C must send email last]
 ```
 
 Use one explicit orchestration function instead.
@@ -1167,14 +1160,11 @@ They are usually the wrong choice for:
 
 The practical default is:
 
-```text
-Explicit service first
-        ↓
-transaction.on_commit() for post-commit work
-        ↓
-background task for slow or external work
-        ↓
-signal only for genuinely independent observers
+```mermaid
+flowchart TD
+    A[Explicit service first] --> B["transaction.on_commit() for post-commit work"]
+    B --> C[Background task for slow or external work]
+    C --> D[Signal only for genuinely independent observers]
 ```
 
 > [!IMPORTANT]

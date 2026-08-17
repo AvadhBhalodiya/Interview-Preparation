@@ -27,18 +27,13 @@ A strong answer does not make you look perfect. It makes you look **self-aware, 
 
 A professional failure story normally follows this pattern:
 
-```text
-Something went wrong
-        ↓
-I understood my contribution
-        ↓
-I corrected the immediate problem
-        ↓
-I identified the root cause
-        ↓
-I changed my working method
-        ↓
-Future results improved
+```mermaid
+flowchart TD
+    A[Something went wrong] --> B[I understood my contribution]
+    B --> C[I corrected the immediate problem]
+    C --> D[I identified the root cause]
+    D --> E[I changed my working method]
+    E --> F[Future results improved]
 ```
 
 The most important part is not the failure itself. The most important part is the change that happened afterward.
@@ -655,18 +650,13 @@ A strong failure story is not a confession. It is evidence of professional growt
 
 The ideal flow is:
 
-```text
-Failure
-  ↓
-Ownership
-  ↓
-Correction
-  ↓
-Root-cause understanding
-  ↓
-Changed behavior or process
-  ↓
-Better future results
+```mermaid
+flowchart TD
+    A[Failure] --> B[Ownership]
+    B --> C[Correction]
+    C --> D[Root-cause understanding]
+    D --> E[Changed behavior or process]
+    E --> F[Better future results]
 ```
 
 The interviewer should finish your answer with three impressions:

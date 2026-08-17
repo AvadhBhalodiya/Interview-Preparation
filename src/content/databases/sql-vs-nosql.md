@@ -59,21 +59,17 @@ They organize data into tables with defined columns and relationships.
 
 Consider an e-commerce application:
 
-```text
-customers
-+----+-------------+
-| id | name        |
-+----+-------------+
-| 1  | Asha Patel  |
-+----+-------------+
+`customers`
 
-orders
-+-----+-------------+----------+
-| id  | customer_id | status   |
-+-----+-------------+----------+
-| 501 | 1           | PAID     |
-+-----+-------------+----------+
-```
+| id | name |
+|---|---|
+| 1 | Asha Patel |
+
+`orders`
+
+| id | customer_id | status |
+|---|---|---|
+| 501 | 1 | PAID |
 
 `orders.customer_id` references `customers.id`.
 
@@ -703,10 +699,9 @@ Ask this question for every important operation:
 
 Vertical scaling means using a larger machine:
 
-```text
-4 CPU / 16 GB RAM
-        ↓
-16 CPU / 64 GB RAM
+```mermaid
+flowchart TD
+    S["4 CPU / 16 GB RAM"] --> L["16 CPU / 64 GB RAM"]
 ```
 
 It is operationally simple but has practical and financial limits.
@@ -715,12 +710,11 @@ It is operationally simple but has practical and financial limits.
 
 Horizontal scaling means distributing work across machines:
 
-```text
-              Load
-               |
-       +-------+-------+
-       |       |       |
-     Node A  Node B  Node C
+```mermaid
+flowchart TD
+    L[Load] --> A[Node A]
+    L --> B[Node B]
+    L --> C[Node C]
 ```
 
 NoSQL systems are often designed around partitioning from the beginning. This is useful, but the application must work within the database's partitioning and query model.

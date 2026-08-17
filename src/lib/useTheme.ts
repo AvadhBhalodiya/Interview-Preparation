@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 export type Theme = 'light' | 'dark'
 
@@ -17,6 +17,35 @@ function applyTheme(theme: Theme) {
   // Tints the browser chrome on mobile; without this the address bar keeps the
   // old theme's color until a hard reload.
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', CANVAS[theme])
+}
+
+// Read-only subscription to the active theme, for components that need to react
+// to it but must not own it. Deliberately watches the DOM attribute rather than
+// exposing the useTheme state: a note can hold 31 diagrams, and this way they
+// share ONE MutationObserver instead of registering 31 `storage` listeners.
+// Watching the attribute also picks up every path that can change the theme —
+// the header toggle, the cross-tab `storage` handler below, and the pre-paint
+// script in index.html — because all three end at the same `dataset.theme`.
+let observer: MutationObserver | null = null
+const listeners = new Set<() => void>()
+
+function subscribeToTheme(cb: () => void) {
+  listeners.add(cb)
+  if (!observer) {
+    observer = new MutationObserver(() => listeners.forEach((l) => l()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  }
+  return () => {
+    listeners.delete(cb)
+    if (listeners.size === 0) {
+      observer?.disconnect()
+      observer = null
+    }
+  }
+}
+
+export function useDocumentTheme(): Theme {
+  return useSyncExternalStore(subscribeToTheme, currentTheme, () => 'light' as Theme)
 }
 
 export function useTheme() {

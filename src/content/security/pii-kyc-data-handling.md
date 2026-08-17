@@ -68,11 +68,9 @@ Security should cover the complete data lifecycle—not only the database.
 
 A single indirect field may not identify a person. Several fields combined may do so.
 
-```text
-Date of birth + postal code + employer
-                    │
-                    ▼
-        May identify one specific person
+```mermaid
+flowchart TD
+    A["Date of birth + postal code + employer"] --> B[May identify one specific person]
 ```
 
 ## 2.2 What Is KYC Data?
@@ -569,11 +567,9 @@ Recommended practices:
 
 Tokenization replaces a sensitive value with a non-sensitive reference.
 
-```text
-PAN: ABCDE1234F
-        │
-        ▼
-Token: tok_pan_8d4a77
+```mermaid
+flowchart LR
+    A["PAN: ABCDE1234F"] --> B["Token: tok_pan_8d4a77"]
 ```
 
 The business database uses the token. Only the PII vault can resolve it.
@@ -681,12 +677,12 @@ AND session_mfa = VERIFIED
 
 ### Masking example
 
-```text
-PAN:     ABCDE1234F  →  ABCD*****F
-Aadhaar: 123412341234 → XXXX-XXXX-1234
-Phone:   9876543210   →  ******3210
-Email:   user@example.com → u***@example.com
-```
+| Field | Stored value | Masked for display |
+|---|---|---|
+| PAN | ABCDE1234F | ABCD*****F |
+| Aadhaar | 123412341234 | XXXX-XXXX-1234 |
+| Phone | 9876543210 | ******3210 |
+| Email | user@example.com | u***@example.com |
 
 Masking is a presentation control, not a replacement for encryption.
 

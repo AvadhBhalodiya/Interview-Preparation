@@ -32,14 +32,11 @@ The most important idea is:
 
 A reliable recurring-payment system usually contains four separate concerns:
 
-```text
-Customer consent
-      ↓
-Mandate or payment-method setup
-      ↓
-Billing or obligation calculation
-      ↓
-Payment execution and settlement
+```mermaid
+flowchart TD
+    CONSENT[Customer consent] --> SETUP[Mandate or<br/>payment-method setup]
+    SETUP --> BILLING[Billing or<br/>obligation calculation]
+    BILLING --> EXEC[Payment execution<br/>and settlement]
 ```
 
 These concerns should remain separate in the data model and application code.
@@ -284,11 +281,11 @@ The customer is actively using the application and can complete authentication.
 
 Example:
 
-```text
-Customer opens checkout
-→ selects a card
-→ enters OTP or completes 3DS
-→ confirms payment
+```mermaid
+flowchart TD
+    OPEN[Customer opens checkout] --> CARD[Selects a card]
+    CARD --> AUTH[Enters OTP or<br/>completes 3DS]
+    AUTH --> CONFIRM[Confirms payment]
 ```
 
 ---
@@ -299,11 +296,11 @@ The customer is not actively present when the payment is initiated.
 
 Example:
 
-```text
-01:00 AM subscription job
-→ invoice becomes due
-→ backend initiates payment
-→ customer is not in the application
+```mermaid
+flowchart TD
+    JOB["01:00 AM subscription job"] --> DUE[Invoice becomes due]
+    DUE --> INIT[Backend initiates payment]
+    INIT --> ABSENT[Customer is not<br/>in the application]
 ```
 
 Recurring payments are commonly off-session.
@@ -361,12 +358,10 @@ Examples:
 
 ## Typical Relationship
 
-```text
-Initial authenticated CIT
-          ↓
-Payment method saved and mandate created
-          ↓
-Future MITs reference the previous agreement
+```mermaid
+flowchart TD
+    CIT[Initial authenticated CIT] --> SAVED[Payment method saved<br/>and mandate created]
+    SAVED --> MIT[Future MITs reference<br/>the previous agreement]
 ```
 
 The first transaction or setup flow should establish the consent and authentication required for later merchant-initiated payments.
@@ -756,13 +751,17 @@ A request can succeed at the provider even if your application never receives th
 
 ## 12.1 Failure Scenario
 
-```text
-Backend → provider: charge ₹999
-Provider: payment succeeds
-Network: response lost
-Backend: assumes failure
-Backend retries without same idempotency key
-Result: customer may be charged twice
+```mermaid
+sequenceDiagram
+    participant Backend
+    participant Provider
+
+    Backend->>Provider: Charge ₹999
+    Provider->>Provider: Payment succeeds
+    Provider--xBackend: Response lost
+    Backend->>Backend: Assumes failure
+    Backend->>Provider: Retry without the same idempotency key
+    Note over Backend,Provider: Customer may be charged twice
 ```
 
 ## 12.2 Idempotency Key Design
@@ -1068,22 +1067,22 @@ This may not be possible after authorization, capture, or clearing.
 
 ## 16.4 Recommended Behavior
 
-```text
-Customer cancels subscription at period end
-→ Keep subscription active until period end
-→ Do not generate next renewal invoice
-→ Revoke or detach mandate according to consent policy
-→ Preserve historical payments and invoices
+```mermaid
+flowchart TD
+    CANCEL[Customer cancels subscription<br/>at period end] --> KEEP[Keep subscription active<br/>until period end]
+    KEEP --> NOINV[Do not generate<br/>next renewal invoice]
+    NOINV --> REVOKE[Revoke or detach mandate<br/>according to consent policy]
+    REVOKE --> KEEPHIST[Preserve historical<br/>payments and invoices]
 ```
 
 For immediate cancellation:
 
-```text
-Cancel service
-→ Calculate refund or credit policy
-→ Stop pending billing jobs
-→ Revoke future collection permission
-→ Record who performed the action and when
+```mermaid
+flowchart TD
+    STOP[Cancel service] --> REFUND[Calculate refund<br/>or credit policy]
+    REFUND --> JOBS[Stop pending billing jobs]
+    JOBS --> PERM[Revoke future<br/>collection permission]
+    PERM --> AUDIT[Record who performed<br/>the action and when]
 ```
 
 Use effective timestamps rather than only a Boolean:
@@ -1110,14 +1109,14 @@ A recurring system should handle:
 
 ## Recommended Update Flow
 
-```text
-Customer chooses "Update payment method"
-→ create new setup session
-→ authenticate new method
-→ receive new mandate/token confirmation
-→ atomically make new method default
-→ retain old reference for audit
-→ optionally cancel old mandate
+```mermaid
+flowchart TD
+    CHOOSE["Customer chooses Update payment method"] --> SETUP[Create new setup session]
+    SETUP --> AUTH[Authenticate new method]
+    AUTH --> CONF["Receive new mandate/token confirmation"]
+    CONF --> DEFAULT[Atomically make<br/>new method default]
+    DEFAULT --> KEEPOLD[Retain old reference for audit]
+    KEEPOLD --> OLDMANDATE[Optionally cancel old mandate]
 ```
 
 Do not replace the current method before the new setup succeeds.
@@ -1230,12 +1229,10 @@ Use:
 
 Tokenization replaces sensitive payment credentials with a reference.
 
-```text
-Raw card number
-      ↓ tokenization
-Provider token: pm_abcd1234
-      ↓
-Merchant stores token only
+```mermaid
+flowchart TD
+    PAN[Raw card number] -->|tokenization| TOKEN["Provider token: pm_abcd1234"]
+    TOKEN --> STORE[Merchant stores token only]
 ```
 
 Tokens reduce exposure but still require access control because they can authorize payments through your provider account.
@@ -1364,12 +1361,12 @@ A card e-mandate authorizes recurring card transactions.
 
 Typical flow:
 
-```text
-Mandate registration with AFA
-→ first transaction with AFA
-→ later eligible recurring debits without repeated AFA
-→ pre-transaction notification
-→ customer opt-out or revocation facility
+```mermaid
+flowchart TD
+    REG[Mandate registration with AFA] --> FIRST[First transaction with AFA]
+    FIRST --> LATER[Later eligible recurring debits<br/>without repeated AFA]
+    LATER --> NOTIFY[Pre-transaction notification]
+    NOTIFY --> OPTOUT[Customer opt-out or<br/>revocation facility]
 ```
 
 The merchant should use tokenized card references and the provider's recurring-payment integration.

@@ -47,26 +47,20 @@ Without these controls, a failed message may repeatedly consume worker capacity,
 
 A typical asynchronous processing flow contains four major components:
 
-```text
-Producer  --->  Broker/Queue  --->  Worker  --->  External dependency
-   |                |                |                  |
-Creates task     Stores task      Processes task     API / DB / service
+```mermaid
+flowchart LR
+    P[Producer<br/>Creates task] --> B[("Broker/Queue<br/>Stores task")]
+    B --> W[Worker<br/>Processes task]
+    W --> E["External dependency<br/>API / DB / service"]
 ```
 
 Example:
 
-```text
-Checkout API
-    |
-    | publishes "send order confirmation"
-    v
-Email Queue
-    |
-    v
-Email Worker
-    |
-    v
-Email Provider
+```mermaid
+flowchart TD
+    A[Checkout API] -->|publishes send order confirmation| Q[[Email Queue]]
+    Q --> W[Email Worker]
+    W --> P[Email Provider]
 ```
 
 A task can finish in one of three meaningful states:
@@ -79,24 +73,15 @@ A task can finish in one of three meaningful states:
 
 The important design decision is made at the failure boundary:
 
-```text
-                    +----------------------+
-                    |   Task processing    |
-                    +----------+-----------+
-                               |
-                         Did it succeed?
-                          /           \
-                        Yes            No
-                        /               \
-              ACK/Delete          Is error retryable?
-                                   /              \
-                                 Yes               No
-                                  |                 |
-                         Attempts remaining?       DLQ
-                           /           \
-                         Yes            No
-                          |              |
-                     Delay + retry      DLQ
+```mermaid
+flowchart TD
+    T[Task processing] --> S{Did it succeed?}
+    S -->|Yes| A["ACK/Delete"]
+    S -->|No| R{Is error retryable?}
+    R -->|No| D1[[Dead-Letter Queue]]
+    R -->|Yes| AT{Attempts remaining?}
+    AT -->|Yes| DR[Delay and retry]
+    AT -->|No| D2[[Dead-Letter Queue]]
 ```
 
 ---
@@ -466,14 +451,9 @@ A message usually enters a DLQ because:
 - Queue-length or broker policies dead-lettered it.
 - A routing or processing policy intentionally diverted it.
 
-```text
-Main Queue
-    |
-    | delivery attempt 1
-    | delivery attempt 2
-    | delivery attempt 3
-    v
-Dead-Letter Queue
+```mermaid
+flowchart TD
+    M[[Main Queue]] -->|"delivery attempt 1<br/>delivery attempt 2<br/>delivery attempt 3"| D[[Dead-Letter Queue]]
 ```
 
 A DLQ is not a trash bin. It is an operational safety mechanism.
@@ -544,46 +524,18 @@ A system with a DLQ but no alerts or recovery procedure merely stores failures m
 
 # 7. Complete Retry-to-DLQ Flow
 
-```text
-+-------------------+
-|   Producer/API    |
-+---------+---------+
-          |
-          | Publish task
-          v
-+-------------------+
-|    Main Queue     |
-+---------+---------+
-          |
-          | Deliver message
-          v
-+-------------------+
-|      Worker       |
-+---------+---------+
-          |
-          | Execute task
-          v
-+-------------------+
-|   Processing OK?  |
-+----+-----------+--+
-     |           |
-    Yes          No
-     |           |
-     v           v
- ACK/Delete   Classify error
-                 |
-          +------+------+
-          |             |
-     Retryable      Permanent
-          |             |
-          v             v
- Attempts left?        DLQ
-     /       \
-   Yes        No
-    |          |
- Delay         DLQ
-    |
-    +--------> Main queue / retry queue
+```mermaid
+flowchart TD
+    P["Producer/API"] -->|Publish task| M[[Main Queue]]
+    M -->|Deliver message| W[Worker]
+    W -->|Execute task| OK{Processing OK?}
+    OK -->|Yes| ACK["ACK/Delete"]
+    OK -->|No| CL[Classify error]
+    CL -->|Retryable| AT{Attempts left?}
+    CL -->|Permanent| DLQ1[[Dead-Letter Queue]]
+    AT -->|Yes| DL[Delay]
+    AT -->|No| DLQ2[[Dead-Letter Queue]]
+    DL --> RQ[["Main queue / retry queue"]]
 ```
 
 A mature flow also records state:
@@ -638,21 +590,13 @@ This still does not eliminate every duplicate scenario. A worker can commit the 
 
 Amazon SQS uses a visibility timeout rather than a traditional AMQP ACK/NACK protocol.
 
-```text
-Receive message
-      |
-      v
-Message becomes temporarily invisible
-      |
-      +--> Processing succeeds -> delete message
-      |
-      +--> Processing fails/crashes -> do not delete
-                                      |
-                                      v
-                            Visibility timeout expires
-                                      |
-                                      v
-                             Message visible again
+```mermaid
+flowchart TD
+    R[Receive message] --> I[Message becomes temporarily invisible]
+    I -->|Processing succeeds| D[Delete message]
+    I -->|"Processing fails/crashes"| N[Do not delete]
+    N --> V[Visibility timeout expires]
+    V --> A[Message visible again]
 ```
 
 The timeout must be long enough for normal processing. If it is too short, another worker may receive the same message while the first worker is still processing it. If it is too long, recovery after a crash is delayed.
@@ -1085,12 +1029,9 @@ Avoid copying secrets, access tokens, full card details, or sensitive personal d
 
 Amazon SQS moves a repeatedly received message to a configured DLQ after its receive count exceeds the source queue's `maxReceiveCount` policy.
 
-```text
-orders-main
-    |
-    | receive count exceeds limit
-    v
-orders-dlq
+```mermaid
+flowchart TD
+    M[[orders-main]] -->|receive count exceeds limit| D[[orders-dlq]]
 ```
 
 ## 13.1 Redrive policy example
@@ -1236,12 +1177,12 @@ Redrive should be controlled because a large batch can overload the recovered se
 
 A safe process is:
 
-```text
-Fix root cause
-   -> test one message
-   -> redrive a small batch
-   -> monitor error and latency metrics
-   -> gradually increase redrive velocity
+```mermaid
+flowchart TD
+    A[Fix root cause] --> B[Test one message]
+    B --> C[Redrive a small batch]
+    C --> D[Monitor error and latency metrics]
+    D --> E[Gradually increase redrive velocity]
 ```
 
 Do not redrive the entire queue merely because the deployment has completed.
@@ -1278,18 +1219,11 @@ rabbitmqctl set_policy orders-dlx \
 
 Topology:
 
-```text
-orders.exchange
-      |
-      v
-orders.main queue
-      |
-      | reject(requeue=false)
-      v
-orders.dead exchange
-      |
-      v
-orders.dlq queue
+```mermaid
+flowchart TD
+    E[orders.exchange] --> M[[orders.main queue]]
+    M -->|"reject(requeue=false)"| DE[orders.dead exchange]
+    DE --> DQ[[orders.dlq queue]]
 ```
 
 ---
@@ -1336,14 +1270,12 @@ Repeated immediate `requeue=True` calls are dangerous because the same message c
 
 A common RabbitMQ design uses separate retry queues.
 
-```text
-                         processing failure
-                                |
-                                v
-Main Queue ---> Worker ---> Retry Exchange
-   ^                            |
-   |                            v
-   +---- DLX after TTL ---- Retry Queue (no consumer)
+```mermaid
+flowchart LR
+    M[[Main Queue]] --> W[Worker]
+    W -->|processing failure| RE[Retry Exchange]
+    RE --> RQ[["Retry Queue (no consumer)"]]
+    RQ -->|DLX after TTL| M
 ```
 
 Example retry tiers:
@@ -1414,15 +1346,13 @@ Use explicit exchanges, routing keys, and topology tests. RabbitMQ can detect ce
 
 Google Cloud Pub/Sub configures dead lettering on a **subscription**, not on the source topic itself.
 
-```text
-Source Topic
-     |
-     v
-Subscription ---> Subscriber
-     |
-     | delivery attempts exhausted
-     v
-Dead-Letter Topic ---> DLQ Subscription ---> Investigation worker
+```mermaid
+flowchart TD
+    T[Source Topic] --> S[Subscription]
+    S --> SUB[Subscriber]
+    S -->|delivery attempts exhausted| DT[Dead-Letter Topic]
+    DT --> DS[DLQ Subscription]
+    DS --> IW[Investigation worker]
 ```
 
 The current official documentation allows a maximum-delivery-attempt value from 5 to 100, with a default of 5 when dead lettering is configured.
@@ -1623,12 +1553,11 @@ A single DLQ message may be urgent for payment or security workflows but low pri
 
 All attempts should share a stable correlation or trace relationship.
 
-```text
-Logical task: order-confirmation-8451
-    |
-    +-- attempt 1: timeout
-    +-- attempt 2: HTTP 503
-    +-- attempt 3: success
+```mermaid
+flowchart TD
+    T["Logical task: order-confirmation-8451"] --> A1["Attempt 1: timeout"]
+    T --> A2["Attempt 2: HTTP 503"]
+    T --> A3["Attempt 3: success"]
 ```
 
 Preserve:
@@ -1657,33 +1586,19 @@ Consider an order-confirmation workflow.
 
 ## 18.2 Proposed design
 
-```text
-Checkout Service
-      |
-      | event_id + order_id
-      v
-Order Confirmation Queue
-      |
-      v
-Email Worker
-      |
-      +--> Validate payload
-      |       |
-      |       +--> invalid -> DLQ/failure queue
-      |
-      +--> Check idempotency record
-      |       |
-      |       +--> already sent -> ACK
-      |
-      +--> Call email provider with idempotency key
-              |
-              +--> success -> store sent status -> ACK
-              |
-              +--> timeout/429/5xx
-                       |
-                       +--> exponential retry with jitter
-                       |
-                       +--> attempts exhausted -> DLQ
+```mermaid
+flowchart TD
+    CS[Checkout Service] -->|event_id + order_id| Q[[Order Confirmation Queue]]
+    Q --> W[Email Worker]
+    W --> V[Validate payload]
+    V -->|invalid| DLQ1[["DLQ / failure queue"]]
+    V -->|valid| IC[Check idempotency record]
+    IC -->|already sent| ACK1[ACK]
+    IC -->|not sent| CALL[Call email provider with idempotency key]
+    CALL -->|success| ST[Store sent status]
+    ST --> ACK2[ACK]
+    CALL -->|"timeout / 429 / 5xx"| RT[Exponential retry with jitter]
+    RT -->|attempts exhausted| DLQ2[[Dead-Letter Queue]]
 ```
 
 ## 18.3 Suggested policy

@@ -167,19 +167,11 @@ user = await fetch_user()
 
 ## 3.3 Function vs object
 
-```text
-async def fetch_user(): ...
-          │
-          │ calling the function
-          ▼
-fetch_user()
-          │
-          ▼
-Coroutine object
-          │
-          │ await or schedule
-          ▼
-Coroutine execution
+```mermaid
+flowchart TD
+    DEF["async def fetch_user()"] -->|Calling the function| CALL["fetch_user()"]
+    CALL --> COBJ[Coroutine object]
+    COBJ -->|await or schedule| EXEC[Coroutine execution]
 ```
 
 ## 3.4 A coroutine may not contain `await`
@@ -222,11 +214,11 @@ Python's async model commonly works with three awaitable types:
 | Task | A scheduled coroutine managed by the event loop |
 | Future | A low-level placeholder for a result that will become available later |
 
-```text
-Awaitable
-├── Coroutine
-├── Task
-└── Future
+```mermaid
+flowchart TD
+    AW[Awaitable] --> CORO[Coroutine]
+    AW --> TSK[Task]
+    AW --> FUT[Future]
 ```
 
 Application code mostly works with **coroutines** and **tasks**. Futures are usually created and managed by frameworks and lower-level libraries.
@@ -363,26 +355,24 @@ asyncio.run(main())
 
 ## Execution timeline
 
-```text
-Event loop starts
-    │
-    ├── main() starts
-    │
-    ├── Task A starts
-    │      └── awaits sleep(2) ───────────────┐
-    │                                         │
-    ├── Task B starts                         │
-    │      └── awaits sleep(1) ───────┐       │
-    │                                 │       │
-    ├── no task is ready; loop waits  │       │
-    │                                 │       │
-    ├── 1 second passes ◄─────────────┘       │
-    │      └── Task B resumes and completes   │
-    │                                         │
-    ├── 2 seconds pass ◄──────────────────────┘
-    │      └── Task A resumes and completes
-    │
-    └── TaskGroup exits; main() completes
+```mermaid
+sequenceDiagram
+    participant EL as Event loop
+    participant MAIN as main()
+    participant TA as Task A
+    participant TB as Task B
+
+    EL->>MAIN: Event loop starts main()
+    MAIN->>TA: Start Task A
+    TA->>EL: await sleep(2)
+    MAIN->>TB: Start Task B
+    TB->>EL: await sleep(1)
+    EL->>EL: No task is ready, the loop waits
+    EL->>TB: 1 second passes
+    TB-->>MAIN: Task B resumes and completes
+    EL->>TA: 2 seconds pass
+    TA-->>MAIN: Task A resumes and completes
+    MAIN-->>EL: TaskGroup exits, main() completes
 ```
 
 The thread is not sleeping separately for each task. The event loop tracks both timers and resumes each task when appropriate.
@@ -552,17 +542,13 @@ user = await task
 
 A coroutine object describes work. A task actively schedules and tracks that work.
 
-```text
-Coroutine object
-      │
-      │ asyncio.create_task(...)
-      ▼
-Scheduled Task
-      │
-      ├── pending
-      ├── running
-      ├── cancelled
-      └── finished
+```mermaid
+flowchart TD
+    COBJ[Coroutine object] -->|"asyncio.create_task(...)"| TASK[Scheduled Task]
+    TASK --> PENDING[pending]
+    TASK --> RUNNING[running]
+    TASK --> CANCELLED[cancelled]
+    TASK --> FINISHED[finished]
 ```
 
 ## 9.2 Naming tasks
@@ -613,14 +599,14 @@ asyncio.run(main())
 
 A `TaskGroup` creates a clear lifetime boundary:
 
-```text
-Enter TaskGroup
-    ├── Start task A
-    ├── Start task B
-    ├── Start task C
-    ├── Wait for the group
-    ├── Handle failure and cancellation consistently
-Exit TaskGroup
+```mermaid
+flowchart TD
+    ENTER[Enter TaskGroup] --> A[Start task A]
+    A --> B[Start task B]
+    B --> C[Start task C]
+    C --> WAIT[Wait for the group]
+    WAIT --> HANDLE[Handle failure and cancellation consistently]
+    HANDLE --> EXIT[Exit TaskGroup]
 ```
 
 No child task should silently outlive the scope that created it unless that behavior is explicitly designed.
@@ -952,14 +938,13 @@ Common use cases:
 
 For heavy CPU work, use one of these designs:
 
-```text
-Async application
-      │
-      ├── ProcessPoolExecutor
-      ├── multiprocessing
-      ├── Celery / worker queue
-      ├── Separate compute service
-      └── Native extension releasing the GIL
+```mermaid
+flowchart TD
+    APP[Async application] --> PPE[ProcessPoolExecutor]
+    APP --> MP[multiprocessing]
+    APP --> CELERY["Celery / worker queue"]
+    APP --> COMPUTE[Separate compute service]
+    APP --> NATIVE[Native extension releasing the GIL]
 ```
 
 A CPU-heavy function running in the event-loop thread delays every other task.
@@ -1231,15 +1216,13 @@ if __name__ == "__main__":
 
 ## Why this design is useful
 
-```text
-build_dashboard()
-    │
-    ├── get_user()   ──────┐
-    │                      ├── concurrent network waits
-    └── get_orders() ──────┘
-             │
-             ▼
-      Build one response
+```mermaid
+flowchart TD
+    BUILD["build_dashboard()"] --> USER["get_user()"]
+    BUILD --> ORDERS["get_orders()"]
+    USER --> WAIT[Concurrent network waits]
+    ORDERS --> WAIT
+    WAIT --> RESP[Build one response]
 ```
 
 The two calls are independent, so they can run concurrently. Their lifecycle remains inside one `TaskGroup`.
@@ -1473,14 +1456,12 @@ Async improves how waiting time is utilized.
 
 An async endpoint with a blocking database driver still blocks its event-loop thread.
 
-```text
-Async web handler
-      │
-      ├── Async HTTP client      ✓
-      ├── Async DB driver        ✓
-      ├── Async Redis client     ✓
-      └── Blocking SDK call      → use to_thread or replace
-```
+| Dependency used inside an async web handler | Verdict |
+|---|---|
+| Async HTTP client | Safe as-is |
+| Async DB driver | Safe as-is |
+| Async Redis client | Safe as-is |
+| Blocking SDK call | Use `to_thread` or replace it |
 
 ## 19.2 Always define timeouts
 

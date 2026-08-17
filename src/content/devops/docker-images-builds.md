@@ -17,38 +17,17 @@ order: 1
 
 Docker packages an application and everything required to run it into an **image**. Docker then starts an isolated process from that image, called a **container**.
 
-```text
-Application source code
-        │
-        │ docker build
-        ▼
-+-------------------------+
-|      Docker Image       |
-|-------------------------|
-| Application code        |
-| Runtime                  |
-| Libraries/dependencies  |
-| Configuration defaults  |
-| Startup command         |
-+-------------------------+
-        │
-        │ docker run
-        ▼
-+-------------------------+
-|    Running Container    |
-|-------------------------|
-| Isolated process        |
-| Read-only image layers  |
-| Writable container layer|
-| Runtime configuration   |
-+-------------------------+
+```mermaid
+flowchart TD
+    A[Application source code] -->|docker build| B["Docker Image<br/>app code, runtime, dependencies,<br/>config defaults, startup command"]
+    B -->|docker run| C["Running Container<br/>isolated process, image layers,<br/>writable layer, runtime config"]
 ```
 
 A simple mental model is:
 
-```text
-Dockerfile  →  Image  →  Container
-Recipe         Package    Running instance
+```mermaid
+flowchart LR
+    A[Dockerfile<br/>Recipe] --> B[Image<br/>Package] --> C[Container<br/>Running instance]
 ```
 
 - A **Dockerfile** describes how to build an image.
@@ -89,13 +68,12 @@ After an image is built, Docker does not modify that image directly. A new build
 
 This gives predictable deployment behavior:
 
-```text
-Same image digest
-      │
-      ├── Local development
-      ├── Test environment
-      ├── Staging environment
-      └── Production environment
+```mermaid
+flowchart TD
+    A[Same image digest] --> B[Local development]
+    A --> C[Test environment]
+    A --> D[Staging environment]
+    A --> E[Production environment]
 ```
 
 The application package remains identical across environments. Runtime settings such as database URLs, credentials, replica counts, and resource limits are supplied separately.
@@ -177,13 +155,11 @@ docker rm orders-api
 
 One image can create many independent containers.
 
-```text
-                  orders-api:1.0.0 image
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   Container A       Container B       Container C
-   port 8001         port 8002         port 8003
+```mermaid
+flowchart TD
+    I["orders-api:1.0.0 image"] --> A[Container A<br/>port 8001]
+    I --> B[Container B<br/>port 8002]
+    I --> C[Container C<br/>port 8003]
 ```
 
 Each container receives its own writable layer, process namespace, network configuration, and runtime environment.
@@ -261,21 +237,11 @@ Similarly, deleting an image generally requires that no existing container still
 
 The normal workflow is:
 
-```text
-Source code + Dockerfile + build context
-                    │
-                    │ docker build
-                    ▼
-              Docker image
-                    │
-           tag and push to registry
-                    │
-                    ▼
-       Docker Hub / Amazon ECR / GHCR
-                    │
-                    │ pull and run
-                    ▼
-                Container
+```mermaid
+flowchart TD
+    A["Source code + Dockerfile + build context"] -->|docker build| B[Docker image]
+    B -->|tag and push to registry| C["Docker Hub / Amazon ECR / GHCR"]
+    C -->|pull and run| D[Container]
 ```
 
 ## 5.1 Build an image
@@ -358,20 +324,14 @@ docker run --rm -p 8000:8000 fastapi-demo:1.0.0
 
 Docker processes instructions in order.
 
-```text
-FROM
-  ↓
-WORKDIR
-  ↓
-COPY requirements.txt
-  ↓
-RUN pip install
-  ↓
-COPY application code
-  ↓
-EXPOSE
-  ↓
-CMD
+```mermaid
+flowchart TD
+    A[FROM] --> B[WORKDIR]
+    B --> C[COPY requirements.txt]
+    C --> D[RUN pip install]
+    D --> E[COPY application code]
+    E --> F[EXPOSE]
+    F --> G[CMD]
 ```
 
 Most filesystem-changing instructions create or contribute to image layers. Docker may reuse cached results when an instruction and its required inputs have not changed.
@@ -707,13 +667,14 @@ Prefer exec form for the main container process because:
 - Graceful shutdown works more reliably
 - No unnecessary shell process is introduced
 
-```text
-Exec form:
-PID 1 → uvicorn
-
-Shell form:
-PID 1 → /bin/sh
-          └── uvicorn
+```mermaid
+flowchart TD
+    subgraph EXEC[Exec form]
+        E1[PID 1] --> E2[uvicorn]
+    end
+    subgraph SHELL[Shell form]
+        S1[PID 1] --> S2["/bin/sh"] --> S3[uvicorn]
+    end
 ```
 
 Some applications still require an entrypoint script for startup preparation. In that case, the script should finish with `exec "$@"` so the final application replaces the shell process.
@@ -774,13 +735,10 @@ Not every instruction necessarily adds a large filesystem layer. Instructions su
 
 Image layers are immutable and can be shared by multiple images and containers.
 
-```text
-python:3.13-slim shared base layers
-           │
-      ┌────┴─────┐
-      ▼          ▼
- orders-api    users-api
- image         image
+```mermaid
+flowchart TD
+    A["python:3.13-slim shared base layers"] --> B[orders-api image]
+    A --> C[users-api image]
 ```
 
 If both images use the same base layer content, Docker can store that content once and reuse it.
@@ -832,12 +790,10 @@ Best when possible: use a separate build stage and copy only the final artifact 
 
 Docker BuildKit can reuse results from previous builds. Reusing unchanged layers makes repeated builds significantly faster.
 
-```text
-Dockerfile instruction
-        │
-        ├── Instruction and required inputs unchanged → reuse cache
-        │
-        └── Changed → execute instruction and evaluate following steps
+```mermaid
+flowchart TD
+    A{Instruction and required inputs unchanged?} -->|Yes| B[Reuse cache]
+    A -->|No| C[Execute instruction and evaluate following steps]
 ```
 
 Suppose the Dockerfile is:
@@ -936,15 +892,14 @@ Cache mounts are useful in CI/CD systems where builds run repeatedly and depende
 
 A good ordering principle is:
 
-```text
-Least frequently changed
-        ↓
-Base image
-System packages
-Dependency manifest
-Application dependencies
-Application source code
-Frequently changed files
+```mermaid
+flowchart TD
+    T[Least frequently changed] --> A[Base image]
+    A --> B[System packages]
+    B --> C[Dependency manifest]
+    C --> D[Application dependencies]
+    D --> E[Application source code]
+    E --> F[Frequently changed files]
 ```
 
 ## 11.1 Recommended Python ordering
@@ -1188,28 +1143,21 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ### Builder stage
 
-```text
-python:3.13-slim
-      +
-requirements.txt
-      +
-pip wheel
-      ↓
-/wheels/*.whl
+```mermaid
+flowchart TD
+    A["python:3.13-slim"] --> D[pip wheel]
+    B[requirements.txt] --> D
+    D --> E["/wheels/*.whl"]
 ```
 
 ### Runtime stage
 
-```text
-python:3.13-slim
-      +
-prebuilt wheels
-      +
-application code
-      +
-non-root user
-      ↓
-production image
+```mermaid
+flowchart TD
+    A["python:3.13-slim"] --> E[production image]
+    B[prebuilt wheels] --> E
+    C[application code] --> E
+    D[non-root user] --> E
 ```
 
 Only the `/wheels` artifacts move from the builder to the runtime stage. The builder filesystem is not included in the final image.
@@ -1430,17 +1378,11 @@ Common registries include:
 
 Registry workflow:
 
-```text
-Developer or CI
-      │ docker build
-      ▼
-Local/build-system image
-      │ docker push
-      ▼
-Container registry
-      │ pull by digest/tag
-      ▼
-ECS / EKS / server / local Docker
+```mermaid
+flowchart TD
+    A[Developer or CI] -->|docker build| B["Local/build-system image"]
+    B -->|docker push| C[Container registry]
+    C -->|"pull by digest/tag"| D["ECS / EKS / server / local Docker"]
 ```
 
 ---
@@ -1469,15 +1411,10 @@ When a container reads an unchanged file, Docker can read it from the image laye
 
 When a container modifies a file from an image layer:
 
-```text
-Read-only lower-layer file
-           │
-           │ first modification
-           ▼
-Copied into writable layer
-           │
-           ▼
-Modified container-specific version
+```mermaid
+flowchart TD
+    A[Read-only lower-layer file] -->|first modification| B[Copied into writable layer]
+    B --> C[Modified container-specific version]
 ```
 
 ## 17.2 Persistent and write-heavy data
@@ -1606,12 +1543,14 @@ This improves signal handling and graceful shutdown behavior.
 
 A production container should be replaceable rather than manually repaired.
 
-```text
-Bad operational model:
-SSH/exec into container → manually patch files → keep container forever
-
-Preferred model:
-Change source/config → build new image → test → deploy replacement container
+```mermaid
+flowchart TD
+    subgraph BAD[Bad operational model]
+        B1["SSH/exec into container"] --> B2[Manually patch files] --> B3[Keep container forever]
+    end
+    subgraph GOOD[Preferred model]
+        G1["Change source/config"] --> G2[Build new image] --> G3[Test] --> G4[Deploy replacement container]
+    end
 ```
 
 ## 18.10 Send logs to stdout and stderr
@@ -1676,29 +1615,21 @@ A multi-platform image can provide platform-specific image variants under one im
 
 A common AWS flow uses Amazon ECR as the image registry and Amazon ECS or Amazon EKS to run containers.
 
-```text
-Developer pushes code
-        │
-        ▼
-CI pipeline
-        │
-        ├── Run tests
-        ├── docker build
-        ├── Scan image
-        └── Tag image with commit SHA
-        │
-        ▼
-Amazon ECR
-        │
-        ▼
-ECS service / EKS Deployment
-        │
-        ├── Pull image
-        ├── Start containers
-        ├── Apply runtime secrets
-        ├── Attach IAM role
-        ├── Configure networking
-        └── Send logs to CloudWatch
+```mermaid
+flowchart TD
+    A[Developer pushes code] --> B[CI pipeline]
+    B --> B1[Run tests]
+    B --> B2[docker build]
+    B --> B3[Scan image]
+    B --> B4[Tag image with commit SHA]
+    B --> C[Amazon ECR]
+    C --> D["ECS service / EKS Deployment"]
+    D --> D1[Pull image]
+    D --> D2[Start containers]
+    D --> D3[Apply runtime secrets]
+    D --> D4[Attach IAM role]
+    D --> D5[Configure networking]
+    D --> D6[Send logs to CloudWatch]
 ```
 
 ## 19.1 Example ECR tag
@@ -1743,14 +1674,11 @@ This avoids rebuilding merely to change environment configuration.
 
 ## 19.4 Immutable deployment pattern
 
-```text
-Code commit a31f92c
-      ↓
-Image tag a31f92c
-      ↓
-Resolved image digest sha256:abc...
-      ↓
-Deployment references that tested artifact
+```mermaid
+flowchart TD
+    A[Code commit a31f92c] --> B[Image tag a31f92c]
+    B --> C["Resolved image digest sha256:abc..."]
+    C --> D[Deployment references that tested artifact]
 ```
 
 This provides traceability from a running workload back to its source revision and build pipeline.
@@ -1968,20 +1896,11 @@ The image contains defaults; the container inspection shows the effective runtim
 
 # 22. Key Takeaways
 
-```text
-Dockerfile
-   │ describes build steps
-   ▼
-Image
-   │ immutable, layered application package
-   │ reused by multiple containers
-   ▼
-Container
-   │ isolated runtime process
-   │ read-only image layers + writable container layer
-   ▼
-Registry / Orchestrator
-   │ distributes and operates the same tested artifact
+```mermaid
+flowchart TD
+    A[Dockerfile] -->|describes build steps| B[Image]
+    B -->|"immutable, reused by many containers"| C[Container]
+    C -->|"isolated process, read-only + writable layer"| D["Registry / Orchestrator<br/>distributes the same tested artifact"]
 ```
 
 The most important points are:

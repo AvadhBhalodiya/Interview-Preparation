@@ -1079,11 +1079,19 @@ squares = (number**2 for number in range(1_000_000))
 
 The bracket type changes the behavior:
 
-```text
-[ ... ]  -> list comprehension -> creates a list immediately
-{ ... }  -> set comprehension  -> creates a set immediately
-{k: v}   -> dict comprehension -> creates a dictionary immediately
-( ... )  -> generator expression -> yields values lazily
+```mermaid
+flowchart LR
+    LB["[ ... ]"] --> LC[List comprehension]
+    LC --> LR1[Creates a list immediately]
+
+    SB["{ ... }"] --> SC[Set comprehension]
+    SC --> SR[Creates a set immediately]
+
+    DB["{k: v}"] --> DC[Dict comprehension]
+    DC --> DR[Creates a dictionary immediately]
+
+    GB["( ... )"] --> GE[Generator expression]
+    GE --> GR[Yields values lazily]
 ```
 
 ## Example

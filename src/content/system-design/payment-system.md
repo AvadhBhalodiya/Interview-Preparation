@@ -1779,16 +1779,12 @@ Start with a relational database because payments need:
 
 Typical evolution:
 
-```text
-Single primary + replicas
-        ↓
-Larger primary and connection pooling
-        ↓
-Partition large tables
-        ↓
-Shard by merchant or payment ID
-        ↓
-Separate payment, ledger, webhook, and reporting stores
+```mermaid
+flowchart TD
+    BASE["Single primary + replicas"] --> BIGGER[Larger primary and connection pooling]
+    BIGGER --> PARTITION[Partition large tables]
+    PARTITION --> SHARD[Shard by merchant or payment ID]
+    SHARD --> SPLIT["Separate payment, ledger, webhook, and reporting stores"]
 ```
 
 ## 19.3 Read replicas
@@ -2122,16 +2118,16 @@ Do not log the raw idempotency key if merchants may place sensitive information 
 
 Trace the full path:
 
-```text
-Merchant request
-  -> Payment API
-  -> Risk service
-  -> Provider adapter
-  -> Provider API
-  -> Payment persistence
-  -> Outbox
-  -> Event consumer
-  -> Merchant webhook
+```mermaid
+flowchart TD
+    REQ[Merchant request] --> API[Payment API]
+    API --> RISK[Risk service]
+    RISK --> ADAPTER[Provider adapter]
+    ADAPTER --> PROVIDER[Provider API]
+    PROVIDER --> PERSIST[(Payment persistence)]
+    PERSIST --> OUTBOX[[Outbox]]
+    OUTBOX --> CONSUMER[Event consumer]
+    CONSUMER --> HOOK[Merchant webhook]
 ```
 
 Do not place raw sensitive data in spans.

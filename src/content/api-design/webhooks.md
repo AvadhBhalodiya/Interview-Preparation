@@ -155,12 +155,10 @@ A robust consumer often treats the webhook as a notification that something chan
 
 For sensitive workflows, the consumer can use the event's resource ID to fetch the current resource from the provider:
 
-```text
-Webhook says: payment pay_98765 succeeded
-                     ↓
-Consumer calls: GET /payments/pay_98765
-                     ↓
-Consumer confirms current status before updating the order
+```mermaid
+flowchart TD
+    A["Webhook says: payment pay_98765 succeeded"] --> B["Consumer calls: GET /payments/pay_98765"]
+    B --> C[Consumer confirms current status before updating the order]
 ```
 
 This is useful when:
@@ -186,14 +184,18 @@ This is useful when:
 
 A webhook still uses HTTP, but the direction of communication is reversed.
 
-```text
-Regular API:
-Consumer ───── request ────> Provider
-Consumer <──── response ─── Provider
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant P as Provider
 
-Webhook:
-Provider ───── event ──────> Consumer
-Provider <──── 2xx ACK ───── Consumer
+    Note over C,P: Regular API
+    C->>P: Request
+    P-->>C: Response
+
+    Note over C,P: Webhook
+    P->>C: Event
+    C-->>P: 2xx ACK
 ```
 
 ## 4.2 Webhooks vs polling
@@ -503,16 +505,12 @@ Webhook delivery is distributed communication. Network failures can happen at an
 
 ## 7.1 The acknowledgement ambiguity
 
-```text
-Provider sends event
-        ↓
-Consumer processes event successfully
-        ↓
-Consumer returns 200
-        ↓
-Network drops the response
-        ↓
-Provider assumes failure and retries
+```mermaid
+flowchart TD
+    A[Provider sends event] --> B[Consumer processes event successfully]
+    B --> C[Consumer returns 200]
+    C --> D[Network drops the response]
+    D --> E[Provider assumes failure and retries]
 ```
 
 The provider cannot know whether the consumer completed processing. This is why duplicate delivery is unavoidable in many webhook systems.
@@ -588,14 +586,14 @@ The composite primary key prevents the same provider event from being recorded t
 
 A provider should retry temporary failures using exponential backoff:
 
-```text
-Attempt 1: immediately
-Attempt 2: after 30 seconds
-Attempt 3: after 2 minutes
-Attempt 4: after 10 minutes
-Attempt 5: after 1 hour
-...
-```
+| Attempt | Delay before delivery |
+|---|---|
+| 1 | Immediately |
+| 2 | After 30 seconds |
+| 3 | After 2 minutes |
+| 4 | After 10 minutes |
+| 5 | After 1 hour |
+| Later attempts | Delay keeps growing up to a maximum |
 
 Add **jitter** so many failing deliveries do not retry at exactly the same time.
 
@@ -626,12 +624,16 @@ Never assume events arrive in creation order unless the provider explicitly guar
 
 Example:
 
-```text
-Expected order:
-subscription.created → invoice.created → invoice.paid
-
-Possible delivery order:
-invoice.paid → subscription.created → invoice.created
+```mermaid
+flowchart TD
+    subgraph EXP[Expected order]
+        E1[subscription.created] --> E2[invoice.created]
+        E2 --> E3[invoice.paid]
+    end
+    subgraph POS[Possible delivery order]
+        P1[invoice.paid] --> P2[subscription.created]
+        P2 --> P3[invoice.created]
+    end
 ```
 
 Ways to handle this:
@@ -772,12 +774,10 @@ Do not store signing secrets in source code or logs.
 
 During rotation, temporarily support both the current and previous secret:
 
-```text
-Verify with new secret
-        ↓ if not valid
-Verify with old secret
-        ↓
-After migration window, remove old secret
+```mermaid
+flowchart TD
+    A[Verify with new secret] -->|If not valid| B[Verify with old secret]
+    B --> C["After migration window, remove old secret"]
 ```
 
 ## 8.6 IP allow lists
@@ -1098,11 +1098,11 @@ Store secrets encrypted and show them only when initially created or rotated.
 
 Unsafe design:
 
-```text
-Create order API
-  ├── Save order
-  ├── Call every webhook subscriber
-  └── Return response
+```mermaid
+flowchart TD
+    A[Create order API] --> B[Save order]
+    B --> C[Call every webhook subscriber]
+    C --> D[Return response]
 ```
 
 One slow or unavailable subscriber increases your API latency and failure rate.
@@ -1334,12 +1334,12 @@ Track at minimum:
 
 ## 13.3 Useful latency measures
 
-```text
-Delivery latency  = received_at - event_created_at
-Queue latency     = processing_started_at - received_at
-Processing time   = processing_finished_at - processing_started_at
-End-to-end time   = processing_finished_at - event_created_at
-```
+| Measure | Formula |
+|---|---|
+| Delivery latency | `received_at - event_created_at` |
+| Queue latency | `processing_started_at - received_at` |
+| Processing time | `processing_finished_at - processing_started_at` |
+| End-to-end time | `processing_finished_at - event_created_at` |
 
 These measurements help locate whether delays originate in the provider, receiver, queue, or worker.
 
@@ -1359,12 +1359,12 @@ Alert on conditions such as:
 
 Preserve identifiers across the entire flow:
 
-```text
-Provider event ID
-    → webhook event record
-    → queue message
-    → worker log
-    → business transaction
+```mermaid
+flowchart TD
+    A[Provider event ID] --> B[Webhook event record]
+    B --> C[[Queue message]]
+    C --> D[Worker log]
+    D --> E[Business transaction]
 ```
 
 This makes distributed debugging significantly easier.

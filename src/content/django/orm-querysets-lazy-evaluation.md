@@ -33,23 +33,13 @@ The SQL runs only when the application needs the actual rows.
 
 ## Simple Flow
 
-```text
-Python QuerySet definition
-          │
-          ▼
-Django builds an internal query
-          │
-          ▼
-More filters/orderings can be added
-          │
-          ▼
-No database query yet
-          │
-          ▼
-QuerySet is evaluated
-          │
-          ▼
-SQL runs and rows are converted into Python objects
+```mermaid
+flowchart TD
+    A[Python QuerySet definition] --> B[Django builds an internal query]
+    B --> C["More filters/orderings can be added"]
+    C --> D[No database query yet]
+    D --> E[QuerySet is evaluated]
+    E --> F[SQL runs and rows are converted into Python objects]
 ```
 
 This behavior is called **lazy evaluation**.
@@ -158,27 +148,16 @@ final_query = popular_query.order_by("-published_at")
 
 The original QuerySets are not modified.
 
-```text
-base_query
-    │
-    ├── filter(is_published=True)
-    │          │
-    │          ▼
-    │   published_query
-    │          │
-    │          ├── filter(view_count__gte=1000)
-    │          │          │
-    │          │          ▼
-    │          │    popular_query
-    │          │          │
-    │          │          └── order_by("-published_at")
-    │          │                     │
-    │          │                     ▼
-    │          │                final_query
-    │          │
-    │          └── base QuerySet remains unchanged
-    │
-    └── No SQL is normally executed during this construction
+```mermaid
+flowchart TD
+    A[base_query] --> B["filter(is_published=True)"]
+    B --> C[published_query]
+    C --> D["filter(view_count__gte=1000)"]
+    D --> E[popular_query]
+    E --> F["order_by('-published_at')"]
+    F --> G[final_query]
+    C --> H[Base QuerySet remains unchanged]
+    A --> I[No SQL is normally executed during this construction]
 ```
 
 ## Practical Benefit
@@ -453,23 +432,15 @@ The second loop normally reuses the cached objects.
 
 ## Cache Flow
 
-```text
-QuerySet created
-      │
-      ▼
-Not evaluated
-      │
-      ▼
-First iteration
-      │
-      ├── SQL executes
-      ├── Rows are fetched
-      └── Results stored in QuerySet cache
-              │
-              ▼
-       Later iteration
-              │
-              └── Cached objects reused
+```mermaid
+flowchart TD
+    A[QuerySet created] --> B[Not evaluated]
+    B --> C[First iteration]
+    C --> D[SQL executes]
+    C --> E[Rows are fetched]
+    C --> F[Results stored in QuerySet cache]
+    F --> G[Later iteration]
+    G --> H[Cached objects reused]
 ```
 
 ## Reusing the Same QuerySet
@@ -563,14 +534,10 @@ fresh_articles = articles.all()
 
 ## Important Distinction
 
-```text
-Same evaluated QuerySet instance
-        │
-        └── Reuses cached results
-
-New QuerySet or evaluated_queryset.all()
-        │
-        └── Can execute again and retrieve current data
+```mermaid
+flowchart LR
+    A[Same evaluated QuerySet instance] --> B[Reuses cached results]
+    C["New QuerySet or evaluated_queryset.all()"] --> D[Can execute again and retrieve current data]
 ```
 
 For long-running jobs, do not assume that an old evaluated QuerySet reflects recent database changes.
@@ -993,19 +960,12 @@ if articles:
 
 The correct choice depends on what the application needs afterward.
 
-```text
-Only existence needed
-        └── exists()
-
-Only count needed
-        └── count()
-
-Only membership needed
-        └── contains(obj)
-
-Objects will also be iterated
-        └── Evaluate once and reuse the QuerySet cache
-```
+| What you need | What to call |
+| --- | --- |
+| Only existence | `exists()` |
+| Only count | `count()` |
+| Only membership | `contains(obj)` |
+| Objects will also be iterated | Evaluate once and reuse the QuerySet cache |
 
 ---
 
@@ -1067,15 +1027,12 @@ However, accessing the deferred field later causes an additional database query.
 
 ## Decision Guide
 
-```text
-Need full model behavior?
-        │
-        ├── Yes → Return model instances
-        │          │
-        │          ├── Need almost all fields → normal QuerySet
-        │          └── Large unused fields → consider defer()/only()
-        │
-        └── No → Use values() or values_list()
+```mermaid
+flowchart TD
+    A{Need full model behavior?} -->|Yes| B[Return model instances]
+    A -->|No| C["Use values() or values_list()"]
+    B -->|Need almost all fields| D[Normal QuerySet]
+    B -->|Large unused fields| E["Consider defer() or only()"]
 ```
 
 ---
@@ -1116,10 +1073,9 @@ articles = (
 
 Django performs SQL joins and loads the related objects in the main query.
 
-```text
-Article + Author + Category
-            │
-            └── One joined SQL query
+```mermaid
+flowchart LR
+    A["Article + Author + Category"] --> B[One joined SQL query]
 ```
 
 ## Use `prefetch_related()`
@@ -1132,12 +1088,10 @@ categories = Category.objects.prefetch_related("articles")
 
 Django normally runs separate queries and joins the results in Python.
 
-```text
-Query 1: Load categories
-Query 2: Load related articles
-             │
-             ▼
-Django connects them in memory
+```mermaid
+flowchart TD
+    A["Query 1: Load categories"] --> C[Django connects them in memory]
+    B["Query 2: Load related articles"] --> C
 ```
 
 ## Relationship Guide
@@ -1186,17 +1140,11 @@ This is useful for:
 
 ## Trade-Off
 
-```text
-Normal QuerySet iteration
-    ├── Stores result cache
-    ├── Repeated iteration is efficient
-    └── Uses more memory
-
-iterator()
-    ├── Avoids standard result cache
-    ├── Better for large one-pass processing
-    └── Repeated iteration executes the query again
-```
+| Normal QuerySet iteration | `iterator()` |
+| --- | --- |
+| Stores result cache | Avoids standard result cache |
+| Repeated iteration is efficient | Better for large one-pass processing |
+| Uses more memory | Repeated iteration executes the query again |
 
 Use `iterator()` when records are processed once and do not need to remain cached.
 
@@ -1328,26 +1276,14 @@ print(
 
 ## Performance Workflow
 
-```text
-Observe slow endpoint
-        │
-        ▼
-Count and inspect SQL queries
-        │
-        ▼
-Inspect queryset.query
-        │
-        ▼
-Run queryset.explain()
-        │
-        ▼
-Check indexes, joins, filters, and ordering
-        │
-        ▼
-Change query or schema
-        │
-        ▼
-Measure again
+```mermaid
+flowchart TD
+    A[Observe slow endpoint] --> B[Count and inspect SQL queries]
+    B --> C["Inspect queryset.query"]
+    C --> D["Run queryset.explain()"]
+    D --> E["Check indexes, joins, filters, and ordering"]
+    E --> F[Change query or schema]
+    F --> G[Measure again]
 ```
 
 ---
@@ -1464,18 +1400,13 @@ The custom methods should normally return QuerySets, preserving:
 
 ## QuerySet Composition
 
-```text
-Article.objects
-      │
-      ├── .published()
-      │       │
-      │       ├── .popular(500)
-      │       │       │
-      │       │       └── .recent()
-      │       │
-      │       └── One final composable QuerySet
-      │
-      └── SQL executes only when evaluated
+```mermaid
+flowchart TD
+    A["Article.objects"] --> B[".published()"]
+    B --> C[".popular(500)"]
+    C --> D[".recent()"]
+    B --> E[One final composable QuerySet]
+    A --> F[SQL executes only when evaluated]
 ```
 
 ---
@@ -1650,47 +1581,14 @@ New QuerySet
 
 ## Complete Lifecycle
 
-```text
-┌──────────────────────────────────────────────┐
-│ 1. Manager creates QuerySet                  │
-│    Article.objects.all()                     │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 2. QuerySet is refined                       │
-│    filter(), exclude(), order_by()           │
-│    select_related(), prefetch_related()      │
-└──────────────────────┬───────────────────────┘
-                       │
-                       │ Usually no SQL
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 3. Evaluation trigger occurs                 │
-│    iteration, list(), len(), bool(), repr()  │
-│    get(), first(), count(), exists(), etc.   │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 4. SQL is sent to the database               │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 5. Database returns rows                     │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 6. Django creates model objects or values    │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│ 7. Standard QuerySet stores result cache     │
-│    unless iterator() or special behavior     │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["1. Manager creates QuerySet<br/>Article.objects.all()"] --> B["2. QuerySet is refined<br/>filter(), exclude(), order_by()<br/>select_related(), prefetch_related()"]
+    B -->|Usually no SQL| C["3. Evaluation trigger occurs<br/>iteration, list(), len(), bool(), repr()<br/>get(), first(), count(), exists(), etc."]
+    C --> D["4. SQL is sent to the database"]
+    D --> E["5. Database returns rows"]
+    E --> F["6. Django creates model objects or values"]
+    F --> G["7. Standard QuerySet stores result cache<br/>unless iterator() or special behavior"]
 ```
 
 ---

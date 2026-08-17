@@ -79,22 +79,15 @@ Ownership = Responsibility from Problem Discovery to Final Outcome
 
 Ownership covers the complete journey:
 
-```text
-Problem
-   ↓
-Understanding
-   ↓
-Planning
-   ↓
-Implementation
-   ↓
-Testing
-   ↓
-Deployment
-   ↓
-Monitoring
-   ↓
-Follow-up
+```mermaid
+flowchart TD
+    A[Problem] --> B[Understanding]
+    B --> C[Planning]
+    C --> D[Implementation]
+    D --> E[Testing]
+    E --> F[Deployment]
+    F --> G[Monitoring]
+    G --> H[Follow-up]
 ```
 
 ---
@@ -154,16 +147,12 @@ Leadership and ownership are important because experienced developers are expect
 
 ### Growth in Responsibility
 
-```text
-Task Execution
-      ↓
-Feature Ownership
-      ↓
-Service Ownership
-      ↓
-Project Leadership
-      ↓
-Technical Direction
+```mermaid
+flowchart TD
+    A[Task execution] --> B[Feature ownership]
+    B --> C[Service ownership]
+    C --> D[Project leadership]
+    D --> E[Technical direction]
 ```
 
 You do not need to be at the final stage to demonstrate leadership. Interviewers mainly want evidence that your responsibility has grown beyond simply completing assigned code.
@@ -250,19 +239,14 @@ An ownership mindset asks:
 
 ## The Ownership Loop
 
-```text
-Understand
-   ↓
-Commit
-   ↓
-Execute
-   ↓
-Validate
-   ↓
-Communicate
-   ↓
-Improve
-   ↺
+```mermaid
+flowchart TD
+    A[Understand] --> B[Commit]
+    B --> C[Execute]
+    C --> D[Validate]
+    D --> E[Communicate]
+    E --> F[Improve]
+    F --> A
 ```
 
 ### Understand
@@ -407,18 +391,13 @@ A strong decision process considers:
 
 ## Simple Decision Framework
 
-```text
-Options
-   ↓
-Trade-offs
-   ↓
-Risks
-   ↓
-Recommendation
-   ↓
-Decision
-   ↓
-Validation
+```mermaid
+flowchart TD
+    A[Options] --> B[Trade-offs]
+    B --> C[Risks]
+    C --> D[Recommendation]
+    D --> E[Decision]
+    E --> F[Validation]
 ```
 
 ### Example
@@ -489,18 +468,13 @@ Ownership includes recognizing and reducing risk before it becomes a serious iss
 
 ## Risk Management Flow
 
-```text
-Identify Risk
-     ↓
-Estimate Impact
-     ↓
-Estimate Probability
-     ↓
-Choose Mitigation
-     ↓
-Assign Owner
-     ↓
-Monitor
+```mermaid
+flowchart TD
+    A[Identify risk] --> B[Estimate impact]
+    B --> C[Estimate probability]
+    C --> D[Choose mitigation]
+    D --> E[Assign owner]
+    E --> F[Monitor]
 ```
 
 ### Example
@@ -544,18 +518,13 @@ Code merged → Done
 
 ### Strong Completion
 
-```text
-Code merged
-   ↓
-Deployed safely
-   ↓
-Metrics checked
-   ↓
-Users validated
-   ↓
-Documentation updated
-   ↓
-Follow-up improvements tracked
+```mermaid
+flowchart TD
+    A[Code merged] --> B[Deployed safely]
+    B --> C[Metrics checked]
+    C --> D[Users validated]
+    D --> E[Documentation updated]
+    E --> F[Follow-up improvements tracked]
 ```
 
 ---
@@ -631,20 +600,14 @@ Show leadership by:
 
 ### Complete Lifecycle View
 
-```text
-Requirements
-     ↓
-Design
-     ↓
-Development
-     ↓
-Testing
-     ↓
-Deployment
-     ↓
-Monitoring
-     ↓
-Learning
+```mermaid
+flowchart TD
+    A[Requirements] --> B[Design]
+    B --> C[Development]
+    C --> D[Testing]
+    D --> E[Deployment]
+    E --> F[Monitoring]
+    F --> G[Learning]
 ```
 
 True ownership exists across this entire flow.
@@ -777,18 +740,13 @@ A deployment causes API latency to increase significantly.
 
 ### Incident Leadership Flow
 
-```text
-Detect
-  ↓
-Stabilize
-  ↓
-Communicate
-  ↓
-Investigate
-  ↓
-Recover
-  ↓
-Prevent
+```mermaid
+flowchart TD
+    A[Detect] --> B[Stabilize]
+    B --> C[Communicate]
+    C --> D[Investigate]
+    D --> E[Recover]
+    E --> F[Prevent]
 ```
 
 ---
@@ -930,18 +888,13 @@ Interviewers do not expect a perfect career. They want evidence that you respond
 
 ## Strong Response to Failure
 
-```text
-Acknowledge
-   ↓
-Contain
-   ↓
-Communicate
-   ↓
-Correct
-   ↓
-Learn
-   ↓
-Prevent
+```mermaid
+flowchart TD
+    A[Acknowledge] --> B[Contain]
+    B --> C[Communicate]
+    C --> D[Correct]
+    D --> E[Learn]
+    E --> F[Prevent]
 ```
 
 ### Example
@@ -1370,20 +1323,14 @@ Ownership means taking responsibility beyond completing assigned code. It includ
 
 The strongest leadership and ownership stories usually show this pattern:
 
-```text
-Unclear or Important Problem
-            ↓
-Personal Initiative
-            ↓
-Collaboration and Influence
-            ↓
-Sound Technical Judgment
-            ↓
-Reliable Execution
-            ↓
-Measurable Result
-            ↓
-Learning and Improvement
+```mermaid
+flowchart TD
+    A[Unclear or important problem] --> B[Personal initiative]
+    B --> C[Collaboration and influence]
+    C --> D[Sound technical judgment]
+    D --> E[Reliable execution]
+    E --> F[Measurable result]
+    F --> G[Learning and improvement]
 ```
 
 For an experienced developer, the key message is:

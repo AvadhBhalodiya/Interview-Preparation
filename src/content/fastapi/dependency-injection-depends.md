@@ -53,12 +53,11 @@ FastAPI resolves `DbSession` and `CurrentUser` before calling the endpoint.
 
 ## Simple mental model
 
-```text
-Endpoint says:              FastAPI does:
-"I need a database"   --->  Create or retrieve a database session
-"I need a user"       --->  Validate the request and load the user
-"I need pagination"   --->  Read and validate query parameters
-```
+| Endpoint says | FastAPI does |
+| --- | --- |
+| I need a database | Create or retrieve a database session |
+| I need a user | Validate the request and load the user |
+| I need pagination | Read and validate query parameters |
 
 The endpoint receives ready-to-use values.
 
@@ -228,19 +227,11 @@ Result:
 
 ## Visual flow
 
-```text
-GET /products?page=3&page_size=10
-                  |
-                  v
-        get_pagination()
-        page = 3
-        page_size = 10
-                  |
-                  v
-   {"page": 3, "page_size": 10, "offset": 20}
-                  |
-                  v
-          list_products()
+```mermaid
+flowchart TD
+    A["GET /products?page=3&page_size=10"] --> B["get_pagination()<br/>page = 3, page_size = 10"]
+    B --> C["Returned dict: page 3, page_size 10, offset 20"]
+    C --> D["list_products()"]
 ```
 
 ---
@@ -361,12 +352,10 @@ def list_orders(
 
 ## Type alias meaning
 
-```text
-DbSession
-    |
-    +-- Runtime value type: Session
-    |
-    +-- FastAPI metadata: Depends(get_db)
+```mermaid
+flowchart TD
+    A[DbSession] --> B["Runtime value type: Session"]
+    A --> C["FastAPI metadata: Depends(get_db)"]
 ```
 
 Static tools understand the value as `Session`, while FastAPI reads the dependency metadata.
@@ -466,20 +455,12 @@ flowchart LR
 
 FastAPI resolves dependencies from the deepest required dependency upward:
 
-```text
-Authorization header
-        |
-        v
-get_access_token()
-        |
-        v
-get_current_user()
-        |
-        v
-get_active_user()
-        |
-        v
-read_profile()
+```mermaid
+flowchart TD
+    A[Authorization header] --> B["get_access_token()"]
+    B --> C["get_current_user()"]
+    C --> D["get_active_user()"]
+    D --> E["read_profile()"]
 ```
 
 Sub-dependencies can be nested as deeply as the application requires, but shallow and focused graphs are easier to understand.
@@ -674,14 +655,11 @@ This is the default behavior.
 
 The cleanup code after `yield` runs after the response is sent.
 
-```text
-Dependency setup
-      |
-Endpoint execution
-      |
-Response sent
-      |
-Dependency cleanup
+```mermaid
+flowchart TD
+    A[Dependency setup] --> B[Endpoint execution]
+    B --> C[Response sent]
+    C --> D[Dependency cleanup]
 ```
 
 Use it when the resource should remain available through response processing.
@@ -690,14 +668,11 @@ Use it when the resource should remain available through response processing.
 
 Cleanup runs after the endpoint function finishes but before the response is sent.
 
-```text
-Dependency setup
-      |
-Endpoint execution
-      |
-Dependency cleanup
-      |
-Response sent
+```mermaid
+flowchart TD
+    A[Dependency setup] --> B[Endpoint execution]
+    B --> C[Dependency cleanup]
+    C --> D[Response sent]
 ```
 
 Example:
@@ -836,14 +811,10 @@ def senior_benefits(
 
 FastAPI calls the instance:
 
-```text
-require_adult(age=20)
-       |
-       v
-RequireMinimumAge.__call__(age=20)
-       |
-       v
-20 is injected into the endpoint
+```mermaid
+flowchart TD
+    A["require_adult(age=20)"] --> B["RequireMinimumAge.__call__(age=20)"]
+    B --> C[20 is injected into the endpoint]
 ```
 
 This provides reusable behavior without using global mutable state.
@@ -1101,16 +1072,12 @@ Typical uses:
 
 ## Decision guide
 
-```text
-Does the endpoint need a typed value?
-    |
-    +-- Yes --> Dependency
-    |
-    +-- No --> Does logic wrap most/all HTTP traffic?
-                   |
-                   +-- Yes --> Middleware
-                   |
-                   +-- No --> Route/router dependency
+```mermaid
+flowchart TD
+    A{"Does the endpoint need a typed value?"} -->|Yes| B[Dependency]
+    A -->|No| C{"Does the logic wrap most or all HTTP traffic?"}
+    C -->|Yes| D[Middleware]
+    C -->|No| E["Route or router dependency"]
 ```
 
 A common production design uses middleware for request tracing and dependencies for authentication, authorization, tenant resolution, and database access.
@@ -1446,20 +1413,12 @@ The dependency graph handles:
 
 ## Layer responsibility
 
-```text
-HTTP request
-    |
-    v
-FastAPI dependencies
-    |  authentication, tenant, session, service wiring
-    v
-Application service
-    |  business use case
-    v
-Repository / ORM
-    |  persistence
-    v
-Database
+```mermaid
+flowchart TD
+    A[HTTP request] --> B[FastAPI dependencies]
+    B -->|"Authentication, tenant, session, service wiring"| C[Application service]
+    C -->|Business use case| D["Repository / ORM"]
+    D -->|Persistence| E[(Database)]
 ```
 
 This is a practical form of dependency injection without requiring a separate DI container.
@@ -1474,10 +1433,10 @@ A dependency should have one clear responsibility.
 
 Good separation:
 
-```text
-extract_token
-    -> get_current_user
-        -> require_admin
+```mermaid
+flowchart TD
+    A[extract_token] --> B[get_current_user]
+    B --> C[require_admin]
 ```
 
 Avoid one large dependency that parses headers, validates tokens, loads the user, checks permissions, creates a database session, and performs the business operation.

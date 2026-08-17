@@ -1530,12 +1530,12 @@ The SLO must define what “delivered” means:
 
 Carry a correlation ID through:
 
-```text
-Business service
-  -> event broker
-  -> realtime router
-  -> WebSocket node
-  -> client acknowledgement
+```mermaid
+flowchart TD
+    SVC[Business service] --> BROKER[[Event broker]]
+    BROKER --> ROUTER[Realtime router]
+    ROUTER --> NODE[WebSocket node]
+    NODE --> ACK[Client acknowledgement]
 ```
 
 A useful event envelope includes:
@@ -1780,17 +1780,11 @@ The application must change `/ready` to a failing response before shutdown and f
 
 A common practical design uses both:
 
-```text
-Durable business event log
-        |
-        v
-Realtime router
-        |
-        v
-Fast regional Pub/Sub
-        |
-        v
-WebSocket nodes
+```mermaid
+flowchart TD
+    LOG[[Durable business event log]] --> ROUTER[Realtime router]
+    ROUTER --> PUBSUB[["Fast regional Pub/Sub"]]
+    PUBSUB --> NODES[WebSocket nodes]
 ```
 
 ## 21.2 Shared registry vs broadcast filtering
@@ -1906,13 +1900,13 @@ flowchart TB
 
 Flow:
 
-```text
-Domain transaction
- -> durable database/outbox
- -> durable event stream
- -> realtime router
- -> gateway
- -> client acknowledgement
+```mermaid
+flowchart TD
+    TX[Domain transaction] --> OUTBOX[("Durable database / outbox")]
+    OUTBOX --> STREAM[[Durable event stream]]
+    STREAM --> ROUTER[Realtime router]
+    ROUTER --> GW[Gateway]
+    GW --> ACK[Client acknowledgement]
 ```
 
 ### Ephemeral events
@@ -1977,13 +1971,13 @@ A WebSocket connection is long-lived and belongs to one server process. When the
 
 ## 23.2 Present the main architecture
 
-```text
-Clients
-  -> Load Balancer
-  -> WebSocket Gateway Nodes
-  -> Shared Pub/Sub or Message Broker
-  -> Shared Presence / Routing Store
-  -> Durable Business Services and Databases
+```mermaid
+flowchart TD
+    CLIENTS[Clients] --> LB[Load Balancer]
+    LB --> WS[WebSocket Gateway Nodes]
+    WS --> BROKER[["Shared Pub/Sub or Message Broker"]]
+    BROKER --> PRESENCE[("Shared Presence / Routing Store")]
+    PRESENCE --> STORE[Durable Business Services and Databases]
 ```
 
 ## 23.3 Explain node state correctly

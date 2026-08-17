@@ -17,12 +17,10 @@ order: 1
 
 A normal web request is synchronous:
 
-```text
-Client sends request
-        ↓
-Application performs all work
-        ↓
-Application returns response
+```mermaid
+flowchart TD
+    A[Client sends request] --> B[Application performs all work]
+    B --> C[Application returns response]
 ```
 
 This is acceptable for fast operations such as:
@@ -44,26 +42,21 @@ It becomes a problem when the request performs slow or resource-heavy work:
 
 Without a background task system, the user waits while the work completes.
 
-```text
-HTTP Request
-    |
-    |---- Generate report: 25 seconds
-    |---- Send email:       3 seconds
-    |---- Upload to S3:     4 seconds
-    |
-HTTP Response after 32 seconds
+```mermaid
+flowchart TD
+    R[HTTP Request] --> A["Generate report: 25 seconds"]
+    A --> B["Send email: 3 seconds"]
+    B --> C["Upload to S3: 4 seconds"]
+    C --> D[HTTP Response after 32 seconds]
 ```
 
 With Celery, the application submits the slow work as a task and returns quickly.
 
-```text
-HTTP Request
-    |
-    |---- Publish task: a few milliseconds
-    |
-HTTP 202 Accepted
-
-Background worker performs the slow work separately.
+```mermaid
+flowchart TD
+    R[HTTP Request] --> P["Publish task: a few milliseconds"]
+    P --> A[HTTP 202 Accepted]
+    P --> W[Background worker performs the slow work separately]
 ```
 
 The web application and the background processing system are therefore **decoupled**.
@@ -123,10 +116,11 @@ flowchart LR
 
 A common deployment might use:
 
-```text
-Django or FastAPI  →  Redis or RabbitMQ  →  Celery Workers
-                              |
-                              └────────────→ Redis/PostgreSQL Result Backend
+```mermaid
+flowchart LR
+    A[Django or FastAPI] --> B[(Redis or RabbitMQ)]
+    B --> C[Celery Workers]
+    C --> D[("Redis/PostgreSQL Result Backend")]
 ```
 
 The broker and result backend have different jobs, even when both use Redis.
@@ -266,22 +260,15 @@ celery -A project.celery_app:app worker --loglevel=INFO
 
 A worker performs the following flow:
 
-```text
-Connect to broker
-      ↓
-Subscribe to one or more queues
-      ↓
-Reserve or receive a task message
-      ↓
-Deserialize the message
-      ↓
-Find the registered task by name
-      ↓
-Execute the task in a worker pool
-      ↓
-Acknowledge or reject the message
-      ↓
-Store status/result when configured
+```mermaid
+flowchart TD
+    A[Connect to broker] --> B[Subscribe to one or more queues]
+    B --> C[Reserve or receive a task message]
+    C --> D[Deserialize the message]
+    D --> E[Find the registered task by name]
+    E --> F[Execute the task in a worker pool]
+    F --> G[Acknowledge or reject the message]
+    G --> H["Store status/result when configured"]
 ```
 
 A worker may run multiple task execution units concurrently.
@@ -476,12 +463,15 @@ if result.successful():
 
 The broker is responsible for message delivery, not task execution.
 
-```text
-Producer              Broker               Worker
-   |                     |                    |
-   |---- publish -------->|                    |
-   |                     |---- deliver ------>|
-   |                     |<--- acknowledge ---|
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant B as Broker
+    participant W as Worker
+
+    P->>B: publish
+    B->>W: deliver
+    W-->>B: acknowledge
 ```
 
 The broker manages concepts such as:
@@ -562,16 +552,11 @@ Be careful with:
 
 ### Practical Selection
 
-```text
-Simple project or POC
-    └── Redis broker + Redis backend
-
-General production system
-    └── RabbitMQ broker + Redis backend
-
-AWS-managed architecture
-    └── SQS broker + Redis/RDS/custom result storage
-```
+| Scenario | Common broker and backend choice |
+| --- | --- |
+| Simple project or POC | Redis broker + Redis backend |
+| General production system | RabbitMQ broker + Redis backend |
+| AWS-managed architecture | SQS broker + Redis/RDS/custom result storage |
 
 These are common patterns, not strict rules.
 
@@ -699,10 +684,12 @@ This prevents a large report task from delaying a password-reset email.
 
 Common built-in states are:
 
-```text
-PENDING → STARTED → SUCCESS
-                  ↘ FAILURE
-                  ↘ RETRY
+```mermaid
+flowchart LR
+    P[PENDING] --> S[STARTED]
+    S --> OK[SUCCESS]
+    S --> F[FAILURE]
+    S --> R[RETRY]
 ```
 
 Other states include:
@@ -1048,22 +1035,12 @@ Report result: {'report_id': 721, 'status': 'generated'}
 
 ## 10.8 What Happened Internally
 
-```text
-run_task.py
-    |
-    | add.delay(10, 20)
-    v
-Redis DB 0: broker queue
-    |
-    v
-Celery worker
-    |
-    | executes add(10, 20)
-    v
-Redis DB 1: SUCCESS + result 30
-    |
-    v
-add_result.get()
+```mermaid
+flowchart TD
+    A[run_task.py] -->|"add.delay(10, 20)"| B[("Redis DB 0: broker queue")]
+    B --> C[Celery worker]
+    C -->|"executes add(10, 20)"| D[("Redis DB 1: SUCCESS + result 30")]
+    D --> E["add_result.get()"]
 ```
 
 ---
@@ -1342,15 +1319,17 @@ Reliable observable outcome
 
 Add more workers when queue depth or task latency increases.
 
-```text
-Before:
-Broker → Worker 1
-
-After:
-Broker → Worker 1
-       → Worker 2
-       → Worker 3
-       → Worker 4
+```mermaid
+flowchart LR
+    subgraph BEFORE[Before]
+        B1[(Broker)] --> W1[Worker 1]
+    end
+    subgraph AFTER[After]
+        B2[(Broker)] --> W2[Worker 1]
+        B2 --> W3[Worker 2]
+        B2 --> W4[Worker 3]
+        B2 --> W5[Worker 4]
+    end
 ```
 
 Workers coordinate through the broker. The producer normally requires no change.
@@ -1539,14 +1518,13 @@ Use dynamic routing sparingly. Central configuration is easier to review and ope
 
 ## 14.4 Routing Decision Model
 
-```text
-Does the task need low latency?
-    ├── Yes → dedicated priority queue
-    └── No
-         |
-         ├── CPU/memory heavy? → resource-specific queue
-         ├── External rate limit? → controlled queue
-         └── General work → default queue
+```mermaid
+flowchart TD
+    A{Does the task need low latency?} -->|Yes| B[Dedicated priority queue]
+    A -->|No| C{Which constraint applies?}
+    C -->|"CPU/memory heavy"| D[Resource-specific queue]
+    C -->|External rate limit| E[Controlled queue]
+    C -->|General work| F[Default queue]
 ```
 
 ---
@@ -1733,30 +1711,23 @@ Also enforce authorization and tenant boundaries when processing multi-tenant da
 
 ## 17.1 Email Delivery
 
-```text
-API creates user
-      ↓
-send_welcome_email.delay(user.id)
-      ↓
-API returns immediately
-      ↓
-Email worker sends message
+```mermaid
+flowchart TD
+    A[API creates user] --> B["send_welcome_email.delay(user.id)"]
+    B --> C[API returns immediately]
+    C --> D[Email worker sends message]
 ```
 
 The task should be idempotent or record whether the email was already sent.
 
 ## 17.2 Report Generation
 
-```text
-User requests report
-      ↓
-Application creates Report(status="queued")
-      ↓
-Celery task generates file
-      ↓
-File stored in object storage
-      ↓
-Report updated to status="completed"
+```mermaid
+flowchart TD
+    A[User requests report] --> B["Application creates Report with status queued"]
+    B --> C[Celery task generates file]
+    C --> D[File stored in object storage]
+    D --> E[Report updated to status completed]
 ```
 
 The application database is the business source of truth.
@@ -1858,24 +1829,12 @@ Only one active scheduler should own a given schedule unless the scheduler imple
 
 Remember Celery as a delivery pipeline:
 
-```text
-Producer
-   |
-   | "Please execute this task"
-   v
-Broker
-   |
-   | "Here is the next queued message"
-   v
-Worker
-   |
-   | Runs Python code
-   v
-Result Backend
-   |
-   | "The task succeeded, failed, or returned this value"
-   v
-Application / Monitoring
+```mermaid
+flowchart TD
+    P[Producer] -->|Please execute this task| B[(Broker)]
+    B -->|Here is the next queued message| W[Worker]
+    W -->|Runs Python code| RB[(Result Backend)]
+    RB -->|"The task succeeded, failed, or returned this value"| A["Application / Monitoring"]
 ```
 
 In one line:

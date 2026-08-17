@@ -172,12 +172,10 @@ flowchart LR
 
 A useful mental model is:
 
-```text
-Internal application data
-        ↓
-Response model contract
-        ↓
-Validated and filtered public JSON
+```mermaid
+flowchart TD
+    A[Internal application data] --> B[Response model contract]
+    B --> C[Validated and filtered<br/>public JSON]
 ```
 
 The response model is the boundary between internal data and public API data.

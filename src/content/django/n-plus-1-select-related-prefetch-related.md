@@ -31,12 +31,16 @@ This is convenient, but it can hide serious performance problems inside:
 
 A page that appears to perform one ORM query may actually execute hundreds of SQL queries.
 
-```text
-Small dataset:
-10 books  -> 11 queries -> may look acceptable
-
-Production dataset:
-1,000 books -> 1,001 queries -> slow response and heavy database load
+```mermaid
+flowchart LR
+    subgraph SMALL["Small dataset"]
+        A1[10 books] --> B1[11 queries]
+        B1 --> C1[May look acceptable]
+    end
+    subgraph PROD["Production dataset"]
+        A2["1,000 books"] --> B2["1,001 queries"]
+        B2 --> C2[Slow response and heavy database load]
+    end
 ```
 
 The important lesson is:
@@ -756,14 +760,10 @@ This is useful for avoiding database round trips, but it means prefetching a ver
 
 ## 6.2 One-Line Selection Rule
 
-```text
-ForeignKey / OneToOne
-        ↓
-select_related()
-
-ManyToMany / reverse ForeignKey
-        ↓
-prefetch_related()
+```mermaid
+flowchart LR
+    A["ForeignKey / OneToOne"] --> B["select_related()"]
+    C["ManyToMany / reverse ForeignKey"] --> D["prefetch_related()"]
 ```
 
 A slightly more complete rule:

@@ -98,20 +98,14 @@ flowchart LR
 
 A typical FastAPI application uses the following stack:
 
-```text
-Client
-  ↓
-Uvicorn or another ASGI server
-  ↓
-ASGI event loop
-  ↓
-Starlette
-  ↓
-FastAPI routing, dependencies, validation
-  ↓
-Your endpoint
-  ↓
-Database, Redis, external APIs, files, queues
+```mermaid
+flowchart TD
+    C[Client] --> U[Uvicorn or another<br/>ASGI server]
+    U --> L[ASGI event loop]
+    L --> S[Starlette]
+    S --> F["FastAPI routing, dependencies, validation"]
+    F --> E[Your endpoint]
+    E --> I["Database, Redis, external APIs, files, queues"]
 ```
 
 FastAPI is built on Starlette, while Uvicorn is commonly used as the ASGI server.
@@ -682,20 +676,14 @@ async def generate_report(payload: ReportInput):
 
 Use an external job system:
 
-```text
-FastAPI request
-   ↓
-Validate input
-   ↓
-Publish job to queue
-   ↓
-Return 202 Accepted + job ID
-   ↓
-Worker processes job
-   ↓
-Store result and status
-   ↓
-Client polls or receives notification
+```mermaid
+flowchart TD
+    A[FastAPI request] --> B[Validate input]
+    B --> C[Publish job to queue]
+    C --> D[Return 202 Accepted<br/>and job ID]
+    D --> E[Worker processes job]
+    E --> F[Store result and status]
+    F --> G[Client polls or<br/>receives notification]
 ```
 
 Suitable technologies include task queues, message brokers, managed queues, and dedicated worker services.
@@ -832,11 +820,10 @@ async def list_users(session: DbSession):
 
 Suppose the API accepts 500 concurrent requests but the database pool allows only 20 active connections.
 
-```text
-500 API tasks
-   ↓
-20 tasks use database connections
-480 tasks wait for the pool
+```mermaid
+flowchart TD
+    A[500 API tasks] --> B[20 tasks use<br/>database connections]
+    A --> C[480 tasks wait<br/>for the pool]
 ```
 
 Async allows waiting tasks to avoid blocking the event loop, but it does not increase database capacity.
@@ -931,12 +918,20 @@ Use a durable queue and separate worker when execution must be reliable.
 
 One process normally has its own event loop and memory space.
 
-```text
-Load balancer
-   ├── Worker process 1 → Event loop 1 → many concurrent tasks
-   ├── Worker process 2 → Event loop 2 → many concurrent tasks
-   ├── Worker process 3 → Event loop 3 → many concurrent tasks
-   └── Worker process 4 → Event loop 4 → many concurrent tasks
+```mermaid
+flowchart LR
+    LB[Load balancer] --> W1[Worker process 1]
+    LB --> W2[Worker process 2]
+    LB --> W3[Worker process 3]
+    LB --> W4[Worker process 4]
+    W1 --> E1[Event loop 1]
+    W2 --> E2[Event loop 2]
+    W3 --> E3[Event loop 3]
+    W4 --> E4[Event loop 4]
+    E1 --> T1[Many concurrent tasks]
+    E2 --> T2[Many concurrent tasks]
+    E3 --> T3[Many concurrent tasks]
+    E4 --> T4[Many concurrent tasks]
 ```
 
 ## 14.1 Why use multiple workers?
@@ -1072,11 +1067,11 @@ Test realistic payloads and downstream behaviour.
 
 ## 16.1 Use async end to end
 
-```text
-async route
-  → async service
-  → async repository
-  → async driver
+```mermaid
+flowchart TD
+    R[async route] --> S[async service]
+    S --> P[async repository]
+    P --> D[async driver]
 ```
 
 Avoid mixing in hidden blocking libraries.
@@ -1122,14 +1117,11 @@ Protect downstream systems with:
 
 A clean structure is:
 
-```text
-Endpoint
-  ↓
-Application service
-  ↓
-Repository or external client
-  ↓
-Infrastructure
+```mermaid
+flowchart TD
+    E[Endpoint] --> S[Application service]
+    S --> R[Repository or external client]
+    R --> I[Infrastructure]
 ```
 
 The endpoint should focus on HTTP concerns. Async decisions should be consistent across the service and infrastructure layers.

@@ -44,23 +44,21 @@ When traffic increases, one server may become slow or unavailable.
 
 A production system usually solves this by running multiple application instances and placing a load balancer in front of them.
 
-```text
-Without scaling
-
-Users ─────► One Server
-                 │
-                 ├── Limited capacity
-                 ├── Single point of failure
-                 └── Maintenance causes downtime
+```mermaid
+flowchart LR
+    U[Users] --> S["One Server (without scaling)"]
+    S --> L1[Limited capacity]
+    S --> L2[Single point of failure]
+    S --> L3[Maintenance causes downtime]
 ```
 
-```text
-With load balancing and auto-scaling
-
-                    ┌──► Application Instance 1
-Users ─► Load       ├──► Application Instance 2
-         Balancer ──┼──► Application Instance 3
-                    └──► New instances when required
+```mermaid
+flowchart LR
+    U[Users] --> LB["Load Balancer (with auto-scaling)"]
+    LB --> A1[Application Instance 1]
+    LB --> A2[Application Instance 2]
+    LB --> A3[Application Instance 3]
+    LB --> A4[New instances when required]
 ```
 
 ---
@@ -71,11 +69,9 @@ Users ─► Load       ├──► Application Instance 2
 
 Vertical scaling means increasing the capacity of one machine.
 
-```text
-2 vCPU, 4 GB RAM
-        │
-        ▼
-8 vCPU, 32 GB RAM
+```mermaid
+flowchart TD
+    A["2 vCPU, 4 GB RAM"] --> B["8 vCPU, 32 GB RAM"]
 ```
 
 Examples:
@@ -88,11 +84,9 @@ Examples:
 
 Horizontal scaling means adding more machines or containers.
 
-```text
-1 instance
-    │
-    ▼
-4 instances
+```mermaid
+flowchart TD
+    A[1 instance] --> B[4 instances]
 ```
 
 ### Comparison
@@ -126,11 +120,12 @@ The system remains accessible even when some components fail.
 
 The system automatically adds and removes resources based on demand.
 
-```text
-Load Balancer       → improves traffic distribution and availability
-Auto Scaling        → improves elasticity and capacity management
-Multiple AZs        → improves fault tolerance
-Monitoring          → provides signals for scaling and recovery
+```mermaid
+flowchart LR
+    LB[Load Balancer] --> LB1[Improves traffic distribution and availability]
+    AS[Auto Scaling] --> AS1[Improves elasticity and capacity management]
+    AZ[Multiple AZs] --> AZ1[Improves fault tolerance]
+    MON[Monitoring] --> MON1[Provides signals for scaling and recovery]
 ```
 
 ---
@@ -257,11 +252,12 @@ These are general industry algorithms. Managed cloud load balancers may choose o
 
 Requests are distributed sequentially.
 
-```text
-Request 1 → Server A
-Request 2 → Server B
-Request 3 → Server C
-Request 4 → Server A
+```mermaid
+flowchart LR
+    R1[Request 1] --> A[Server A]
+    R2[Request 2] --> B[Server B]
+    R3[Request 3] --> C[Server C]
+    R4[Request 4] --> A
 ```
 
 Suitable when backend servers have similar capacity and requests require similar work.
@@ -405,12 +401,12 @@ A listener checks for incoming connections on a configured protocol and port.
 
 Examples:
 
-```text
-HTTP  : 80
-HTTPS : 443
-TCP   : 5432
-TLS   : 443
-```
+| Protocol | Port |
+|---|---|
+| HTTP | 80 |
+| HTTPS | 443 |
+| TCP | 5432 |
+| TLS | 443 |
 
 ### Listener Rule
 
@@ -490,19 +486,21 @@ An Application Load Balancer, or ALB, is designed mainly for HTTP and HTTPS work
 
 ### Path-Based Routing Example
 
-```text
-/api/*       → API service
-/images/*    → Image service
-/admin/*     → Admin service
-/*           → Frontend service
+```mermaid
+flowchart LR
+    P1["/api/*"] --> S1[API service]
+    P2["/images/*"] --> S2[Image service]
+    P3["/admin/*"] --> S3[Admin service]
+    P4["/*"] --> S4[Frontend service]
 ```
 
 ### Host-Based Routing Example
 
-```text
-api.example.com     → API target group
-admin.example.com   → Admin target group
-shop.example.com    → Store target group
+```mermaid
+flowchart LR
+    H1[api.example.com] --> T1[API target group]
+    H2[admin.example.com] --> T2[Admin target group]
+    H3[shop.example.com] --> T3[Store target group]
 ```
 
 ### Suitable Workloads
@@ -623,18 +621,24 @@ Typical uses:
 
 A highly available load balancer should use subnets in at least two Availability Zones.
 
-```text
-                         ┌────────────────────────────┐
-                         │ Application Load Balancer  │
-                         └─────────────┬──────────────┘
-                                       │
-                   ┌───────────────────┴───────────────────┐
-                   │                                       │
-          Availability Zone A                     Availability Zone B
-          ┌─────────────────┐                     ┌─────────────────┐
-          │ App Instance A1 │                     │ App Instance B1 │
-          │ App Instance A2 │                     │ App Instance B2 │
-          └─────────────────┘                     └─────────────────┘
+```mermaid
+flowchart TB
+    ALB[Application Load Balancer]
+
+    subgraph AZA[Availability Zone A]
+        A1[App Instance A1]
+        A2[App Instance A2]
+    end
+
+    subgraph AZB[Availability Zone B]
+        B1[App Instance B1]
+        B2[App Instance B2]
+    end
+
+    ALB --> A1
+    ALB --> A2
+    ALB --> B1
+    ALB --> B2
 ```
 
 If one target or Availability Zone has a problem, healthy capacity in another zone can continue processing requests.
@@ -647,10 +651,11 @@ If one target or Availability Zone has a problem, healthy capacity in another zo
 
 Auto-scaling automatically adjusts compute capacity according to workload demand or a predefined schedule.
 
-```text
-Low traffic  → remove unnecessary capacity
-High traffic → add capacity
-Failure      → replace unhealthy capacity
+```mermaid
+flowchart LR
+    LT[Low traffic] --> RC[Remove unnecessary capacity]
+    HT[High traffic] --> AC[Add capacity]
+    F[Failure] --> RUC[Replace unhealthy capacity]
 ```
 
 Auto-scaling has two major goals:
@@ -836,24 +841,17 @@ flowchart TB
 
 A simplified instance lifecycle is:
 
-```text
-Launch
-  │
-  ▼
-Pending
-  │
-  ▼
-InService
-  │
-  ├── Scale-in selected
-  ├── Health check failure
-  └── Manual termination
-  │
-  ▼
-Terminating
-  │
-  ▼
-Terminated
+```mermaid
+flowchart TD
+    L[Launch] --> P[Pending]
+    P --> IS[InService]
+    IS --> SI[Scale-in selected]
+    IS --> HF[Health check failure]
+    IS --> MT[Manual termination]
+    SI --> T[Terminating]
+    HF --> T
+    MT --> T
+    T --> TE[Terminated]
 ```
 
 Lifecycle hooks can pause selected transitions so that custom work can run.
@@ -967,14 +965,14 @@ sequenceDiagram
 
 ## 6.3 Scale-In Flow
 
-```text
-1. Workload decreases.
-2. Scaling policy reduces desired capacity.
-3. ASG selects an instance for termination.
-4. Target is deregistered from the target group.
-5. Load balancer stops sending new requests to that target.
-6. Existing requests are allowed to finish during the configured drain period.
-7. Instance shuts down and is terminated.
+```mermaid
+flowchart TD
+    S1[Workload decreases] --> S2[Scaling policy reduces desired capacity]
+    S2 --> S3[ASG selects an instance for termination]
+    S3 --> S4[Target is deregistered from the target group]
+    S4 --> S5[Load balancer stops sending new requests to that target]
+    S5 --> S6[Existing requests are allowed to finish during the configured drain period]
+    S6 --> S7[Instance shuts down and is terminated]
 ```
 
 This graceful process helps avoid dropping active requests.
@@ -1073,20 +1071,11 @@ The application instances usually do not need public IP addresses.
 
 A clean security-group relationship is:
 
-```text
-Internet
-   │
-   │ HTTPS 443
-   ▼
-ALB Security Group
-   │
-   │ Application port, allowed only from ALB security group
-   ▼
-Application Security Group
-   │
-   │ Database port, allowed only from application security group
-   ▼
-Database Security Group
+```mermaid
+flowchart TD
+    I[Internet] -->|HTTPS 443| ALBSG[ALB Security Group]
+    ALBSG -->|"Application port, allowed only from ALB security group"| APPSG[Application Security Group]
+    APPSG -->|"Database port, allowed only from application security group"| DBSG[Database Security Group]
 ```
 
 Example:
@@ -1109,20 +1098,22 @@ Avoid storing important runtime state only on one instance.
 
 ### Avoid
 
-```text
-User session → local process memory
-Uploaded file → local container filesystem
-Scheduled task lock → local variable
+```mermaid
+flowchart LR
+    US[User session] --> LPM[Local process memory]
+    UF[Uploaded file] --> LCF[Local container filesystem]
+    STL[Scheduled task lock] --> LV[Local variable]
 ```
 
 ### Prefer
 
-```text
-User session → Redis or signed cookie
-Uploaded file → Amazon S3
-Persistent data → Database
-Task queue → SQS, RabbitMQ or managed queue
-Shared cache → ElastiCache
+```mermaid
+flowchart LR
+    US[User session] --> R[Redis or signed cookie]
+    UF[Uploaded file] --> S3[Amazon S3]
+    PD[Persistent data] --> DB[Database]
+    TQ[Task queue] --> Q["SQS, RabbitMQ or managed queue"]
+    SC[Shared cache] --> EC[ElastiCache]
 ```
 
 ---
@@ -1176,10 +1167,11 @@ Keep average ASG CPU utilization near 50%.
 
 Behavior:
 
-```text
-Current CPU = 78% → scale out
-Current CPU = 25% → eventually scale in
-Current CPU = 51% → maintain capacity
+```mermaid
+flowchart LR
+    C1["Current CPU = 78%"] --> A1[Scale out]
+    C2["Current CPU = 25%"] --> A2[Eventually scale in]
+    C3["Current CPU = 51%"] --> A3[Maintain capacity]
 ```
 
 This is usually the best starting point because it behaves similarly to a thermostat.
@@ -1226,15 +1218,10 @@ Scheduled scaling changes capacity at known times.
 
 Example:
 
-```text
-Monday–Friday at 8:30 AM:
-Minimum = 6
-Desired = 8
-
-Monday–Friday at 8:00 PM:
-Minimum = 2
-Desired = 2
-```
+| Time Window | Minimum | Desired |
+|---|---|---|
+| Monday–Friday at 8:30 AM | 6 | 8 |
+| Monday–Friday at 8:00 PM | 2 | 2 |
 
 Suitable for:
 
@@ -1460,10 +1447,11 @@ When a target is removed:
 2. Allow active requests to complete.
 3. Terminate the process after a grace period.
 
-```text
-New requests       → another healthy target
-Existing requests  → allowed to finish
-Target termination → after drain period
+```mermaid
+flowchart LR
+    NR[New requests] --> AHT[Another healthy target]
+    ER[Existing requests] --> ATF[Allowed to finish]
+    TT[Target termination] --> ADP[After drain period]
 ```
 
 This is important for:
@@ -1496,12 +1484,12 @@ A gradual traffic ramp can protect such targets where the selected load-balancer
 
 ## 9.5 Health Threshold Example
 
-```text
-Health-check interval:   15 seconds
-Timeout:                  5 seconds
-Healthy threshold:       2 checks
-Unhealthy threshold:     3 checks
-```
+| Setting | Value |
+|---|---|
+| Health-check interval | 15 seconds |
+| Timeout | 5 seconds |
+| Healthy threshold | 2 checks |
+| Unhealthy threshold | 3 checks |
 
 Approximate detection behavior:
 
@@ -1684,11 +1672,11 @@ Both layers must have enough capacity.
 
 Example failure:
 
-```text
-ECS wants 20 tasks
-EC2 cluster has room for only 10
-Result: remaining tasks stay pending
-```
+| Item | Value |
+|---|---|
+| ECS desired tasks | 20 |
+| EC2 cluster capacity | 10 |
+| Result | Remaining tasks stay pending |
 
 ---
 
@@ -1696,12 +1684,12 @@ Result: remaining tasks stay pending
 
 Conceptual policy:
 
-```text
-Minimum tasks: 2
-Maximum tasks: 20
-Target metric: ECSServiceAverageCPUUtilization
-Target value: 50%
-```
+| Setting | Value |
+|---|---|
+| Minimum tasks | 2 |
+| Maximum tasks | 20 |
+| Target metric | ECSServiceAverageCPUUtilization |
+| Target value | 50% |
 
 Another useful metric for an ALB-backed service is:
 
@@ -1924,12 +1912,11 @@ Safe requests per second per instance
 
 Example:
 
-```text
-Peak demand:                    2,400 requests/second
-Safe capacity per instance:      300 requests/second
-
-Required baseline capacity = 2,400 / 300 = 8 instances
-```
+| Item | Value |
+|---|---|
+| Peak demand | 2,400 requests/second |
+| Safe capacity per instance | 300 requests/second |
+| Required baseline capacity | 2,400 / 300 = 8 instances |
 
 Add headroom:
 
@@ -1945,15 +1932,13 @@ This formula is only useful when validated with realistic load testing.
 
 Scaling the application tier may move the bottleneck elsewhere.
 
-```text
-More application instances
-          │
-          ▼
-More database connections
-More cache connections
-More outbound API calls
-More queue consumers
-More log volume
+```mermaid
+flowchart TD
+    A[More application instances] --> B[More database connections]
+    A --> C[More cache connections]
+    A --> D[More outbound API calls]
+    A --> E[More queue consumers]
+    A --> F[More log volume]
 ```
 
 Confirm that dependencies can support the maximum application capacity.
@@ -1994,16 +1979,12 @@ Use Spot only when the application can tolerate interruptions and the scaling de
 
 ### Design
 
-```text
-Route 53
-   ↓
-Application Load Balancer
-   ↓
-Target Group
-   ↓
-EC2 Auto Scaling Group across 2+ AZs
-   ↓
-RDS / ElastiCache / S3
+```mermaid
+flowchart TD
+    R53[Route 53] --> ALB[Application Load Balancer]
+    ALB --> TG[Target Group]
+    TG --> ASG[EC2 Auto Scaling Group across 2+ AZs]
+    ASG --> DEP["RDS / ElastiCache / S3"]
 ```
 
 ### Scaling Metric
@@ -2072,14 +2053,10 @@ High usage: 9 AM–6 PM
 
 ### Policy Combination
 
-```text
-Scheduled scaling:
-Increase minimum capacity before 9 AM
-Reduce minimum capacity after 7 PM
-
-Target tracking:
-Respond to unexpected demand during the day
-```
+| Policy | Behavior |
+|---|---|
+| Scheduled scaling | Increase minimum capacity before 9 AM; reduce minimum capacity after 7 PM |
+| Target tracking | Respond to unexpected demand during the day |
 
 ---
 
@@ -2176,53 +2153,58 @@ Do not rely only on reactive scaling when instances require several minutes to b
 
 ## Load Balancing
 
-```text
-Purpose:
-Distribute traffic across healthy targets.
+**Purpose:** Distribute traffic across healthy targets.
 
-Key concepts:
-Listener → Rule → Target Group → Target → Health Check
+**Key concepts:**
+
+```mermaid
+flowchart LR
+    L[Listener] --> R[Rule]
+    R --> TG[Target Group]
+    TG --> T[Target]
+    T --> HC[Health Check]
 ```
 
 ## Auto-Scaling
 
-```text
-Purpose:
-Adjust compute capacity and replace unhealthy resources.
+**Purpose:** Adjust compute capacity and replace unhealthy resources.
 
-Key concepts:
-Launch Template → Auto Scaling Group → Scaling Policy → Metric
+**Key concepts:**
+
+```mermaid
+flowchart LR
+    LT[Launch Template] --> ASG[Auto Scaling Group]
+    ASG --> SP[Scaling Policy]
+    SP --> M[Metric]
 ```
 
 ## Combined Flow
 
-```text
-Users
-  ↓
-Load Balancer
-  ↓
-Healthy Targets
-  ↓
-Auto Scaling Group adds/removes capacity
-  ↑
-CloudWatch metrics and scaling policies
+```mermaid
+flowchart TD
+    U[Users] --> LB[Load Balancer]
+    LB --> HT[Healthy Targets]
+    HT --> ASG["Auto Scaling Group adds/removes capacity"]
+    CW[CloudWatch metrics and scaling policies] --> ASG
 ```
 
 ## AWS Selection
 
-```text
-ALB  → HTTP/HTTPS, Layer 7, path and host routing
-NLB  → TCP/UDP/TLS, Layer 4, high throughput, static IP needs
-GWLB → firewalls and virtual network appliances
+```mermaid
+flowchart LR
+    A[ALB] --> A1["HTTP/HTTPS, Layer 7, path and host routing"]
+    N[NLB] --> N1["TCP/UDP/TLS, Layer 4, high throughput, static IP needs"]
+    G[GWLB] --> G1["Firewalls and virtual network appliances"]
 ```
 
 ## Scaling Policies
 
-```text
-Target tracking → keep a metric near a target
-Step scaling    → different actions for different threshold ranges
-Scheduled       → scale at known times
-Predictive      → forecast repeating demand patterns
+```mermaid
+flowchart LR
+    TT[Target tracking] --> TT1[Keep a metric near a target]
+    SS[Step scaling] --> SS1[Different actions for different threshold ranges]
+    SCH[Scheduled] --> SCH1[Scale at known times]
+    PRED[Predictive] --> PRED1[Forecast repeating demand patterns]
 ```
 
 ## Most Important Design Principle

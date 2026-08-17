@@ -197,12 +197,10 @@ Examples include:
 
 This layer is useful when several application instances produce the same public response.
 
-```text
-Clients
-   |
-Load Balancer / API Gateway Cache
-   |
-Application Instances
+```mermaid
+flowchart TD
+    CLIENTS[Clients] --> GW["Load Balancer / API Gateway Cache"]
+    GW --> APPS[Application Instances]
 ```
 
 ### Suitable data
@@ -428,12 +426,13 @@ Each layer protects the layer behind it.
 
 A useful mental model is:
 
-```text
-Faster + smaller + closer
-            |
-Browser → CDN → Gateway → Local Memory → Redis → Database
-            |
-More authoritative + slower + larger
+```mermaid
+flowchart LR
+    BROWSER["Browser<br/>faster, smaller, closer"] --> CDN[CDN]
+    CDN --> GW[Gateway]
+    GW --> MEM[Local Memory]
+    MEM --> REDIS[(Redis)]
+    REDIS --> DB[("Database<br/>more authoritative, slower, larger")]
 ```
 
 The closer a cache is to the user, the faster it can respond. The closer data is to the primary database, the more authoritative it generally is.
@@ -591,12 +590,10 @@ A production write-behind design normally needs a durable queue or log rather th
 
 Refresh-ahead updates a cached value before it expires.
 
-```text
-TTL remaining becomes small
-          |
-Background worker recomputes value
-          |
-Cache receives fresh value before hard expiry
+```mermaid
+flowchart TD
+    TTL[TTL remaining becomes small] --> WORKER[Background worker recomputes value]
+    WORKER --> FRESH[Cache receives fresh value before hard expiry]
 ```
 
 This pattern is useful for:
@@ -801,22 +798,15 @@ The cache was intended to reduce database load, but its synchronized miss create
 
 The failure can amplify:
 
-```text
-Popular key expires
-        ↓
-Many requests miss
-        ↓
-Duplicate database queries
-        ↓
-Database latency rises
-        ↓
-Requests stay active longer
-        ↓
-Connection pools fill
-        ↓
-Retries create more traffic
-        ↓
-Application and database become unhealthy
+```mermaid
+flowchart TD
+    EXPIRE[Popular key expires] --> MISS[Many requests miss]
+    MISS --> DUP[Duplicate database queries]
+    DUP --> LAT[Database latency rises]
+    LAT --> ACTIVE[Requests stay active longer]
+    ACTIVE --> POOL[Connection pools fill]
+    POOL --> RETRY[Retries create more traffic]
+    RETRY --> SICK[Application and database become unhealthy]
 ```
 
 This is a positive feedback loop.

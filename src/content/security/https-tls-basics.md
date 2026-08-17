@@ -72,14 +72,11 @@ HTTP itself does not provide transport encryption.
 
 HTTPS means that HTTP is carried through TLS.
 
-```text
-HTTP message
-    ↓
-TLS encrypts and authenticates the connection
-    ↓
-TCP, or QUIC for HTTP/3
-    ↓
-IP network
+```mermaid
+flowchart TD
+    A[HTTP message] --> B[TLS encrypts and authenticates<br/>the connection]
+    B --> C["TCP, or QUIC for HTTP/3"]
+    C --> D[IP network]
 ```
 
 Common default ports:
@@ -264,10 +261,10 @@ Modern TLS commonly uses ephemeral Diffie-Hellman key exchange, usually ECDHE.
 
 Both parties contribute temporary key material and independently calculate the same shared secret.
 
-```text
-Client ephemeral key                 Server ephemeral key
-          │                                   │
-          └──────── derive shared secret ─────┘
+```mermaid
+flowchart TD
+    C[Client ephemeral key] --> D[Derive shared secret]
+    S[Server ephemeral key] --> D
 ```
 
 The shared secret is never directly sent over the network.
@@ -278,10 +275,9 @@ Ephemeral key exchange provides forward secrecy.
 
 If the server’s certificate private key is stolen later, previously captured TLS sessions should not become decryptable merely because that long-term key was compromised.
 
-```text
-Long-term certificate key compromised later
-                       ↓
-Past ephemeral session keys are still not available
+```mermaid
+flowchart TD
+    A[Long-term certificate key<br/>compromised later] --> B[Past ephemeral session keys<br/>are still not available]
 ```
 
 Forward secrecy depends on using ephemeral key exchange and protecting session-ticket keys appropriately.
@@ -292,12 +288,10 @@ Modern TLS uses Authenticated Encryption with Associated Data.
 
 AEAD provides encryption and integrity together.
 
-```text
-Plaintext + key + nonce
-          ↓
-     AEAD algorithm
-          ↓
-Ciphertext + authentication tag
+```mermaid
+flowchart TD
+    A["Plaintext + key + nonce"] --> B[AEAD algorithm]
+    B --> C["Ciphertext + authentication tag"]
 ```
 
 If the tag does not validate, the record is rejected.
@@ -335,28 +329,24 @@ sequenceDiagram
     S->>C: Encrypted HTTP response
 ```
 
-ASCII view:
+Message-by-message view:
 
-```text
-Client                                               Server
-  |                                                     |
-  | --- ClientHello ----------------------------------> |
-  |     versions, algorithms, key share, SNI, ALPN      |
-  |                                                     |
-  | <--- ServerHello ---------------------------------- |
-  |      selected version, algorithm, server key share  |
-  | <--- EncryptedExtensions                            |
-  | <--- Certificate                                    |
-  | <--- CertificateVerify                              |
-  | <--- Finished                                       |
-  |                                                     |
-  | Validate certificate and handshake                  |
-  | Derive traffic keys                                 |
-  |                                                     |
-  | --- Finished -------------------------------------> |
-  |                                                     |
-  | === Encrypted HTTP request =======================> |
-  | <== Encrypted HTTP response ======================= |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: ClientHello<br/>versions, algorithms, key share, SNI, ALPN
+    S->>C: ServerHello<br/>selected version, algorithm, server key share
+    S->>C: EncryptedExtensions
+    S->>C: Certificate
+    S->>C: CertificateVerify
+    S->>C: Finished
+    C->>C: Validate certificate and handshake
+    C->>C: Derive traffic keys
+    C->>S: Finished
+    C->>S: Encrypted HTTP request
+    S->>C: Encrypted HTTP response
 ```
 
 ## 6.2 ClientHello
@@ -399,12 +389,10 @@ The server sends its certificate chain so the client can validate its identity.
 
 The chain commonly contains:
 
-```text
-Leaf certificate: api.example.com
-        ↓ signed by
-Intermediate CA certificate
-        ↓ signed by
-Trusted root CA
+```mermaid
+flowchart TD
+    L["Leaf certificate: api.example.com"] -->|signed by| I[Intermediate CA certificate]
+    I -->|signed by| R[Trusted root CA]
 ```
 
 The root certificate is normally already present in the client’s trust store and is not required to be sent by the server.
@@ -515,19 +503,11 @@ A certificate is not trusted simply because it is cryptographically valid. The c
 
 ## 7.5 Root, intermediate, and leaf certificates
 
-```text
-Trusted Root CA
-      │
-      │ signs
-      ▼
-Intermediate CA
-      │
-      │ signs
-      ▼
-Leaf / Server Certificate
-      │
-      ▼
-api.example.com
+```mermaid
+flowchart TD
+    R[Trusted Root CA] -->|signs| I[Intermediate CA]
+    I -->|signs| L["Leaf / Server Certificate"]
+    L --> H[api.example.com]
 ```
 
 Why use intermediates?
@@ -750,11 +730,14 @@ server_name = api.example.com
 
 The server can then choose the correct certificate.
 
-```text
-203.0.113.10
-├── api.example.com  → Certificate A
-├── shop.example.com → Certificate B
-└── docs.example.com → Certificate C
+```mermaid
+flowchart LR
+    IP[203.0.113.10] --> A[api.example.com]
+    IP --> B[shop.example.com]
+    IP --> C[docs.example.com]
+    A --> CA[Certificate A]
+    B --> CB[Certificate B]
+    C --> CC[Certificate C]
 ```
 
 Without correct SNI, the server may return a default certificate and cause a hostname mismatch.
@@ -834,14 +817,10 @@ The internal hop must still be evaluated. A private network is not automatically
 
 ## 12.3 Termination at a load balancer
 
-```text
-Internet
-   │
-   ▼
-Cloud Load Balancer
-   │  TLS terminates here
-   ▼
-Application targets
+```mermaid
+flowchart TD
+    A[Internet] --> B[Cloud Load Balancer]
+    B -->|TLS terminates here| C[Application targets]
 ```
 
 Examples include managed application load balancers, API gateways, CDNs, and ingress controllers.
@@ -969,13 +948,17 @@ TLS 1.3 commonly uses pre-shared keys derived from a previous session and sessio
 
 A server can issue an opaque ticket that the client presents later.
 
-```text
-First connection:
-Server → client: session ticket
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
 
-Later connection:
-Client → server: ticket
-Server: resume session
+    Note over C,S: First connection
+    S-->>C: Session ticket
+
+    Note over C,S: Later connection
+    C->>S: Ticket
+    S->>S: Resume session
 ```
 
 Ticket keys are security-sensitive. If multiple servers share them, they must be distributed and rotated securely.
@@ -984,10 +967,9 @@ Ticket keys are security-sensitive. If multiple servers share them, they must be
 
 TLS 1.3 can allow a resumed client to send application data before the handshake fully completes.
 
-```text
-ClientHello + early application data
-                  ↓
-                Server
+```mermaid
+flowchart LR
+    C["ClientHello + early application data"] --> S[Server]
 ```
 
 This reduces latency but creates replay risk.
@@ -1204,17 +1186,11 @@ Operational concerns:
 
 ## 16.4 Cloud load-balancer pattern
 
-```text
-DNS
- │
- ▼
-CDN / WAF
- │ HTTPS
- ▼
-Load Balancer
- │ HTTPS or mTLS
- ▼
-Application services
+```mermaid
+flowchart TD
+    A[DNS] --> B["CDN / WAF"]
+    B -->|HTTPS| C[Load Balancer]
+    C -->|HTTPS or mTLS| D[Application services]
 ```
 
 Managed services reduce certificate-handling work but do not remove responsibility for:
@@ -1657,14 +1633,11 @@ Use maintained defaults and test representative clients.
 
 ## 19.8 Redirect loop
 
-```text
-Client HTTPS
-   ↓
-Proxy terminates TLS
-   ↓ HTTP
-App thinks request is HTTP
-   ↓
-App redirects to HTTPS repeatedly
+```mermaid
+flowchart TD
+    A[Client HTTPS] --> B[Proxy terminates TLS]
+    B -->|HTTP| C[App thinks request is HTTP]
+    C --> D[App redirects to HTTPS repeatedly]
 ```
 
 Fix trusted forwarded-protocol configuration.
@@ -1822,16 +1795,12 @@ flowchart LR
 
 ## 21.1 Trust boundaries
 
-```text
-Internet
-  ↓
-CDN / WAF
-  ↓
-Cloud network
-  ↓
-Application subnet
-  ↓
-Database subnet
+```mermaid
+flowchart TD
+    A[Internet] --> B["CDN / WAF"]
+    B --> C[Cloud network]
+    C --> D[Application subnet]
+    D --> E[Database subnet]
 ```
 
 Each boundary should answer:
@@ -1960,14 +1929,11 @@ The most important practical points are:
 
 A simple mental model:
 
-```text
-Certificate authenticates the server
-        ↓
-Handshake establishes shared keys
-        ↓
-Symmetric encryption protects HTTP traffic
-        ↓
-Application security still controls who may do what
+```mermaid
+flowchart TD
+    A[Certificate authenticates the server] --> B[Handshake establishes shared keys]
+    B --> C[Symmetric encryption<br/>protects HTTP traffic]
+    C --> D[Application security still controls<br/>who may do what]
 ```
 
 ---

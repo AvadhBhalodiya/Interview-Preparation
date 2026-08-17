@@ -172,10 +172,11 @@ Many real systems are mixed workloads. Profile the application instead of select
 
 ## One-Line Selection Rule
 
-```text
-Blocking I/O + synchronous library  -> ThreadPoolExecutor
-CPU-heavy pure-Python work          -> ProcessPoolExecutor
-Many async I/O operations           -> asyncio
+```mermaid
+flowchart LR
+    BIO["Blocking I/O + synchronous library"] --> TPE[ThreadPoolExecutor]
+    CPU[CPU-heavy pure-Python work] --> PPE[ProcessPoolExecutor]
+    AIO["Many async I/O operations"] --> ASY[asyncio]
 ```
 
 ---
@@ -186,16 +187,18 @@ A thread is an execution path inside a process. Multiple threads share the proce
 
 ## 5.1 How Threads Work
 
-```text
-Single Python process
-+---------------------------------------------------+
-| Shared heap, modules, objects, files              |
-|                                                   |
-|  Thread 1       Thread 2       Thread 3           |
-|  API call       File read      DB query           |
-|     |               |              |              |
-|     +------ shared memory ----------+             |
-+---------------------------------------------------+
+```mermaid
+flowchart TD
+    subgraph PROC[Single Python process]
+        HEAP["Shared heap, modules, objects, files"]
+        T1[Thread 1<br/>API call]
+        T2[Thread 2<br/>File read]
+        T3[Thread 3<br/>DB query]
+
+        T1 --> HEAP
+        T2 --> HEAP
+        T3 --> HEAP
+    end
 ```
 
 Because memory is shared, passing data between threads is easy. That convenience also creates the risk of race conditions.
@@ -404,20 +407,15 @@ Multiprocessing runs work in separate operating-system processes. Each process h
 
 ## 6.1 How Processes Work
 
-```text
-Parent process
-+--------------------+
-| Main application   |
-+---------+----------+
-          |
-          | submit serialized work
-          v
-+----------------+  +----------------+  +----------------+
-| Worker process |  | Worker process |  | Worker process |
-| Python runtime |  | Python runtime |  | Python runtime |
-| Separate memory|  | Separate memory|  | Separate memory|
-+----------------+  +----------------+  +----------------+
-       CPU 1               CPU 2               CPU 3
+```mermaid
+flowchart TD
+    subgraph PARENT[Parent process]
+        MAIN[Main application]
+    end
+
+    MAIN -->|Submit serialized work| W1["Worker process<br/>Python runtime<br/>Separate memory<br/>CPU 1"]
+    MAIN -->|Submit serialized work| W2["Worker process<br/>Python runtime<br/>Separate memory<br/>CPU 2"]
+    MAIN -->|Submit serialized work| W3["Worker process<br/>Python runtime<br/>Separate memory<br/>CPU 3"]
 ```
 
 Because workers use separate interpreters, pure-Python work can execute simultaneously across multiple CPU cores.
@@ -542,36 +540,30 @@ Avoid depending on local lambdas, nested functions, open database connections, l
 
 Processes do not share normal Python objects directly.
 
-```text
-Parent object
-    |
-    | serialize / copy
-    v
-Worker process
-    |
-    | serialize / copy result
-    v
-Parent process
+```mermaid
+flowchart TD
+    A[Parent object] -->|"Serialize / copy"| B[Worker process]
+    B -->|"Serialize / copy result"| C[Parent process]
 ```
 
 For small tasks, serialization and scheduling can cost more than the computation.
 
 ### Poor Task Granularity
 
-```text
-10,000,000 tiny tasks
--> excessive serialization
--> excessive queue operations
--> poor performance
+```mermaid
+flowchart TD
+    A["10,000,000 tiny tasks"] --> B[Excessive serialization]
+    B --> C[Excessive queue operations]
+    C --> D[Poor performance]
 ```
 
 ### Better Task Granularity
 
-```text
-Input data
--> split into a limited number of meaningful chunks
--> process each chunk
--> combine results
+```mermaid
+flowchart TD
+    A[Input data] --> B[Split into a limited number of meaningful chunks]
+    B --> C[Process each chunk]
+    C --> D[Combine results]
 ```
 
 Use larger batches when each item is very cheap.
@@ -597,13 +589,13 @@ Use shared memory only when measurement shows serialization is a real bottleneck
 
 It normally runs many tasks in one thread:
 
-```text
-One process
-└── One event-loop thread
-    ├── Task A runs until await
-    ├── Task B runs until await
-    ├── Task C runs until await
-    └── Event loop resumes tasks when operations are ready
+```mermaid
+flowchart TD
+    PROC[One process] --> EL[One event-loop thread]
+    EL --> TA[Task A runs until await]
+    EL --> TB[Task B runs until await]
+    EL --> TC[Task C runs until await]
+    EL --> RESUME[Event loop resumes tasks when operations are ready]
 ```
 
 ## 7.1 How the Event Loop Works
@@ -901,12 +893,9 @@ if __name__ == "__main__":
 
 This creates a hybrid architecture:
 
-```text
-Asyncio event loop
-    |
-    | manages network requests and orchestration
-    |
-    +----> Process pool handles CPU-heavy calculations
+```mermaid
+flowchart LR
+    EL[Asyncio event loop<br/>manages network requests and orchestration] --> POOL[Process pool<br/>handles CPU-heavy calculations]
 ```
 
 ---
@@ -938,15 +927,13 @@ flowchart TD
 
 ## Fast Mental Model
 
-```text
-Does it calculate heavily?
-    -> Multiprocessing
-
-Does it wait on blocking APIs?
-    -> Multithreading
-
-Does it manage many async-compatible I/O operations?
-    -> Asyncio
+```mermaid
+flowchart TD
+    A{Does it calculate heavily?} -->|Yes| MP[Multiprocessing]
+    A -->|No| B{Does it wait on blocking APIs?}
+    B -->|Yes| MT[Multithreading]
+    B -->|No| C{"Does it manage many async-compatible I/O operations?"}
+    C -->|Yes| ASY[Asyncio]
 ```
 
 ---
@@ -986,11 +973,11 @@ Choice:         ProcessPoolExecutor
 
 Practical design:
 
-```text
-Image paths
-    -> divide into chunks
-    -> process chunks across workers
-    -> store output paths
+```mermaid
+flowchart TD
+    A[Image paths] --> B[Divide into chunks]
+    B --> C[Process chunks across workers]
+    C --> D[Store output paths]
 ```
 
 Before deciding, verify whether the imaging library releases the GIL. A native imaging library may perform well with threads, but benchmarking is required.
@@ -1060,19 +1047,18 @@ The three models are not mutually exclusive.
 
 A production system may use all of them at different layers:
 
-```text
-Async web server
-│
-├── asyncio tasks
-│   ├── call async database driver
-│   ├── call other services
-│   └── manage WebSockets
-│
-├── thread pool
-│   └── invoke blocking SDK or legacy library
-│
-└── process pool / job workers
-    └── perform CPU-heavy report generation
+```mermaid
+flowchart TD
+    SRV[Async web server] --> TASKS[asyncio tasks]
+    SRV --> TPOOL[thread pool]
+    SRV --> PPOOL["process pool / job workers"]
+
+    TASKS --> ADB[Call async database driver]
+    TASKS --> SVC[Call other services]
+    TASKS --> WSOCK[Manage WebSockets]
+
+    TPOOL --> SDK[Invoke blocking SDK or legacy library]
+    PPOOL --> REPORT[Perform CPU-heavy report generation]
 ```
 
 ## Common Hybrid Pattern
@@ -1205,11 +1191,11 @@ async def use_connection() -> None:
 
 Adding more threads helps only until another bottleneck becomes dominant.
 
-```text
-More threads
-    -> more overlapping waits
-    -> eventually database/API connection limits are reached
-    -> latency and failures may increase
+```mermaid
+flowchart TD
+    A[More threads] --> B[More overlapping waits]
+    B --> C["Eventually database/API connection limits are reached"]
+    C --> D[Latency and failures may increase]
 ```
 
 ## Processes: Main Costs
@@ -1340,10 +1326,11 @@ However:
 
 Therefore, the classic selection model remains the safest general rule for normal CPython environments:
 
-```text
-I/O-bound synchronous work -> threads
-CPU-bound Python work       -> processes
-High-concurrency async I/O  -> asyncio
+```mermaid
+flowchart LR
+    IOB["I/O-bound synchronous work"] --> THR[threads]
+    CPUB[CPU-bound Python work] --> PRC[processes]
+    ASYNCIO["High-concurrency async I/O"] --> ASY[asyncio]
 ```
 
 ## InterpreterPoolExecutor

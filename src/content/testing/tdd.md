@@ -25,14 +25,24 @@ order: 4
 
 The process is commonly called **Red–Green–Refactor**.
 
-```text
-Traditional test-after approach
+```mermaid
+flowchart LR
+    subgraph TRAD[Traditional test-after approach]
+        TR[Requirement]
+        TP[Production code]
+        TT[Tests]
+        TF[Fix defects]
+        TR --> TP --> TT --> TF
+    end
 
-Requirement → Production code → Tests → Fix defects
-
-TDD approach
-
-Requirement → Failing test → Minimal code → Refactor → Next behavior
+    subgraph TDDA[TDD approach]
+        DR[Requirement]
+        DF[Failing test]
+        DM[Minimal code]
+        DX[Refactor]
+        DN[Next behavior]
+        DR --> DF --> DM --> DX --> DN
+    end
 ```
 
 TDD is not simply “writing unit tests before code.” It combines three activities:
@@ -149,14 +159,22 @@ Tests become living examples of business behavior and are automatically checked 
 
 TDD encourages developers to validate each small decision immediately.
 
-```text
-Long feedback loop
+```mermaid
+flowchart LR
+    subgraph LONG[Long feedback loop]
+        LC[Write many changes]
+        LR2[Run tests]
+        LD[Diagnose many possible causes]
+        LC --> LR2 --> LD
+    end
 
-Write many changes ───────────────► Run tests ─► Diagnose many possible causes
-
-Short TDD feedback loop
-
-Write one test ─► Small change ─► Run tests ─► Immediate result
+    subgraph SHORT[Short TDD feedback loop]
+        ST[Write one test]
+        SC[Small change]
+        SR[Run tests]
+        SI[Immediate result]
+        ST --> SC --> SR --> SI
+    end
 ```
 
 Fast feedback reduces the amount of unfinished reasoning a developer must keep in their head.
@@ -424,14 +442,18 @@ Examples:
 
 These areas usually contain many edge cases, and incorrect results can have direct business impact.
 
-```text
-Example: Commission calculation
+**Example: Commission calculation**
 
-Gross premium
-     │
-     ├── MGA commission
-     ├── Broker commission
-     └── Carrier payable amount
+```mermaid
+flowchart TD
+    GROSS[Gross premium]
+    MGA[MGA commission]
+    BROKER[Broker commission]
+    CARRIER[Carrier payable amount]
+
+    GROSS --> MGA
+    GROSS --> BROKER
+    GROSS --> CARRIER
 ```
 
 Each rule can be expressed as a small test before implementation.
@@ -921,16 +943,15 @@ AI tools can help draft tests and implementation code, but the developer remains
 
 A safe AI-assisted TDD loop is:
 
-```text
-Developer defines behavior
-        ↓
-AI drafts failing test
-        ↓
-Developer verifies failure and intent
-        ↓
-AI or developer implements minimal code
-        ↓
-Developer reviews, refactors, and runs broader tests
+```mermaid
+flowchart TD
+    DEFINE[Developer defines behavior]
+    DRAFT[AI drafts failing test]
+    VERIFY[Developer verifies failure and intent]
+    IMPL[AI or developer implements minimal code]
+    REVIEW[Developer reviews, refactors,<br/>and runs broader tests]
+
+    DEFINE --> DRAFT --> VERIFY --> IMPL --> REVIEW
 ```
 
 Never accept a newly generated test merely because it is green. A test that never failed may be testing the wrong behavior or no meaningful behavior at all.
@@ -966,10 +987,12 @@ Scenario: Free delivery at the threshold
 
 TDD and BDD can work together:
 
-```text
-BDD scenario defines feature behavior
-             ↓
-TDD cycles design the supporting implementation
+```mermaid
+flowchart TD
+    BDD[BDD scenario defines feature behavior]
+    TDD[TDD cycles design the supporting implementation]
+
+    BDD --> TDD
 ```
 
 ## 10.3 TDD vs Acceptance Test-Driven Development

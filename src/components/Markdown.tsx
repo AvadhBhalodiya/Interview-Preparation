@@ -27,6 +27,7 @@ import dockerfile from 'highlight.js/lib/languages/dockerfile'
 import { slugify } from '../lib/toc'
 import { resolveNoteHref } from '../lib/content'
 import { remarkCallouts } from '../lib/remarkCallouts'
+import { MermaidDiagram } from './MermaidDiagram'
 
 // Only the languages we actually use - keeps the bundle small.
 hljs.registerLanguage('python', python)
@@ -114,7 +115,18 @@ function CodeBlock({ lang, value }: { lang: string; value: string }) {
   )
 }
 
-export function Markdown({ body, section }: { body: string; section: string }) {
+export function Markdown({
+  body,
+  section,
+  title,
+}: {
+  body: string
+  section: string
+  title?: string
+}) {
+  // Diagrams are numbered per note so an exported file is identifiable
+  // ("api-gateway-3.svg") rather than a page of identical names.
+  let diagramCount = 0
   const components: Components = {
     // A note's main sections are h1 in most files, h2 in a few, and h4 in one,
     // so every level down to h4 needs an id — otherwise the table of contents
@@ -140,7 +152,16 @@ export function Markdown({ body, section }: { body: string; section: string }) {
       const text = String(children ?? '').replace(/\n$/, '')
       const isBlock = Boolean(className?.startsWith('language-')) || text.includes('\n')
       if (!isBlock) return <code className="inline-code">{children}</code>
-      return <CodeBlock lang={match?.[1] ?? 'text'} value={text} />
+      const lang = match?.[1] ?? 'text'
+      // Diagrams branch out before CodeBlock, which stays the fallback the
+      // renderer degrades to on a parse error or the "view source" toggle.
+      if (lang === 'mermaid') {
+        diagramCount += 1
+        return (
+          <MermaidDiagram source={text} title={`${title ?? section}-${diagramCount}`} />
+        )
+      }
+      return <CodeBlock lang={lang} value={text} />
     },
     // Callout panels emitted by remarkCallouts (> [!TYPE]); any other div passes through.
     div: ({ className, children }) => {

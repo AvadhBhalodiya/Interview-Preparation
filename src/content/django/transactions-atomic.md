@@ -161,18 +161,12 @@ def some_function():
 
 Its simplified behavior is:
 
-```text
-Enter block
-   |
-   v
-Start transaction or savepoint
-   |
-   v
-Execute database operations
-   |
-   +---- normal exit ----> commit/release savepoint
-   |
-   +---- exception ------> rollback
+```mermaid
+flowchart TD
+    A[Enter block] --> B[Start transaction or savepoint]
+    B --> C[Execute database operations]
+    C -->|Normal exit| D["Commit or release savepoint"]
+    C -->|Exception| E[Rollback]
 ```
 
 ## Signature
@@ -340,12 +334,12 @@ with transaction.atomic():
 
 Django usually behaves like this:
 
-```text
-Outer atomic block  -> starts transaction
-Inner atomic block  -> creates savepoint
-Inner success       -> releases savepoint
-Outer success       -> commits transaction
-```
+| Event | Effect |
+| --- | --- |
+| Outer atomic block | Starts transaction |
+| Inner atomic block | Creates savepoint |
+| Inner success | Releases savepoint |
+| Outer success | Commits transaction |
 
 ## Savepoint diagram
 
@@ -600,12 +594,10 @@ Order committed  ❌
 
 Using `on_commit()`:
 
-```text
-Order committed?
-    |
-    +-- Yes -> send email
-    |
-    +-- No  -> discard callback
+```mermaid
+flowchart TD
+    A{Order committed?} -->|Yes| B[Send email]
+    A -->|No| C[Discard callback]
 ```
 
 ## Queueing background tasks after commit
@@ -950,16 +942,12 @@ DATABASES = {
 
 Conceptually:
 
-```text
-Request arrives
-      |
-Start transaction
-      |
-Execute view
-      |
-      +-- response returned -> commit
-      |
-      +-- exception --------> rollback
+```mermaid
+flowchart TD
+    A[Request arrives] --> B[Start transaction]
+    B --> C[Execute view]
+    C -->|Response returned| D[Commit]
+    C -->|Exception| E[Rollback]
 ```
 
 ## What is included
@@ -1322,17 +1310,11 @@ def place_order(*, customer, items):
 
 Views, commands, background workers, and APIs can call the same service.
 
-```text
-View / API / Worker
-         |
-         v
-Business service
-         |
-         v
-Transaction boundary
-         |
-         v
-Models and database
+```mermaid
+flowchart TD
+    A["View / API / Worker"] --> B[Business service]
+    B --> C[Transaction boundary]
+    C --> D[Models and database]
 ```
 
 ## 18.8 Avoid relying on model `save()` calls alone
@@ -1594,12 +1576,10 @@ flowchart TD
 
 # 21. Key Takeaways
 
-```text
-transaction.atomic()
-    |
-    +-- Success   -> commit
-    |
-    +-- Exception -> rollback
+```mermaid
+flowchart TD
+    A["transaction.atomic()"] -->|Success| B[Commit]
+    A -->|Exception| C[Rollback]
 ```
 
 - Django uses autocommit mode by default.

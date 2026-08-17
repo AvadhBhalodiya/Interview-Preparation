@@ -31,19 +31,11 @@ For a table containing ten million rows, scanning the entire table for one custo
 
 A B-tree index keeps selected column values in sorted order and stores references to the corresponding table rows. The database can navigate the tree, locate the required value, and read only the relevant part of the table.
 
-```text
-Index search
-
-Root page
-   |
-   v
-Internal page
-   |
-   v
-Leaf page containing the target key
-   |
-   v
-Matching table row(s)
+```mermaid
+flowchart TD
+    R[Root page] --> I[Internal page]
+    I --> L[Leaf page containing the target key]
+    L --> T["Matching table row(s)"]
 ```
 
 However, an index is not free. Every additional index consumes storage and normally has to be maintained when rows are inserted, updated, or deleted.

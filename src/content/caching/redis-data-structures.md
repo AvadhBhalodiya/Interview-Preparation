@@ -725,11 +725,11 @@ A consumer may receive the same event more than once, for example when:
 
 Therefore, stream consumers should normally be idempotent.
 
-```text
-event_id -> already processed?
-
-yes -> do not repeat side effects
-no  -> process, record completion, acknowledge
+```mermaid
+flowchart TD
+    E[event_id] --> Q{Already processed?}
+    Q -->|Yes| S[Do not repeat side effects]
+    Q -->|No| P["Process, record completion, acknowledge"]
 ```
 
 ## 9.5 Stream Trimming
@@ -1150,14 +1150,11 @@ Common uses:
 
 A vector set stores high-dimensional vectors and finds similar elements.
 
-```text
-document text
-    |
-embedding model
-    |
-[0.18, -0.27, 0.91, ...]
-    |
-Redis vector set
+```mermaid
+flowchart TD
+    D[Document text] --> E[Embedding model]
+    E --> V["[0.18, -0.27, 0.91, ...]"]
+    V --> R[(Redis vector set)]
 ```
 
 ## 17.1 Main Operations

@@ -202,16 +202,12 @@ Only the first execution changes the row. Later executions affect zero rows.
 
 Store a unique identifier for each logical task.
 
-```text
-Incoming task
-    │
-    ▼
-Has idempotency key been processed?
-    ├── Yes → Return stored result / skip
-    └── No  → Execute operation
-                 │
-                 ▼
-             Store result
+```mermaid
+flowchart TD
+    A[Incoming task] --> B{Has idempotency key been processed?}
+    B -->|Yes| C["Return stored result / skip"]
+    B -->|No| D[Execute operation]
+    D --> E[Store result]
 ```
 
 Example table:
@@ -375,10 +371,10 @@ Only one worker can insert the unique key.
 
 A useful idempotency record may contain:
 
-```text
-PROCESSING → COMPLETED
-     │
-     └─────→ FAILED / RETRYABLE
+```mermaid
+flowchart TD
+    P[PROCESSING] --> C[COMPLETED]
+    P --> F["FAILED / RETRYABLE"]
 ```
 
 Example model:
@@ -704,12 +700,10 @@ Claim the notification before sending.
 
 Be aware of the failure window:
 
-```text
-Email sent successfully
-        ↓
-Worker crashes before marking SENT
-        ↓
-Retry may send again
+```mermaid
+flowchart TD
+    A[Email sent successfully] --> B[Worker crashes before marking SENT]
+    B --> C[Retry may send again]
 ```
 
 Possible mitigations:
@@ -835,12 +829,10 @@ A common problem is updating the database and publishing an event reliably.
 
 Unsafe flow:
 
-```text
-Update order in database
-        ↓
-Application crashes
-        ↓
-Order changed, but event was never published
+```mermaid
+flowchart TD
+    A[Update order in database] --> B[Application crashes]
+    B --> C["Order changed, but event was never published"]
 ```
 
 Reversing the order creates the opposite problem: the event may be published while the database transaction later fails.
@@ -919,16 +911,12 @@ A retry may begin after step 2 has completed.
 
 ## Persist Workflow State
 
-```text
-PENDING
-  ↓
-INVENTORY_RESERVED
-  ↓
-PAYMENT_CAPTURED
-  ↓
-SHIPMENT_CREATED
-  ↓
-COMPLETED
+```mermaid
+flowchart TD
+    A[PENDING] --> B[INVENTORY_RESERVED]
+    B --> C[PAYMENT_CAPTURED]
+    C --> D[SHIPMENT_CREATED]
+    D --> E[COMPLETED]
 ```
 
 Each step should:
@@ -966,12 +954,10 @@ For complex workflows, use a durable workflow engine or a carefully designed sta
 
 Some workflows require a compensating action:
 
-```text
-Payment captured
-    +
-Inventory reservation failed permanently
-    ↓
-Create refund operation
+```mermaid
+flowchart TD
+    A[Payment captured] --> C[Create refund operation]
+    B[Inventory reservation failed permanently] --> C
 ```
 
 The compensation must also be idempotent:

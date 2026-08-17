@@ -1525,20 +1525,14 @@ Security gates should be risk-based. A critical authorization regression should 
 
 A concise secure-request model is:
 
-```text
-Authenticate identity
-        ↓
-Authorize function
-        ↓
-Authorize object
-        ↓
-Authorize properties
-        ↓
-Validate business rules
-        ↓
-Control resource usage
-        ↓
-Perform and audit the action
+```mermaid
+flowchart TD
+    A[Authenticate identity] --> B[Authorize function]
+    B --> C[Authorize object]
+    C --> D[Authorize properties]
+    D --> E[Validate business rules]
+    E --> F[Control resource usage]
+    F --> G[Perform and audit the action]
 ```
 
 ---

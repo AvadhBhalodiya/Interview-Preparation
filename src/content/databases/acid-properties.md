@@ -520,14 +520,11 @@ If zero rows are updated, another transaction changed the document first. The ap
 
 **Durability means that after a transaction commits successfully, its result must survive a database restart or system failure.**
 
-```text
-Transaction
-    │
-    ├── COMMIT acknowledged
-    │
-    └── Server crashes
-             │
-             └── Committed change is recovered
+```mermaid
+flowchart TD
+    T[Transaction] --> C[COMMIT acknowledged]
+    C --> X[Server crashes]
+    X --> R[Committed change is recovered]
 ```
 
 ## 6.2 Write-Ahead Logging
@@ -654,22 +651,17 @@ COMMIT;
 
 ## 7.4 Transaction Boundary Diagram
 
-```text
-BEGIN
-  │
-  ├── Lock account rows
-  ├── Check sender balance
-  ├── Debit sender
-  ├── Credit receiver
-  ├── Insert audit records
-  │
-  ├── Any failure? ── Yes ──> ROLLBACK
-  │
-  └── No
-       │
-       └── COMMIT
-            │
-            └── Transfer is permanent
+```mermaid
+flowchart TD
+    B[BEGIN] --> L[Lock account rows]
+    L --> C[Check sender balance]
+    C --> D[Debit sender]
+    D --> CR[Credit receiver]
+    CR --> A[Insert audit records]
+    A --> F{Any failure?}
+    F -->|Yes| RB[ROLLBACK]
+    F -->|No| CM[COMMIT]
+    CM --> P[Transfer is permanent]
 ```
 
 ---
@@ -938,15 +930,13 @@ Serializable transactions and deadlock detection can abort one transaction to pr
 
 Application logic should be able to retry appropriate failures:
 
-```text
-Attempt transaction
-    │
-    ├── Success → Return result
-    │
-    └── Retryable conflict
-            │
-            ├── Back off briefly
-            └── Retry entire transaction
+```mermaid
+flowchart TD
+    A[Attempt transaction] --> O{Outcome?}
+    O -->|Success| R[Return result]
+    O -->|Retryable conflict| B[Back off briefly]
+    B --> RT[Retry entire transaction]
+    RT --> A
 ```
 
 The entire transaction must be retried because its earlier reads may no longer be valid.
@@ -998,18 +988,15 @@ Committed results survive supported failures.
 
 ## 12.2 Complete Mental Model
 
-```text
-                    ACID TRANSACTION
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-   All or nothing     Valid state       Safe concurrency
-     Atomicity        Consistency          Isolation
-        │                  │                  │
-        └──────────────────┼──────────────────┘
-                           │
-                Commit survives failure
-                       Durability
+```mermaid
+flowchart TB
+    T[ACID transaction]
+    T --> A["All or nothing<br/>Atomicity"]
+    T --> C["Valid state<br/>Consistency"]
+    T --> I["Safe concurrency<br/>Isolation"]
+    A --> D["Commit survives failure<br/>Durability"]
+    C --> D
+    I --> D
 ```
 
 ## 12.3 Fast Comparison

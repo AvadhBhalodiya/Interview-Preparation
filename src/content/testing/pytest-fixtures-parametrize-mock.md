@@ -206,14 +206,14 @@ def test_connection_is_available(connection: FakeConnection) -> None:
 
 The code before `yield` is setup. The code after `yield` is teardown.
 
-```text
-Fixture setup
-    ↓
-yield resource
-    ↓
-Test execution
-    ↓
-Fixture teardown
+```mermaid
+flowchart TD
+    SETUP[Fixture setup]
+    YIELD[yield resource]
+    EXEC[Test execution]
+    TEARDOWN[Fixture teardown]
+
+    SETUP --> YIELD --> EXEC --> TEARDOWN
 ```
 
 Teardown still runs when the test assertion fails, which makes `yield` fixtures suitable for:
@@ -274,10 +274,18 @@ A `session` fixture is reused across the whole test run. It should not contain m
 
 Use the narrowest practical scope:
 
-```text
-Default choice                → function
-Expensive but module-specific → module
-Expensive and suite-wide      → session
+```mermaid
+flowchart LR
+    DEFAULT[Default choice]
+    MODSPEC[Expensive but module-specific]
+    SUITE[Expensive and suite-wide]
+    FN[function]
+    MOD[module]
+    SESS[session]
+
+    DEFAULT --> FN
+    MODSPEC --> MOD
+    SUITE --> SESS
 ```
 
 Wider scope improves speed but increases the chance of shared-state coupling.
@@ -1534,12 +1542,18 @@ A good name makes the test suite read like executable documentation.
 
 A typical unit test should control dependencies at the boundary:
 
-```text
-Service under test
-├── Repository mock
-├── API client mock
-├── Event publisher mock
-└── Clock mock
+```mermaid
+flowchart TD
+    SUT[Service under test]
+    REPO[Repository mock]
+    APIC[API client mock]
+    PUB[Event publisher mock]
+    CLOCK[Clock mock]
+
+    SUT --> REPO
+    SUT --> APIC
+    SUT --> PUB
+    SUT --> CLOCK
 ```
 
 Integration tests can then verify that real components are wired together correctly.
@@ -1692,12 +1706,15 @@ Rows should exercise the same behavior. When cases require very different setup 
 
 Read the import inside the module under test and patch the exact name that the function uses.
 
-```text
-from app.gateway import charge
-→ patch app.service.charge
+```mermaid
+flowchart LR
+    FROMIMP["from app.gateway import charge"]
+    PATCHSVC["patch app.service.charge"]
+    PLAINIMP["import app.gateway"]
+    PATCHGW["patch app.gateway.charge"]
 
-import app.gateway
-→ patch app.gateway.charge
+    FROMIMP --> PATCHSVC
+    PLAINIMP --> PATCHGW
 ```
 
 ## 10.8 Prefer `autospec` or `spec_set`

@@ -425,18 +425,11 @@ Use explicit typing and mutually exclusive validation rules.
 
 Example validation profiles:
 
-```text
-Access token:
-- typ = at+jwt
-- aud = orders-api
-- requires scope
-
-Password-reset token:
-- typ = password-reset+jwt
-- aud = account-recovery
-- one-time jti
-- very short expiration
-```
+| Check | Access token | Password-reset token |
+|---|---|---|
+| `typ` | `at+jwt` | `password-reset+jwt` |
+| `aud` | `orders-api` | `account-recovery` |
+| Additional rules | Requires scope | One-time `jti`, very short expiration |
 
 Never accept an OpenID Connect ID token as an API access token simply because its signature is valid.
 
@@ -468,12 +461,10 @@ Prefer stable identifiers over duplicated profile information. Fetch sensitive o
 
 A self-contained JWT can often be validated without contacting the issuer.
 
-```text
-API receives JWT
-    ↓
-Valid signature and claims
-    ↓
-API accepts it without a database lookup
+```mermaid
+flowchart TD
+    A[API receives JWT] --> B[Valid signature and claims]
+    B --> C[API accepts it without<br/>a database lookup]
 ```
 
 This improves availability and scalability, but it means the API may not know that the user logged out, the account was disabled, or the token was stolen after issuance.
@@ -547,7 +538,7 @@ sequenceDiagram
     C->>A: Refresh token R1
     A->>S: Validate active R1
     S-->>A: Valid
-    A->>S: Mark R1 used; store R2
+    A->>S: Mark R1 used, store R2
     A-->>C: Access token A2 + refresh token R2
 
     Note over C,A: Attacker later replays R1
@@ -644,12 +635,12 @@ Removing a verification key can invalidate every token signed with that key. Thi
 
 It is usually unsuitable for normal logout because it affects many users and services at once.
 
-```text
-Normal logout     -> revoke session or token family
-Single token      -> denylist its jti
-All user sessions -> increase session version / revoke user sessions
-Key compromise    -> emergency key rotation and broad invalidation
-```
+| Situation | Correct response |
+|---|---|
+| Normal logout | Revoke the session or token family |
+| Single token | Denylist its `jti` |
+| All user sessions | Increase session version / revoke user sessions |
+| Key compromise | Emergency key rotation and broad invalidation |
 
 ---
 
@@ -1022,36 +1013,36 @@ Do not let an accidental cache outage silently disable revocation checks across 
 
 ## 11.1 Server-Rendered Web Application
 
-```text
-Browser
-  └── Secure + HttpOnly + SameSite session cookie
-        └── Application server
-              ├── Server-side session
-              └── Calls internal APIs using service credentials
+```mermaid
+flowchart TD
+    B[Browser] --> C["Secure + HttpOnly + SameSite<br/>session cookie"]
+    C --> A[Application server]
+    A --> S[Server-side session]
+    A --> I[Calls internal APIs<br/>using service credentials]
 ```
 
 This is often simpler than exposing JWTs to browser code.
 
 ## 11.2 Single-Page Application with BFF
 
-```text
-Browser
-  └── HttpOnly session cookie
-        └── BFF
-              ├── Stores/refreshes OAuth tokens server-side
-              └── Calls resource APIs
+```mermaid
+flowchart TD
+    B[Browser] --> C[HttpOnly session cookie]
+    C --> F[BFF]
+    F --> S["Stores/refreshes OAuth tokens server-side"]
+    F --> A[Calls resource APIs]
 ```
 
 This strongly limits token exposure in the browser.
 
 ## 11.3 SPA Directly Calling APIs
 
-```text
-Browser JavaScript
-  ├── Short-lived access token in memory
-  ├── Authorization Code + PKCE
-  └── Carefully protected refresh mechanism
-        └── API validates JWT or introspects token
+```mermaid
+flowchart TD
+    B[Browser JavaScript] --> T["Short-lived access token in memory"]
+    B --> P["Authorization Code + PKCE"]
+    B --> R[Carefully protected refresh mechanism]
+    R --> A[API validates JWT<br/>or introspects token]
 ```
 
 This design requires especially strong XSS controls. Prefer not to place long-lived refresh tokens in JavaScript-readable persistent storage.

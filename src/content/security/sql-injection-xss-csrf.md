@@ -26,15 +26,20 @@ SQL Injection, Cross-Site Scripting, and Cross-Site Request Forgery attack diffe
 
 A useful mental model is:
 
-```text
-SQL Injection:
-Untrusted input ──> SQL query ──> Database executes unintended SQL
-
-XSS:
-Untrusted input ──> HTML/JavaScript output ──> Browser executes unintended script
-
-CSRF:
-Attacker page ──> Victim browser ──> Trusted application accepts forged action
+```mermaid
+flowchart LR
+    subgraph SQLI[SQL Injection]
+        A[Untrusted input] --> B[SQL query]
+        B --> C[Database executes<br/>unintended SQL]
+    end
+    subgraph XSS[XSS]
+        D[Untrusted input] --> E["HTML/JavaScript output"]
+        E --> F[Browser executes<br/>unintended script]
+    end
+    subgraph CSRF[CSRF]
+        G[Attacker page] --> H[Victim browser]
+        H --> I[Trusted application<br/>accepts forged action]
+    end
 ```
 
 The common security principle is:
@@ -165,12 +170,10 @@ The attacker sends the payload and receives the result through the same applicat
 
 Example:
 
-```text
-Request input
-   ↓
-Vulnerable query
-   ↓
-Database error or extracted data returned in HTTP response
+```mermaid
+flowchart TD
+    A[Request input] --> B[Vulnerable query]
+    B --> C[Database error or extracted data<br/>returned in HTTP response]
 ```
 
 Common forms include:
@@ -545,12 +548,14 @@ If the template engine does not escape output, an attacker may inject markup or 
 
 ### Core problem
 
-```text
-Expected browser interpretation:
-User value ──> Plain text
-
-Vulnerable browser interpretation:
-User value ──> HTML / JavaScript / URL / CSS code
+```mermaid
+flowchart LR
+    subgraph EXP[Expected browser interpretation]
+        A[User value] --> B[Plain text]
+    end
+    subgraph VUL[Vulnerable browser interpretation]
+        C[User value] --> D["HTML / JavaScript / URL / CSS code"]
+    end
 ```
 
 ### Possible impact
@@ -606,12 +611,10 @@ document.getElementById("output").textContent = message;
 
 The malicious value is sent in a request and immediately reflected in the response.
 
-```text
-Crafted URL
-   ↓
-Vulnerable server response includes request value
-   ↓
-Victim browser executes injected content
+```mermaid
+flowchart TD
+    A[Crafted URL] --> B[Vulnerable server response<br/>includes request value]
+    B --> C[Victim browser executes<br/>injected content]
 ```
 
 Common locations:
@@ -626,14 +629,11 @@ Common locations:
 
 The malicious content is saved and later displayed to one or more users.
 
-```text
-Attacker submits content
-   ↓
-Application stores it
-   ↓
-Another user loads a page
-   ↓
-Stored content executes in that user's browser
+```mermaid
+flowchart TD
+    A[Attacker submits content] --> B[Application stores it]
+    B --> C[Another user loads a page]
+    C --> D[Stored content executes<br/>in that user's browser]
 ```
 
 Common locations:
@@ -800,14 +800,11 @@ Use bypass features only when the content has been sanitized with a proven HTML 
 
 Output encoding should happen when the value is inserted into its final output context.
 
-```text
-Stored value
-   ↓
-Business processing
-   ↓
-Encode for the exact output context
-   ↓
-Render
+```mermaid
+flowchart TD
+    A[Stored value] --> B[Business processing]
+    B --> C[Encode for the exact output context]
+    C --> D[Render]
 ```
 
 Do not encode all data at input time because:
@@ -880,14 +877,11 @@ In such cases, use a maintained, well-reviewed HTML sanitizer configured with an
 
 Conceptually:
 
-```text
-Untrusted HTML
-   ↓
-HTML parser-based sanitizer
-   ↓
-Allowed tags and attributes only
-   ↓
-Rendered HTML
+```mermaid
+flowchart TD
+    A[Untrusted HTML] --> B[HTML parser-based sanitizer]
+    B --> C[Allowed tags and attributes only]
+    C --> D[Rendered HTML]
 ```
 
 A sanitizer should remove or neutralize:
@@ -1171,19 +1165,16 @@ CSRF is primarily relevant when:
 
 ### Cookie authentication
 
-```text
-Browser automatically attaches cookie
-              ↓
-CSRF protection normally required
+```mermaid
+flowchart TD
+    A[Browser automatically attaches cookie] --> B[CSRF protection normally required]
 ```
 
 ### Authorization header controlled by JavaScript
 
-```text
-Frontend explicitly reads token and adds:
-Authorization: Bearer <token>
-              ↓
-A normal cross-site form cannot add this custom header
+```mermaid
+flowchart TD
+    A["Frontend explicitly reads the token and adds<br/>Authorization: Bearer token"] --> B[A normal cross-site form<br/>cannot add this custom header]
 ```
 
 A bearer-token API that never authenticates through cookies is generally less exposed to traditional CSRF. However, token storage introduces other concerns, especially XSS. Do not move session tokens from secure cookies to JavaScript-accessible storage only to avoid CSRF.
@@ -1693,18 +1684,13 @@ Review:
 
 ## 7.2 Automated testing layers
 
-```text
-Developer tests
-     ↓
-Static analysis / SAST
-     ↓
-Dependency and secret scanning
-     ↓
-Integration security tests
-     ↓
-Dynamic testing / DAST in test environment
-     ↓
-Production logging and alerting
+```mermaid
+flowchart TD
+    A[Developer tests] --> B["Static analysis / SAST"]
+    B --> C[Dependency and secret scanning]
+    C --> D[Integration security tests]
+    D --> E["Dynamic testing / DAST<br/>in test environment"]
+    E --> F[Production logging and alerting]
 ```
 
 ### Unit and integration tests
