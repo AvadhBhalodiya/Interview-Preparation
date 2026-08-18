@@ -7,9 +7,29 @@ order: 8
 # Django Migrations: How They Work & Common Issues
 
 > [!KEY]
+>
 > A Django migration is a **versioned instruction file** that moves the database schema and, when required, its data from one known state to another.
 
-**Version note:** This guide is aligned with Django **6.0** migration behavior. Most concepts also apply to Django 4.2 LTS and 5.2 LTS.
+## In short
+
+- Three states must agree: the current models in `models.py`, the model state the migration graph records, and the schema actually present in the database — almost every migration problem is one of them drifting away from the other two.
+- `makemigrations` diffs the current models against the state reconstructed from migration files, **never** against the live database; `migrate` walks the graph, runs the pending operations, and records each applied migration as a row in `django_migrations`.
+- Migrations form a directed acyclic graph ordered by each file's `dependencies` list — the `0004_` numeric prefixes are labels, not an execution order, and they mean nothing across apps.
+- Adding a non-nullable column to a populated table needs a default, or the safer three-step sequence: add it nullable, backfill existing rows, then apply `NOT NULL`.
+- Data migrations must load models through `apps.get_model("app", "Model")`, never `from app.models import Model` — the historical model matches the schema at that point in history, while the imported class matches today's code.
+- `RunSQL` and `SeparateDatabaseAndState` are how you reconcile Django's recorded state with a database changed out of band, by describing the database action and the state transition separately.
+- `--fake` and `--fake-initial` edit only the recorded state in `django_migrations`; they change what Django believes is applied and never touch the schema.
+
+```mermaid
+flowchart LR
+    A["Current models.py"] -->|makemigrations| B["Migration history"]
+    B -->|migrate| C["Actual database schema"]
+    C -->|Recorded in| D["django_migrations table"]
+```
+
+**Interview answer:** You change `models.py`, run `makemigrations` — which compares the current models against the model state rebuilt from the existing migration files, not against the database — and it writes a migration file holding a `dependencies` list and an `operations` list. `migrate` then builds the dependency graph, reads `django_migrations` to see what is already applied, executes the pending operations in dependency order, and records each one. What goes wrong is those three states drifting apart: a column altered by hand, a migration faked to silence an error, a shared migration edited after it was applied, or two branches merged into two leaf nodes that need `makemigrations --merge`.
+
+**Gotcha:** Reaching for `--fake` to make a migration error go away. It rewrites the recorded state without touching the schema, so the real mismatch survives and resurfaces later inside a different migration — by which point the recorded history no longer explains how the database reached its current shape.
 
 ---
 
@@ -19,7 +39,6 @@ A Django model describes how application data should look:
 
 ```python
 from django.db import models
-
 
 class Product(models.Model):
     name = models.CharField(max_length=120)
@@ -66,11 +85,7 @@ Django works with three related states.
 
 ## 2.1 Current model state
 
-This is the model code currently present in the application:
-
-```text
-products/models.py
-```
+This is the model code currently present in the application: `products/models.py`
 
 ## 2.2 Historical migration state
 
@@ -97,16 +112,7 @@ Database
     └── status
 ```
 
-The three states should remain consistent:
-
-```mermaid
-flowchart LR
-    A["Current models.py"] -->|makemigrations| B["Migration history"]
-    B -->|migrate| C["Actual database schema"]
-    C -->|Recorded in| D["django_migrations table"]
-```
-
-A large number of migration problems happen when one of these states is changed without updating the others.
+The three states should remain consistent. A large number of migration problems happen when one of these states is changed without updating the others.
 
 Examples:
 
@@ -154,11 +160,7 @@ class Product(models.Model):
 
 ## 3.2 Generate a migration
 
-```bash
-python manage.py makemigrations products
-```
-
-Possible output:
+Run `python manage.py makemigrations products`. Possible output:
 
 ```text
 Migrations for 'products':
@@ -172,7 +174,6 @@ Migrations for 'products':
 
 ```python
 from django.db import migrations, models
-
 
 class Migration(migrations.Migration):
 
@@ -193,27 +194,13 @@ Check that Django detected the intended operation. Renames, complex constraints,
 
 ## 3.4 Preview the execution
 
-Show the migration plan:
+Show the migration plan with `python manage.py migrate --plan`.
 
-```bash
-python manage.py migrate --plan
-```
-
-Show generated SQL for one migration:
-
-```bash
-python manage.py sqlmigrate products 0002
-```
-
-SQL output varies by database backend.
+Show the generated SQL for one migration with `python manage.py sqlmigrate products 0002`. SQL output varies by database backend.
 
 ## 3.5 Apply the migration
 
-```bash
-python manage.py migrate
-```
-
-Django:
+Run `python manage.py migrate`. Django:
 
 1. Loads migration files.
 2. Builds their dependency graph.
@@ -230,7 +217,6 @@ A migration file is a Python module containing a class named `Migration`.
 
 ```python
 from django.db import migrations, models
-
 
 class Migration(migrations.Migration):
 
@@ -285,7 +271,6 @@ Example for a custom user dependency:
 ```python
 from django.conf import settings
 from django.db import migrations
-
 
 class Migration(migrations.Migration):
     dependencies = [
@@ -357,7 +342,7 @@ flowchart LR
     E --> F["New migration operations"]
 ```
 
-This explains several important behaviors.
+This explains several important behaviors. It also explains why Django may generate migrations for field options that help reconstruct historical models, even when the immediate database schema is not changed.
 
 ## 5.1 Manual database changes are not automatically detected
 
@@ -365,11 +350,7 @@ If a column is created manually in PostgreSQL, Django's migration history does n
 
 The next migration may fail because Django believes the column still needs to be created.
 
-## 5.2 Model changes may produce migrations without obvious SQL changes
-
-Django may generate migrations for field options that help reconstruct historical models, even when the immediate database schema is not changed.
-
-## 5.3 Renames require careful review
+## 5.2 Renames require careful review
 
 When a field is renamed and changed significantly at the same time, Django may interpret it as:
 
@@ -378,11 +359,7 @@ Remove old field
 Add new field
 ```
 
-instead of:
-
-```text
-Rename existing field
-```
+instead of: `Rename existing field`
 
 The first interpretation may cause data loss.
 
@@ -409,9 +386,7 @@ flowchart LR
 
 Each node is a migration. An arrow means:
 
-```text
-The source migration must run before the target migration.
-```
+> The source migration must run before the target migration.
 
 Django uses the graph to calculate a valid execution order.
 
@@ -494,11 +469,7 @@ This is usually straightforward because existing rows can receive `NULL`.
 
 ## 7.3 Adding a non-nullable field
 
-The following change requires a value for existing rows:
-
-```python
-status = models.CharField(max_length=20)
-```
+The following change requires a value for existing rows: `status = models.CharField(max_length=20)`
 
 Django may ask for a one-off default.
 
@@ -599,7 +570,6 @@ python manage.py makemigrations products \
 ```python
 from django.db import migrations
 
-
 def set_default_status(apps, schema_editor):
     Product = apps.get_model("products", "Product")
 
@@ -607,14 +577,12 @@ def set_default_status(apps, schema_editor):
         status="active"
     )
 
-
 def reverse_default_status(apps, schema_editor):
     Product = apps.get_model("products", "Product")
 
     Product.objects.filter(status="active").update(
         status=None
     )
-
 
 class Migration(migrations.Migration):
 
@@ -632,11 +600,7 @@ class Migration(migrations.Migration):
 
 ## 8.3 Always use historical models
 
-Inside a migration, use:
-
-```python
-Product = apps.get_model("products", "Product")
-```
+Inside a migration, use: `Product = apps.get_model("products", "Product")`
 
 Do not normally import the current model:
 
@@ -670,11 +634,7 @@ def forwards(apps, schema_editor):
 
 ## 8.5 Make data migrations reversible when practical
 
-Use a reverse callable:
-
-```python
-migrations.RunPython(forwards, backwards)
-```
+Use a reverse callable: `migrations.RunPython(forwards, backwards)`
 
 For intentionally irreversible logic:
 
@@ -689,11 +649,7 @@ Use `noop` only when reversing without restoring old data is acceptable.
 
 ## 8.6 Avoid loading all rows into memory
 
-Unsafe for a large table:
-
-```python
-products = list(Product.objects.all())
-```
+Unsafe for a large table: `products = list(Product.objects.all())`
 
 Prefer:
 
@@ -748,13 +704,9 @@ flowchart TD
     C --> E["Actual database"]
 ```
 
-## 9.1 Why state matters
+State matters because `makemigrations` uses project state to decide what changed. If custom SQL changes the database without updating Django's state, Django may later attempt to recreate or remove the same structure.
 
-`makemigrations` uses project state to decide what changed.
-
-If custom SQL changes the database without updating Django's state, Django may later attempt to recreate or remove the same structure.
-
-## 9.2 `RunSQL`
+## 9.1 `RunSQL`
 
 Example:
 
@@ -773,7 +725,7 @@ migrations.RunSQL(
 
 Custom SQL is database-specific and must be reviewed carefully.
 
-## 9.3 `SeparateDatabaseAndState`
+## 9.2 `SeparateDatabaseAndState`
 
 Use this advanced operation when the database action and Django's state transition must be described separately.
 
@@ -870,25 +822,13 @@ For large tables, separate schema deployment from background backfilling when th
 
 # 11. Reversing and Rolling Back Migrations
 
-To move an app back to migration `0002`:
-
-```bash
-python manage.py migrate products 0002
-```
+To move an app back to migration `0002`: `python manage.py migrate products 0002`
 
 If `0003` is currently applied, Django tries to reverse it.
 
-To reverse every migration for an app:
+To reverse every migration for an app: `python manage.py migrate products zero`
 
-```bash
-python manage.py migrate products zero
-```
-
-Preview what will happen:
-
-```bash
-python manage.py migrate products 0002 --plan
-```
+Preview what will happen: `python manage.py migrate products 0002 --plan`
 
 ## 11.1 Reversible schema operations
 
@@ -942,11 +882,7 @@ Production migration design should account for mixed application versions.
 python manage.py makemigrations
 ```
 
-For one app:
-
-```bash
-python manage.py makemigrations products
-```
+For one app: `python manage.py makemigrations products`
 
 With a meaningful name:
 
@@ -963,11 +899,7 @@ python manage.py makemigrations products \
     --name backfill_product_status
 ```
 
-Preview without writing files:
-
-```bash
-python manage.py makemigrations --dry-run
-```
+Preview without writing files: `python manage.py makemigrations --dry-run`
 
 Show full proposed migration content:
 
@@ -977,63 +909,27 @@ python manage.py makemigrations \
     --verbosity 3
 ```
 
-Fail CI when model changes have no migration:
+Fail CI when model changes have no migration: `python manage.py makemigrations --check`
 
-```bash
-python manage.py makemigrations --check
-```
+Merge conflicting branches: `python manage.py makemigrations --merge`
 
-Merge conflicting branches:
-
-```bash
-python manage.py makemigrations --merge
-```
-
-In Django 6.0+, update the latest migration with current model changes:
-
-```bash
-python manage.py makemigrations products --update
-```
+In Django 6.0+, update the latest migration with current model changes: `python manage.py makemigrations products --update`
 
 Use `--update` cautiously and avoid rewriting a migration that has already been shared or applied in another environment.
 
 ## 12.2 Apply migrations
 
-Apply all pending migrations:
+Apply all pending migrations: `python manage.py migrate`
 
-```bash
-python manage.py migrate
-```
+Apply migrations for one app: `python manage.py migrate products`
 
-Apply migrations for one app:
+Move to a specific migration: `python manage.py migrate products 0004`
 
-```bash
-python manage.py migrate products
-```
+Show execution plan: `python manage.py migrate --plan`
 
-Move to a specific migration:
+Check for unapplied migrations: `python manage.py migrate --check`
 
-```bash
-python manage.py migrate products 0004
-```
-
-Show execution plan:
-
-```bash
-python manage.py migrate --plan
-```
-
-Check for unapplied migrations:
-
-```bash
-python manage.py migrate --check
-```
-
-Select a database:
-
-```bash
-python manage.py migrate --database=analytics
-```
+Select a database: `python manage.py migrate --database=analytics`
 
 ## 12.3 Inspect migration status
 
@@ -1041,11 +937,7 @@ python manage.py migrate --database=analytics
 python manage.py showmigrations
 ```
 
-For one app:
-
-```bash
-python manage.py showmigrations products
-```
+For one app: `python manage.py showmigrations products`
 
 Applied migrations are marked:
 
@@ -1056,11 +948,7 @@ products
  [ ] 0003_product_status
 ```
 
-Show a dependency-oriented plan:
-
-```bash
-python manage.py showmigrations --plan
-```
+Show a dependency-oriented plan: `python manage.py showmigrations --plan`
 
 ## 12.4 Inspect SQL
 
@@ -1078,19 +966,11 @@ This is especially useful before:
 
 ## 12.5 Fake migration state
 
-Mark migration operations as applied without running their SQL:
-
-```bash
-python manage.py migrate products 0003 --fake
-```
+Mark migration operations as applied without running their SQL: `python manage.py migrate products 0003 --fake`
 
 Use only when the database already matches the expected result.
 
-For a pre-existing schema:
-
-```bash
-python manage.py migrate --fake-initial
-```
+For a pre-existing schema: `python manage.py migrate --fake-initial`
 
 `--fake-initial` checks for expected table names, not a complete structural match. Confirm the existing schema first.
 
@@ -1133,11 +1013,7 @@ INSTALLED_APPS = [
 ]
 ```
 
-For an app that does not yet have migrations:
-
-```bash
-python manage.py makemigrations products
-```
+For an app that does not yet have migrations: `python manage.py makemigrations products`
 
 ---
 
@@ -1197,11 +1073,7 @@ The database object exists, but Django's migration history says its creation mig
 
 ### Resolution
 
-For a genuine pre-existing initial schema:
-
-```bash
-python manage.py migrate --fake-initial
-```
+For a genuine pre-existing initial schema: `python manage.py migrate --fake-initial`
 
 For later migrations, verify the complete expected schema before considering `--fake`.
 
@@ -1230,11 +1102,7 @@ python manage.py migrate --check
 
 ### Deployment prevention
 
-Use this order only when the schema change is backward-compatible:
-
-```text
-Deploy compatible schema → deploy application code
-```
+Use this order only when the schema change is backward-compatible: `Deploy compatible schema → deploy application code`
 
 For destructive changes, use an expand-and-contract approach.
 
@@ -1283,11 +1151,7 @@ products.0005_add_status
 products.0005_add_category
 ```
 
-Both depend on:
-
-```text
-products.0004_previous
-```
+Both depend on: `products.0004_previous`
 
 This produces two leaf migrations.
 
@@ -1297,11 +1161,7 @@ This produces two leaf migrations.
 python manage.py makemigrations products --merge
 ```
 
-Django may create:
-
-```text
-0006_merge_0005_add_status_0005_add_category.py
-```
+Django may create: `0006_merge_0005_add_status_0005_add_category.py`
 
 Example:
 
@@ -1432,11 +1292,7 @@ Migration logic should be stable and self-contained.
 
 Migration files serialize references to some functions, fields, managers, and callables.
 
-Example:
-
-```python
-upload_to=product_image_path
-```
+Example: `upload_to=product_image_path`
 
 If an old migration imports this callable and it is later deleted, a fresh installation may fail while loading migration history.
 
@@ -1558,11 +1414,7 @@ This is the most important migration pattern for continuously deployed systems.
 
 ### Phase 1: Expand
 
-Add the new structure while keeping the old structure:
-
-```text
-old_column + new_column
-```
+Add the new structure while keeping the old structure: `old_column + new_column`
 
 Deploy code that can work with both.
 
@@ -1644,23 +1496,11 @@ Destructive schema rollback is riskier.
 
 # 15. Migration Conflicts in Teams
 
-Suppose two developers branch from:
+Suppose two developers branch from: `0004_product_price`
 
-```text
-0004_product_price
-```
+Developer A creates: `0005_product_status`
 
-Developer A creates:
-
-```text
-0005_product_status
-```
-
-Developer B creates:
-
-```text
-0005_product_category
-```
+Developer B creates: `0005_product_category`
 
 After merging Git branches:
 
@@ -1717,17 +1557,9 @@ Manual resolution may be required when both migrations:
 
 Over time, an app may accumulate hundreds of migrations.
 
-Squashing combines a migration range into a smaller optimized migration:
+Squashing combines a migration range into a smaller optimized migration: `python manage.py squashmigrations products 0050`
 
-```bash
-python manage.py squashmigrations products 0050
-```
-
-Django may optimize:
-
-```text
-CreateModel + AddField + AlterField
-```
+Django may optimize: `CreateModel + AddField + AlterField`
 
 into a single final `CreateModel`.
 
@@ -1774,11 +1606,7 @@ Do not squash only because the migration folder “looks large.” Django is des
 
 # 17. Multiple Databases
 
-Apply migrations to a selected database:
-
-```bash
-python manage.py migrate --database=analytics
-```
+Apply migrations to a selected database: `python manage.py migrate --database=analytics`
 
 Database routers can control whether a model is migrated on a database:
 
@@ -1833,17 +1661,9 @@ Important considerations:
 
 ## 18.2 CI practices
 
-Check that developers did not forget migrations:
+Check that developers did not forget migrations: `python manage.py makemigrations --check`
 
-```bash
-python manage.py makemigrations --check
-```
-
-Check for unapplied migrations:
-
-```bash
-python manage.py migrate --check
-```
+Check for unapplied migrations: `python manage.py migrate --check`
 
 Create a clean test database and run the full migration chain.
 
@@ -1891,6 +1711,9 @@ Before approving a migration, check:
 - Has the generated SQL been reviewed?
 - Has it been tested on realistic data volume?
 
+> [!KEY]
+> A good migration does more than make the final schema correct. It provides a safe path from the old production state to the new production state.
+
 ---
 
 # 19. Practical End-to-End Example
@@ -1920,11 +1743,7 @@ python manage.py makemigrations products \
     --name add_nullable_product_slug
 ```
 
-Apply:
-
-```bash
-python manage.py migrate
-```
+Apply: `python manage.py migrate`
 
 ## 19.2 Step 2: Create a data migration
 
@@ -1939,7 +1758,6 @@ Migration:
 ```python
 from django.db import migrations
 from django.utils.text import slugify
-
 
 def populate_slugs(apps, schema_editor):
     Product = apps.get_model("products", "Product")
@@ -1960,13 +1778,11 @@ def populate_slugs(apps, schema_editor):
             pk=product.pk
         ).update(slug=slug)
 
-
 def clear_slugs(apps, schema_editor):
     Product = apps.get_model("products", "Product")
     database_alias = schema_editor.connection.alias
 
     Product.objects.using(database_alias).update(slug=None)
-
 
 class Migration(migrations.Migration):
 
@@ -1993,11 +1809,7 @@ It creates deterministic uniqueness without expensive collision loops.
 
 ## 19.3 Step 3: Validate before adding the constraint
 
-Check for missing values:
-
-```python
-Product.objects.filter(slug__isnull=True).exists()
-```
+Check for missing values: `Product.objects.filter(slug__isnull=True).exists()`
 
 Check duplicates:
 
@@ -2030,17 +1842,9 @@ python manage.py makemigrations products \
     --name require_unique_product_slug
 ```
 
-Review SQL:
+Review SQL: `python manage.py sqlmigrate products 0004`
 
-```bash
-python manage.py sqlmigrate products 0004
-```
-
-Apply:
-
-```bash
-python manage.py migrate
-```
+Apply: `python manage.py migrate`
 
 ## 19.5 Resulting migration sequence
 
@@ -2058,40 +1862,6 @@ This sequence is:
 - Easier to troubleshoot
 - Reversible within the stated reverse behavior
 - Suitable for testing each stage independently
-
----
-
-# 20. Final Mental Model
-
-Remember this flow:
-
-```mermaid
-flowchart TD
-    A["models.py changes"] --> B["makemigrations"]
-    B --> C["Migration operations"]
-    C --> D["Dependency graph"]
-    D --> E["migrate"]
-    E --> F["SchemaEditor executes database changes"]
-    E --> G["RunPython or RunSQL changes data/custom objects"]
-    F --> H["django_migrations records success"]
-    G --> H
-```
-
-The most important points are:
-
-1. `makemigrations` compares current models with migration history, not directly with the live database.
-2. `migrate` applies or reverses migration operations in dependency order.
-3. Migration files are production code and must be reviewed and committed.
-4. Django tracks applied migrations in the `django_migrations` table.
-5. Schema state and migration state must remain synchronized.
-6. Data migrations should use historical models through `apps.get_model()`.
-7. Large or breaking changes should use staged, backward-compatible migrations.
-8. `--fake` is an advanced repair tool, not a normal solution.
-9. Never rewrite shared migration history without a deliberate coordination plan.
-10. A safe migration considers data volume, locks, mixed application versions, rollback, and database-specific behavior.
-
-> [!KEY]
-> A good migration does more than make the final schema correct. It provides a safe path from the old production state to the new production state.
 
 ---
 

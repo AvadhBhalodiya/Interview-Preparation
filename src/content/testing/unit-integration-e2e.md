@@ -2,13 +2,46 @@
 title: "Unit / Integration / E2E"
 group: "Test Types & Tools"
 order: 1
+updated: "August 2026"
 ---
 
 # Unit vs Integration vs End-to-End (E2E) Tests
 
-> **Category:** Testing  
-> **Audience:** Developers with 3+ years of experience  
-> **Updated:** August 2026
+> The three test levels, what each is actually for, and why a team should define its own boundaries instead of arguing about the labels.
+
+## In short
+
+- A test's level is decided by its **boundary** — how much of the system it executes and which dependencies are real — not by the folder it lives in.
+- **Unit:** one behaviour with collaborators replaced by mocks or fakes. Fast, precise failures, the largest group of tests.
+- **Integration:** two or more real components together (API + service + database, consumer + broker). It is the only level that catches wrong SQL, missing wiring, serialization mismatches, and broken contracts.
+- **E2E:** a complete user journey through the deployed system. Highest realism, slowest, flakiest — reserve it for critical journeys.
+- The pyramid is guidance about cost per unit of confidence, not a fixed 70/20/10 split. The shape to avoid is the inverted one, the ice-cream cone.
+- The labels mean different things in different teams, so document the boundaries your project actually uses instead of arguing about names.
+- Test each risk at the **lowest level that can confidently detect it**.
+
+```mermaid
+flowchart TD
+    START[What risk are you testing?]
+    LOGIC{Pure business logic<br/>or edge case?}
+    BOUNDARY{Does correctness depend on<br/>DB, queue, framework, or API wiring?}
+    JOURNEY{Must a complete user<br/>workflow be proven?}
+
+    UNIT[Write a Unit Test]
+    INT[Write an Integration Test]
+    E2E[Write an E2E Test]
+
+    START --> LOGIC
+    LOGIC -- Yes --> UNIT
+    LOGIC -- No --> BOUNDARY
+    BOUNDARY -- Yes --> INT
+    BOUNDARY -- No --> JOURNEY
+    JOURNEY -- Yes --> E2E
+    JOURNEY -- No --> UNIT
+```
+
+**Interview answer:** The three levels differ by boundary. A unit test exercises one behaviour with its collaborators replaced, so it runs in milliseconds and the failure points straight at the cause. An integration test runs several real components together — typically router, service, repository, and a real test database — because that is the only way to catch wrong SQL, unregistered routes, or a broken contract. An E2E test drives the deployed system the way a user does, which buys the most realism at the highest cost and flakiness, so it is reserved for critical journeys. The working rule is to prove each risk at the lowest level that can confidently detect it.
+
+**Gotcha:** Pushing coverage upward — proving every discount, validation rule, and permission branch through the browser. That produces the ice-cream cone: slow builds, flaky failures, and diagnosis that starts from a screenshot instead of a stack trace. Broad tests should prove the journey; the variations belong at unit level.
 
 ---
 
@@ -136,7 +169,6 @@ The important point is not that the test contains only one function. The importa
 # pricing.py
 from decimal import Decimal
 
-
 def calculate_final_price(
     price: Decimal,
     discount_percent: Decimal,
@@ -161,7 +193,6 @@ import pytest
 
 from pricing import calculate_final_price
 
-
 def test_calculates_discounted_price() -> None:
     result = calculate_final_price(
         price=Decimal("100.00"),
@@ -169,7 +200,6 @@ def test_calculates_discounted_price() -> None:
     )
 
     assert result == Decimal("80.00")
-
 
 def test_rejects_negative_price() -> None:
     with pytest.raises(ValueError, match="Price cannot be negative"):
@@ -189,11 +219,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
-
 class PaymentGateway(Protocol):
     def charge(self, customer_id: str, amount: Decimal) -> str:
         """Return the payment transaction ID."""
-
 
 @dataclass
 class OrderService:
@@ -212,7 +240,6 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 from order_service import OrderService
-
 
 def test_pay_charges_customer() -> None:
     gateway = Mock()
@@ -299,7 +326,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-
 
 @pytest.mark.asyncio
 async def test_create_user_persists_user(test_database) -> None:
@@ -875,27 +901,7 @@ Use:
 
 # 11. How to Decide Which Test to Write
 
-Use the following decision flow:
-
-```mermaid
-flowchart TD
-    START[What risk are you testing?]
-    LOGIC{Pure business logic<br/>or edge case?}
-    BOUNDARY{Does correctness depend on<br/>DB, queue, framework, or API wiring?}
-    JOURNEY{Must a complete user<br/>workflow be proven?}
-
-    UNIT[Write a Unit Test]
-    INT[Write an Integration Test]
-    E2E[Write an E2E Test]
-
-    START --> LOGIC
-    LOGIC -- Yes --> UNIT
-    LOGIC -- No --> BOUNDARY
-    BOUNDARY -- Yes --> INT
-    BOUNDARY -- No --> JOURNEY
-    JOURNEY -- Yes --> E2E
-    JOURNEY -- No --> UNIT
-```
+Start from the risk and pick the smallest boundary that can expose it. The decision flow is the diagram in **In short** at the top of this note.
 
 ## 11.1 Decision Examples
 
@@ -964,11 +970,9 @@ Markers allow suites to be selected independently.
 ```python
 import pytest
 
-
 @pytest.mark.unit
 def test_calculates_total() -> None:
     ...
-
 
 @pytest.mark.integration
 async def test_saves_order_to_database() -> None:
@@ -1010,43 +1014,25 @@ def test_rejects_coupon_when_expiry_date_has_passed():
     ...
 ```
 
-A useful naming pattern is:
-
-```text
-test_<behavior>_when_<condition>
-```
+A useful naming pattern is: `test_<behavior>_when_<condition>`
 
 ---
 
 # 13. Reliable Test Design Principles
 
+These apply at every level. For what makes an individual test strong — assertion quality, naming, boundary cases, and how to judge a coverage number — see [Coverage & Good Tests](test-coverage-good-tests.md).
+
 ## 13.1 Test Behavior, Not Implementation
 
 A test should remain valid when internal code is refactored without changing behavior.
 
-Weak assertion:
+Weak assertion: `service._discount_percentage == 10`
 
-```python
-service._discount_percentage == 10
-```
+Better assertion: `assert service.calculate_total(Decimal("100")) == Decimal("90")`
 
-Better assertion:
+For UI tests, prefer accessible user-facing selectors: `page.getByRole('button', { name: 'Place order' })`
 
-```python
-assert service.calculate_total(Decimal("100")) == Decimal("90")
-```
-
-For UI tests, prefer accessible user-facing selectors:
-
-```typescript
-page.getByRole('button', { name: 'Place order' })
-```
-
-Avoid fragile selectors when possible:
-
-```typescript
-page.locator('.btn.primary.checkout-button:nth-child(2)')
-```
+Avoid fragile selectors when possible: `page.locator('.btn.primary.checkout-button:nth-child(2)')`
 
 ## 13.2 Keep Tests Independent
 
@@ -1078,7 +1064,6 @@ Example with an injected clock:
 ```python
 from datetime import UTC, datetime
 
-
 def test_coupon_is_expired() -> None:
     fixed_now = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
 
@@ -1090,17 +1075,9 @@ def test_coupon_is_expired() -> None:
 
 ## 13.4 Avoid Fixed Sleeps
 
-Weak E2E code:
+Weak E2E code: `await page.waitForTimeout(5000);`
 
-```typescript
-await page.waitForTimeout(5000);
-```
-
-Better:
-
-```typescript
-await expect(page.getByText('Order confirmed')).toBeVisible();
-```
+Better: `await expect(page.getByText('Order confirmed')).toBeVisible();`
 
 Wait for the required condition, not an assumed duration.
 
@@ -1147,34 +1124,6 @@ Common causes include:
 - Incorrect asynchronous handling
 
 Retries may provide temporary diagnostics, but repeated retries should not replace fixing the root cause.
-
----
-
-# 14. Key Takeaways
-
-```text
-Unit Test
-- Small boundary
-- Fast and precise
-- Best for business logic and edge cases
-- Uses mocks or fakes for external collaborators
-
-Integration Test
-- Verifies connected components
-- Best for databases, APIs, queues, frameworks, and service boundaries
-- Uses selected real dependencies
-
-E2E Test
-- Verifies a complete user journey
-- Highest realism and highest maintenance cost
-- Best for a focused set of critical workflows
-```
-
-The most important rule is:
-
-> **Test at the lowest level that can confidently detect the production failure you care about.**
-
-A strong test suite does not attempt to replace every unit and integration test with E2E coverage. It combines fast lower-level feedback with a small number of realistic full-system checks.
 
 ---
 

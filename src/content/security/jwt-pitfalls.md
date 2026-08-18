@@ -2,41 +2,45 @@
 title: "JWT Pitfalls"
 group: "Access & Data Protection"
 order: 5
+updated: "August 2026"
 ---
 
 # JWT Pitfalls: Algorithms, Claims, Revocation, and Storage
 
-> **Category:** Security  
-> **Audience:** Developers with 3+ years of experience  
-> **Updated:** August 2026  
-> **Goal:** Understand how to use JSON Web Tokens safely in real applications—not merely how to generate and decode them.
+> Understand how to use JSON Web Tokens safely in real applications—not merely how to generate and decode them.
+
+## In short
+
+- A signed JWT is `header.payload.signature`, Base64URL-**encoded, not encrypted** — anyone holding it can read every claim, so nothing secret goes in the payload.
+- Never trust the token's own `alg` header: pin the accepted algorithms server-side, or `none` and HS256/RS256 confusion let an attacker sign their own tokens.
+- A valid signature is the start of validation, not the end. Also require `iss`, `aud`, token type, and `exp`/`nbf`/`iat` with a bounded clock skew.
+- Verification is stateless, so nothing you do to the client revokes a token. Immediate revocation needs server state: a `jti` denylist, a session version, or introspection.
+- The practical compromise is a short-lived access token plus a rotated refresh token; reuse of an already-rotated refresh token means theft, so revoke the whole family.
+- Storage is a trade-off, not a fix: `localStorage` is readable by any XSS, `HttpOnly` cookies close that but then need CSRF protection.
+- Scopes and roles inside a token are authentication output, not authorization — still check that this user owns this object.
+
+```mermaid
+flowchart LR
+    H[Header<br/>alg, typ, kid] --> J[JWT]
+    P[Payload<br/>claims] --> J
+    S[Signature<br/>integrity and authenticity] --> J
+```
+
+**Interview answer:** A JWT is a signed, self-contained set of claims, which is exactly why it is easy to get wrong — the signature only proves the token was not modified, so the server must additionally pin the allowed algorithm and check issuer, audience, token type, and time claims itself. Because verification touches no database, a JWT stays valid until it expires and logging out does not invalidate it, so real systems pair short-lived access tokens with a rotated refresh token and keep just enough state (denylist, session version, or introspection) to revoke early. Where the token is stored decides which attack it is exposed to: `localStorage` to XSS, cookies to CSRF.
+
+**Gotcha:** Stopping at "the signature verified". A password-reset token, an ID token, and an access token minted for a different API are all signed by the same trusted issuer and pass the signature check perfectly — only the `aud` and token-type checks reject them.
 
 ---
 
-# 1. JWT Security Mental Model
+# 1. What a JWT Is
 
-A **JSON Web Token (JWT)** is a compact format used to transfer claims between systems. A JWT can be signed as a **JWS** or encrypted as a **JWE**.
+A **JSON Web Token (JWT)** is a compact format used to transfer claims between systems. A JWT can be signed as a **JWS** or encrypted as a **JWE**. Most authentication systems use signed JWTs, where the signature protects integrity: it proves that protected token data was not modified after signing.
 
-Most authentication systems use signed JWTs. The signature protects integrity: it proves that protected token data was not modified after signing.
-
-A JWT does **not** automatically provide:
-
-- confidentiality;
-- logout or immediate revocation;
-- secure browser storage;
-- authorization correctness;
-- protection from token theft;
-- protection from replay attacks.
-
-These controls must be designed separately.
+Confidentiality, logout and immediate revocation, secure browser storage, authorization correctness, and protection from token theft or replay are **not** provided by the format. Each of those controls must be designed separately, and the rest of this note is how.
 
 ## 1.1 JWT Structure
 
-A commonly used signed JWT contains three Base64URL-encoded sections:
-
-```text
-HEADER.PAYLOAD.SIGNATURE
-```
+A commonly used signed JWT contains three Base64URL-encoded sections: `HEADER.PAYLOAD.SIGNATURE`
 
 Example:
 
@@ -46,13 +50,6 @@ eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9
 eyJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZS5jb20iLCJzdWIiOiIxMjMifQ
 .
 SIGNATURE_BYTES
-```
-
-```mermaid
-flowchart LR
-    H[Header<br/>alg, typ, kid] --> J[JWT]
-    P[Payload<br/>claims] --> J
-    S[Signature<br/>integrity and authenticity] --> J
 ```
 
 ### Header example
@@ -447,9 +444,7 @@ JWT payloads frequently appear in:
 
 Follow data minimization:
 
-```text
-Include only what the recipient needs to authorize the request.
-```
+> Include only what the recipient needs to authorize the request.
 
 Prefer stable identifiers over duplicated profile information. Fetch sensitive or frequently changing data from an authoritative service when needed.
 
@@ -585,19 +580,11 @@ JWT claim:
 }
 ```
 
-On global logout, password reset, or account compromise:
-
-```text
-token_version = 8
-```
+On global logout, password reset, or account compromise: `token_version = 8`
 
 Tokens carrying version `7` are then rejected.
 
-Alternative:
-
-```text
-valid_tokens_after = 2026-08-03T05:45:00Z
-```
+Alternative: `valid_tokens_after = 2026-08-03T05:45:00Z`
 
 Reject tokens whose `iat` is earlier than that timestamp.
 
@@ -866,10 +853,8 @@ EXPECTED_AUDIENCE = "https://orders-api.example.com"
 ALLOWED_ALGORITHMS = ["RS256"]  # Configuration, never token-controlled
 EXPECTED_TYPE = "at+jwt"
 
-
 class AuthenticationError(Exception):
     """Raised when an access token cannot be trusted."""
-
 
 def validate_access_token(token: str, public_key: str) -> dict[str, Any]:
     if not token or len(token) > 16_384:
@@ -954,11 +939,9 @@ from __future__ import annotations
 import time
 from typing import Any, Protocol
 
-
 class RedisLike(Protocol):
     def set(self, name: str, value: str, *, ex: int) -> Any: ...
     def exists(self, name: str) -> int: ...
-
 
 def revoke_access_token(redis: RedisLike, claims: dict[str, Any]) -> None:
     jti = claims.get("jti")
@@ -976,7 +959,6 @@ def revoke_access_token(redis: RedisLike, claims: dict[str, Any]) -> None:
         "revoked",
         ex=ttl_seconds,
     )
-
 
 def is_access_token_revoked(redis: RedisLike, jti: str) -> bool:
     return bool(redis.exists(f"jwt:denylist:{jti}"))
@@ -1125,30 +1107,13 @@ Do not forward the same broad user token through every internal service by defau
 - [ ] Emergency signing-key compromise procedures are documented and tested.
 - [ ] Authorization-server, API, cache, and key-store outage behavior is explicit.
 
----
-
-# 13. Key Takeaways
-
-```text
-1. Never trust the token's algorithm choice.
-2. A valid signature is only the beginning of validation.
-3. Validate issuer, audience, token type, time claims and required claims.
-4. Signed JWT payloads are readable; do not put secrets inside them.
-5. Short-lived access tokens reduce the damage caused by theft.
-6. Refresh-token rotation provides replay detection and safer long sessions.
-7. Immediate revocation requires state: denylist, session lookup or introspection.
-8. localStorage is convenient but exposes tokens to JavaScript and XSS.
-9. HttpOnly cookies reduce token theft but require CSRF protection.
-10. Authentication claims never replace object-level authorization.
-```
-
-The central design principle is:
+The central design principle behind every line above is:
 
 > **Treat a JWT as an untrusted bearer credential until its cryptography, context, lifecycle, and authorization are all validated.**
 
 ---
 
-# 14. References
+# 13. References
 
 ## IETF standards and best-current-practice documents
 

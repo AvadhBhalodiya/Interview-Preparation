@@ -6,12 +6,49 @@ order: 2
 
 # DRF ViewSets & Routers
 
-> **Core idea:** A **ViewSet** keeps related API actions in one class, while a **Router** automatically creates the URL patterns that connect HTTP requests to those actions.
-
-This topic is based on the current Django REST Framework documentation and is suitable for day-to-day API development and interview preparation.
-
+> A **ViewSet** keeps related API actions in one class, while a **Router** automatically creates the URL patterns that connect HTTP requests to those actions.
+>
 > [!NOTE]
 > As of **July 2026**, the latest documented Django REST Framework release is **3.17.1**. Always verify framework compatibility before upgrading an existing project.
+
+## In short
+
+- A ViewSet defines **actions** — `list`, `create`, `retrieve`, `update`, `partial_update`, `destroy` — not HTTP handlers like `get()` and `post()`. The router decides which method and URL calls which action.
+- Four classes, smallest first: `ViewSet` (dispatch only, no model behaviour), `GenericViewSet` (adds `get_queryset()`, `get_object()`, `get_serializer()`, filtering, and pagination but no actions), `ModelViewSet` (full CRUD), `ReadOnlyModelViewSet` (`list` and `retrieve` only).
+- `router.register(prefix, viewset, basename)`: `prefix` controls the URL **path**, `basename` controls the URL **name** (`product-list`, `product-detail`). `DefaultRouter` adds an API root view and format-suffix routes; `SimpleRouter` does not.
+- `@action(detail=True)` generates `/products/{pk}/activate/` and `@action(detail=False)` generates `/products/featured/`. Use `url_path` to change the URL and `url_name` to change the route name.
+- `self.action` lets one class behave differently per action through `get_serializer_class()`, `get_permissions()`, `get_throttles()`, and `get_queryset()`.
+- Prefer the smallest override: save values → `perform_create()`, output shape → `get_serializer_class()`, visible records → `get_queryset()`, whole response flow → override the action itself.
+- Inside an action always use `self.get_object()` and `self.get_serializer()`, never `Product.objects.get(pk=pk)` — the helpers apply the queryset, lookup config, filter backends, object permissions, and serializer context.
+
+```mermaid
+flowchart TD
+    A[New DRF endpoint] --> B{Is it a resource with related operations?}
+
+    B -- No --> C[Use APIView or function-based view]
+    B -- Yes --> D{Does it need model-backed generic behavior?}
+
+    D -- No --> E[Use ViewSet]
+    D -- Yes --> F{Does it need all CRUD actions?}
+
+    F -- Yes --> G[Use ModelViewSet]
+    F -- No --> H{Read-only list and retrieve?}
+
+    H -- Yes --> I[Use ReadOnlyModelViewSet]
+    H -- No --> J[Use GenericViewSet plus selected mixins]
+
+    G --> K{Do standard URL conventions fit?}
+    I --> K
+    J --> K
+    E --> K
+
+    K -- Yes --> L[Register with Router]
+    K -- No --> M[Bind ViewSet manually]
+```
+
+**Interview answer:** A ViewSet collects the operations of one resource into a single class, and a router turns that class into URL patterns by convention — `GET /products/` to `list`, `POST /products/` to `create`, `GET /products/42/` to `retrieve`, and so on. That is why you pick the smallest class that fits: `ModelViewSet` when the resource really does need all of CRUD, `GenericViewSet` plus the mixins you want when it does not, so unsupported routes are never generated in the first place. Anything outside CRUD becomes an `@action`, and anything that varies per action — serializer, permissions, queryset — is expressed by branching on `self.action` rather than by splitting the class.
+
+**Gotcha:** Omitting `basename` on a ViewSet that defines only `get_queryset()`. The router derives the name from a **class-level** `queryset` attribute, so with only the method it cannot see the model and raises at import time — which is exactly the case in every multi-tenant ViewSet, since those must scope the queryset per request.
 
 ---
 
@@ -47,11 +84,9 @@ from rest_framework.generics import (
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductListCreateView(ListCreateAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
-
 
 class ProductDetailView(RetrieveUpdateDestroyAPIView):
     queryset = Product.objects.all()
@@ -66,7 +101,6 @@ from rest_framework.viewsets import ModelViewSet
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -78,7 +112,6 @@ A router can then generate the standard URL patterns automatically:
 from rest_framework.routers import DefaultRouter
 
 from .views import ProductViewSet
-
 
 router = DefaultRouter()
 router.register("products", ProductViewSet, basename="product")
@@ -133,12 +166,7 @@ flowchart LR
     D --> D3["GET /products/{id}/ → retrieve"]
 ```
 
-Think of the responsibilities like this:
-
-```text
-ViewSet = What the API can do
-Router  = Which URLs expose those operations
-```
+Think of the responsibilities like this: the **ViewSet** decides what the API can do, and the **router** decides which URLs expose those operations.
 
 ---
 
@@ -157,50 +185,24 @@ The standard action mapping is:
 
 ## Collection and detail routes
 
-### Collection route
-
-Operates on the resource collection:
+A **collection** route operates on the resource as a whole, a **detail** route on one member of it.
 
 ```text
-/api/products/
-```
+GET    /api/products/        collection
+POST   /api/products/        collection
 
-Examples:
-
-```text
-GET  /api/products/
-POST /api/products/
-```
-
-### Detail route
-
-Operates on one resource:
-
-```text
-/api/products/42/
-```
-
-Examples:
-
-```text
-GET    /api/products/42/
-PATCH  /api/products/42/
-DELETE /api/products/42/
+GET    /api/products/42/     detail
+PATCH  /api/products/42/     detail
+DELETE /api/products/42/     detail
 ```
 
 ## Important distinction
 
-In an `APIView`, you normally write:
-
 ```python
-def get(self, request):
+def get(self, request):     # what you write in an APIView
     ...
-```
 
-In a `ViewSet`, you normally write:
-
-```python
-def list(self, request):
+def list(self, request):    # what you write in a ViewSet
     ...
 ```
 
@@ -221,7 +223,6 @@ You implement every required action yourself.
 ```python
 from rest_framework.response import Response
 from rest_framework.viewsets import ViewSet
-
 
 class HealthViewSet(ViewSet):
     def list(self, request):
@@ -256,7 +257,6 @@ from rest_framework.viewsets import GenericViewSet
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -266,12 +266,7 @@ class ProductViewSet(
     serializer_class = ProductSerializer
 ```
 
-This ViewSet exposes only:
-
-```text
-GET /products/
-GET /products/{id}/
-```
+This ViewSet exposes only `GET /products/` and `GET /products/{id}/`.
 
 ### Use it when
 
@@ -283,16 +278,7 @@ GET /products/{id}/
 
 ## 4.3 `ModelViewSet`
 
-`ModelViewSet` provides the complete common CRUD action set:
-
-```text
-list
-create
-retrieve
-update
-partial_update
-destroy
-```
+`ModelViewSet` provides the complete common CRUD action set — `list`, `create`, `retrieve`, `update`, `partial_update`, and `destroy` — by combining `CreateModelMixin`, `RetrieveModelMixin`, `UpdateModelMixin`, `DestroyModelMixin`, `ListModelMixin`, and `GenericViewSet`.
 
 ```python
 from rest_framework.viewsets import ModelViewSet
@@ -300,21 +286,9 @@ from rest_framework.viewsets import ModelViewSet
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
-```
-
-Conceptually, it combines these mixins:
-
-```text
-CreateModelMixin
-RetrieveModelMixin
-UpdateModelMixin
-DestroyModelMixin
-ListModelMixin
-GenericViewSet
 ```
 
 ### Use it when
@@ -327,19 +301,13 @@ GenericViewSet
 
 ## 4.4 `ReadOnlyModelViewSet`
 
-`ReadOnlyModelViewSet` provides only:
-
-```text
-list
-retrieve
-```
+`ReadOnlyModelViewSet` provides only `list` and `retrieve`.
 
 ```python
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from .models import Category
 from .serializers import CategorySerializer
-
 
 class CategoryViewSet(ReadOnlyModelViewSet):
     queryset = Category.objects.all()
@@ -377,7 +345,6 @@ The following example creates a production-style Product API.
 from django.conf import settings
 from django.db import models
 
-
 class Product(models.Model):
     name = models.CharField(max_length=150)
     slug = models.SlugField(unique=True)
@@ -407,7 +374,6 @@ class Product(models.Model):
 from rest_framework import serializers
 
 from .models import Product
-
 
 class ProductSerializer(serializers.ModelSerializer):
     created_by = serializers.StringRelatedField(read_only=True)
@@ -444,7 +410,6 @@ from rest_framework.viewsets import ModelViewSet
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.select_related("created_by")
     serializer_class = ProductSerializer
@@ -463,7 +428,6 @@ from rest_framework.routers import DefaultRouter
 
 from .views import ProductViewSet
 
-
 router = DefaultRouter()
 router.register("products", ProductViewSet, basename="product")
 
@@ -477,7 +441,6 @@ urlpatterns = router.urls
 
 from django.contrib import admin
 from django.urls import include, path
-
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -498,12 +461,7 @@ urlpatterns = [
 
 ## Generated URL names
 
-```text
-product-list
-product-detail
-```
-
-These names are important for:
+The router also generates the route names `product-list` and `product-detail`. These names are important for:
 
 - `reverse()`
 - Hyperlinked serializers
@@ -544,16 +502,9 @@ router.register(
 > [!IMPORTANT]
 > Do not include a leading or trailing slash in the prefix.
 
-Recommended:
-
 ```python
-router.register("products", ProductViewSet)
-```
-
-Avoid:
-
-```python
-router.register("/products/", ProductViewSet)
+router.register("products", ProductViewSet)     # recommended
+router.register("/products/", ProductViewSet)   # avoid
 ```
 
 ## Router registry
@@ -580,7 +531,6 @@ DRF provides two commonly used built-in routers.
 ```python
 from rest_framework.routers import SimpleRouter
 
-
 router = SimpleRouter()
 router.register("products", ProductViewSet, basename="product")
 ```
@@ -594,7 +544,6 @@ router.register("products", ProductViewSet, basename="product")
 
 ```python
 from rest_framework.routers import DefaultRouter
-
 
 router = DefaultRouter()
 router.register("products", ProductViewSet, basename="product")
@@ -629,38 +578,16 @@ Use `SimpleRouter` when:
 
 # 8. Understanding `basename`
 
-The `basename` controls generated URL names.
-
-```python
-router.register(
-    "products",
-    ProductViewSet,
-    basename="product",
-)
-```
-
-The router generates names such as:
-
-```text
-product-list
-product-detail
-product-activate
-```
+The `basename` controls generated URL names. Registering with `basename="product"` produces names such as `product-list`, `product-detail`, and `product-activate`.
 
 ## Automatic basename detection
 
-When the ViewSet has a class-level `queryset`, DRF can usually derive the basename from its model:
+When the ViewSet has a class-level `queryset`, DRF can usually derive the basename from its model, so `router.register("products", ProductViewSet)` works without an explicit basename.
 
 ```python
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
-```
-
-The following may work without an explicit basename:
-
-```python
-router.register("products", ProductViewSet)
 ```
 
 ## When basename must be supplied
@@ -688,13 +615,8 @@ router.register(
 ```
 
 > [!KEY]
-> `prefix` controls the URL path.  
-> `basename` controls the URL name.
-
-```text
-prefix="products"  → /products/
-basename="product" → product-list
-```
+> `prefix` controls the URL path: `prefix="products"` → `/products/`.  
+> `basename` controls the URL name: `basename="product"` → `product-list`.
 
 ---
 
@@ -718,7 +640,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
-
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -733,38 +654,13 @@ class ProductViewSet(ModelViewSet):
         return Response(serializer.data)
 ```
 
-The router generates:
+The router generates `POST /products/{pk}/activate/`.
 
-```text
-POST /products/{pk}/activate/
-```
+## 9.1 `detail=True` and `detail=False`
 
-## 9.1 `detail=True`
-
-Use `detail=True` when the action operates on one object.
+`detail=True` means the action operates on **one object** and receives the lookup argument, producing `POST /products/{pk}/activate/` above. `detail=False` means it operates on the **collection**, producing `GET /products/featured/`.
 
 ```python
-@action(detail=True, methods=["post"])
-def activate(self, request, pk=None):
-    product = self.get_object()
-    ...
-```
-
-Generated route:
-
-```text
-POST /products/{pk}/activate/
-```
-
-## 9.2 `detail=False`
-
-Use `detail=False` when the action operates on the collection.
-
-```python
-from rest_framework.decorators import action
-from rest_framework.response import Response
-
-
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -780,13 +676,7 @@ class ProductViewSet(ModelViewSet):
         return Response(serializer.data)
 ```
 
-Generated route:
-
-```text
-GET /products/featured/
-```
-
-## 9.3 Multiple HTTP methods
+## 9.2 Multiple HTTP methods
 
 ```python
 @action(detail=True, methods=["get", "post"])
@@ -802,7 +692,9 @@ def status(self, request, pk=None):
 
 Prefer separate actions when GET and POST perform conceptually different operations. It usually produces clearer permissions, documentation, and tests.
 
-## 9.4 Custom `url_path` and `url_name`
+## 9.3 Custom `url_path` and `url_name`
+
+This generates the route `POST /products/{pk}/change-status/` and the URL name `product-change-status`.
 
 ```python
 @action(
@@ -815,26 +707,13 @@ def change_status(self, request, pk=None):
     ...
 ```
 
-Generated route:
-
-```text
-POST /products/{pk}/change-status/
-```
-
-Generated URL name:
-
-```text
-product-change-status
-```
-
-## 9.5 Additional method mappings
+## 9.4 Additional method mappings
 
 A single logical action can support related methods using `.mapping`:
 
 ```python
 from rest_framework.decorators import action
 from rest_framework.response import Response
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -855,31 +734,13 @@ class ProductViewSet(ModelViewSet):
         return Response({"is_featured": False})
 ```
 
-This maps:
-
-```text
-PUT    /products/{pk}/featured/
-DELETE /products/{pk}/featured/
-```
+This maps `PUT /products/{pk}/featured/` and `DELETE /products/{pk}/featured/` onto the same URL.
 
 ---
 
 # 10. Action-Specific Behavior
 
-During normal action execution, DRF exposes `self.action`.
-
-Possible values include:
-
-```text
-list
-create
-retrieve
-update
-partial_update
-destroy
-activate
-featured
-```
+During normal action execution, DRF exposes `self.action` — one of the standard action names (`list`, `create`, `retrieve`, `update`, `partial_update`, `destroy`) or the name of a custom `@action` such as `activate` or `featured`.
 
 It is useful for changing:
 
@@ -918,13 +779,9 @@ class ProductViewSet(ModelViewSet):
         return ProductDetailSerializer
 ```
 
-A dictionary-based implementation can be cleaner:
+Once there are more than a few branches, a dictionary is cleaner:
 
 ```python
-class ProductViewSet(ModelViewSet):
-    queryset = Product.objects.all()
-    serializer_class = ProductDetailSerializer
-
     serializer_action_classes = {
         "list": ProductListSerializer,
         "create": ProductWriteSerializer,
@@ -933,10 +790,7 @@ class ProductViewSet(ModelViewSet):
     }
 
     def get_serializer_class(self):
-        return self.serializer_action_classes.get(
-            self.action,
-            self.serializer_class,
-        )
+        return self.serializer_action_classes.get(self.action, self.serializer_class)
 ```
 
 ---
@@ -945,7 +799,6 @@ class ProductViewSet(ModelViewSet):
 
 ```python
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -968,7 +821,6 @@ You can also configure permissions directly on a custom action:
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -1095,15 +947,7 @@ Never return all user-owned records and depend on object permissions alone unles
 
 ## 11.4 Use `perform_create()` for request-derived values
 
-```python
-def perform_create(self, serializer):
-    serializer.save(
-        customer=self.request.user,
-        organization=self.request.user.organization,
-    )
-```
-
-Use hooks for persistence-related behavior:
+Use these hooks for persistence-related behavior:
 
 | Hook | Called during |
 |---|---|
@@ -1111,17 +955,18 @@ Use hooks for persistence-related behavior:
 | `perform_update()` | `update` and `partial_update` |
 | `perform_destroy()` | `destroy` |
 
-Example:
-
 ```python
+def perform_create(self, serializer):
+    serializer.save(
+        customer=self.request.user,
+        organization=self.request.user.organization,
+    )
+
 def perform_update(self, serializer):
     serializer.save(updated_by=self.request.user)
-```
 
-For soft delete:
-
-```python
 def perform_destroy(self, instance):
+    # Soft delete instead of removing the row.
     instance.is_deleted = True
     instance.save(update_fields=["is_deleted"])
 ```
@@ -1137,7 +982,6 @@ Override `create()` when you need to change the complete request-response flow.
 ```python
 from rest_framework import status
 from rest_framework.response import Response
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -1169,13 +1013,7 @@ class ProductViewSet(ModelViewSet):
 
 # 12. Custom Lookup Fields
 
-By default, detail routes use `pk`:
-
-```text
-/products/42/
-```
-
-You can use a slug:
+By default, detail routes use `pk`, giving `/products/42/`. Setting `lookup_field` changes that — with `lookup_field = "slug"` the route becomes `/products/wireless-keyboard/`.
 
 ```python
 class ProductViewSet(ModelViewSet):
@@ -1184,17 +1022,7 @@ class ProductViewSet(ModelViewSet):
     lookup_field = "slug"
 ```
 
-Generated route:
-
-```text
-/products/wireless-keyboard/
-```
-
-Your model should normally enforce uniqueness for the lookup field:
-
-```python
-slug = models.SlugField(unique=True)
-```
+Your model should normally enforce uniqueness for the lookup field, for example `slug = models.SlugField(unique=True)`.
 
 ## Restricting lookup values
 
@@ -1214,7 +1042,6 @@ import uuid
 
 from django.db import models
 
-
 class Product(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -1225,28 +1052,17 @@ class Product(models.Model):
 
 ## Path converter mode
 
-Modern DRF routers can use Django `path()` converters:
+Modern DRF routers can use Django `path()` converters instead of regular expressions, which then match a route such as `/products/550e8400-e29b-41d4-a716-446655440000/`.
 
 ```python
 from rest_framework.routers import SimpleRouter
 
-
 router = SimpleRouter(use_regex_path=False)
-```
 
-Then a ViewSet can specify:
-
-```python
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     lookup_value_converter = "uuid"
-```
-
-Example route:
-
-```text
-/products/550e8400-e29b-41d4-a716-446655440000/
 ```
 
 ---
@@ -1257,17 +1073,12 @@ A full `ModelViewSet` may expose more operations than your API should allow.
 
 ## 13.1 Use `ReadOnlyModelViewSet`
 
+Supports `GET /categories/` and `GET /categories/{pk}/` only.
+
 ```python
 class CategoryViewSet(ReadOnlyModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
-```
-
-Supported:
-
-```text
-GET /categories/
-GET /categories/{pk}/
 ```
 
 ---
@@ -1280,7 +1091,6 @@ For list, create, and retrieve only:
 from rest_framework import mixins
 from rest_framework.viewsets import GenericViewSet
 
-
 class ProductViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -1291,23 +1101,7 @@ class ProductViewSet(
     serializer_class = ProductSerializer
 ```
 
-Supported:
-
-```text
-GET  /products/
-POST /products/
-GET  /products/{pk}/
-```
-
-Not supported:
-
-```text
-PUT    /products/{pk}/
-PATCH  /products/{pk}/
-DELETE /products/{pk}/
-```
-
-This is clearer than exposing all actions and blocking them later.
+This generates `GET /products/`, `POST /products/`, and `GET /products/{pk}/`, and generates no route at all for `PUT`, `PATCH`, or `DELETE` on the detail URL — clearer than exposing all actions and blocking them later.
 
 ---
 
@@ -1317,7 +1111,6 @@ You could technically reject an action:
 
 ```python
 from rest_framework.exceptions import MethodNotAllowed
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -1340,7 +1133,6 @@ from django.urls import path
 
 from .views import ProductViewSet
 
-
 product_list = ProductViewSet.as_view(
     {
         "get": "list",
@@ -1357,7 +1149,6 @@ product_detail = ProductViewSet.as_view(
     }
 )
 
-
 urlpatterns = [
     path("products/", product_list, name="product-list"),
     path(
@@ -1368,14 +1159,7 @@ urlpatterns = [
 ]
 ```
 
-This explicitly maps HTTP methods to actions:
-
-```python
-{
-    "get": "list",
-    "post": "create",
-}
-```
+The dictionary passed to `.as_view()` is the explicit form of what a router would otherwise generate.
 
 ## When manual binding is useful
 
@@ -1400,7 +1184,6 @@ Use generated route names instead of hardcoding paths.
 ```python
 from django.urls import reverse
 
-
 list_url = reverse("product-list")
 detail_url = reverse(
     "product-detail",
@@ -1410,18 +1193,11 @@ detail_url = reverse(
 
 ## Namespaced router
 
-Project URLs:
-
 ```python
-path(
-    "api/v1/",
-    include(("products.urls", "products"), namespace="v1"),
-)
-```
+# Project URLs
+path("api/v1/", include(("products.urls", "products"), namespace="v1"))
 
-Reverse:
-
-```python
+# Reverse through the namespace
 reverse("v1:product-list")
 ```
 
@@ -1432,7 +1208,6 @@ Inside a ViewSet:
 ```python
 from rest_framework.decorators import action
 from rest_framework.response import Response
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -1464,28 +1239,17 @@ class ProductViewSet(ModelViewSet):
 
 # 16. Nested Resource Design
 
-Suppose orders contain items:
-
-```text
-/orders/{order_id}/items/
-```
-
-DRF's built-in routers are primarily designed for flat resources.
+Suppose orders contain items, and you want `/orders/{order_id}/items/`. DRF's built-in routers are primarily designed for flat resources.
 
 ## Option 1: Flat endpoints with filtering
 
-```text
-GET /order-items/?order=42
-```
-
-This is simple and works well for many APIs.
+Expose `GET /order-items/?order=42`. This is simple and works well for many APIs.
 
 ## Option 2: Custom action
 
 ```python
 from rest_framework.decorators import action
 from rest_framework.response import Response
-
 
 class OrderViewSet(ModelViewSet):
     queryset = Order.objects.all()
@@ -1505,29 +1269,15 @@ class OrderViewSet(ModelViewSet):
         return Response(serializer.data)
 ```
 
-Generated endpoint:
-
-```text
-GET /orders/{pk}/items/
-```
+This generates `GET /orders/{pk}/items/`.
 
 ## Option 3: Nested router package
 
-For a strongly nested API structure, a third-party nested-router package can generate routes such as:
-
-```text
-/orders/{order_pk}/items/{pk}/
-```
+For a strongly nested API structure, a third-party nested-router package can generate routes such as `/orders/{order_pk}/items/{pk}/`.
 
 ## Design guidance
 
-Use nesting when the child resource is meaningfully scoped by the parent.
-
-Avoid excessive nesting such as:
-
-```text
-/organizations/{id}/projects/{id}/tasks/{id}/comments/{id}/
-```
+Use nesting when the child resource is meaningfully scoped by the parent. Avoid excessive nesting such as `/organizations/{id}/projects/{id}/tasks/{id}/comments/{id}/`.
 
 Deep nesting makes:
 
@@ -1542,13 +1292,7 @@ One or two levels is usually sufficient.
 
 # 17. Request Lifecycle
 
-Consider this request:
-
-```text
-PATCH /api/v1/products/42/
-```
-
-A simplified lifecycle is:
+A simplified lifecycle for `PATCH /api/v1/products/42/`:
 
 ```mermaid
 sequenceDiagram
@@ -1608,7 +1352,6 @@ from rest_framework.test import APIClient
 
 from products.models import Product
 
-
 @pytest.mark.django_db
 def test_authenticated_user_can_create_product(user):
     client = APIClient()
@@ -1657,7 +1400,6 @@ def test_admin_can_archive_product(admin_user, product):
 
 ```python
 from django.urls import resolve, reverse
-
 
 def test_product_list_route_resolves_to_list_action():
     url = reverse("product-list")
@@ -1714,14 +1456,7 @@ A `404` is often preferred for cross-tenant access because it does not reveal th
 - Multiple unrelated services are coordinated
 - You need complete control over HTTP handling
 
-Examples:
-
-```text
-POST /auth/verify-otp/
-POST /payments/webhook/
-POST /reports/generate/
-GET  /health/
-```
+Examples: `POST /auth/verify-otp/`, `POST /payments/webhook/`, `POST /reports/generate/`, `GET /health/`.
 
 ### Use generic views when
 
@@ -1737,6 +1472,24 @@ GET  /health/
 - Consistent URL conventions matter
 - The project has many resources
 - Router-generated URLs reduce repetitive configuration
+
+## Fast reference
+
+| Requirement | Recommended choice |
+|---|---|
+| Full CRUD model resource | `ModelViewSet` + router |
+| Read-only model resource | `ReadOnlyModelViewSet` + router |
+| Only selected CRUD operations | `GenericViewSet` + mixins |
+| Non-model grouped actions | `ViewSet` |
+| Highly unusual endpoint | `APIView` |
+| Standard URL conventions | Router |
+| Unusual URL-to-action mapping | Manual `.as_view()` binding |
+| One-object custom operation | `@action(detail=True)` |
+| Collection-level custom operation | `@action(detail=False)` |
+| Request-specific records | Override `get_queryset()` |
+| Different output by action | Override `get_serializer_class()` |
+| Different access rules by action | Override `get_permissions()` |
+| Add owner during creation | Override `perform_create()` |
 
 ---
 
@@ -1802,55 +1555,21 @@ This protects:
 
 ---
 
-## 20.3 Use `self.get_object()`
-
-Inside a detail action, prefer:
+## 20.3 Use `self.get_object()` and `self.get_serializer()`
 
 ```python
-product = self.get_object()
+product = self.get_object()                    # prefer
+product = Product.objects.get(pk=pk)           # avoid
+
+serializer = self.get_serializer(product)      # prefer
+serializer = ProductSerializer(product)        # avoid
 ```
 
-Avoid:
-
-```python
-product = Product.objects.get(pk=pk)
-```
-
-`self.get_object()` applies:
-
-- The ViewSet QuerySet
-- Lookup configuration
-- Filter backends
-- Object-level permissions
-- Standard not-found handling
+`self.get_object()` applies the ViewSet queryset, lookup configuration, filter backends, object-level permissions, and standard not-found handling. `self.get_serializer()` preserves serializer, request, and view context, action-specific serializer selection, and any custom `get_serializer_context()` behavior.
 
 ---
 
-## 20.4 Use `self.get_serializer()`
-
-Prefer:
-
-```python
-serializer = self.get_serializer(product)
-```
-
-Instead of:
-
-```python
-serializer = ProductSerializer(product)
-```
-
-`self.get_serializer()` preserves:
-
-- Serializer context
-- Request context
-- View context
-- Action-specific serializer selection
-- Custom `get_serializer_context()` behavior
-
----
-
-## 20.5 Preserve pagination in collection actions
+## 20.4 Preserve pagination in collection actions
 
 A custom collection action may return many records. Use DRF's pagination helpers:
 
@@ -1872,29 +1591,21 @@ def inactive(self, request):
 
 ---
 
-## 20.6 Make action names domain-oriented
-
-Good custom actions:
+## 20.5 Make action names domain-oriented
 
 ```text
-/orders/{id}/cancel/
-/invoices/{id}/send/
-/users/{id}/deactivate/
-/reports/export/
+/orders/{id}/cancel/                good — a domain operation
+/invoices/{id}/send/                good
+/users/{id}/deactivate/             good
+/reports/export/                    good
+
+/products/{id}/update-product/      avoid — PATCH already says this
+/products/{id}/delete-product/      avoid — DELETE already says this
 ```
-
-Avoid action names that simply repeat generic CRUD:
-
-```text
-/products/{id}/update-product/
-/products/{id}/delete-product/
-```
-
-Standard `PATCH`, `PUT`, and `DELETE` already express these operations.
 
 ---
 
-## 20.7 Use correct HTTP semantics
+## 20.6 Use correct HTTP semantics
 
 | Operation | Recommended method |
 |---|---|
@@ -1907,23 +1618,18 @@ Standard `PATCH`, `PUT`, and `DELETE` already express these operations.
 Do not use `GET` for a state-changing action:
 
 ```python
-# Avoid
-@action(detail=True, methods=["get"])
+@action(detail=True, methods=["get"])    # avoid: GET must not change state
 def activate(self, request, pk=None):
     ...
-```
 
-Use:
-
-```python
-@action(detail=True, methods=["post"])
+@action(detail=True, methods=["post"])   # use
 def activate(self, request, pk=None):
     ...
 ```
 
 ---
 
-## 20.8 Prevent accidental field updates
+## 20.7 Prevent accidental field updates
 
 Use dedicated write serializers and `read_only_fields`.
 
@@ -1947,7 +1653,7 @@ def perform_create(self, serializer):
 
 ---
 
-## 20.9 Optimize list and detail queries separately
+## 20.8 Optimize list and detail queries separately
 
 ```python
 def get_queryset(self):
@@ -1974,7 +1680,7 @@ Validate query counts in tests for important endpoints.
 
 ---
 
-## 20.10 Keep router registration close to the app
+## 20.9 Keep router registration close to the app
 
 A scalable project structure:
 
@@ -1989,111 +1695,18 @@ products/
 └── tests/
 ```
 
-App router:
-
 ```python
 # products/urls.py
-
 router = DefaultRouter()
 router.register("products", ProductViewSet, basename="product")
 
 urlpatterns = router.urls
-```
 
-Root URL configuration:
-
-```python
+# config/urls.py
 path("api/v1/", include("products.urls"))
 ```
 
 For very large systems, you may instead maintain one central API router. Choose one consistent project convention.
-
----
-
-# 21. Practical Decision Guide
-
-Use this decision flow:
-
-```mermaid
-flowchart TD
-    A[New DRF endpoint] --> B{Is it a resource with related operations?}
-
-    B -- No --> C[Use APIView or function-based view]
-    B -- Yes --> D{Does it need model-backed generic behavior?}
-
-    D -- No --> E[Use ViewSet]
-    D -- Yes --> F{Does it need all CRUD actions?}
-
-    F -- Yes --> G[Use ModelViewSet]
-    F -- No --> H{Read-only list and retrieve?}
-
-    H -- Yes --> I[Use ReadOnlyModelViewSet]
-    H -- No --> J[Use GenericViewSet plus selected mixins]
-
-    G --> K{Do standard URL conventions fit?}
-    I --> K
-    J --> K
-    E --> K
-
-    K -- Yes --> L[Register with Router]
-    K -- No --> M[Bind ViewSet manually]
-```
-
-## Fast reference
-
-| Requirement | Recommended choice |
-|---|---|
-| Full CRUD model resource | `ModelViewSet` + router |
-| Read-only model resource | `ReadOnlyModelViewSet` + router |
-| Only selected CRUD operations | `GenericViewSet` + mixins |
-| Non-model grouped actions | `ViewSet` |
-| Highly unusual endpoint | `APIView` |
-| Standard URL conventions | Router |
-| Unusual URL-to-action mapping | Manual `.as_view()` binding |
-| One-object custom operation | `@action(detail=True)` |
-| Collection-level custom operation | `@action(detail=False)` |
-| Request-specific records | Override `get_queryset()` |
-| Different output by action | Override `get_serializer_class()` |
-| Different access rules by action | Override `get_permissions()` |
-| Add owner during creation | Override `perform_create()` |
-
----
-
-# 22. Final Summary
-
-| `ViewSet` | `Router` |
-| --- | --- |
-| Groups related API actions | Registers a URL prefix and a ViewSet |
-| Uses `list`/`create`/`retrieve`/`update`/`destroy` | Maps HTTP methods to ViewSet actions |
-| Can use generic QuerySet and serializer behavior | Generates collection and detail routes |
-| Can expose custom actions with `@action` | Generates route names from `basename` |
-| — | Includes routes for custom actions |
-
-The most common implementation is:
-
-```python
-class ProductViewSet(ModelViewSet):
-    queryset = Product.objects.all()
-    serializer_class = ProductSerializer
-```
-
-```python
-router = DefaultRouter()
-router.register("products", ProductViewSet, basename="product")
-```
-
-Remember these core rules:
-
-1. Use `ModelViewSet` for standard CRUD resources.
-2. Use selected mixins when not every CRUD operation should exist.
-3. Use `@action(detail=True)` for one-object operations.
-4. Use `@action(detail=False)` for collection operations.
-5. Scope user-visible data in `get_queryset()`.
-6. Use `self.get_object()` and `self.get_serializer()`.
-7. Use `perform_create()` and related hooks for save-time behavior.
-8. Set `basename` explicitly when it cannot be inferred.
-9. Use routers for consistency, but manual binding when explicit control is more important.
-10. Keep complex business workflows outside the ViewSet.
 
 ---
 

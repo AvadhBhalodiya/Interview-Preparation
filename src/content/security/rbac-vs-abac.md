@@ -2,13 +2,37 @@
 title: "RBAC vs ABAC"
 group: "Access & Data Protection"
 order: 4
+updated: "3 August 2026"
 ---
 
 # RBAC vs ABAC
 
-> **Category:** Security  
-> **Audience:** Developers with 3+ years of experience  
-> **Last reviewed:** 3 August 2026
+> Role-based access control assigns permissions to roles; attribute-based access control evaluates rules at request time. Where each fits, and how they combine.
+
+## In short
+
+- RBAC grants access indirectly through roles: a user is assigned one or more roles, each role bundles a fixed set of permissions, and the check is simply "does one of this user's roles have this permission?"
+- ABAC grants access by evaluating a policy against attributes of the subject, resource, action, and environment at request time — the question shifts from "what role does this user hold?" to "does this specific request satisfy the policy?"
+- RBAC is easy to administer and audit (list who holds the `Admin` role) but handles contextual rules poorly — tenant isolation, resource ownership, time of day, device trust — and tends toward **role explosion** as requirements get more specific.
+- ABAC naturally expresses object-level and contextual rules (`subject.tenant_id == resource.tenant_id`, `device.trusted == true`) without adding new roles, at the cost of more complex policies, harder debugging, and a real dependency on attribute quality.
+- Most production systems run a hybrid: RBAC decides the broad capability ("can this user type approve invoices at all?"), and ABAC narrows it to the specific request ("only within this tenant, under the approval limit, with MFA verified").
+- Authorization must be enforced server-side on every request and default to deny — an endpoint-level check ("can read invoices") is not the same as an object-level check ("can read this invoice"), and skipping the latter opens the door to horizontal privilege escalation.
+
+```mermaid
+flowchart LR
+    S[Subject Attributes] --> PE[Policy Evaluation]
+    O[Object Attributes] --> PE
+    A[Action Attributes] --> PE
+    E[Environment Attributes] --> PE
+    P[Policies] --> PE
+    PE --> D{Decision}
+    D -->|Match| Allow
+    D -->|No Match| Deny
+```
+
+**Interview answer:** RBAC assigns permissions to roles and roles to users, so access is decided by checking which role a user holds — it's simple to set up and audit, which makes it a good fit for stable internal systems where job functions rarely change. ABAC instead evaluates a policy against attributes of the subject, resource, action, and environment at request time, so it can express fine-grained, contextual rules — same tenant, resource ownership, device trust, time of day — that a role alone can't capture, which is why multi-tenant, cloud, and zero-trust systems lean on it. In practice, most production systems combine both: RBAC grants the broad capability and ABAC narrows it to the specific resource and context.
+
+**Gotcha:** The common mistake is treating RBAC and ABAC as competitors and picking one for the whole system — pure RBAC can't express "only your own tenant's data" without exploding into hundreds of roles, and pure ABAC turns every rule into a policy that's hard for administrators to reason about. The practical answer is almost always hybrid: a role grants the broad permission, and an attribute check narrows it to the specific object and context before the action executes.
 
 ---
 
@@ -40,11 +64,8 @@ Two commonly used authorization models are:
 
 The main difference is straightforward:
 
-```text
-RBAC checks the user's role.
-
-ABAC evaluates attributes and policies.
-```
+> RBAC checks the user's role.  
+> ABAC evaluates attributes and policies.
 
 ---
 
@@ -63,19 +84,7 @@ flowchart LR
     P --> A[Allowed Actions]
 ```
 
-Example:
-
-```text
-User: Avadh
-Role: Project Manager
-Permissions:
-- View project
-- Edit project
-- Assign tasks
-- View reports
-```
-
-The application does not normally assign every permission directly to Avadh. It assigns the **Project Manager** role, which already contains those permissions.
+For example, user `Avadh` is assigned the **Project Manager** role, and that role carries `View project`, `Edit project`, `Assign tasks`, and `View reports`. The application does not normally assign every permission directly to Avadh — it assigns the role, which already contains those permissions.
 
 NIST describes RBAC as controlling access through roles that represent organizational functions. Permissions may also be inherited through a role hierarchy.
 
@@ -85,47 +94,19 @@ NIST describes RBAC as controlling access through roles that represent organizat
 
 ### User
 
-The person, service account, or system identity requesting access.
-
-```text
-User: developer@example.com
-```
+The person, service account, or system identity requesting access — for example, `developer@example.com`.
 
 ### Role
 
-A named collection of responsibilities or job functions.
-
-```text
-Admin
-Manager
-Developer
-Support Agent
-Viewer
-```
+A named collection of responsibilities or job functions, such as `Admin`, `Manager`, `Developer`, `Support Agent`, or `Viewer`.
 
 ### Permission
 
-A specific allowed action.
-
-```text
-project.read
-project.update
-user.create
-invoice.approve
-production.deploy
-```
+A specific allowed action, such as `project.read`, `project.update`, `user.create`, `invoice.approve`, or `production.deploy`.
 
 ### Resource
 
-The object being accessed.
-
-```text
-Project
-Invoice
-Customer
-Server
-Document
-```
+The object being accessed — for example, a `Project`, `Invoice`, `Customer`, `Server`, or `Document`.
 
 ### User–Role Assignment
 
@@ -141,15 +122,10 @@ The relationship between a user and one or more roles.
 
 The relationship between a role and its permissions.
 
-```text
-Developer:
-- repository.read
-- repository.write
-- deployment.create
-
-Viewer:
-- repository.read
-```
+| Role | Permissions |
+|---|---|
+| Developer | repository.read, repository.write, deployment.create |
+| Viewer | repository.read |
 
 ---
 
@@ -168,22 +144,7 @@ Consider a project-management application.
 
 ### Authorization decision
 
-```text
-Request:
-User = Bob
-Action = update_task
-Resource = Task #501
-
-Bob's roles:
-- Developer
-
-Developer permissions:
-- task.read
-- task.update
-
-Decision:
-ALLOW
-```
+Bob requests `update_task` on `Task #501`. Bob holds the `Developer` role, and `Developer` carries `task.read` and `task.update` — since `task.update` is present, the decision is **ALLOW**.
 
 A simplified code check might look like this:
 
@@ -233,13 +194,7 @@ Role hierarchy reduces duplicate permission assignments, but deep hierarchies ca
 
 Some responsibilities should not be assigned to the same person.
 
-Example:
-
-```text
-Payment Creator != Payment Approver
-```
-
-This reduces fraud and accidental misuse.
+For example, a `Payment Creator` must not also be a `Payment Approver`. This reduces fraud and accidental misuse.
 
 Two common forms are:
 
@@ -248,23 +203,11 @@ Two common forms are:
 
 ### Cardinality constraints
 
-A role may have a limited number of users.
-
-```text
-Maximum users with Super Admin role = 3
-```
+A role may have a limited number of users — for example, a policy might cap the `Super Admin` role at a maximum of 3 users.
 
 ### Prerequisite roles
 
-A user may need one role before receiving another.
-
-```text
-Required before Production Deployer:
-- Developer
-- Security Training Completed
-```
-
-The first condition fits RBAC. The training condition is dynamic and is usually more naturally represented with ABAC.
+A user may need one role before receiving another — for example, being granted `Production Deployer` might require already holding the `Developer` role and having completed security training. The first condition fits RBAC. The training condition is dynamic and is usually more naturally represented with ABAC.
 
 ---
 
@@ -274,13 +217,7 @@ The first condition fits RBAC. The training condition is dynamic and is usually 
 
 #### Easy to understand
 
-Roles map naturally to organizational responsibilities.
-
-```text
-Finance Manager
-Support Agent
-System Administrator
-```
+Roles map naturally to organizational responsibilities, such as `Finance Manager`, `Support Agent`, or `System Administrator`.
 
 #### Simple administration
 
@@ -294,10 +231,8 @@ RBAC works well when job functions and access requirements do not change frequen
 
 Auditors can inspect:
 
-```text
-Which users have the Admin role?
-Which permissions belong to Finance Manager?
-```
+> Which users have the Admin role?  
+> Which permissions belong to Finance Manager?
 
 #### Widely supported
 
@@ -313,30 +248,17 @@ RBAC is built into many frameworks and platforms, including:
 
 #### Role explosion
 
-As rules become more specific, teams create many narrowly defined roles.
-
-```text
-Project-A-Developer
-Project-B-Developer
-Project-A-Developer-ReadOnly
-Project-A-Developer-Temporary
-India-Project-A-Developer
-```
-
-This is called **role explosion**.
+As rules become more specific, teams create many narrowly defined roles — `Project-A-Developer`, `Project-B-Developer`, `Project-A-Developer-ReadOnly`, `Project-A-Developer-Temporary`, `India-Project-A-Developer`, and so on. This proliferation is called **role explosion**.
 
 #### Weak support for contextual rules
 
-A role alone cannot naturally express rules such as:
+A role alone cannot naturally express rules such as allowing access only:
 
-```text
-Allow access only:
 - during business hours
 - from a managed device
-- when user.department matches document.department
-- when user.tenant_id matches resource.tenant_id
+- when `user.department` matches `document.department`
+- when `user.tenant_id` matches `resource.tenant_id`
 - when the resource belongs to the user's assigned region
-```
 
 #### Object-level authorization becomes awkward
 
@@ -344,15 +266,11 @@ A user may be allowed to update a project, but only projects they own or project
 
 A basic role check answers:
 
-```text
-Is this user a Project Manager?
-```
+> Is this user a Project Manager?
 
 It does not answer:
 
-```text
-Is this user allowed to update this particular project?
-```
+> Is this user allowed to update this particular project?
 
 #### Permissions can become too broad
 
@@ -373,18 +291,6 @@ NIST defines ABAC as an access-control method in which authorization is determin
 - The requested operation
 - Sometimes the environment
 
-```mermaid
-flowchart LR
-    S[Subject Attributes] --> PE[Policy Evaluation]
-    O[Object Attributes] --> PE
-    A[Action Attributes] --> PE
-    E[Environment Attributes] --> PE
-    P[Policies] --> PE
-    PE --> D{Decision}
-    D -->|Match| Allow
-    D -->|No Match| Deny
-```
-
 Example policy:
 
 ```text
@@ -404,18 +310,7 @@ ABAC evaluates the complete context rather than only a role name.
 
 ### Subject attributes
 
-Properties of the identity requesting access.
-
-```text
-user.id
-user.role
-user.department
-user.location
-user.clearance_level
-user.tenant_id
-user.employment_status
-user.training_completed
-```
+Properties of the identity requesting access, such as `user.id`, `user.role`, `user.department`, `user.location`, `user.clearance_level`, `user.tenant_id`, `user.employment_status`, and `user.training_completed`.
 
 Example:
 
@@ -431,16 +326,7 @@ Example:
 
 ### Object or resource attributes
 
-Properties of the resource being accessed.
-
-```text
-document.owner_id
-document.department
-document.classification
-project.tenant_id
-invoice.amount
-record.region
-```
+Properties of the resource being accessed, such as `document.owner_id`, `document.department`, `document.classification`, `project.tenant_id`, `invoice.amount`, or `record.region`.
 
 Example:
 
@@ -456,40 +342,13 @@ Example:
 
 ### Action attributes
 
-Properties of the requested operation.
+Properties of the requested operation, such as `read`, `create`, `update`, `delete`, `approve`, `download`, or `deploy`.
 
-```text
-read
-create
-update
-delete
-approve
-download
-deploy
-```
-
-Actions may also contain additional context:
-
-```text
-payment.approve
-payment.amount
-deployment.environment
-export.format
-```
+Actions may also contain additional context, such as `payment.approve`, `payment.amount`, `deployment.environment`, or `export.format`.
 
 ### Environment attributes
 
-Properties of the request environment.
-
-```text
-current_time
-request_ip
-country
-device_trust
-network_zone
-authentication_strength
-risk_score
-```
+Properties of the request environment, such as `current_time`, `request_ip`, `country`, `device_trust`, `network_zone`, `authentication_strength`, or `risk_score`.
 
 Example:
 
@@ -534,33 +393,12 @@ AND environment.mfa_verified == true
 
 ### Evaluation
 
-```text
-Subject:
-- department = finance
-- tenant_id = tenant-a
-- approval_limit = 50,000
-- compliance_training = completed
+**Subject:** `department = finance`, `tenant_id = tenant-a`, `approval_limit = 50,000`, `compliance_training = completed`.  
+**Resource:** `tenant_id = tenant-a`, `amount = 40,000`.  
+**Environment:** `device_trusted = true`, `mfa_verified = true`.  
+**Decision:** ALLOW.
 
-Resource:
-- tenant_id = tenant-a
-- amount = 40,000
-
-Environment:
-- device_trusted = true
-- mfa_verified = true
-
-Decision:
-ALLOW
-```
-
-If the invoice amount changes to `75,000`, the decision becomes:
-
-```text
-DENY
-Reason: resource.amount exceeds subject.approval_limit
-```
-
-No new role is needed.
+If the invoice amount changes to `75,000`, the decision becomes **DENY** — `resource.amount` exceeds `subject.approval_limit`. No new role is needed.
 
 ---
 
@@ -602,21 +440,7 @@ Examples:
 
 ### Policy Decision Point (PDP)
 
-Evaluates the policy and returns:
-
-```text
-ALLOW
-DENY
-```
-
-It may also return:
-
-```text
-Reason
-Required obligations
-Allowed fields
-Data filters
-```
+Evaluates the policy and returns **ALLOW** or **DENY**, and may also return a reason, required obligations, allowed fields, or data filters.
 
 ### Policy Information Point (PIP)
 
@@ -645,23 +469,11 @@ ABAC can include user, resource, action, and request context in one decision.
 
 #### Dynamic authorization
 
-Access can change automatically when an attribute changes.
-
-Example:
-
-```text
-employment_status = terminated
-```
-
-Policies can deny access immediately without manually editing every role.
+Access can change automatically when an attribute changes — for example, when `employment_status` becomes `terminated` — and policies can deny access immediately without manually editing every role.
 
 #### Better support for multi-tenant applications
 
-A tenant-matching policy can apply across the whole application.
-
-```text
-subject.tenant_id == resource.tenant_id
-```
+A tenant-matching policy — `subject.tenant_id == resource.tenant_id` — can apply across the whole application.
 
 #### Reduces role explosion
 
@@ -683,12 +495,7 @@ Authorization rules can become difficult to understand when policies contain man
 
 #### Attribute quality is critical
 
-Incorrect, outdated, or untrusted attributes can produce incorrect authorization decisions.
-
-```text
-Wrong tenant_id -> possible cross-tenant access
-Wrong clearance -> possible sensitive-data exposure
-```
+Incorrect, outdated, or untrusted attributes can produce incorrect authorization decisions — a wrong `tenant_id` risks cross-tenant access, and a wrong `clearance` risks sensitive-data exposure.
 
 #### Harder debugging
 
@@ -700,20 +507,7 @@ The application may need to retrieve attributes from multiple sources before mak
 
 #### Policy conflicts
 
-Multiple policies may produce conflicting results.
-
-Example:
-
-```text
-Policy A: Allow finance managers
-Policy B: Deny access outside business hours
-```
-
-The system needs a clear conflict strategy, such as:
-
-```text
-Explicit deny overrides allow
-```
+Multiple policies may produce conflicting results — for example, Policy A allows finance managers while Policy B denies access outside business hours. The system needs a clear conflict strategy, such as **explicit deny overrides allow**.
 
 ---
 
@@ -736,40 +530,9 @@ Explicit deny overrides allow
 
 ## Decision formula
 
-### RBAC
+**RBAC:** allow if `user.roles` contains a role with the required permission — expressed simply as `User -> Role -> Permission`.
 
-```text
-ALLOW if:
-user.roles contains a role with required_permission
-```
-
-Mathematically:
-
-```text
-User -> Role -> Permission
-```
-
-### ABAC
-
-```text
-ALLOW if:
-policy(subject, resource, action, environment) == true
-```
-
-Mathematically:
-
-```text
-Decision = Policy(S, R, A, E)
-```
-
-Where:
-
-```text
-S = Subject attributes
-R = Resource attributes
-A = Action
-E = Environment attributes
-```
+**ABAC:** allow if `policy(subject, resource, action, environment) == true`, or `Decision = Policy(S, R, A, E)`, where `S` is subject attributes, `R` is resource attributes, `A` is the action, and `E` is environment attributes.
 
 ---
 
@@ -789,16 +552,7 @@ Consider a SaaS project-management application used by multiple companies.
 
 ## Using only RBAC
 
-Possible roles:
-
-```text
-Tenant Admin
-Project Manager
-Developer
-Viewer
-Contractor
-Production Deployer
-```
+Possible roles: `Tenant Admin`, `Project Manager`, `Developer`, `Viewer`, `Contractor`, `Production Deployer`.
 
 RBAC can handle the broad functional permissions:
 
@@ -811,13 +565,11 @@ RBAC can handle the broad functional permissions:
 
 But additional checks are still required:
 
-```text
-user.tenant_id == resource.tenant_id
-task.assignee_id == user.id
-mfa_verified == true
-device_trusted == true
-current_date <= contract_expiry
-```
+- `user.tenant_id == resource.tenant_id`
+- `task.assignee_id == user.id`
+- `mfa_verified == true`
+- `device_trusted == true`
+- `current_date <= contract_expiry`
 
 These are attribute-based decisions.
 
@@ -867,16 +619,7 @@ Use RBAC for broad capabilities:
 | Project Manager | project.update |
 | Tenant Admin | user.manage |
 
-Then use ABAC for contextual restrictions:
-
-```text
-same tenant
-assigned resource
-trusted device
-MFA completed
-contract still active
-classification permitted
-```
+Then use ABAC for contextual restrictions: same tenant, assigned resource, trusted device, MFA completed, contract still active, classification permitted.
 
 Combined rule:
 
@@ -963,21 +706,12 @@ CREATE TABLE role_permissions (
 );
 ```
 
-For a multi-tenant system, role assignment may also need a scope:
-
-```text
-user_id
-role_id
-tenant_id
-project_id
-```
+For a multi-tenant system, role assignment may also need a scope: `user_id`, `role_id`, `tenant_id`, `project_id`.
 
 Example:
 
-```text
-Bob is a Project Manager in Project A,
-but only a Viewer in Project B.
-```
+> Bob is a Project Manager in Project A,  
+> but only a Viewer in Project B.
 
 This is sometimes called **scoped RBAC**.
 
@@ -1021,15 +755,13 @@ Example JSON-like policy:
 
 Important policy requirements include:
 
-```text
-Effect: allow or deny
-Actions: operations covered by the policy
-Subjects: identities covered by the policy
-Resources: resources covered by the policy
-Conditions: attribute comparisons
-Priority: evaluation order
-Conflict rule: how multiple decisions are combined
-```
+- **Effect:** allow or deny
+- **Actions:** operations covered by the policy
+- **Subjects:** identities covered by the policy
+- **Resources:** resources covered by the policy
+- **Conditions:** attribute comparisons
+- **Priority:** evaluation order
+- **Conflict rule:** how multiple decisions are combined
 
 ---
 
@@ -1040,16 +772,13 @@ Conflict rule: how multiple decisions are combined
 ```python
 from dataclasses import dataclass, field
 
-
 @dataclass(frozen=True)
 class User:
     id: str
     permissions: set[str] = field(default_factory=set)
 
-
 def has_permission(user: User, permission: str) -> bool:
     return permission in user.permissions
-
 
 def delete_project(user: User, project_id: str) -> None:
     if not has_permission(user, "project.delete"):
@@ -1064,7 +793,6 @@ def delete_project(user: User, project_id: str) -> None:
 from dataclasses import dataclass
 from datetime import date
 
-
 @dataclass(frozen=True)
 class Subject:
     id: str
@@ -1073,20 +801,17 @@ class Subject:
     approval_limit: float
     compliance_training_completed: bool
 
-
 @dataclass(frozen=True)
 class Invoice:
     id: str
     tenant_id: str
     amount: float
 
-
 @dataclass(frozen=True)
 class RequestContext:
     mfa_verified: bool
     device_trusted: bool
     request_date: date
-
 
 def can_approve_invoice(
     subject: Subject,
@@ -1114,7 +839,6 @@ class HybridUser:
     approval_limit: float
     compliance_training_completed: bool
 
-
 def can_approve_invoice_hybrid(
     user: HybridUser,
     invoice: Invoice,
@@ -1137,10 +861,8 @@ def can_approve_invoice_hybrid(
 
 The important design principle is:
 
-```text
-Do not scatter authorization logic across controllers and views.
-Centralize it in reusable policies or authorization services.
-```
+> Do not scatter authorization logic across controllers and views.  
+> Centralize it in reusable policies or authorization services.
 
 ---
 
@@ -1162,7 +884,6 @@ Example FastAPI-style dependency:
 
 ```python
 from fastapi import Depends, HTTPException, status
-
 
 def require_permission(permission: str):
     def dependency(current_user=Depends(get_current_user)):
@@ -1201,14 +922,12 @@ def delete(project_id: str, user: User):
 
 A secure sequence is:
 
-```text
 1. Authenticate the user.
 2. Check broad permission.
 3. Load the target resource safely.
 4. Evaluate resource-level and contextual rules.
 5. Perform the action.
 6. Record an audit event.
-```
 
 Do not rely only on hiding buttons in the frontend. Client-side checks improve user experience but are not security controls.
 
@@ -1218,27 +937,12 @@ Do not rely only on hiding buttons in the frontend. Client-side checks improve u
 
 RBAC and ABAC are not mutually exclusive.
 
-A practical design often uses:
-
-```text
-RBAC = What type of action may the user perform?
-
-ABAC = May the user perform that action on this resource
-       in this context?
-```
+A practical design often uses RBAC to answer *what type of action may the user perform?* and ABAC to answer *may the user perform that action on this resource, in this context?*
 
 Example:
 
-```text
-RBAC:
-User has permission "document.update"
-
-ABAC:
-User tenant matches document tenant
-User department matches document department
-User clearance is sufficient
-Device is trusted
-```
+**RBAC:** the user has the `document.update` permission.  
+**ABAC:** the user's tenant matches the document's tenant, the user's department matches the document's department, the user's clearance is sufficient, and the device is trusted.
 
 Final policy:
 
@@ -1263,39 +967,28 @@ AND trusted_device
 
 ### SaaS application
 
-```text
-RBAC: Tenant Admin can manage users.
-ABAC: Admin can manage only users in the same tenant.
-```
+> RBAC: Tenant Admin can manage users.  
+> ABAC: Admin can manage only users in the same tenant.
 
 ### Healthcare system
 
-```text
-RBAC: Doctor can view patient records.
-ABAC: Doctor must be assigned to the patient and be on duty.
-```
+> RBAC: Doctor can view patient records.  
+> ABAC: Doctor must be assigned to the patient and be on duty.
 
 ### Banking system
 
-```text
-RBAC: Manager can approve payments.
-ABAC: Amount must be within approval limit and MFA must be verified.
-```
+> RBAC: Manager can approve payments.  
+> ABAC: Amount must be within approval limit and MFA must be verified.
 
 ### Cloud environment
 
-```text
-RBAC: Developer can operate compute resources.
-ABAC: Principal project tag must match the resource project tag.
-```
+> RBAC: Developer can operate compute resources.  
+> ABAC: Principal project tag must match the resource project tag.
 
 ### Deployment platform
 
-```text
-RBAC: Release Engineer can deploy.
-ABAC: Production deployment requires an approved change,
-      trusted device, and allowed maintenance window.
-```
+> RBAC: Release Engineer can deploy.  
+> ABAC: Production deployment requires an approved change, trusted device, and allowed maintenance window.
 
 ---
 
@@ -1310,13 +1003,7 @@ ABAC: Production deployment requires an approved change,
 - Audit teams need straightforward role reviews.
 - The application is relatively small or internally focused.
 
-Example:
-
-```text
-Admin
-Editor
-Viewer
-```
+Example: `Admin`, `Editor`, `Viewer`.
 
 ## Choose ABAC when
 
@@ -1352,13 +1039,7 @@ For many production applications, hybrid authorization is the most practical cho
 
 ## 9.1 Deny by default
 
-When no policy explicitly allows an operation, deny it.
-
-```text
-No matching permission or policy -> DENY
-```
-
-Do not assume access is allowed because no deny rule exists.
+When no policy explicitly allows an operation, deny it — `no matching permission or policy -> DENY`. Do not assume access is allowed because no deny rule exists.
 
 ---
 
@@ -1366,20 +1047,9 @@ Do not assume access is allowed because no deny rule exists.
 
 Grant only the permissions needed for the user's current responsibilities.
 
-Avoid:
+Avoid overly broad grants such as `Developer -> *`. Prefer scoping explicitly:
 
-```text
-Developer -> *
-```
-
-Prefer:
-
-```text
-Developer:
-- project.read
-- task.read
-- task.update_assigned
-```
+- `Developer`: `project.read`, `task.read`, `task.update_assigned`
 
 ---
 
@@ -1399,19 +1069,7 @@ The server must evaluate authorization for every protected operation.
 
 ## 9.4 Check object-level access
 
-Endpoint-level permission is not enough.
-
-```text
-User can read invoices
-```
-
-must be combined with:
-
-```text
-User can read this invoice
-```
-
-This is essential for preventing horizontal privilege escalation and insecure direct object reference issues.
+Endpoint-level permission is not enough. Being allowed to read invoices in general must be combined with being allowed to read this specific invoice — this is essential for preventing horizontal privilege escalation and insecure direct object reference issues.
 
 ---
 
@@ -1461,23 +1119,9 @@ Every execution path that accesses protected data must apply equivalent authoriz
 
 ## 9.7 Keep roles business-oriented
 
-Good role names:
+Good role names: `Billing Administrator`, `Claims Reviewer`, `Support Agent`, `Project Manager`.
 
-```text
-Billing Administrator
-Claims Reviewer
-Support Agent
-Project Manager
-```
-
-Weak role names:
-
-```text
-CanEditButton
-Page7Access
-APIUser2
-TemporaryRoleFinal
-```
+Weak role names: `CanEditButton`, `Page7Access`, `APIUser2`, `TemporaryRoleFinal`.
 
 Roles should represent business responsibilities, not implementation details.
 
@@ -1485,29 +1129,9 @@ Roles should represent business responsibilities, not implementation details.
 
 ## 9.8 Keep permissions action-oriented
 
-Use consistent permission names:
+Use consistent permission names in the form `resource.action` — for example, `invoice.read`, `invoice.approve`, `project.update`, `user.invite`, or `deployment.create`.
 
-```text
-resource.action
-```
-
-Examples:
-
-```text
-invoice.read
-invoice.approve
-project.update
-user.invite
-deployment.create
-```
-
-Avoid vague permissions such as:
-
-```text
-full_access
-special_access
-advanced_user
-```
+Avoid vague permissions such as `full_access`, `special_access`, or `advanced_user`.
 
 ---
 
@@ -1517,39 +1141,16 @@ For ABAC, specify what happens when policies conflict.
 
 A safe common approach is:
 
-```text
-Explicit deny overrides allow.
-No matching allow results in deny.
-```
+> Explicit deny overrides allow.  
+> No matching allow results in deny.
 
-Example:
-
-```text
-Allow: User is a finance manager.
-Deny: Device is not trusted.
-
-Final result: DENY
-```
+Example: one policy allows because the user is a finance manager, another denies because the device is not trusted — the final result is **DENY**.
 
 ---
 
 ## 9.10 Log authorization decisions
 
-Useful audit fields include:
-
-```text
-timestamp
-request_id
-subject_id
-tenant_id
-resource_type
-resource_id
-action
-decision
-policy_id
-reason_code
-authentication_method
-```
+Useful audit fields include `timestamp`, `request_id`, `subject_id`, `tenant_id`, `resource_type`, `resource_id`, `action`, `decision`, `policy_id`, `reason_code`, and `authentication_method`.
 
 Avoid logging secrets or excessive sensitive data.
 
@@ -1564,11 +1165,7 @@ Authorization logs support:
 
 ## 9.11 Test authorization as a matrix
 
-Create tests across:
-
-```text
-Users × Roles × Resources × Actions × Contexts
-```
+Create tests across `Users × Roles × Resources × Actions × Contexts`.
 
 Example:
 
@@ -1587,17 +1184,7 @@ Include both positive and negative tests.
 
 ## 9.12 Review access regularly
 
-Review:
-
-```text
-Users with privileged roles
-Unused roles
-Overlapping roles
-Expired temporary access
-Stale attributes
-Policies that never match
-Policies that allow too much
-```
+Review users with privileged roles, unused roles, overlapping roles, expired temporary access, stale attributes, policies that never match, and policies that allow too much.
 
 Access should be removed promptly when users change teams, leave the company, or complete temporary work.
 
@@ -1637,49 +1224,7 @@ This makes policy changes, testing, auditing, and reuse easier.
 
 # 10. Key Takeaways
 
-```text
-RBAC:
-Access is based mainly on roles.
-
-ABAC:
-Access is based on attributes evaluated against policies.
-```
-
-### Remember RBAC as
-
-```text
-User -> Role -> Permission
-```
-
-### Remember ABAC as
-
-```text
-Subject + Resource + Action + Environment -> Policy -> Decision
-```
-
-### Practical rule
-
-```text
-Use RBAC for broad business capabilities.
-
-Use ABAC for resource-level, tenant-level,
-and contextual restrictions.
-```
-
-### Most production-friendly approach
-
-```text
-Hybrid = RBAC permission + ABAC conditions
-```
-
-Example:
-
-```text
-User has "invoice.approve"
-AND user.tenant_id == invoice.tenant_id
-AND invoice.amount <= user.approval_limit
-AND MFA is verified
-```
+The most production-friendly approach is a hybrid: `RBAC permission + ABAC conditions`. For example, approving an invoice requires the user to hold the `invoice.approve` permission **and** satisfy `user.tenant_id == invoice.tenant_id`, `invoice.amount <= user.approval_limit`, and MFA verified — the role grants the capability, the attributes confirm this specific request is allowed.
 
 RBAC is usually easier to start with. ABAC provides stronger flexibility and fine-grained control. A hybrid model often gives the best balance between understandable administration and secure, context-aware authorization.
 

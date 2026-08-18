@@ -6,9 +6,34 @@ order: 4
 
 # Pagination: Offset-Based vs Cursor-Based
 
-> **Topic:** API Design & REST  
-> **Level:** Intermediate developer  
-> **Goal:** Understand how offset and cursor pagination work, where each approach fits, and how to design a reliable paginated REST API.
+> Understand how offset and cursor pagination work, where each approach fits, and how to design a reliable paginated REST API.
+
+## In short
+
+- Offset pagination says "skip N rows, return the next `limit`" via `page`/`page_size` or `offset`/`limit`; cursor pagination says "continue after this ordered position" via an opaque token.
+- `LIMIT 20 OFFSET 500000` is expensive because the database still processes the skipped rows, so cost grows with page depth.
+- Offsets are positional, so an insert or delete between requests shifts every later page: rows get duplicated across pages or skipped entirely.
+- Cursor pagination is implemented with a keyset predicate — `WHERE (created_at, id) < (:created_at, :id) ORDER BY created_at DESC, id DESC LIMIT 20` — backed by a matching composite index.
+- The full sort key must be unique and deterministic, so append a tie-breaker such as `id` and put every sort field inside the cursor.
+- Cursor is the API contract, keyset is the query technique; cursors should be opaque, versioned, signed when tampering matters, and bound to the sort and filters.
+- Offset suits small, stable, numbered-page admin tables that need exact totals; cursor suits large, dynamic feeds and logs, where `limit + 1` gives `has_more` without a count query.
+
+```mermaid
+flowchart TD
+    A[Need pagination] --> B{Must jump to page N?}
+    B -- Yes --> C{Dataset large or highly dynamic?}
+    C -- No --> D[Use offset pagination]
+    C -- Yes --> E[Consider hybrid UX or search filters]
+    B -- No --> F{Large or frequently changing data?}
+    F -- Yes --> G[Use cursor pagination]
+    F -- No --> H{Need exact total pages?}
+    H -- Yes --> D
+    H -- No --> G
+```
+
+**Interview answer:** Default to cursor pagination for anything large or frequently changing — feeds, logs, transaction histories — because a keyset predicate seeks straight to the last position instead of paying for skipped rows, and it does not duplicate or drop records when data shifts under the client. Use offset pagination when the UI genuinely needs numbered pages, a direct jump to page N, or an exact total, and the data is small and relatively stable. Both can coexist: offset on admin screens, cursor on public feeds.
+
+**Gotcha:** Sorting by a non-unique column such as `created_at` alone — without an `id` tie-breaker in both the `ORDER BY` and the cursor, tied rows reorder between requests and the page boundary silently repeats or skips them.
 
 ---
 
@@ -96,22 +121,14 @@ Offset pagination uses two values:
 - `limit`: Maximum number of records to return
 - `offset`: Number of records to skip
 
-For example:
-
-```http
-GET /api/products?limit=20&offset=40
-```
+For example: `GET /api/products?limit=20&offset=40`
 
 This means:
 
 1. Skip the first 40 matching products.
 2. Return the next 20 products.
 
-Some APIs expose the same concept using page numbers:
-
-```http
-GET /api/products?page=3&page_size=20
-```
+Some APIs expose the same concept using page numbers: `GET /api/products?page=3&page_size=20`
 
 The server calculates the offset:
 
@@ -152,11 +169,7 @@ GET /api/products?page=3&page_size=20
 }
 ```
 
-This response is useful for interfaces that show numbered pages:
-
-```text
-Previous  1  2  [3]  4  5  ...  13  Next
-```
+This response is useful for interfaces that show numbered pages: `Previous  1  2  [3]  4  5  ...  13  Next`
 
 ---
 
@@ -198,19 +211,11 @@ Page numbers and offsets are familiar to developers and users.
 
 ### Supports direct page navigation
 
-A client can jump directly to page 10:
-
-```http
-GET /api/products?page=10&page_size=20
-```
+A client can jump directly to page 10: `GET /api/products?page=10&page_size=20`
 
 ### Easy total-page calculation
 
-When a total count is available:
-
-```text
-total_pages = ceil(total_items / page_size)
-```
+When a total count is available: `total_pages = ceil(total_items / page_size)`
 
 ### Suitable for small or moderately sized datasets
 
@@ -226,7 +231,7 @@ It works well when:
 
 ## 3.5 Limitations
 
-### 1. Deep pages can become slow
+### Deep pages can become slow
 
 The cost generally increases as the offset grows.
 
@@ -236,29 +241,11 @@ The cost generally increases as the offset grows.
 | `OFFSET 10,000` | More skipped work |
 | `OFFSET 500,000` | Potentially expensive |
 
-### 2. Inserts can create duplicate results
+### Inserts can create duplicate results
 
-Assume records are sorted newest first.
+Assume records are sorted newest first. The first request returns `Page 1: [E, D, C]`.
 
-#### First request
-
-```text
-Page 1: [E, D, C]
-```
-
-Before the next request, a new record `F` is inserted:
-
-```text
-Current data: [F, E, D, C, B, A]
-```
-
-#### Second request using `OFFSET 3`
-
-```text
-Page 2: [C, B, A]
-```
-
-Record `C` appears on both pages.
+Before the next request, a new record `F` is inserted, so the current data is `[F, E, D, C, B, A]`. The second request uses `OFFSET 3` and returns `Page 2: [C, B, A]`, so record `C` appears on both pages.
 
 ```mermaid
 sequenceDiagram
@@ -278,30 +265,13 @@ sequenceDiagram
     Note over Client: C is duplicated
 ```
 
-### 3. Deletes can cause missing results
+### Deletes can cause missing results
 
-Initial data:
+Starting from `[E, D, C, B, A]`, page 1 returns `[E, D]`.
 
-```text
-[E, D, C, B, A]
-```
+If `E` is deleted before page 2, the current data is `[D, C, B, A]` and `OFFSET 2` now starts after `C`, so page 2 returns `[B, A]`. Record `C` is missed.
 
-Page 1 returns:
-
-```text
-[E, D]
-```
-
-If `E` is deleted before page 2, `OFFSET 2` now starts after `C`:
-
-```text
-Current data: [D, C, B, A]
-Page 2: [B, A]
-```
-
-Record `C` is missed.
-
-### 4. Exact totals can be expensive
+### Exact totals can be expensive
 
 A response with `total_items` often requires an additional count:
 
@@ -313,7 +283,7 @@ WHERE status = 'active';
 
 For large tables, complex joins, or selective filters, exact counts may add significant cost.
 
-### 5. Results require deterministic ordering
+### Results require deterministic ordering
 
 Without a stable `ORDER BY`, different requests may return inconsistent subsets.
 
@@ -425,11 +395,7 @@ id         = ord_104
 
 Cursor-based APIs commonly use **keyset pagination** in the database.
 
-Assume the collection is ordered by:
-
-```sql
-ORDER BY created_at DESC, id DESC
-```
+Assume the collection is ordered by: `ORDER BY created_at DESC, id DESC`
 
 The next-page query can be:
 
@@ -469,7 +435,7 @@ These terms are related but not identical:
 
 ## 4.4 Advantages
 
-### 1. Better deep-pagination performance
+### Better deep-pagination performance
 
 With a suitable index, the database can seek from the cursor position instead of scanning and discarding a large offset.
 
@@ -482,31 +448,13 @@ ON orders (created_at DESC, id DESC);
 
 The index should match the filter and sort pattern used by the query.
 
-### 2. More stable during inserts
+### More stable during inserts
 
-Suppose page 1 returns:
+Suppose page 1 returns `[E, D, C]`, so the cursor represents `C`.
 
-```text
-[E, D, C]
-```
+A new record `F` is inserted and the data becomes `[F, E, D, C, B, A]`. The next query asks for records after `C`, so it returns `[B, A]`. The newly inserted record does not shift the continuation point.
 
-The cursor represents `C`.
-
-A new record `F` is inserted:
-
-```text
-[F, E, D, C, B, A]
-```
-
-The next query asks for records after `C`, so it returns:
-
-```text
-[B, A]
-```
-
-The newly inserted record does not shift the continuation point.
-
-### 3. Good for infinite scrolling
+### Good for infinite scrolling
 
 Cursor pagination works naturally for:
 
@@ -519,11 +467,11 @@ Cursor pagination works naturally for:
 - Large order lists
 - Mobile applications
 
-### 4. Avoids exposing row positions
+### Avoids exposing row positions
 
 An opaque cursor prevents clients from depending on an implementation detail such as a numeric database offset.
 
-### 5. Scales well for sequential traversal
+### Scales well for sequential traversal
 
 It is especially effective when users normally move forward or backward one page at a time.
 
@@ -531,17 +479,13 @@ It is especially effective when users normally move forward or backward one page
 
 ## 4.5 Limitations
 
-### 1. Direct page jumping is difficult
+### Direct page jumping is difficult
 
-A cursor does not naturally support:
-
-```text
-Go directly to page 57
-```
+A cursor does not naturally support: `Go directly to page 57`
 
 The client needs a cursor for the required position.
 
-### 2. Total page counts are not natural
+### Total page counts are not natural
 
 Cursor pagination usually returns:
 
@@ -561,7 +505,7 @@ rather than:
 
 The API can still calculate a total count, but doing so removes some of the performance benefit.
 
-### 3. Implementation is more complex
+### Implementation is more complex
 
 The server must correctly handle:
 
@@ -573,7 +517,7 @@ The server must correctly handle:
 - Invalid or expired cursors
 - Forward and backward navigation
 
-### 4. Cursors can become invalid
+### Cursors can become invalid
 
 A cursor may become unusable when:
 
@@ -585,11 +529,7 @@ A cursor may become unusable when:
 
 The API should define how invalid cursors are reported.
 
-Example:
-
-```http
-HTTP/1.1 400 Bad Request
-```
+Example: `HTTP/1.1 400 Bad Request`
 
 ```json
 {
@@ -600,25 +540,32 @@ HTTP/1.1 400 Bad Request
 }
 ```
 
-### 5. Changing sort order changes cursor meaning
+### Changing sort order changes cursor meaning
 
-A cursor created for:
+A cursor created for: `GET /orders?status=paid&sort=-created_at`
 
-```http
-GET /orders?status=paid&sort=-created_at
-```
-
-should not silently be reused for:
-
-```http
-GET /orders?status=failed&sort=amount
-```
+should not silently be reused for: `GET /orders?status=failed&sort=amount`
 
 The cursor should either include the relevant query context or be validated against it.
 
 ---
 
 # 5. Offset vs Cursor Comparison
+
+```mermaid
+flowchart LR
+    subgraph OFF[Offset-based]
+        OC[Client] -->|page or offset| OA[API]
+        OA -->|LIMIT and OFFSET| OD[(Database)]
+        OA --> OP["Easy numbered pages<br/>Easy direct jumps<br/>Slower and less stable at deep offsets"]
+    end
+
+    subgraph CUR[Cursor-based]
+        CC[Client] -->|cursor| CA[API]
+        CA -->|range or keyset query| CD[(Database)]
+        CA --> CP["Efficient sequential traversal<br/>Stable during common insert patterns<br/>No natural arbitrary page jump"]
+    end
+```
 
 | Area | Offset-Based | Cursor-Based |
 |---|---|---|
@@ -645,27 +592,15 @@ Stable ordering is essential for both strategies and critical for cursor paginat
 
 ## Problem with a non-unique sort field
 
-Suppose several orders have the same timestamp:
+Suppose several orders have the same timestamp: `created_at = 2026-07-30T10:00:00Z`
 
-```text
-created_at = 2026-07-30T10:00:00Z
-```
-
-Sorting only by `created_at` does not define their exact order:
-
-```sql
-ORDER BY created_at DESC
-```
+Sorting only by `created_at` does not define their exact order: `ORDER BY created_at DESC`
 
 The database may return tied records in different orders across requests.
 
 ## Add a unique tie-breaker
 
-Use:
-
-```sql
-ORDER BY created_at DESC, id DESC
-```
+Use: `ORDER BY created_at DESC, id DESC`
 
 The cursor must include both fields:
 
@@ -676,11 +611,7 @@ The cursor must include both fields:
 }
 ```
 
-The next-page predicate must also compare both fields:
-
-```sql
-WHERE (created_at, id) < (:created_at, :id)
-```
+The next-page predicate must also compare both fields: `WHERE (created_at, id) < (:created_at, :id)`
 
 ## Recommended rule
 
@@ -821,11 +752,7 @@ A pagination contract should be consistent across endpoints.
 
 ## 8.3 Prefer `limit + 1` to detect another page
 
-To determine `has_more`, request one extra record internally:
-
-```sql
-LIMIT 21
-```
+To determine `has_more`, request one extra record internally: `LIMIT 21`
 
 For a public page size of 20:
 
@@ -919,7 +846,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 
-
 @router.get("/orders")
 async def list_orders(
     page: Annotated[int, Query(ge=1)] = 1,
@@ -978,10 +904,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-
 class InvalidCursorError(ValueError):
     pass
-
 
 def encode_cursor(*, created_at: datetime, order_id: str) -> str:
     payload = {
@@ -991,7 +915,6 @@ def encode_cursor(*, created_at: datetime, order_id: str) -> str:
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
 
 def decode_cursor(cursor: str) -> dict[str, Any]:
     try:
@@ -1022,7 +945,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
-
 
 @router.get("/orders/cursor")
 async def list_orders_cursor(
@@ -1149,18 +1071,7 @@ Application events
 
 ## Practical decision flow
 
-```mermaid
-flowchart TD
-    A[Need pagination] --> B{Must jump to page N?}
-    B -- Yes --> C{Dataset large or highly dynamic?}
-    C -- No --> D[Use offset pagination]
-    C -- Yes --> E[Consider hybrid UX or search filters]
-    B -- No --> F{Large or frequently changing data?}
-    F -- Yes --> G[Use cursor pagination]
-    F -- No --> H{Need exact total pages?}
-    H -- Yes --> D
-    H -- No --> G
-```
+If the UI must jump to an arbitrary page N and the dataset is small and stable, use offset. Otherwise — large data, frequent writes, sequential traversal — use cursor. When a large dataset still needs direct jumps, prefer search filters or a hybrid experience over deep offsets. The decision-flow diagram in the **In short** section at the top of this note walks the same choice.
 
 ---
 
@@ -1168,17 +1079,9 @@ flowchart TD
 
 ## 11.1 Always define deterministic ordering
 
-Bad:
+Bad: `ORDER BY created_at DESC`
 
-```sql
-ORDER BY created_at DESC
-```
-
-Better:
-
-```sql
-ORDER BY created_at DESC, id DESC
-```
+Better: `ORDER BY created_at DESC, id DESC`
 
 ## 11.2 Match indexes to query patterns
 
@@ -1229,11 +1132,7 @@ This prevents a cursor from being reused with incompatible query parameters.
 
 ## 11.6 Enforce maximum page sizes
 
-A client should not be able to request:
-
-```http
-GET /orders?limit=1000000
-```
+A client should not be able to request: `GET /orders?limit=1000000`
 
 A typical maximum is between 50 and 200, depending on item size and endpoint cost.
 
@@ -1290,11 +1189,7 @@ During a long traversal:
 
 For a stable export or financial report, use snapshot-based processing, a fixed cutoff time, or a dedicated export job.
 
-Example cutoff:
-
-```http
-GET /transactions?created_before=2026-07-30T10:00:00Z&limit=100
-```
+Example cutoff: `GET /transactions?created_before=2026-07-30T10:00:00Z&limit=100`
 
 All following requests preserve the same cutoff.
 
@@ -1381,40 +1276,7 @@ Pagination does not need to be identical across every endpoint when the usage pa
 
 ---
 
-# 13. Key Interview Takeaways
-
-## Core distinction
-
-```text
-Offset:
-“Skip N rows.”
-
-Cursor:
-“Continue after this ordered position.”
-```
-
-## Important technical points
-
-1. Offset pagination is simple and supports direct page navigation.
-2. Large offsets can be inefficient because skipped rows still require work.
-3. Inserts and deletes can shift offsets, causing duplicates or missing records.
-4. Cursor pagination is usually better for large, frequently changing datasets.
-5. Cursor pagination commonly uses keyset predicates in the database.
-6. A cursor is an API token; keyset pagination is the underlying query technique.
-7. Stable ordering requires a unique tie-breaker such as `(created_at, id)`.
-8. A matching composite index is essential for efficient cursor queries.
-9. Cursor pagination does not naturally provide page numbers or exact totals.
-10. Opaque cursors should be validated and, when appropriate, signed.
-11. `limit + 1` is a practical way to calculate `has_more`.
-12. Pagination does not automatically provide snapshot consistency.
-
-## One-line selection rule
-
-> Use **offset pagination** for simple, numbered, relatively stable lists; use **cursor pagination** for large, dynamic, sequentially consumed collections.
-
----
-
-# 14. References
+# 13. References
 
 The following primary documentation was reviewed for the behavior and design guidance in this document:
 
@@ -1422,22 +1284,3 @@ The following primary documentation was reviewed for the behavior and design gui
 - [GitHub Docs — Using pagination in the REST API](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api)
 - [Stripe API Reference — Pagination](https://docs.stripe.com/api/pagination)
 - [GraphQL Cursor Connections Specification](https://relay.dev/graphql/connections.htm)
-
----
-
-## Final Summary
-
-```mermaid
-flowchart LR
-    subgraph OFF[Offset-based]
-        OC[Client] -->|page or offset| OA[API]
-        OA -->|LIMIT and OFFSET| OD[(Database)]
-        OA --> OP["Easy numbered pages<br/>Easy direct jumps<br/>Slower and less stable at deep offsets"]
-    end
-
-    subgraph CUR[Cursor-based]
-        CC[Client] -->|cursor| CA[API]
-        CA -->|range or keyset query| CD[(Database)]
-        CA --> CP["Efficient sequential traversal<br/>Stable during common insert patterns<br/>No natural arbitrary page jump"]
-    end
-```

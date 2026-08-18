@@ -2,14 +2,46 @@
 title: "Redis Use Cases"
 group: "Redis in Practice"
 order: 5
+updated: "July 2026"
 ---
 
 # Redis Use Cases
 
-> **Topic:** Caching with Redis  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Last reviewed:** July 2026  
+> The jobs Redis is genuinely good at — caching, sessions, rate limiting, queues, leaderboards — and why it complements the primary database rather than replacing it.
+>
 > **Version context:** Redis Open Source 8.8
+
+## In short
+
+- Redis is an in-memory store with rich data types, used as a cache, session store, rate limiter, queue, event log, leaderboard, and geo or time-series index. It complements the primary database rather than replacing it.
+- Four properties drive every use case: in-memory latency, atomic commands (`INCR`, `SET NX`, `ZINCRBY`), TTL-based automatic expiry, and state shared across all application instances.
+- Pick the data type from the access pattern: Hash for sessions, Sorted Set for leaderboards and sliding windows, `SET NX` with TTL for locks and idempotency keys, Stream for reliable events.
+- Pub/Sub is fire-and-forget to currently connected subscribers; Streams persist, replay, and acknowledge. Never use Pub/Sub where a missed message matters.
+- Redis is the wrong choice for relational queries, large cold datasets, large objects, unbounded collections, and writes that must be durable before you return success.
+- Every temporary key needs a TTL. Temporary data without one becomes permanent memory usage, and then eviction decides what to lose on your behalf.
+- Avoid `KEYS` in production, keep values small, and keep disposable cache data on a different instance from critical state.
+
+```mermaid
+flowchart TB
+    U[Web or Mobile Client] --> API[Backend API]
+
+    API --> R[(Redis)]
+    API --> DB[(PostgreSQL)]
+    API --> OBJ[(Object Storage)]
+
+    R --> C[Cache]
+    R --> S[Sessions and Carts]
+    R --> RL[Rate Limits]
+    R --> Q[Streams and Jobs]
+    R --> V[Vector Search]
+
+    Q --> W[Background Workers]
+    W --> DB
+```
+
+**Interview answer:** Beyond caching, Redis is the shared, expiring, atomic state layer for a horizontally scaled backend — sessions, rate-limit counters, idempotency keys, distributed locks, leaderboards, job queues, and event streams. The same three properties explain all of them: everything is in memory, command execution is atomic so the application needs no locking around a counter, and any key can carry a TTL. The relational database stays the source of truth; Redis holds operational state that is cheap to rebuild.
+
+**Gotcha:** Treating Redis as durable. Pub/Sub silently drops messages for any subscriber that is not connected at publish time, and an in-memory store with asynchronous persistence can lose the most recent writes during a failover. Anything that must survive a restart belongs in the database, or at minimum in a Stream with acknowledgements — not in a plain key.
 
 ---
 
@@ -139,68 +171,20 @@ Caching is the most common Redis use case.
 
 The application stores frequently accessed data in Redis so that future requests do not need to query the primary database.
 
-## 4.1 Cache-Aside Flow
+In one line, the dominant pattern is cache-aside: check Redis, fall back to the database on a miss, store the result with a TTL, and delete the key after a database write commits.
 
-```mermaid
-flowchart TD
-    A[Application receives request] --> B{Value exists in Redis?}
-    B -- Yes --> C[Return cached value]
-    B -- No --> D[Read from database]
-    D --> E[Store value in Redis with TTL]
-    E --> F[Return value]
-```
+The mechanics behind that line are covered elsewhere and are not repeated here:
 
-### Read Flow
+| Topic | Where it lives |
+|---|---|
+| Cache-aside, write-through, write-behind, with working code | [Cache Strategies](cache-strategies.md) |
+| Delete-vs-update, versioned keys, event-driven invalidation | [Cache Invalidation](cache-invalidation.md) |
+| TTL semantics and eviction policies | [TTL and Eviction Policies](ttl-eviction-policies.md) |
+| Cache layers, negative caching, and the stampede with its mitigations | [Caching Layers and Stampede](../system-design/caching-layers-stampede.md) |
 
-1. Read from Redis.
-2. On a cache hit, return the value.
-3. On a cache miss, query the database.
-4. Store the result in Redis.
-5. Return the result.
+What remains a *use-case* decision is which data belongs in the cache at all.
 
-### Write Flow
-
-1. Update the database.
-2. Delete or update the related Redis key.
-3. Allow the next read to repopulate the cache.
-
-## 4.2 Python Example
-
-```python
-import json
-from typing import Any
-
-from redis import Redis
-
-redis_client = Redis(
-    host="localhost",
-    port=6379,
-    decode_responses=True,
-)
-
-PRODUCT_TTL_SECONDS = 300
-
-
-def get_product(product_id: int) -> dict[str, Any] | None:
-    cache_key = f"product:{product_id}"
-
-    cached_product = redis_client.get(cache_key)
-    if cached_product is not None:
-        return json.loads(cached_product)
-
-    product = load_product_from_database(product_id)
-    if product is None:
-        return None
-
-    redis_client.set(
-        cache_key,
-        json.dumps(product),
-        ex=PRODUCT_TTL_SECONDS,
-    )
-    return product
-```
-
-## 4.3 Good Caching Candidates
+## 4.1 Good Caching Candidates
 
 Redis caching works well for:
 
@@ -215,7 +199,7 @@ Redis caching works well for:
 - Frequently executed reports
 - Third-party API responses
 
-## 4.4 Poor Caching Candidates
+## 4.2 Poor Caching Candidates
 
 Avoid caching data when:
 
@@ -225,53 +209,6 @@ Avoid caching data when:
 - The result is rarely requested
 - The object is too large compared with its access frequency
 - Cache invalidation would be more complex than the original query
-
-## 4.5 Negative Caching
-
-A missing database record can also be cached for a short period.
-
-```python
-NOT_FOUND = "__not_found__"
-
-value = redis_client.get(cache_key)
-
-if value == NOT_FOUND:
-    return None
-
-if value is None:
-    product = load_product_from_database(product_id)
-
-    if product is None:
-        redis_client.set(cache_key, NOT_FOUND, ex=30)
-        return None
-```
-
-This prevents repeated database queries for invalid or nonexistent IDs.
-
-## 4.6 Cache Stampede Protection
-
-A cache stampede occurs when a popular key expires and many requests query the database at the same time.
-
-```mermaid
-flowchart TD
-    E[Popular key expires] --> M[100 requests miss the cache]
-    M --> Q[100 database queries run together]
-```
-
-Common protections:
-
-- Add random jitter to TTL values
-- Use a short Redis lock during regeneration
-- Refresh popular keys before they expire
-- Serve stale data while one worker refreshes it
-- Request coalescing: allow only one database load per key
-
-```python
-import random
-
-ttl = 300 + random.randint(0, 60)
-redis_client.set(cache_key, value, ex=ttl)
-```
 
 ---
 
@@ -332,13 +269,7 @@ redis_client.expire(session_key, 1800)
 
 ## 5.3 Sliding Session Expiration
 
-The application can refresh the TTL after an authenticated request.
-
-```python
-redis_client.expire(session_key, 1800)
-```
-
-Active sessions remain alive, while inactive sessions expire automatically.
+Calling `redis_client.expire(session_key, 1800)` again after each authenticated request refreshes the TTL. Active sessions stay alive, while inactive ones expire on their own.
 
 ## 5.4 Important Security Rule
 
@@ -363,45 +294,19 @@ It protects:
 - LLM APIs
 - File-processing endpoints
 
-## 6.1 Fixed-Window Counter
+## 6.1 Why This Is a Redis Use Case
 
-Example rule:
+The algorithms themselves — fixed window, sliding log, sliding-window counter, token bucket, leaky bucket — their trade-offs, the `429` and `Retry-After` response design, and a full working implementation are covered in [Rate Limiting](../api-design/rate-limiting.md).
 
-> Maximum 100 requests per user per minute.
+What makes rate limiting a *Redis* problem is the storage, not the algorithm. A limit is only correct if every API instance sees the same counter, so it cannot live in process memory. Redis supplies exactly the three things the counter needs:
 
-```python
-def is_allowed(user_id: int, limit: int = 100) -> bool:
-    key = f"rate-limit:user:{user_id}:minute"
+| Requirement | Redis mechanism |
+|---|---|
+| One counter shared by every instance | A single key, reachable from all of them |
+| Increment without a read-modify-write race | `INCR` and `INCRBY` are atomic |
+| The window resets itself | `EXPIRE` on the key, set when the counter is first created |
 
-    request_count = redis_client.incr(key)
-
-    if request_count == 1:
-        redis_client.expire(key, 60)
-
-    return request_count <= limit
-```
-
-## 6.2 Flow
-
-```mermaid
-flowchart TD
-    R[Incoming request] --> K[Increment Redis counter]
-    K --> C{Counter within limit?}
-    C -- Yes --> A[Allow request]
-    C -- No --> D[Return HTTP 429]
-```
-
-## 6.3 Rate-Limiting Algorithms
-
-| Algorithm | Strength | Limitation |
-|---|---|---|
-| Fixed window | Simple and fast | Allows bursts near window boundaries |
-| Sliding log | Accurate | Uses more memory |
-| Sliding-window counter | Good balance | More implementation complexity |
-| Token bucket | Supports controlled bursts | Requires careful atomic updates |
-| Leaky bucket | Smooth request flow | May delay or reject bursts |
-
-Use a Lua script or an appropriate atomic command when multiple Redis operations must behave as one operation.
+For a sliding window, a Sorted Set of request timestamps replaces the counter: `ZADD` the current time, `ZREMRANGEBYSCORE` everything older than the window, then `ZCARD` to count what is left. When several such operations must behave as one, put them in a Lua script so no other client can interleave.
 
 ---
 
@@ -558,25 +463,7 @@ The API returns quickly while workers process jobs asynchronously.
 
 ## 9.2 Lists vs Streams
 
-### Redis List
-
-Use for a basic queue.
-
-```text
-Producer: LPUSH jobs payload
-Consumer: BRPOP jobs
-```
-
-### Redis Stream
-
-Use when you need:
-
-- Consumer groups
-- Acknowledgements
-- Retry handling
-- Pending-message tracking
-- Event replay
-- Retention control
+A List gives you the simplest possible queue — `LPUSH jobs payload` on one side, a blocking `BRPOP jobs` on the other — but a job popped by a worker that then crashes is gone. A Stream keeps the message until it is acknowledged, which is why consumer groups, retries, and replay only exist there. The full comparison is in [Redis Data Structures](redis-data-structures.md).
 
 For production-grade reliable processing, a mature task framework or Redis Streams is usually safer than building a custom List-based queue.
 
@@ -615,17 +502,9 @@ PUBLISH order-events '{"order_id": 501, "status": "paid"}'
 
 ## 10.3 Important Limitation
 
-Pub/Sub does not persist message history.
+Pub/Sub does not persist message history. If a subscriber is disconnected when a message is published, that subscriber misses the message permanently — there is no backlog to catch up on.
 
-If a subscriber is disconnected when a message is published, that subscriber misses the message.
-
-Use Pub/Sub when:
-
-- The message is temporary
-- Only online consumers need it
-- Replay is not required
-
-Use Redis Streams when delivery tracking and replay are required.
+Use Pub/Sub only when the message is temporary and losing it for an offline consumer is acceptable. Section 11.3 compares it with Streams dimension by dimension.
 
 ---
 
@@ -658,28 +537,11 @@ flowchart LR
 
 ## 11.2 Basic Commands
 
-Add an event:
-
 ```text
-XADD orders * order_id 501 status created
-```
-
-Read events:
-
-```text
-XREAD COUNT 10 STREAMS orders 0
-```
-
-Create a consumer group:
-
-```text
-XGROUP CREATE orders order-workers 0 MKSTREAM
-```
-
-Acknowledge successful processing:
-
-```text
-XACK orders order-workers 1712345678901-0
+XADD orders * order_id 501 status created        # add an event
+XREAD COUNT 10 STREAMS orders 0                  # read events
+XGROUP CREATE orders order-workers 0 MKSTREAM    # create a consumer group
+XACK orders order-workers 1712345678901-0        # acknowledge processing
 ```
 
 ## 11.3 Pub/Sub vs Streams
@@ -1097,24 +959,9 @@ Memory isolation, expiration, authorization, and deletion policies are essential
 
 # 19. Choosing the Correct Redis Data Type
 
-| Data Type | Best-Fit Use Cases |
-|---|---|
-| String | Cache values, tokens, counters, flags, locks |
-| Hash | Sessions, user profiles, carts, object fields |
-| List | Simple queues, recent items, stacks |
-| Set | Unique values, memberships, tags, permissions |
-| Sorted Set | Leaderboards, ranking, scheduling, sliding windows |
-| Stream | Reliable events, consumer groups, processing pipelines |
-| JSON | Nested application objects and document-style data |
-| Geospatial | Nearby locations and radius searches |
-| Time Series | Metrics, sensors, monitoring dashboards |
-| HyperLogLog | Approximate unique counts |
-| Bloom Filter | Probabilistic membership checks |
-| Count-Min Sketch | Frequency estimation |
-| Top-K | Approximate trending items |
-| Vector Index | Semantic search, RAG, recommendations |
+Section 3 above maps a requirement to a Redis feature. The inverse view — each data type, its commands, its complexity, and what it is good at — is in [Redis Data Structures](redis-data-structures.md).
 
-A strong Redis design starts with the access pattern, not the command.
+Either way, a strong Redis design starts with the access pattern, not the command.
 
 Ask:
 
@@ -1185,41 +1032,11 @@ Lists, Sets, Sorted Sets, Streams, and JSON objects should have clear limits or 
 
 ## 21.1 Use Clear Key Naming
 
-```text
-<environment>:<service>:<entity>:<identifier>
-```
-
-Examples:
-
-```text
-prod:catalog:product:501
-prod:auth:session:7dd92c
-prod:billing:idempotency:request-934
-```
-
-A simpler format is also valid:
-
-```text
-product:501
-session:7dd92c
-rate-limit:user:1842
-```
-
-Consistency matters more than the exact format.
+Namespace every key by environment, service, and entity — `prod:auth:session:7dd92c` rather than `7dd92c`. Consistency matters more than the exact format; key-design rules are covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
 ## 21.2 Add TTLs to Temporary Data
 
-Temporary data without TTL becomes permanent memory usage.
-
-Always consider TTLs for:
-
-- Cache entries
-- Sessions
-- Locks
-- OTPs
-- Idempotency keys
-- Temporary workflow state
-- Rate-limit counters
+Temporary data without a TTL becomes permanent memory usage. Cache entries, sessions, locks, OTPs, idempotency keys, workflow state, and rate-limit counters should all carry one. TTL semantics and the commands that set them are in [TTL and Eviction Policies](ttl-eviction-policies.md).
 
 ## 21.3 Avoid `KEYS` in Production
 
@@ -1270,11 +1087,7 @@ Use:
 
 Decide how the application behaves when Redis is unavailable.
 
-For a noncritical cache:
-
-```text
-Redis failure -> Query database directly
-```
+For a noncritical cache: `Redis failure -> Query database directly`
 
 For a session store or rate limiter, failure handling needs an explicit policy:
 
@@ -1306,19 +1119,9 @@ Important metrics include:
 
 ## 21.9 Configure Memory and Eviction
 
-Set an appropriate `maxmemory` and eviction policy.
+Set an appropriate `maxmemory` and eviction policy; the choice between `allkeys-lru`, `allkeys-lfu`, the `volatile-*` variants, and `noeviction` is covered in [TTL and Eviction Policies](ttl-eviction-policies.md).
 
-Examples:
-
-- `allkeys-lru`
-- `allkeys-lfu`
-- `volatile-lru`
-- `volatile-ttl`
-- `noeviction`
-
-The correct policy depends on whether the Redis instance is a pure cache or also stores important non-cache data.
-
-A common production practice is to separate critical state from disposable cache data into different Redis instances or logical deployments.
+The use-case consequence is what matters here: the correct policy depends on whether the instance is a pure cache or also holds state you cannot lose. That is a strong argument for separating critical state from disposable cache data into different Redis instances, so one eviction policy does not have to serve both.
 
 ## 21.10 Secure Redis
 
@@ -1355,27 +1158,9 @@ Consider an e-commerce backend.
 | Nearby warehouses | Geospatial index |
 | Product recommendations | Vector search |
 
-## 22.2 Architecture
+The architecture this table describes is the diagram in **In short** at the top of this note.
 
-```mermaid
-flowchart TB
-    U[Web or Mobile Client] --> API[Backend API]
-
-    API --> R[(Redis)]
-    API --> DB[(PostgreSQL)]
-    API --> OBJ[(Object Storage)]
-
-    R --> C[Cache]
-    R --> S[Sessions and Carts]
-    R --> RL[Rate Limits]
-    R --> Q[Streams and Jobs]
-    R --> V[Vector Search]
-
-    Q --> W[Background Workers]
-    W --> DB
-```
-
-## 22.3 Request Example
+## 22.2 Request Example
 
 Product detail request:
 
@@ -1404,22 +1189,7 @@ Redis is handling fast operational state. PostgreSQL remains the durable source 
 
 ---
 
-# 23. Key Takeaways
-
-- Redis is more than a simple key-value cache.
-- Caching, sessions, counters, rate limiting, and temporary state are its most common backend use cases.
-- Sorted Sets are ideal for ranking and time-window algorithms.
-- Pub/Sub is for live, non-durable broadcasting.
-- Streams are for persistent events, replay, acknowledgements, and consumer groups.
-- TTL is central to good Redis memory management.
-- Redis should usually complement, not replace, the primary database.
-- Atomic commands, Lua scripts, pipelines, and correct data-type selection are important for production-quality designs.
-- Modern Redis also supports JSON, time series, search, vectors, semantic caching, recommendations, feature stores, and agent memory.
-- Every Redis use case needs explicit decisions about durability, expiration, failure handling, memory, and consistency.
-
----
-
-# 24. Official References
+# 23. Official References
 
 - [Redis documentation](https://redis.io/docs/latest/)
 - [Redis use cases](https://redis.io/docs/latest/develop/use-cases/)

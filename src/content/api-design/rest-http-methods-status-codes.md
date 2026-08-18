@@ -6,10 +6,46 @@ order: 1
 
 # REST Principles, HTTP Methods & Status Codes
 
-> **Topic:** API Design & REST  
-> **Level:** Intermediate developer  
-> **Purpose:** Practical understanding for backend development and technical interviews  
+> Practical understanding for backend development and technical interviews
+>
 > **Standards baseline:** HTTP semantics from RFC 9110, HTTP caching from RFC 9111, Problem Details from RFC 9457, and the current IANA registries.
+
+## In short
+
+- A URI names the resource, the method states the intent, the status code states the outcome, and the body carries a representation.
+- `GET`, `HEAD`, `OPTIONS`, `TRACE` and `QUERY` are safe; those plus `PUT` and `DELETE` are idempotent; `POST` and `PATCH` are neither by default.
+- `POST` creates when the server picks the URI, `PUT` replaces the whole representation at a URI the client already knows, `PATCH` changes selected fields.
+- Success codes: `200` returned content, `201` created plus a `Location` header, `202` accepted but not finished, `204` succeeded with nothing to send.
+- Client errors: `401` unauthenticated vs `403` authenticated but refused, `404` missing or hidden, `405` wrong method, `409` state conflict, `412` failed `If-Match`, `422` semantically invalid, `429` rate limited.
+- Server errors: `500` unexpected, `502` invalid upstream response, `503` temporarily unavailable, `504` upstream timeout — and never leak stack traces in any of them.
+- Return failures as RFC 9457 Problem Details with a stable machine-readable code, and use `ETag` with `If-Match` for cache validation and optimistic concurrency.
+
+```mermaid
+flowchart TD
+    A[Request failed] --> B{Is failure caused by request or client condition?}
+    B -->|No| S[5xx server-side failure]
+    B -->|Yes| C{Authentication missing or invalid?}
+    C -->|Yes| D[401 Unauthorized]
+    C -->|No| E{Authenticated but forbidden?}
+    E -->|Yes| F[403 Forbidden]
+    E -->|No| G{Resource missing or hidden?}
+    G -->|Yes| H[404 Not Found]
+    G -->|No| I{Method unsupported for resource?}
+    I -->|Yes| J[405 Method Not Allowed]
+    I -->|No| K{Request media type unsupported?}
+    K -->|Yes| L[415 Unsupported Media Type]
+    K -->|No| M{Semantic validation failed?}
+    M -->|Yes| N[422 Unprocessable Content]
+    M -->|No| O{Current state conflicts?}
+    O -->|Yes| P[409 Conflict]
+    O -->|No| Q{Precondition failed?}
+    Q -->|Yes| R[412 Precondition Failed]
+    Q -->|No| T[400 Bad Request or another specific 4xx]
+```
+
+**Interview answer:** Choose the method by its contract — safe and idempotent for reads, `PUT` for a full replacement at a known URI, `PATCH` for a partial change, `POST` for creation or any unsafe processing — then choose the most specific status code that describes the outcome to the client rather than to your code. Creation is `201` with a `Location` header, accepted-but-unfinished work is `202`, and a successful call with nothing to return is `204`. On failure, separate authentication (`401`) from authorization (`403`), malformed syntax (`400`) from failed validation (`422`), and state conflicts (`409`) from failed preconditions (`412`).
+
+**Gotcha:** Returning `200 OK` with `"success": false` in the body — every cache, gateway, retry layer and monitor between you and the client reads the status code, not your JSON.
 
 ---
 
@@ -17,28 +53,11 @@ order: 1
 
 ## 1.1 What Is REST?
 
-**REST** stands for **Representational State Transfer**.
-
-REST is an **architectural style** for designing distributed systems. It is not:
-
-- A programming language
-- A framework
-- A data format
-- A network protocol
-- A strict API specification
+**REST** stands for **Representational State Transfer**. It is an **architectural style** for designing distributed systems — not a programming language, a framework, a data format, a network protocol, or a strict API specification.
 
 REST defines a set of architectural constraints that help systems remain scalable, loosely coupled, cache-friendly, and independently evolvable.
 
-HTTP is commonly used to implement REST APIs because HTTP already provides:
-
-- Resource identifiers through URIs
-- Standard request methods
-- Standard response status codes
-- Headers and metadata
-- Caching rules
-- Content negotiation
-- Authentication mechanisms
-- Intermediary support such as proxies and gateways
+HTTP is commonly used to implement REST APIs because HTTP already provides resource identifiers through URIs, standard request methods and response status codes, headers and metadata, caching rules, content negotiation, authentication mechanisms, and intermediary support such as proxies and gateways.
 
 A system can use HTTP without being RESTful. Similarly, merely returning JSON over HTTP does not automatically make an API RESTful.
 
@@ -82,100 +101,23 @@ The response body contains a representation of the resource or an error.
 
 ## 2.1 What Is a Resource?
 
-A **resource** is a conceptual entity that can be identified and interacted with.
+A **resource** is a conceptual entity that can be identified and interacted with: a user, an order, a product, a payment, a report, a collection of invoices, or the current status of a deployment. The identifier `/orders/ORD-101` names the resource "order ORD-101".
 
-Examples:
-
-- A user
-- An order
-- A product
-- A payment
-- A report
-- A collection of invoices
-- The current status of a deployment
-
-```text
-Resource identifier: /orders/ORD-101
-Resource:             Order ORD-101
-```
-
-A resource is not the same as a database row. It is an API-level concept.
-
-For example, `/account-summary` may combine data from:
-
-- User table
-- Subscription table
-- Billing service
-- Payment provider
-- Usage aggregation
-
-It is still one API resource even though it is not one database record.
+A resource is not the same as a database row. It is an API-level concept. `/account-summary` may combine the user table, the subscription table, a billing service, a payment provider and usage aggregation, and is still one API resource even though it is not one database record.
 
 ---
 
 ## 2.2 What Is a Representation?
 
-A **representation** is the data format used to describe the current or intended state of a resource.
+A **representation** is the data format used to describe the current or intended state of a resource, and the same resource may have several. `GET /reports/2026-summary` with `Accept: application/json` returns `{"year": 2026, "revenue": 12500000}`, while the same URI with `Accept: application/pdf` returns a rendered document. The resource is the same, but its representation is different.
 
-The same resource may have multiple representations:
-
-```http
-GET /reports/2026-summary
-Accept: application/json
-```
-
-```json
-{
-  "year": 2026,
-  "revenue": 12500000
-}
-```
-
-Or:
-
-```http
-GET /reports/2026-summary
-Accept: application/pdf
-```
-
-The resource is the same, but its representation is different.
-
-Common representation formats include:
-
-- JSON
-- XML
-- HTML
-- CSV
-- PDF
-- Images
-- Binary files
-
-For most application APIs, JSON is the normal default.
+Common representation formats include JSON, XML, HTML, CSV, PDF, images and binary files. For most application APIs, JSON is the normal default.
 
 ---
 
 ## 2.3 Resource State vs Application State
 
-These two ideas are commonly confused.
-
-### Resource state
-
-State stored or managed by the server:
-
-```json
-{
-  "order_id": "ORD-101",
-  "status": "shipped"
-}
-```
-
-### Application state
-
-The client’s current workflow or navigation state:
-
-```text
-Cart page -> Address page -> Payment page -> Confirmation page
-```
+These two ideas are commonly confused. **Resource state** is state stored or managed by the server, such as `{"order_id": "ORD-101", "status": "shipped"}`. **Application state** is the client’s current workflow or navigation position: `Cart page -> Address page -> Payment page -> Confirmation page`.
 
 REST allows the server to store resource state.  
 The stateless constraint means the server should not depend on hidden conversational state from earlier requests to understand the current request.
@@ -206,28 +148,11 @@ flowchart TD
 
 ## 3.1 Client-Server
 
-The client and server have separate responsibilities.
-
-```text
-Client responsibilities
-- User interface
-- User interaction
-- Client-side state
-- Calling the API
-- Displaying representations
-
-Server responsibilities
-- Business rules
-- Resource management
-- Persistence
-- Authorization
-- Validation
-- Response generation
-```
+The client owns the user interface, user interaction, client-side state, calling the API and displaying representations. The server owns business rules, resource management, persistence, authorization, validation and response generation.
 
 ### Benefit
 
-The frontend and backend can evolve independently as long as the API contract remains compatible.
+The frontend and backend can evolve independently as long as the API contract remains compatible, and many clients can share one API.
 
 ```mermaid
 flowchart LR
@@ -251,46 +176,15 @@ Authorization: Bearer <access-token>
 Accept: application/json
 ```
 
-The server should not require:
-
-```text
-Request 1: "Remember that I selected customer C-10."
-Request 2: "Now return their orders."
-```
-
-Instead:
-
-```http
-GET /customers/C-10/orders
-```
+The server should not require one request to say "remember that I selected customer C-10" so that a later request can mean "now return their orders". `GET /customers/C-10/orders` carries its own context.
 
 ### Stateless does not mean “the server stores no state”
 
-The server can store:
-
-- Users
-- Orders
-- Permissions
-- Tokens
-- Database records
-- Cache entries
-- Audit logs
-
-Statelessness means each request is independently understandable.
+The server can store users, orders, permissions, tokens, database records, cache entries and audit logs. Statelessness means each request is independently understandable.
 
 ### Benefit
 
-Any available application instance can handle the request:
-
-```mermaid
-flowchart LR
-    C[Client] --> LB[Load Balancer]
-    LB --> A[API Instance A]
-    LB --> B[API Instance B]
-    LB --> D[API Instance C]
-```
-
-This improves horizontal scalability and failover.
+Any available application instance can handle the request, which improves horizontal scalability and failover.
 
 ---
 
@@ -305,15 +199,7 @@ ETag: "product-42-v8"
 Content-Type: application/json
 ```
 
-Caching can reduce:
-
-- Latency
-- Network traffic
-- Database load
-- Application server load
-- Infrastructure cost
-
-Caching must be applied carefully to personalized or sensitive data.
+Caching can reduce latency, network traffic, database load, application-server load and infrastructure cost. It must be applied carefully to personalized or sensitive data.
 
 ---
 
@@ -325,13 +211,7 @@ The uniform interface includes four important ideas.
 
 ### 3.4.1 Resource identification
 
-Resources are identified using URIs.
-
-```text
-/users/42
-/orders/ORD-101
-/products/P-500/reviews
-```
+Resources are identified using URIs such as `/users/42`, `/orders/ORD-101` and `/products/P-500/reviews`.
 
 ### 3.4.2 Manipulation through representations
 
@@ -348,14 +228,7 @@ Content-Type: application/merge-patch+json
 
 ### 3.4.3 Self-descriptive messages
 
-The request and response should carry enough metadata to explain how they must be processed.
-
-```http
-Content-Type: application/json
-Accept: application/json
-Authorization: Bearer ...
-Cache-Control: no-store
-```
+The request and response should carry enough metadata to explain how they must be processed, through headers such as `Content-Type`, `Accept`, `Authorization` and `Cache-Control`.
 
 ### 3.4.4 Hypermedia as the Engine of Application State
 
@@ -366,17 +239,9 @@ A response can include links or controls that tell the client which transitions 
   "id": "ORD-101",
   "status": "pending_payment",
   "_links": {
-    "self": {
-      "href": "/orders/ORD-101"
-    },
-    "payment": {
-      "href": "/orders/ORD-101/payments",
-      "method": "POST"
-    },
-    "cancel": {
-      "href": "/orders/ORD-101/cancellations",
-      "method": "POST"
-    }
+    "self": { "href": "/orders/ORD-101" },
+    "payment": { "href": "/orders/ORD-101/payments", "method": "POST" },
+    "cancel": { "href": "/orders/ORD-101/cancellations", "method": "POST" }
   }
 }
 ```
@@ -398,16 +263,7 @@ flowchart TD
     APP --> DB[(Database)]
 ```
 
-Layers can provide:
-
-- TLS termination
-- Authentication
-- Rate limiting
-- Caching
-- Logging
-- Routing
-- Load balancing
-- Web application firewall rules
+Layers can provide TLS termination, authentication, rate limiting, caching, logging, routing, load balancing and web application firewall rules.
 
 ---
 
@@ -425,26 +281,7 @@ This is the only optional REST constraint and is normally not central to backend
 
 ## 4.1 Prefer Nouns Over Verbs
 
-The HTTP method already represents the general operation.
-
-### Prefer
-
-```http
-GET    /users
-POST   /users
-GET    /users/42
-PATCH  /users/42
-DELETE /users/42
-```
-
-### Avoid generic CRUD action names
-
-```http
-GET  /getUsers
-POST /createUser
-POST /updateUser
-POST /deleteUser
-```
+The HTTP method already represents the general operation, so prefer `GET /users`, `POST /users`, `GET /users/42`, `PATCH /users/42` and `DELETE /users/42` over generic CRUD action names such as `GET /getUsers`, `POST /createUser`, `POST /updateUser` and `POST /deleteUser`.
 
 The noun-based form is more predictable and better aligned with HTTP semantics.
 
@@ -452,14 +289,7 @@ The noun-based form is more predictable and better aligned with HTTP semantics.
 
 ## 4.2 Use Collections and Individual Resources
 
-```text
-/users                 -> collection
-/users/42              -> one user
-/users/42/orders       -> user's order collection
-/users/42/orders/901   -> one order under that user
-```
-
-Typical mapping:
+`/users` is a collection, `/users/42` is one user, `/users/42/orders` is that user's order collection and `/users/42/orders/901` is one order under that user.
 
 | Operation | Method and URI |
 |---|---|
@@ -474,22 +304,7 @@ Typical mapping:
 
 ## 4.3 Use Stable Identifiers
 
-Prefer identifiers that do not change when mutable attributes change.
-
-### Better
-
-```text
-/users/8f52c18d
-/products/P-1048
-/orders/ORD-2026-00081
-```
-
-### Fragile
-
-```text
-/users/aarav-shah
-/products/blue-running-shoe-size-10
-```
+Prefer identifiers that do not change when mutable attributes change. `/users/8f52c18d`, `/products/P-1048` and `/orders/ORD-2026-00081` are stable; `/users/aarav-shah` and `/products/blue-running-shoe-size-10` break the moment the name or attribute changes.
 
 A human-readable slug is acceptable when it is designed as a stable identifier.
 
@@ -497,24 +312,7 @@ A human-readable slug is acceptable when it is designed as a stable identifier.
 
 ## 4.4 Keep Nesting Shallow
 
-### Reasonable
-
-```text
-/customers/C-10/orders
-/orders/O-90/items
-```
-
-### Too deeply nested
-
-```text
-/companies/1/departments/2/teams/3/users/4/tasks/5/comments
-```
-
-A deeply nested resource can often be addressed directly:
-
-```text
-/comments/{comment_id}
-```
+`/customers/C-10/orders` and `/orders/O-90/items` are reasonable. `/companies/1/departments/2/teams/3/users/4/tasks/5/comments` is not — a deeply nested resource can usually be addressed directly as `/comments/{comment_id}`.
 
 A practical guideline is to nest only when the parent relationship is important to identity, authorization, or filtering.
 
@@ -526,14 +324,7 @@ A practical guideline is to nest only when the parent relationship is important 
 GET /orders?status=paid&sort=-created_at&limit=20&cursor=abc123
 ```
 
-Use query parameters for:
-
-- Filtering
-- Sorting
-- Pagination
-- Field selection
-- Search
-- Optional expansions
+Use query parameters for filtering, sorting, pagination, field selection, search and optional expansions.
 
 ```text
 GET /users?role=admin
@@ -546,20 +337,7 @@ GET /customers/C-10?include=addresses,subscriptions
 
 ## 4.6 Model Business Actions as Resources
 
-Not every operation is simple CRUD.
-
-Examples:
-
-```http
-POST /orders/ORD-101/cancellations
-POST /payments/PAY-10/refunds
-POST /invoices/INV-90/reminders
-POST /deployments/DEP-7/retries
-```
-
-This models an action as the creation of a related resource or event.
-
-Example:
+Not every operation is simple CRUD. Endpoints such as `POST /payments/PAY-10/refunds`, `POST /invoices/INV-90/reminders` and `POST /deployments/DEP-7/retries` model an action as the creation of a related resource or event.
 
 ```http
 POST /orders/ORD-101/cancellations
@@ -581,30 +359,9 @@ A command-style endpoint such as `POST /orders/ORD-101/cancel` can still be unde
 
 ## 4.7 Naming Conventions
 
-Choose one convention and apply it consistently.
+Choose one convention and apply it consistently — `/orders/{order_id}/line-items` or `/orders/{order_id}/line_items`, not both. For URLs, lowercase kebab-case such as `/payment-methods` and `/audit-events` is the readable default.
 
-Common choices:
-
-```text
-/orders/{order_id}/line-items
-/orders/{order_id}/line_items
-```
-
-For URLs, lowercase kebab-case is readable:
-
-```text
-/payment-methods
-/audit-events
-```
-
-Other practical rules:
-
-- Avoid file extensions such as `/users.json`
-- Avoid implementation names such as `/postgres/users`
-- Avoid exposing internal table names
-- Avoid putting sensitive information in URLs
-- Avoid trailing-slash inconsistency
-- Keep identifiers URL-safe
+Other practical rules: avoid file extensions such as `/users.json`, avoid implementation names such as `/postgres/users`, do not expose internal table names, keep sensitive information out of URLs, be consistent about trailing slashes, and keep identifiers URL-safe.
 
 ---
 
@@ -625,14 +382,7 @@ If-Match: "user-42-v7"
 }
 ```
 
-A request contains:
-
-```text
-Method + target URI + HTTP version
-Headers
-Blank line
-Optional content/body
-```
+A request contains the method, target URI and HTTP version, then headers, a blank line, and optional content.
 
 ---
 
@@ -650,14 +400,7 @@ Cache-Control: private, max-age=60
 }
 ```
 
-A response contains:
-
-```text
-HTTP version + status code + reason phrase
-Headers
-Blank line
-Optional content/body
-```
+A response contains the HTTP version, status code and reason phrase, then headers, a blank line, and optional content.
 
 The numeric status code carries the protocol semantics. Clients should not depend on the human-readable reason phrase.
 
@@ -698,77 +441,15 @@ Three properties are especially important:
 
 ## 6.1 Safe Methods
 
-A method is **safe** when the client is not requesting a change to the target resource’s state.
-
-Common safe methods:
-
-- `GET`
-- `HEAD`
-- `OPTIONS`
-- `TRACE`
-- `QUERY`
-
-A safe request may still cause operational side effects such as:
-
-- Access logs
-- Metrics
-- Cache population
-- Billing for bandwidth
-- Security auditing
-
-Those side effects do not change the intended semantics of the target resource.
-
-A `GET` endpoint should not perform a business mutation:
-
-```http
-GET /orders/ORD-101/cancel
-```
-
-Web crawlers, browser prefetching, retries, and caches may issue safe requests automatically.
+A method is **safe** when the client is not requesting a change to the target resource’s state: `GET`, `HEAD`, `OPTIONS`, `TRACE` and `QUERY`. Operational side effects such as access logs, metrics, cache population and bandwidth billing are allowed, because they do not change the intended semantics of the target resource. A business mutation is not allowed, so `GET /orders/ORD-101/cancel` is wrong — crawlers, browser prefetching, retries and caches all issue safe requests automatically.
 
 ---
 
 ## 6.2 Idempotent Methods
 
-A method is **idempotent** when multiple identical requests have the same intended effect as one request.
+A method is **idempotent** when N identical requests leave the same intended target state as one request. `GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`, `TRACE` and `QUERY` are idempotent; `POST` is not, and `PATCH` is not by default, although a particular patch can be designed to be. Idempotency constrains the resulting state, not the responses: a repeated `DELETE /users/42` may answer `204 No Content` and then `404 Not Found` and still be idempotent, because user `42` does not exist either way.
 
-```text
-One request       -> target state X
-Repeated request  -> target state X
-```
-
-Common idempotent methods:
-
-- `GET`
-- `HEAD`
-- `PUT`
-- `DELETE`
-- `OPTIONS`
-- `TRACE`
-- `QUERY`
-
-`POST` is not idempotent by default.  
-`PATCH` is not idempotent by default, although a particular patch operation can be designed to be idempotent.
-
-### Idempotency does not require identical responses
-
-```http
-DELETE /users/42
-```
-
-First response:
-
-```http
-HTTP/1.1 204 No Content
-```
-
-Repeated response:
-
-```http
-HTTP/1.1 404 Not Found
-```
-
-The responses differ, but the intended final state is still the same: user `42` does not exist.
+The full method-by-method properties table, `Idempotency-Key` design and retry-safety patterns are in [Idempotency (HTTP)](idempotency-http-methods.md).
 
 ---
 
@@ -776,22 +457,7 @@ The responses differ, but the intended final state is still the same: user `42` 
 
 `GET` and `HEAD` are the main cache-oriented methods.
 
-Other responses may be cacheable when their specifications and response metadata allow it, but real-world cache support varies.
-
-A practical view:
-
-| Method | Safe | Idempotent | Typical API use | Common cache behavior |
-|---|---:|---:|---|---|
-| `GET` | Yes | Yes | Read resource | Commonly cacheable |
-| `HEAD` | Yes | Yes | Read metadata | Cache semantics similar to GET |
-| `POST` | No | No | Create/process command | Rarely cached in practice |
-| `PUT` | No | Yes | Full replacement | Normally not cached |
-| `PATCH` | No | No | Partial modification | Normally not cached |
-| `DELETE` | No | Yes | Remove resource | Not cached |
-| `OPTIONS` | Yes | Yes | Discover communication options | Not cached |
-| `TRACE` | Yes | Yes | Diagnostics | Not cached |
-| `CONNECT` | No | No | Create a tunnel | Not applicable |
-| `QUERY` | Yes | Yes | Safe query with request content | Defined as cacheable |
+Other responses may be cacheable when their specifications and response metadata allow it, but real-world cache support varies. `POST` responses are rarely cached in practice; `PUT`, `PATCH` and `DELETE` responses are normally not cached at all; `QUERY` is defined as cacheable under QUERY-aware cache rules.
 
 ---
 
@@ -829,19 +495,13 @@ Common responses:
 | Authentication required | `401 Unauthorized` |
 | Access denied | `403 Forbidden` |
 
-### GET request content
-
-The semantics of content in a `GET` request are not generally defined. Use query parameters for normal filtering or use a method with defined request-content semantics.
+The semantics of content in a `GET` request are not generally defined. Use query parameters for normal filtering, or a method with defined request-content semantics.
 
 ---
 
 ## 7.2 HEAD — Retrieve Headers Without Response Content
 
-`HEAD` is similar to `GET`, but the server does not send response content.
-
-```http
-HEAD /files/report.pdf
-```
+`HEAD` is similar to `GET`, but the server does not send response content. `HEAD /files/report.pdf` answers:
 
 ```http
 HTTP/1.1 200 OK
@@ -851,13 +511,7 @@ ETag: "report-v3"
 Last-Modified: Wed, 29 Jul 2026 08:30:00 GMT
 ```
 
-Useful for:
-
-- Checking whether a resource exists
-- Reading metadata
-- Checking content length
-- Checking validators such as `ETag`
-- Validating cached information
+It is useful for checking whether a resource exists, reading metadata and content length, and inspecting validators such as `ETag` to revalidate cached information.
 
 The server should provide headers that correspond to a `GET` response, except where calculating a header would require generating the full content.
 
@@ -867,14 +521,7 @@ The server should provide headers that correspond to a `GET` response, except wh
 
 `POST` asks the target resource to process the enclosed representation according to that resource’s own semantics.
 
-Common uses:
-
-- Create a new resource under a collection
-- Submit a command
-- Start an asynchronous job
-- Create a subordinate resource
-- Process a complex operation
-- Trigger a domain workflow
+Common uses are creating a new resource under a collection, submitting a command, starting an asynchronous job, creating a subordinate resource, processing a complex operation and triggering a domain workflow.
 
 ### Create a resource
 
@@ -970,35 +617,7 @@ Possible responses:
 
 ### Important semantic
 
-With replacement-style `PUT`, omitted fields may be reset or removed according to the API contract.
-
-Existing state:
-
-```json
-{
-  "name": "Aarav",
-  "email": "aarav@example.com",
-  "active": true
-}
-```
-
-Request:
-
-```json
-{
-  "name": "Aarav Shah"
-}
-```
-
-Possible resulting state:
-
-```json
-{
-  "name": "Aarav Shah",
-  "email": null,
-  "active": false
-}
-```
+With replacement-style `PUT`, omitted fields may be reset or removed according to the API contract. If the existing state is `{"name": "Aarav", "email": "aarav@example.com", "active": true}` and the request body is only `{"name": "Aarav Shah"}`, the resulting state may become `{"name": "Aarav Shah", "email": null, "active": false}`.
 
 Do not use `PUT` as a partial-update method unless the API contract explicitly defines different semantics.
 
@@ -1066,60 +685,13 @@ Two known approaches are:
 ]
 ```
 
-`PATCH` is not idempotent by definition.
-
-This patch may be idempotent:
-
-```json
-{
-  "status": "active"
-}
-```
-
-This operation is not idempotent:
-
-```json
-{
-  "operation": "increment",
-  "path": "/login_count",
-  "value": 1
-}
-```
+`PATCH` is not idempotent by definition, but a given patch can be. Setting `{"status": "active"}` is idempotent; an increment such as `{"operation": "increment", "path": "/login_count", "value": 1}` is not.
 
 ---
 
 ## 7.6 DELETE — Remove a Resource
 
-```http
-DELETE /users/42
-```
-
-Possible responses:
-
-### Deletion completed, no content
-
-```http
-HTTP/1.1 204 No Content
-```
-
-### Deletion completed, response included
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "deleted": true,
-  "id": "42"
-}
-```
-
-### Deletion accepted for asynchronous processing
-
-```http
-HTTP/1.1 202 Accepted
-Location: /deletion-jobs/JOB-9
-```
+`DELETE /users/42` has three normal outcomes: `204 No Content` when nothing needs to be returned, `200 OK` with a body such as `{"deleted": true, "id": "42"}`, or `202 Accepted` with `Location: /deletion-jobs/JOB-9` when removal is queued for asynchronous processing.
 
 `DELETE` is idempotent by intended effect even when repeated responses differ.
 
@@ -1154,36 +726,17 @@ CORS is a browser security mechanism. It is separate from REST itself.
 
 ---
 
-## 7.8 TRACE — Diagnostic Loopback
+## 7.8 TRACE and CONNECT — Diagnostics and Tunnels
 
-`TRACE` asks the server to reflect the received request for diagnostics.
+`TRACE` asks the server to reflect the received request back for diagnostics; it is usually disabled in production because reflected request data can expose sensitive information and widen the attack surface. `CONNECT` creates a tunnel to a target, commonly through an HTTP proxy carrying HTTPS traffic.
 
-It is usually disabled in production because reflected request data may expose sensitive information or increase attack surface.
-
-It is not normally used as an application REST endpoint.
+Both are protocol plumbing rather than application endpoints, and neither belongs in a REST resource design.
 
 ---
 
-## 7.9 CONNECT — Establish a Tunnel
+## 7.9 QUERY — Safe, Idempotent Server-Side Query
 
-`CONNECT` creates a tunnel to a target, commonly through an HTTP proxy for HTTPS traffic.
-
-```text
-Client -> Proxy -> CONNECT target.example:443 -> Encrypted tunnel
-```
-
-It is part of HTTP but is not a normal CRUD or REST application method.
-
----
-
-## 7.10 QUERY — Safe, Idempotent Server-Side Query
-
-`QUERY` was standardized in RFC 10008 in 2026 and is now present in the IANA HTTP Method Registry.
-
-It fills a gap between:
-
-- `GET`, which is safe and idempotent but normally carries query input in the URI
-- `POST`, which supports request content but is not safe or idempotent by default
+`QUERY` was standardized in RFC 10008 in 2026 and is now present in the IANA HTTP Method Registry. It fills the gap between `GET`, which is safe and idempotent but normally carries query input in the URI, and `POST`, which supports request content but is neither safe nor idempotent by default.
 
 Example:
 
@@ -1204,35 +757,13 @@ Accept: application/json
 }
 ```
 
-Properties:
-
-- Safe
-- Idempotent
-- Request content is expected
-- Response can be cached using QUERY-aware cache rules
-- Useful for large or structured read-only queries
+It is safe and idempotent, expects request content, can be cached under QUERY-aware cache rules, and is useful for large or structured read-only queries.
 
 ### Practical adoption note
 
-Although it is now standardized, frameworks, browsers, API gateways, security tools, SDK generators, and observability products may not all support `QUERY` immediately.
+Although it is now standardized, frameworks, browsers, API gateways, security tools, SDK generators and observability products may not all support `QUERY` immediately. For broad compatibility, many production APIs will continue using `GET /products?category=laptops` or `POST /product-searches`.
 
-For broad compatibility, many production APIs will continue using:
-
-```http
-GET /products?category=laptops
-```
-
-or:
-
-```http
-POST /product-searches
-```
-
-When adopting `QUERY`, verify the complete request path:
-
-```text
-Client -> CDN -> WAF -> Gateway -> Framework -> Router -> Monitoring
-```
+When adopting `QUERY`, verify the complete request path: `Client -> CDN -> WAF -> Gateway -> Framework -> Router -> Monitoring`
 
 ---
 
@@ -1255,46 +786,9 @@ Client -> CDN -> WAF -> Gateway -> Framework -> Router -> Monitoring
 
 ## 8.2 Example: User Resource
 
-### Create with server-generated ID
+Create with a server-generated ID is `POST /users`. Replace a known user is `PUT /users/42`. Update only the email is `PATCH /users/42`. Activation through a domain operation is either the resource-oriented `POST /users/42/activations` or the command form `POST /users/42/activate`.
 
-```http
-POST /users
-```
-
-### Replace known user
-
-```http
-PUT /users/42
-```
-
-### Update only email
-
-```http
-PATCH /users/42
-```
-
-### Activate through a domain operation
-
-Possible resource-oriented form:
-
-```http
-POST /users/42/activations
-```
-
-Possible command form:
-
-```http
-POST /users/42/activate
-```
-
-The resource-oriented form is useful when activation has its own:
-
-- Identifier
-- Timestamp
-- Actor
-- Status
-- Audit record
-- Reversal workflow
+The resource-oriented form is useful when activation has its own identifier, timestamp, actor, status, audit record and reversal workflow.
 
 ---
 
@@ -1336,20 +830,7 @@ flowchart TD
     I -->|5| E[Server-side failure]
 ```
 
-Do not return `200 OK` for every response while placing the real outcome only inside JSON.
-
-### Avoid
-
-```http
-HTTP/1.1 200 OK
-
-{
-  "success": false,
-  "error": "user not found"
-}
-```
-
-### Prefer
+Do not return `200 OK` for every response while placing the real outcome only inside JSON. Avoid a `200 OK` carrying `{"success": false, "error": "user not found"}`, and prefer:
 
 ```http
 HTTP/1.1 404 Not Found
@@ -1370,11 +851,7 @@ HTTP clients, gateways, caches, monitors, SDKs, and retry systems depend on the 
 
 ## 10.1 200 OK
 
-Use when the operation succeeded and the response includes a representation or result.
-
-```http
-GET /users/42
-```
+Use when the operation succeeded and the response includes a representation or result — a successful `GET` or query, a `PATCH` returning the updated resource, a `DELETE` returning a result, or a `POST` returning processed output without creating a new resource.
 
 ```http
 HTTP/1.1 200 OK
@@ -1385,23 +862,11 @@ HTTP/1.1 200 OK
 }
 ```
 
-Common uses:
-
-- Successful `GET`
-- Successful query
-- `PATCH` returning the updated resource
-- `DELETE` returning a result
-- `POST` returning processed output without creating a new resource
-
 ---
 
 ## 10.2 201 Created
 
-Use when the request creates a new resource.
-
-```http
-POST /users
-```
+Use when the request creates a new resource — for successful creation, not for every successful `POST`. Include a `Location` header with the new resource URI, and optionally the new representation.
 
 ```http
 HTTP/1.1 201 Created
@@ -1414,21 +879,11 @@ Content-Type: application/json
 }
 ```
 
-Good practice:
-
-- Include a `Location` header with the new resource URI
-- Optionally include the new resource representation
-- Use for successful creation, not every successful POST
-
 ---
 
 ## 10.3 202 Accepted
 
 Use when the request has been accepted but processing is not complete.
-
-```http
-POST /video-transcoding-jobs
-```
 
 ```http
 HTTP/1.1 202 Accepted
@@ -1441,49 +896,19 @@ Retry-After: 10
 }
 ```
 
-`202` does not guarantee that processing will eventually succeed.
-
-Provide a way to observe the operation:
-
-```http
-GET /video-transcoding-jobs/JOB-18
-```
-
-```json
-{
-  "id": "JOB-18",
-  "status": "processing",
-  "progress": 65
-}
-```
+`202` does not guarantee that processing will eventually succeed, so always provide a way to observe the operation — here `GET /video-transcoding-jobs/JOB-18` returning `{"id": "JOB-18", "status": "processing", "progress": 65}`.
 
 ---
 
 ## 10.4 204 No Content
 
-Use when the request succeeded and no response content is needed.
-
-Common uses:
-
-- Successful deletion
-- Successful update where the client does not need the updated representation
-- Successful command with no response representation
-
-```http
-DELETE /users/42
-```
-
-```http
-HTTP/1.1 204 No Content
-```
-
-A `204` response does not contain a message body.
+Use when the request succeeded and no response content is needed: a successful deletion, an update where the client does not need the updated representation, or a command with no response representation. A `204` response does not contain a message body.
 
 ---
 
 ## 10.5 206 Partial Content
 
-Use for a successful range request.
+Use for a successful range request — video streaming, large file downloads, download resumption and partial binary retrieval.
 
 ```http
 GET /videos/V-90
@@ -1495,103 +920,51 @@ HTTP/1.1 206 Partial Content
 Content-Range: bytes 0-999999/5000000
 ```
 
-Used for:
-
-- Video streaming
-- Large file downloads
-- Download resumption
-- Partial binary retrieval
-
 Do not use `206` as the normal status for paginated JSON collections. A paginated collection is usually returned with `200 OK`.
 
 ---
 
 # 11. Redirection Status Codes — 3xx
 
-## 11.1 301 Moved Permanently
+The two legacy redirects are rarely a deliberate API design choice, because user agents historically change the method while following them:
 
-The resource has a new permanent URI.
+| Code | Name | When to use |
+|---:|---|---|
+| `301` | Moved Permanently | Resource has a new permanent URI, sent in `Location`; clients and caches may remember it. Prefer `308` when the method must be preserved |
+| `302` | Found | Resource is temporarily at another URI; prefer `307` when the method must be preserved |
 
-```http
-HTTP/1.1 301 Moved Permanently
-Location: /v2/customers/42
-```
-
-Clients and caches may remember the redirect.
+The four that matter for API design have prose below.
 
 ---
 
-## 11.2 302 Found
-
-The resource is temporarily available at another URI.
-
-Historically, user agents sometimes change a `POST` to `GET` while following `302`.
-
-For API behavior where the method must be preserved, use `307`.
-
----
-
-## 11.3 303 See Other
+## 11.1 303 See Other
 
 Use when the client should retrieve another resource using `GET`.
 
-Common pattern after creating or submitting an operation:
-
-```http
-POST /report-runs
-```
-
-```http
-HTTP/1.1 303 See Other
-Location: /report-runs/R-10/result
-```
-
-The client follows with:
-
-```http
-GET /report-runs/R-10/result
-```
+The common pattern is after creating or submitting an operation: `POST /report-runs` answers `303 See Other` with `Location: /report-runs/R-10/result`, and the client follows with a `GET` on that URI.
 
 ---
 
-## 11.4 304 Not Modified
+## 11.2 304 Not Modified
 
-Used for conditional cache validation.
-
-```http
-GET /products/P-100
-If-None-Match: "product-v4"
-```
+Used for conditional cache validation. A `GET /products/P-100` carrying `If-None-Match: "product-v4"` gets back:
 
 ```http
 HTTP/1.1 304 Not Modified
 ETag: "product-v4"
 ```
 
-The client reuses its cached representation.
-
-`304` is not a normal success response with JSON content and does not contain a response body representing the resource.
+The client reuses its cached representation. `304` is not a normal success response with JSON content and does not contain a response body representing the resource.
 
 ---
 
-## 11.5 307 Temporary Redirect
+## 11.3 307 Temporary Redirect
 
-Temporary redirect that preserves the original method and content.
-
-```http
-POST /payments
-```
-
-```http
-HTTP/1.1 307 Temporary Redirect
-Location: https://payments-region-b.example.com/payments
-```
-
-The client repeats `POST`, not `GET`.
+Temporary redirect that preserves the original method and content. A `POST /payments` answered with `307` and `Location: https://payments-region-b.example.com/payments` makes the client repeat the `POST`, not switch to `GET`.
 
 ---
 
-## 11.6 308 Permanent Redirect
+## 11.4 308 Permanent Redirect
 
 Permanent redirect that preserves the original method and content.
 
@@ -1615,47 +988,20 @@ It does not mean that the backend code cannot throw an exception. The distinctio
 
 ## 12.1 400 Bad Request
 
-Use when the server cannot process the request because it is malformed or violates basic request structure.
-
-Examples:
-
-- Invalid JSON
-- Missing required framing information
-- Invalid query parameter syntax
-- Mutually incompatible parameters
-- Invalid date syntax
-
-```http
-POST /users
-Content-Type: application/json
-
-{
-  "email": "aarav@example.com",
-```
-
-```http
-HTTP/1.1 400 Bad Request
-```
+Use when the server cannot process the request because it is malformed or violates basic request structure: invalid JSON, missing framing information, invalid query-parameter or date syntax, or mutually incompatible parameters. A truncated body such as `{"email": "aarav@example.com",` is a `400 Bad Request` — the server never got as far as validating it.
 
 ---
 
 ## 12.2 401 Unauthorized
 
-Despite the name, `401` means the request lacks valid authentication credentials.
-
-Use when:
-
-- Token is missing
-- Token is invalid
-- Token is expired
-- Credentials cannot be verified
+Despite the name, `401` means the request lacks valid authentication credentials: the token is missing, invalid or expired, or the credentials cannot be verified. Include a challenge describing how to authenticate:
 
 ```http
 HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Bearer realm="api"
 ```
 
-### Mental model
+The mental model:
 
 ```text
 401 -> Who are you? Authentication is missing or invalid.
@@ -1666,18 +1012,7 @@ WWW-Authenticate: Bearer realm="api"
 
 ## 12.3 403 Forbidden
 
-The server understood the request but refuses to authorize it.
-
-Examples:
-
-- User lacks required role
-- Tenant cannot access another tenant’s data
-- Account policy blocks the action
-- Resource owner denied access
-
-```http
-HTTP/1.1 403 Forbidden
-```
+The server understood the request but refuses to authorize it: the user lacks a required role, a tenant is reaching into another tenant’s data, account policy blocks the action, or the resource owner denied access.
 
 Some APIs return `404` instead of `403` when revealing the resource’s existence would leak sensitive information. This should be an intentional security policy.
 
@@ -1685,21 +1020,9 @@ Some APIs return `404` instead of `403` when revealing the resource’s existenc
 
 ## 12.4 404 Not Found
 
-The target resource does not exist, is not visible to the client, or the server does not wish to reveal whether it exists.
+The target resource does not exist, is not visible to the client, or the server does not wish to reveal whether it exists — `GET /users/999999` answers `404 Not Found`.
 
-```http
-GET /users/999999
-```
-
-```http
-HTTP/1.1 404 Not Found
-```
-
-A collection with no matching elements normally returns an empty collection, not `404`.
-
-```http
-GET /users?role=unknown-role
-```
+A collection with no matching elements normally returns an empty collection, not `404`:
 
 ```http
 HTTP/1.1 200 OK
@@ -1714,11 +1037,7 @@ HTTP/1.1 200 OK
 
 ## 12.5 405 Method Not Allowed
 
-The resource exists, but the method is not supported for it.
-
-```http
-DELETE /system-health
-```
+The resource exists, but the method is not supported for it. Always list what is supported:
 
 ```http
 HTTP/1.1 405 Method Not Allowed
@@ -1735,160 +1054,21 @@ Compare:
 
 ---
 
-## 12.6 406 Not Acceptable
+## 12.6 409 Conflict
 
-The server cannot produce a representation matching the client’s `Accept` header.
-
-```http
-GET /reports/R-1
-Accept: application/x-custom-format
-```
-
-```http
-HTTP/1.1 406 Not Acceptable
-```
+The request conflicts with the current state of the resource: a duplicate unique identifier, an invalid state transition, a dependency that blocks deletion, a concurrent update, or a username that already exists. `POST /users` with an email that is already taken is a `409 Conflict`, and so is asking to cancel an order whose current status is already `shipped`.
 
 ---
 
-## 12.7 408 Request Timeout
+## 12.7 412 Precondition Failed
 
-The server did not receive a complete request within the time it was prepared to wait.
-
-This is different from a client-side timeout where the client gives up before receiving a response.
-
-Retries may be appropriate depending on the method and request semantics.
+A request condition supplied by the client evaluated to false — a `PATCH /users/42` carrying `If-Match: "user-v7"` when the current ETag is `"user-v8"`. This is central to optimistic concurrency control.
 
 ---
 
-## 12.8 409 Conflict
+## 12.8 422 Unprocessable Content
 
-The request conflicts with the current state of the resource.
-
-Examples:
-
-- Duplicate unique identifier
-- Invalid state transition
-- Resource dependency prevents deletion
-- Concurrent update conflict
-- Username already exists
-
-```http
-POST /users
-
-{
-  "email": "existing@example.com"
-}
-```
-
-```http
-HTTP/1.1 409 Conflict
-```
-
-Another example:
-
-```text
-Current order status: shipped
-Requested transition: cancel
-Result: 409 Conflict
-```
-
----
-
-## 12.9 410 Gone
-
-The resource previously existed but has been intentionally and likely permanently removed.
-
-```http
-GET /public-links/expired-link
-```
-
-```http
-HTTP/1.1 410 Gone
-```
-
-Use `404` when the server does not know or does not want to communicate permanence.
-
----
-
-## 12.10 412 Precondition Failed
-
-A request condition supplied by the client evaluated to false.
-
-```http
-PATCH /users/42
-If-Match: "user-v7"
-```
-
-Current ETag:
-
-```text
-"user-v8"
-```
-
-Response:
-
-```http
-HTTP/1.1 412 Precondition Failed
-```
-
-This is central to optimistic concurrency control.
-
----
-
-## 12.11 413 Content Too Large
-
-The request content is larger than the server is willing or able to process.
-
-```http
-POST /attachments
-Content-Length: 500000000
-```
-
-```http
-HTTP/1.1 413 Content Too Large
-```
-
-The modern RFC 9110 reason phrase is **Content Too Large**. Older systems may display **Payload Too Large**.
-
----
-
-## 12.12 415 Unsupported Media Type
-
-The request’s `Content-Type` is unsupported.
-
-```http
-POST /users
-Content-Type: application/xml
-```
-
-If the API only accepts JSON:
-
-```http
-HTTP/1.1 415 Unsupported Media Type
-```
-
-Compare:
-
-```text
-Content-Type -> format being sent by the client
-Accept       -> formats the client wants to receive
-
-415 -> cannot consume this request format
-406 -> cannot produce an acceptable response format
-```
-
----
-
-## 12.13 422 Unprocessable Content
-
-The server understands the media type and syntax, but cannot process the request instructions.
-
-Examples:
-
-- Validation failure
-- Semantically invalid field combination
-- Invalid domain value
-- Valid patch syntax with an impossible operation
+The server understands the media type and syntax, but cannot process the request instructions: a validation failure, a semantically invalid field combination, an invalid domain value, or valid patch syntax describing an impossible operation.
 
 ```http
 POST /employees
@@ -1901,9 +1081,7 @@ Content-Type: application/json
 }
 ```
 
-```http
-HTTP/1.1 422 Unprocessable Content
-```
+Every field parses, so the request is not malformed; it is `422 Unprocessable Content` because a termination date cannot precede the joining date.
 
 ### 400 vs 422
 
@@ -1918,39 +1096,15 @@ Both are valid choices for many validation cases when consistently documented. F
 
 ---
 
-## 12.14 428 Precondition Required
+## 12.9 429 Too Many Requests
 
-The server requires the request to be conditional.
-
-```http
-PATCH /documents/D-9
-```
-
-```http
-HTTP/1.1 428 Precondition Required
-```
-
-The server may require:
-
-```http
-If-Match: "document-v12"
-```
-
-This prevents lost updates.
-
----
-
-## 12.15 429 Too Many Requests
-
-The client has exceeded a rate limit.
+The client has exceeded a rate limit. Send `Retry-After` whenever the reset time is known, and expect clients to apply bounded backoff on top of it.
 
 ```http
 HTTP/1.1 429 Too Many Requests
 Retry-After: 60
 Content-Type: application/problem+json
-```
 
-```json
 {
   "type": "https://api.example.com/problems/rate-limit-exceeded",
   "title": "Rate limit exceeded",
@@ -1959,35 +1113,27 @@ Content-Type: application/problem+json
 }
 ```
 
-The client should apply bounded backoff and honor `Retry-After` when provided.
-
 ---
 
-## 12.16 431 Request Header Fields Too Large
+## 12.10 Other 4xx Codes at a Glance
 
-Use when request headers are too large.
-
-Possible causes:
-
-- Oversized cookies
-- Extremely large authentication tokens
-- Too many forwarded headers
-- Header abuse
-
----
-
-## 12.17 Other Notable 4xx Codes
-
-| Code | Meaning | Typical use |
+| Code | Name | When to use |
 |---:|---|---|
-| `402` | Payment Required | Reserved for future use; some APIs use it by convention |
+| `402` | Payment Required | Reserved for future use; some APIs use it by convention for billing failures |
+| `406` | Not Acceptable | No representation matches the client’s `Accept` header; the mirror image of `415` |
 | `407` | Proxy Authentication Required | Authentication with an HTTP proxy |
+| `408` | Request Timeout | Server gave up waiting for a complete request; distinct from a client-side timeout waiting for a response |
+| `410` | Gone | Existed before and was intentionally, likely permanently, removed; use `404` when permanence is unknown or should not be revealed |
 | `411` | Length Required | Server requires `Content-Length` |
+| `413` | Content Too Large | Request content exceeds what the server will process; older systems show the former phrase "Payload Too Large" |
 | `414` | URI Too Long | URI exceeds acceptable length |
+| `415` | Unsupported Media Type | The request’s `Content-Type` cannot be consumed, for example XML sent to a JSON-only API. `415` is about what the client sends, `406` about what it will accept |
 | `416` | Range Not Satisfiable | Requested range cannot be served |
 | `421` | Misdirected Request | Request reached a server unable to produce a response for that target |
 | `425` | Too Early | Server refuses a request that may be replayed |
 | `426` | Upgrade Required | Client must switch protocols |
+| `428` | Precondition Required | Server insists the request be conditional, for example an `If-Match` on `PATCH`, so that lost updates are impossible |
+| `431` | Request Header Fields Too Large | Oversized cookies, very large tokens, too many forwarded headers, or header abuse |
 | `451` | Unavailable For Legal Reasons | Access denied for legal reasons |
 
 `418` is registered as unused in the current IANA registry. It should not be selected for normal API error semantics.
@@ -1998,14 +1144,7 @@ Possible causes:
 
 A `5xx` response means the server failed to fulfill an apparently valid request.
 
-Do not expose:
-
-- Stack traces
-- SQL queries
-- Credentials
-- Internal file paths
-- Infrastructure secrets
-- Unfiltered exception messages
+Do not expose stack traces, SQL queries, credentials, internal file paths, infrastructure secrets or unfiltered exception messages.
 
 Return a safe error identifier that can be correlated with server logs.
 
@@ -2019,9 +1158,7 @@ Use for an unexpected server-side failure when no more specific `5xx` code appli
 HTTP/1.1 500 Internal Server Error
 Content-Type: application/problem+json
 X-Request-ID: req-8f2d1
-```
 
-```json
 {
   "type": "about:blank",
   "title": "Internal Server Error",
@@ -2033,17 +1170,7 @@ X-Request-ID: req-8f2d1
 
 ---
 
-## 13.2 501 Not Implemented
-
-The server does not support the functionality needed to fulfill the request.
-
-It may be used when the server does not recognize or implement a method.
-
-Do not use `501` simply because a planned application feature has not yet been developed. For a known resource with a disallowed method, `405` is usually more appropriate.
-
----
-
-## 13.3 502 Bad Gateway
+## 13.2 502 Bad Gateway
 
 A gateway or proxy received an invalid response from an upstream server.
 
@@ -2054,36 +1181,20 @@ flowchart TD
     P -->|invalid upstream response| GW
 ```
 
-Response:
-
-```http
-HTTP/1.1 502 Bad Gateway
-```
-
 ---
 
-## 13.4 503 Service Unavailable
+## 13.3 503 Service Unavailable
 
-The service is temporarily unable to handle the request.
-
-Possible reasons:
-
-- Maintenance
-- Overload
-- Dependency outage
-- Circuit breaker open
-- No healthy instances
+The service is temporarily unable to handle the request — maintenance, overload, a dependency outage, an open circuit breaker, or no healthy instances. Use `Retry-After` when the server can estimate a retry time:
 
 ```http
 HTTP/1.1 503 Service Unavailable
 Retry-After: 120
 ```
 
-Use `Retry-After` when the server can estimate a retry time.
-
 ---
 
-## 13.5 504 Gateway Timeout
+## 13.4 504 Gateway Timeout
 
 A gateway or proxy did not receive a timely response from an upstream service.
 
@@ -2104,18 +1215,21 @@ Compare:
 
 ---
 
-## 13.6 Other Notable 5xx Codes
+## 13.5 Other 5xx Codes at a Glance
 
-| Code | Meaning | Typical use |
+| Code | Name | When to use |
 |---:|---|---|
+| `501` | Not Implemented | Server does not support the functionality needed, typically an unrecognized method. Do not use it merely because a planned feature is unbuilt; for a known resource with a disallowed method, `405` is more appropriate |
 | `505` | HTTP Version Not Supported | HTTP version unsupported |
-| `507` | Insufficient Storage | Server cannot store required representation; often WebDAV-related |
+| `507` | Insufficient Storage | Server cannot store the required representation; often WebDAV-related |
 | `508` | Loop Detected | Infinite processing loop detected |
 | `511` | Network Authentication Required | Client must authenticate to gain network access |
 
 ---
 
 # 14. Status-Code Selection Guide
+
+The matching decision flow for failures is the diagram in the "In short" summary at the top of this note.
 
 ## 14.1 Success Decision Flow
 
@@ -2132,34 +1246,7 @@ flowchart TD
 
 ---
 
-## 14.2 Error Decision Flow
-
-```mermaid
-flowchart TD
-    A[Request failed] --> B{Is failure caused by request or client condition?}
-    B -->|No| S[5xx server-side failure]
-    B -->|Yes| C{Authentication missing or invalid?}
-    C -->|Yes| D[401 Unauthorized]
-    C -->|No| E{Authenticated but forbidden?}
-    E -->|Yes| F[403 Forbidden]
-    E -->|No| G{Resource missing or hidden?}
-    G -->|Yes| H[404 Not Found]
-    G -->|No| I{Method unsupported for resource?}
-    I -->|Yes| J[405 Method Not Allowed]
-    I -->|No| K{Request media type unsupported?}
-    K -->|Yes| L[415 Unsupported Media Type]
-    K -->|No| M{Semantic validation failed?}
-    M -->|Yes| N[422 Unprocessable Content]
-    M -->|No| O{Current state conflicts?}
-    O -->|Yes| P[409 Conflict]
-    O -->|No| Q{Precondition failed?}
-    Q -->|Yes| R[412 Precondition Failed]
-    Q -->|No| T[400 Bad Request or another specific 4xx]
-```
-
----
-
-## 14.3 Common Operation Mapping
+## 14.2 Common Operation Mapping
 
 | Operation | Typical success | Common failures |
 |---|---|---|
@@ -2182,22 +1269,12 @@ These are common mappings, not automatic rules. The correct status depends on th
 
 ## 15.1 Use a Consistent Machine-Readable Shape
 
-RFC 9457 defines **Problem Details for HTTP APIs**.
-
-Media type:
-
-```http
-Content-Type: application/problem+json
-```
-
-Example:
+RFC 9457 defines **Problem Details for HTTP APIs**, carried under the media type `application/problem+json`.
 
 ```http
 HTTP/1.1 422 Unprocessable Content
 Content-Type: application/problem+json
-```
 
-```json
 {
   "type": "https://api.example.com/problems/validation-error",
   "title": "Request validation failed",
@@ -2246,35 +1323,15 @@ Human-readable text can change. Client logic should use stable machine-readable 
 }
 ```
 
-Clients should not parse:
-
-```text
-"A user with this email already exists."
-```
-
-to determine behavior.
+Clients should never parse `"A user with this email already exists."` to determine behavior.
 
 ---
 
 ## 15.3 Correlation IDs
 
-Include a request or correlation identifier.
+Include a request or correlation identifier — a response header such as `X-Request-ID: req-71f8` alongside `"instance": "urn:request:req-71f8"` in the problem body.
 
-```http
-X-Request-ID: req-71f8
-```
-
-```json
-{
-  "instance": "urn:request:req-71f8"
-}
-```
-
-Log the same identifier across:
-
-```text
-API Gateway -> Application -> Queue -> Worker -> Database calls
-```
+Log the same identifier across: `API Gateway -> Application -> Queue -> Worker -> Database calls`
 
 This supports debugging without revealing internal implementation details to the client.
 
@@ -2284,18 +1341,7 @@ This supports debugging without revealing internal implementation details to the
 
 ## 16.1 Cache-Control
 
-Example:
-
-```http
-Cache-Control: public, max-age=300
-```
-
-Meaning:
-
-```text
-public       -> shared caches may store it
-max-age=300  -> fresh for 300 seconds
-```
+`Cache-Control: public, max-age=300` means shared caches may store the response and it stays fresh for 300 seconds.
 
 Common directives:
 
@@ -2310,23 +1356,13 @@ Common directives:
 | `must-revalidate` | Do not reuse stale response without validation |
 | `immutable` | Representation is not expected to change while fresh |
 
-`no-cache` does not mean “never store.” It means the cached response must be revalidated before reuse.
-
-For sensitive responses, a common choice is:
-
-```http
-Cache-Control: no-store
-```
+`no-cache` does not mean “never store.” It means the cached response must be revalidated before reuse. For sensitive responses the common choice is `Cache-Control: no-store`.
 
 ---
 
 ## 16.2 ETag Validation
 
-Initial request:
-
-```http
-GET /products/P-100
-```
+Initial request: `GET /products/P-100`
 
 Response:
 
@@ -2371,15 +1407,7 @@ ETag: "product-P-100-v5"
 
 ## 16.3 Last-Modified Validation
 
-```http
-Last-Modified: Wed, 29 Jul 2026 08:30:00 GMT
-```
-
-Client:
-
-```http
-If-Modified-Since: Wed, 29 Jul 2026 08:30:00 GMT
-```
+The server sends `Last-Modified: Wed, 29 Jul 2026 08:30:00 GMT` and the client echoes it back as `If-Modified-Since: Wed, 29 Jul 2026 08:30:00 GMT`.
 
 `ETag` is often more precise because timestamps may not represent every relevant change and can have limited resolution.
 
@@ -2389,14 +1417,7 @@ If-Modified-Since: Wed, 29 Jul 2026 08:30:00 GMT
 
 When the representation depends on request headers, inform caches.
 
-```http
-Vary: Accept-Encoding, Accept-Language
-```
-
-This means different variants may exist for:
-
-- Compression
-- Language
+`Vary: Accept-Encoding, Accept-Language` tells caches that different variants may exist for compression and for language.
 
 Avoid unnecessarily large `Vary` sets because they reduce cache efficiency.
 
@@ -2431,18 +1452,7 @@ sequenceDiagram
 
 ## 17.2 Conditional Update
 
-Read:
-
-```http
-GET /documents/D-10
-```
-
-```http
-HTTP/1.1 200 OK
-ETag: "document-D-10-v7"
-```
-
-Update:
+A read of `GET /documents/D-10` returns `200 OK` with `ETag: "document-D-10-v7"`. The client sends that validator back on the write:
 
 ```http
 PATCH /documents/D-10
@@ -2454,18 +1464,7 @@ Content-Type: application/merge-patch+json
 }
 ```
 
-If current version is still `v7`:
-
-```http
-HTTP/1.1 200 OK
-ETag: "document-D-10-v8"
-```
-
-If another client already changed it:
-
-```http
-HTTP/1.1 412 Precondition Failed
-```
+If the current version is still `v7`, the response is `200 OK` with a new `ETag: "document-D-10-v8"`. If another client already changed it, the response is `412 Precondition Failed`.
 
 Flow:
 
@@ -2496,107 +1495,35 @@ For resources where lost updates are unacceptable, the API may return `428 Preco
 
 ## 18.1 Offset Pagination
 
-```http
-GET /orders?limit=20&offset=40
-```
-
-Simple, but large offsets may become slow and concurrent inserts can cause duplicate or skipped items.
+`GET /orders?limit=20&offset=40` is simple and supports jumping to a page, but large offsets become slow and concurrent inserts cause duplicated or skipped items across pages.
 
 ---
 
 ## 18.2 Cursor Pagination
 
-```http
-GET /orders?limit=20&cursor=eyJjcmVhdGVkX2F0...
-```
+`GET /orders?limit=20&cursor=eyJjcmVhdGVkX2F0...` returns an opaque `next_cursor` alongside the items. It is the better default for large or frequently changing datasets, infinite scrolling and stable forward traversal. Either way, a paginated collection is a `200 OK`, not a `206`.
 
-Response:
-
-```json
-{
-  "items": [
-    {
-      "id": "ORD-101"
-    },
-    {
-      "id": "ORD-100"
-    }
-  ],
-  "next_cursor": "eyJjcmVhdGVkX2F0...",
-  "has_more": true
-}
-```
-
-Cursor pagination is often better for:
-
-- Large datasets
-- Frequently changing data
-- Infinite scrolling
-- Stable forward traversal
-
-The cursor should usually be opaque to clients.
+Cursor encoding, keyset queries, total counts, bidirectional paging and the failure modes of each approach: [Pagination](pagination-offset-cursor.md).
 
 ---
 
 ## 18.3 Filtering
 
-```http
-GET /orders?status=paid&customer_id=C-10
-```
-
-Define:
-
-- Supported filters
-- Operators
-- Case sensitivity
-- Date/time format
-- Timezone behavior
-- Empty-value behavior
+A filter such as `GET /orders?status=paid&customer_id=C-10` needs a documented contract: which filters are supported, which operators exist, whether matching is case-sensitive, the date/time format and timezone behavior, and what an empty value means.
 
 ---
 
 ## 18.4 Sorting
 
-```http
-GET /orders?sort=-created_at,total
-```
+In `GET /orders?sort=-created_at,total` the usual convention is that `created_at` sorts ascending and `-created_at` descending.
 
-Possible convention:
-
-```text
-created_at   -> ascending
--created_at  -> descending
-```
-
-Always define a deterministic tie-breaker for stable pagination.
-
-Example:
-
-```text
-ORDER BY created_at DESC, id DESC
-```
+Always define a deterministic tie-breaker such as `ORDER BY created_at DESC, id DESC`, otherwise pagination is not stable.
 
 ---
 
 ## 18.5 Search
 
-Simple search:
-
-```http
-GET /products?q=mechanical+keyboard
-```
-
-Structured complex search:
-
-```http
-POST /product-searches
-```
-
-Or, with compatible infrastructure:
-
-```http
-QUERY /products
-```
+Simple search is `GET /products?q=mechanical+keyboard`. Structured complex search is `POST /product-searches`, or `QUERY /products` where the infrastructure supports it.
 
 Avoid very large or sensitive query expressions in URLs because URLs are commonly logged, cached, stored in history, and included in monitoring systems.
 
@@ -2604,163 +1531,29 @@ Avoid very large or sensitive query expressions in URLs because URLs are commonl
 
 ## 18.6 Field Selection and Expansion
 
-```http
-GET /users/42?fields=id,name,email
-```
+`GET /users/42?fields=id,name,email` narrows the representation; `GET /orders/ORD-101?include=items,payments` widens it.
 
-```http
-GET /orders/ORD-101?include=items,payments
-```
-
-Use expansion carefully because uncontrolled expansion can produce:
-
-- Very large responses
-- N+1 database queries
-- Expensive joins
-- Circular relationships
-- Unpredictable latency
+Use expansion carefully, because uncontrolled expansion produces very large responses, N+1 database queries, expensive joins, circular relationships and unpredictable latency.
 
 ---
 
 # 19. Authentication and Authorization Semantics
 
-## 19.1 Authentication Flow
+The only part of this that is HTTP semantics is the status split: an unverifiable identity is `401 Unauthorized` with a `WWW-Authenticate` header, while a verified identity that is not permitted to act is `403 Forbidden`. Where revealing existence would itself leak information — a request for another tenant’s `GET /tenants/T-2/invoices/INV-90` — returning `404 Not Found` is a legitimate authorization policy, not a substitute for the permission check.
 
-```mermaid
-flowchart TD
-    A[Client sends credentials] --> B{Can identity be verified?}
-    B -->|No| C[401 Unauthorized]
-    B -->|Yes| D{Is the action permitted?}
-    D -->|Allowed| E[Process request]
-    D -->|Denied| F[403 Forbidden]
-```
+Never trust a tenant or user ID taken from the URL; always verify it against the authenticated principal.
 
----
-
-## 19.2 Bearer Token Example
-
-```http
-GET /me
-Authorization: Bearer eyJhbGciOi...
-```
-
-Invalid or expired token:
-
-```http
-HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer
-```
-
-Valid token without permission:
-
-```http
-HTTP/1.1 403 Forbidden
-```
-
----
-
-## 19.3 Multi-Tenant Resource Protection
-
-Request:
-
-```http
-GET /tenants/T-2/invoices/INV-90
-```
-
-Authenticated user belongs to tenant `T-1`.
-
-Possible response:
-
-```http
-HTTP/1.1 404 Not Found
-```
-
-Returning `404` may prevent disclosing that another tenant’s invoice exists. This is an authorization policy, not a replacement for actual permission checks.
-
-Never depend only on a tenant ID supplied in the URL. Verify it against the authenticated principal and server-side authorization rules.
+Token formats, OAuth flows, scopes, session design and JWT handling: [AuthN vs AuthZ](authn-authz-oauth-jwt.md).
 
 ---
 
 # 20. API Versioning and Compatibility
 
-REST does not require one specific versioning strategy.
+REST does not mandate a versioning strategy. The three common carriers are the URI (`/api/v1/users` — visible and easy to route, but baked into every link), the media type (`Accept: application/vnd.example.user-v2+json` — tied to the representation, harder on tooling) and a dedicated header (`API-Version: 2026-07-01` — keeps URIs stable, less visible in logs).
 
-Common approaches:
+Most changes do not need a new version at all: adding optional fields, endpoints and tolerated enum values is compatible, whereas removing or renaming fields, changing a type or meaning, making an optional field required, or changing status-code, authentication or pagination guarantees is breaking. Clients should ignore unknown response fields unless the contract says otherwise.
 
-## 20.1 URI Versioning
-
-```text
-/api/v1/users
-/api/v2/users
-```
-
-Advantages:
-
-- Visible
-- Easy to route
-- Easy to test and document
-
-Trade-off:
-
-- Version becomes part of every URI
-
----
-
-## 20.2 Media-Type Versioning
-
-```http
-Accept: application/vnd.example.user-v2+json
-```
-
-Advantages:
-
-- Version tied to representation
-
-Trade-off:
-
-- More complex for developers, tools, and documentation
-
----
-
-## 20.3 Header Versioning
-
-```http
-API-Version: 2026-07-01
-```
-
-Advantages:
-
-- Keeps resource URI stable
-
-Trade-off:
-
-- Less visible in links, logs, and browser navigation
-
----
-
-## 20.4 Prefer Compatible Evolution
-
-Not every change requires a new major version.
-
-Often compatible:
-
-- Adding optional response fields
-- Adding new endpoints
-- Adding optional request fields
-- Adding new enum values when clients are designed to tolerate them
-
-Usually breaking:
-
-- Removing fields
-- Renaming fields
-- Changing field meaning
-- Changing type
-- Making an optional field required
-- Changing status-code semantics
-- Changing authentication requirements
-- Changing pagination guarantees
-
-Clients should ignore unknown response fields unless the contract explicitly says otherwise.
+Deprecation windows, sunset headers, and choosing between the strategies: [API Versioning](api-versioning.md).
 
 ---
 
@@ -2946,16 +1739,13 @@ from pydantic import BaseModel, EmailStr
 
 app = FastAPI()
 
-
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
 
-
 class UserPatch(BaseModel):
     name: str | None = None
     email: EmailStr | None = None
-
 
 class User(BaseModel):
     id: UUID
@@ -2963,13 +1753,10 @@ class User(BaseModel):
     email: EmailStr
     version: int
 
-
 users: dict[UUID, User] = {}
-
 
 def make_etag(user: User) -> str:
     return f'"user-{user.id}-v{user.version}"'
-
 
 @app.post(
     "/users",
@@ -2995,7 +1782,6 @@ def create_user(payload: UserCreate, response: Response) -> User:
     response.headers["ETag"] = make_etag(user)
     return user
 
-
 @app.get("/users/{user_id}", response_model=User)
 def get_user(user_id: UUID, response: Response) -> User:
     user = users.get(user_id)
@@ -3007,7 +1793,6 @@ def get_user(user_id: UUID, response: Response) -> User:
 
     response.headers["ETag"] = make_etag(user)
     return user
-
 
 @app.patch("/users/{user_id}", response_model=User)
 def update_user(
@@ -3048,7 +1833,6 @@ def update_user(
 
     response.headers["ETag"] = make_etag(updated)
     return updated
-
 
 @app.delete(
     "/users/{user_id}",
@@ -3106,51 +1890,16 @@ Level 2: Resource URIs + correct HTTP methods/status codes
 Level 3: Hypermedia controls
 ```
 
-Example progression:
-
-### Level 0
-
-```http
-POST /api
-{
-  "operation": "getUser",
-  "userId": 42
-}
-```
-
-### Level 1
-
-```http
-POST /users/42
-```
-
-### Level 2
-
-```http
-GET /users/42
-```
-
-```http
-HTTP/1.1 200 OK
-```
-
-### Level 3
+Reading a user progresses like this. Level 0 posts `{"operation": "getUser", "userId": 42}` to a single `/api` endpoint. Level 1 gives the user its own URI but still uses `POST /users/42`. Level 2 uses `GET /users/42` and answers `200 OK`. Level 3 adds hypermedia controls to that representation:
 
 ```json
 {
   "id": "42",
   "status": "active",
   "_links": {
-    "self": {
-      "href": "/users/42"
-    },
-    "orders": {
-      "href": "/users/42/orders"
-    },
-    "deactivation": {
-      "href": "/users/42/deactivations",
-      "method": "POST"
-    }
+    "self": { "href": "/users/42" },
+    "orders": { "href": "/users/42/orders" },
+    "deactivation": { "href": "/users/42/deactivations", "method": "POST" }
   }
 }
 ```
@@ -3216,96 +1965,7 @@ The maturity model is a learning tool, not the formal definition of REST. REST i
 
 ---
 
-# 25. Quick Revision Summary
-
-```mermaid
-flowchart TD
-    REST[REST] --> CS[Client-server separation]
-    REST --> ST[Stateless requests]
-    REST --> CA[Cacheable responses]
-    REST --> UI[Uniform interface]
-    REST --> LS[Layered system]
-    REST --> COD[Code on demand - optional]
-```
-
-```text
-Core resource methods
-GET     -> retrieve
-POST    -> create or process
-PUT     -> create/replace at known URI
-PATCH   -> partially modify
-DELETE  -> remove
-HEAD    -> GET-like metadata without content
-OPTIONS -> communication options
-QUERY   -> safe body-based query, where supported
-```
-
-```text
-Method properties
-Safe:
-GET, HEAD, OPTIONS, TRACE, QUERY
-
-Idempotent:
-GET, HEAD, PUT, DELETE, OPTIONS, TRACE, QUERY
-
-Not idempotent by default:
-POST, PATCH
-```
-
-```text
-Most-used success codes
-200 -> successful response with content
-201 -> resource created
-202 -> accepted for later processing
-204 -> successful, no content
-206 -> partial range response
-```
-
-```text
-Most-used client error codes
-400 -> malformed or generally invalid request
-401 -> authentication missing or invalid
-403 -> authenticated but forbidden
-404 -> resource missing or hidden
-405 -> method not allowed
-409 -> current-state conflict
-412 -> precondition failed
-413 -> request content too large
-415 -> unsupported request media type
-422 -> semantically invalid content
-428 -> conditional request required
-429 -> rate limit exceeded
-```
-
-```text
-Most-used server error codes
-500 -> unexpected internal failure
-502 -> invalid upstream response
-503 -> temporarily unavailable
-504 -> upstream timeout
-```
-
-```text
-Important comparisons
-401 vs 403 -> authentication vs authorization
-400 vs 422 -> malformed request vs semantic validation
-404 vs 410 -> missing/unknown vs intentionally gone
-405 vs 501 -> method disallowed here vs method not implemented
-409 vs 412 -> domain/state conflict vs explicit condition failed
-415 vs 406 -> cannot consume request vs cannot produce response
-301/302 vs 307/308 -> method may change vs method preserved
-200 vs 201 vs 202 vs 204 -> returned vs created vs queued vs no content
-```
-
-A well-designed REST API makes the meaning of every interaction visible through:
-
-```text
-Resource URI + HTTP method + headers + status code + representation
-```
-
----
-
-# 26. References
+# 25. References
 
 The guide uses the following authoritative sources:
 

@@ -2,27 +2,24 @@
 title: "Coverage & Good Tests"
 group: "Quality & Practice"
 order: 3
+updated: "August 2026"
 ---
 
 # Test Coverage & What Makes a Good Test
 
-> **Category:** Testing  
-> **Level:** Intermediate Developer  
-> **Last updated:** August 2026  
+> What a coverage percentage does and does not tell you, and what separates a test that catches real regressions from one that only inflates the number.
+>
 > **Examples:** Python, `pytest`, `pytest-cov`, and `coverage.py`
 
----
+## In short
 
-# 1. Why This Topic Matters
-
-A test suite gives developers confidence to change code without silently breaking existing behaviour.
-
-However, two different questions must be answered:
-
-1. **How much code is exercised by tests?**
-2. **How well do the tests verify the behaviour?**
-
-Test coverage mainly helps answer the first question. Test quality answers the second.
+- Coverage measures **execution, not correctness**. A test with no assertion at all still reports 100% line coverage for the code it runs.
+- **Branch coverage** is the more useful number: a compact function can show 100% line coverage while half its decision outcomes were never taken.
+- Code coverage is only one kind of coverage. Requirements, risk, data, platform, and integration coverage are separate questions a percentage cannot answer.
+- A good test verifies **observable behaviour** through a public interface, asserts exact outcomes, is deterministic and independent, and covers one rule — so it fails for exactly one reason.
+- Thresholds are guardrails, not goals. Prefer **diff coverage** on changed lines plus risk-based targeting over forcing every module to the same global percentage.
+- **Mutation testing** answers the stronger question: would the suite notice if `>=` became `>`? A surviving mutant is a weak assertion the coverage report cannot see.
+- The mental model: coverage shows where tests went, assertions show what they proved, mutation testing shows what they can detect, risk analysis shows what must be protected.
 
 ```mermaid
 flowchart TD
@@ -38,7 +35,22 @@ flowchart TD
     STRENGTH --> QUALITIES
 ```
 
-A healthy project needs both.
+**Interview answer:** Coverage tells me which lines and branches the suite executed, which is useful for finding code no test reaches at all — but it says nothing about whether the result was checked, so a test with a weak assertion inflates it just as well as a strong one. I use branch coverage rather than line coverage, apply the threshold to changed code in a pull request rather than to the whole project, and target depth by risk: payments, authorization, and idempotency get far more attention than a formatting helper with the same line count. To judge whether the tests are actually strong, the question I ask is "would this test fail if the behaviour became wrong?" — and mutation testing answers it mechanically.
+
+**Gotcha:** Treating a high percentage as a quality result. `def test_add_tax(): add_tax(100, 0.18)` executes every line of the function and asserts nothing; so does `assert result is not None`. Both report full coverage on that code and would survive any regression in it.
+
+---
+
+# 1. Why This Topic Matters
+
+A test suite gives developers confidence to change code without silently breaking existing behaviour.
+
+However, two different questions must be answered:
+
+1. **How much code is exercised by tests?**
+2. **How well do the tests verify the behaviour?**
+
+Test coverage mainly helps answer the first question. Test quality answers the second. A healthy project needs both, and the diagram in **In short** above shows how the two halves divide.
 
 ---
 
@@ -63,11 +75,7 @@ def calculate_discount(amount: float, is_premium: bool) -> float:
     return amount
 ```
 
-Suppose the test suite only calls:
-
-```python
-calculate_discount(100, True)
-```
+Suppose the test suite only calls: `calculate_discount(100, True)`
 
 The premium branch is executed, but the non-premium branch is not.
 
@@ -232,7 +240,6 @@ A stronger test set is:
 ```python
 import pytest
 
-
 @pytest.mark.parametrize(
     ("balance", "amount", "expected"),
     [
@@ -320,11 +327,7 @@ flowchart TD
 
 Path coverage becomes expensive as decisions increase.
 
-With `n` independent binary decisions, the number of possible combinations can approach:
-
-```text
-2^n
-```
+With `n` independent binary decisions, the number of possible combinations can approach: `2^n`
 
 Ten independent conditions can produce up to `1024` combinations. Testing every possible path is often unrealistic, so teams prioritize:
 
@@ -538,7 +541,6 @@ def test_create_user():
     global created_user
     created_user = create_user()
 
-
 def test_update_user():
     update_user(created_user)
 ```
@@ -693,14 +695,11 @@ Problems:
 ```python
 import pytest
 
-
 def test_save10_coupon_reduces_total_by_ten_percent():
     assert apply_coupon(100, "SAVE10") == 90
 
-
 def test_missing_coupon_keeps_original_total():
     assert apply_coupon(100, None) == 100
-
 
 def test_invalid_coupon_is_rejected():
     with pytest.raises(ValueError, match="Invalid coupon"):
@@ -832,7 +831,6 @@ Fragile production code:
 ```python
 from datetime import datetime
 
-
 def is_offer_active(expiry):
     return datetime.now() < expiry
 ```
@@ -844,7 +842,6 @@ A more testable design injects the current time:
 ```python
 from datetime import datetime
 
-
 def is_offer_active(expiry: datetime, now: datetime) -> bool:
     return now < expiry
 ```
@@ -853,7 +850,6 @@ Test:
 
 ```python
 from datetime import datetime, timezone
-
 
 def test_offer_is_active_before_expiry():
     now = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
@@ -868,7 +864,6 @@ Inject or seed randomness:
 
 ```python
 import random
-
 
 def generate_otp(rng: random.Random) -> str:
     return str(rng.randint(100000, 999999))
@@ -901,11 +896,7 @@ Use:
 
 # 13. Test Naming and Readability
 
-A useful name describes:
-
-```text
-Scenario + Action + Expected result
-```
+A useful name describes: `Scenario + Action + Expected result`
 
 Examples:
 
@@ -913,10 +904,8 @@ Examples:
 def test_active_user_with_valid_password_can_log_in():
     ...
 
-
 def test_locked_user_is_rejected_even_with_valid_password():
     ...
-
 
 def test_transfer_above_daily_limit_is_rejected():
     ...
@@ -928,10 +917,8 @@ Avoid names such as:
 def test_login_1():
     ...
 
-
 def test_method():
     ...
-
 
 def test_success():
     ...
@@ -957,17 +944,9 @@ Use the pattern that remains natural for the project. Consistency matters more t
 
 ## 14.1 Assert exact outcomes
 
-Weak:
+Weak: `assert response`
 
-```python
-assert response
-```
-
-Stronger:
-
-```python
-assert response.status_code == 201
-```
+Stronger: `assert response.status_code == 201`
 
 More complete when relevant:
 
@@ -1096,11 +1075,7 @@ A practical interpretation:
 | High | Broad execution coverage, but test strength still needs evaluation |
 | 100% | Every measured item executed; correctness is still not guaranteed |
 
-A team may use a threshold to prevent coverage from decreasing:
-
-```bash
-pytest --cov=app --cov-branch --cov-fail-under=80
-```
+A team may use a threshold to prevent coverage from decreasing: `pytest --cov=app --cov-branch --cov-fail-under=80`
 
 However, a global threshold should be a guardrail, not the primary goal.
 
@@ -1159,11 +1134,7 @@ Evaluate code using:
 | Security sensitivity | Does it handle auth, secrets, or PII? |
 | Recoverability | Can failure be reversed easily? |
 
-A simple priority model:
-
-```text
-Testing Priority = Impact × Likelihood × Complexity
-```
+A simple priority model: `Testing Priority = Impact × Likelihood × Complexity`
 
 This is not a precise mathematical truth. It is a decision aid.
 
@@ -1319,38 +1290,13 @@ A balanced suite usually has more small tests and fewer broad tests.
              /________________\
 ```
 
-## Unit tests
+| Level | Best for |
+|---|---|
+| Unit | Domain rules, calculations, validation, branch-heavy logic, error mapping, state transitions |
+| Integration | Database queries, ORM mappings, transactions, API serialization, queue publishing, cache behaviour, external adapter protocol |
+| End-to-end | Critical user journeys, application wiring, authentication flow, payment or checkout flow, deployment-level confidence |
 
-Best for:
-
-- Domain rules.
-- Calculations.
-- Validation.
-- Branch-heavy logic.
-- Error mapping.
-- State transitions.
-
-## Integration tests
-
-Best for:
-
-- Database queries.
-- ORM mappings.
-- Transactions.
-- API serialization.
-- Queue publishing.
-- Cache behaviour.
-- External adapter protocol.
-
-## End-to-end tests
-
-Best for:
-
-- Critical user journeys.
-- Application wiring.
-- Authentication flow.
-- Payment or checkout flow.
-- Deployment-level confidence.
+The levels themselves — what each one proves, where the boundary falls, and how to size the mix — belong to [Unit vs Integration vs E2E](unit-integration-e2e.md).
 
 Coverage collected only from unit tests may look high while integrations are broken. Coverage should be interpreted together with the types of tests producing it.
 
@@ -1358,17 +1304,9 @@ Coverage collected only from unit tests may look high while integrations are bro
 
 # 21. Measuring Coverage with Pytest
 
-Install the tools:
+Install the tools: `python -m pip install pytest pytest-cov`
 
-```bash
-python -m pip install pytest pytest-cov
-```
-
-Run tests with terminal coverage:
-
-```bash
-pytest --cov=app --cov-report=term-missing
-```
+Run tests with terminal coverage: `pytest --cov=app --cov-report=term-missing`
 
 Include branch coverage:
 
@@ -1389,17 +1327,9 @@ pytest \
   --cov-report=html
 ```
 
-Open:
+Open: `htmlcov/index.html`
 
-```text
-htmlcov/index.html
-```
-
-Generate XML for CI platforms:
-
-```bash
-pytest --cov=app --cov-branch --cov-report=xml
-```
+Generate XML for CI platforms: `pytest --cov=app --cov-branch --cov-report=xml`
 
 Fail when total coverage falls below a threshold:
 
@@ -1411,17 +1341,9 @@ pytest \
   --cov-fail-under=80
 ```
 
-Run a specific test while investigating:
+Run a specific test while investigating: `pytest tests/services/test_payment_service.py -v`
 
-```bash
-pytest tests/services/test_payment_service.py -v
-```
-
-Run tests matching a name:
-
-```bash
-pytest -k "refund" -v
-```
+Run tests matching a name: `pytest -k "refund" -v`
 
 ---
 
@@ -1464,11 +1386,7 @@ directory = "htmlcov"
 output = "coverage.xml"
 ```
 
-Run:
-
-```bash
-pytest --cov=app --cov-report=term-missing --cov-report=html
-```
+Run: `pytest --cov=app --cov-report=term-missing --cov-report=html`
 
 ## Be careful with exclusions
 
@@ -1662,9 +1580,7 @@ Check whether important branches and error paths remain unexecuted.
 
 Ask:
 
-```text
-What small bug could I introduce that this test should catch?
-```
+> What small bug could I introduce that this test should catch?
 
 Examples:
 
@@ -1736,45 +1652,7 @@ Use this during code review.
 
 ---
 
-# 27. Key Takeaways
-
-```text
-1. Coverage measures execution, not correctness.
-
-2. Branch coverage is usually more useful than line coverage alone.
-
-3. A test is valuable when it can detect a meaningful regression.
-
-4. Good tests are readable, deterministic, independent, and
-   focused on observable behaviour.
-
-5. High coverage with weak assertions gives false confidence.
-
-6. Test boundaries, failures, permissions, and business rules,
-   not only happy paths.
-
-7. Use coverage to find questions, not to declare quality.
-
-8. Prefer risk-based and changed-code coverage over blindly
-   forcing every module to the same percentage.
-
-9. Use mutation testing selectively to evaluate test strength.
-
-10. A balanced suite combines unit, integration, and end-to-end tests.
-```
-
-The most useful mental model is:
-
-```text
-Coverage shows where tests went.
-Assertions show what tests proved.
-Mutation testing shows what tests can detect.
-Risk analysis shows what must be protected.
-```
-
----
-
-# 28. References
+# 27. References
 
 - [Coverage.py documentation](https://coverage.readthedocs.io/en/latest/)
 - [Coverage.py — Branch coverage measurement](https://coverage.readthedocs.io/en/latest/branch.html)

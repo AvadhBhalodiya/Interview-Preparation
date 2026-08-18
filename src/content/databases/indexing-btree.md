@@ -2,14 +2,54 @@
 title: "Indexing (B-tree)"
 group: "Queries & Optimization"
 order: 2
+updated: "July 2026"
 ---
 
 # B-Tree Indexing: When It Helps vs When It Hurts
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer / interview preparation  
-> **Last reviewed:** July 2026  
+> How a B-tree index turns a full table scan into a targeted lookup, and the cases where adding one slows down writes without helping reads.
+>
 > **Primary examples:** PostgreSQL and MySQL/InnoDB
+
+## In short
+
+- A B-tree keeps indexed values sorted and balanced, so equality, range, prefix and `ORDER BY` access can navigate a few pages instead of reading the whole table.
+- The benefit comes from selectivity and rows fetched, not from a column appearing in `WHERE`; an index that matches most of the table loses to a sequential scan, and the optimizer is allowed to say so.
+- `ORDER BY ... LIMIT` is one of the strongest patterns, because a matching index returns rows already in order and the engine can stop early.
+- Composite indexes are read left to right: equality columns first, then the range or ordering column, then only the extra columns needed to cover the query.
+- Every index is paid for on writes — each `INSERT`, `UPDATE` and `DELETE` maintains it — and again in storage, cache, backups and replication traffic.
+- Functions applied to the indexed column (`DATE(created_at)`) and leading wildcards (`LIKE '%ava%'`) make a predicate non-sargable, so the plain index cannot be navigated.
+- The best index is normally the smallest one that supports an important query or constraint, confirmed by a plan on production-like data.
+
+```mermaid
+flowchart TD
+    R["Root: 30 | 60"]
+    A["Internal: 10 | 20"]
+    B["Internal: 40 | 50"]
+    C["Internal: 70 | 80"]
+    L1["Leaf: 1 ... 9"]
+    L2["Leaf: 10 ... 19"]
+    L3["Leaf: 20 ... 29"]
+    L4["Leaf: 30 ... 39"]
+    L5["Leaf: 40 ... 59"]
+    L6["Leaf: 60 ... 69"]
+    L7["Leaf: 70 ... 89"]
+
+    R --> A
+    R --> B
+    R --> C
+    A --> L1
+    A --> L2
+    A --> L3
+    B --> L4
+    B --> L5
+    C --> L6
+    C --> L7
+```
+
+**Interview answer:** A B-tree helps when a query touches a small, ordered slice of the table: a selective equality lookup, a bounded range, a join key, or an `ORDER BY ... LIMIT` the index can serve in index order and stop early. It hurts when the query returns a large share of the rows, because following many index entries into scattered table pages costs more than one sequential scan, and it hurts on every write, because each index has to be maintained, stored and cached. So the question is never "does this column appear in `WHERE`", it is "does the read benefit outweigh the write, storage and maintenance cost on the real workload".
+
+**Gotcha:** The usual mistake is adding one index per column that appears in a `WHERE` clause without ever inspecting a plan, which leaves a pile of overlapping, low-selectivity indexes that slow every write while the planner ignores most of them.
 
 ---
 
@@ -52,35 +92,7 @@ It is:
 
 # 2. What a B-Tree Index Is
 
-A B-tree is a balanced, ordered, multi-level search structure.
-
-A simplified B-tree might look like this:
-
-```mermaid
-flowchart TD
-    R["Root: 30 | 60"]
-    A["Internal: 10 | 20"]
-    B["Internal: 40 | 50"]
-    C["Internal: 70 | 80"]
-    L1["Leaf: 1 ... 9"]
-    L2["Leaf: 10 ... 19"]
-    L3["Leaf: 20 ... 29"]
-    L4["Leaf: 30 ... 39"]
-    L5["Leaf: 40 ... 59"]
-    L6["Leaf: 60 ... 69"]
-    L7["Leaf: 70 ... 89"]
-
-    R --> A
-    R --> B
-    R --> C
-    A --> L1
-    A --> L2
-    A --> L3
-    B --> L4
-    B --> L5
-    C --> L6
-    C --> L7
-```
+A B-tree is a balanced, ordered, multi-level search structure, of the shape shown in the diagram at the top of this note.
 
 Each node can contain many keys and child pointers. Database pages are usually large enough to hold many index entries, so each tree level eliminates a large part of the search space.
 
@@ -96,11 +108,7 @@ For application development and interviews, calling it a **B-tree index** is cor
 
 ## 2.2 How lookup works
 
-Assume an index exists on `users.email`:
-
-```sql
-CREATE INDEX idx_users_email ON users (email);
-```
+Assume an index exists on `users.email`: `CREATE INDEX idx_users_email ON users (email);`
 
 The query is:
 
@@ -130,17 +138,7 @@ flowchart LR
 
 A B-tree remains balanced as data changes. All leaf entries stay at approximately the same depth, avoiding a long linked-list-style search path.
 
-Lookup is commonly described as approximately:
-
-```text
-O(log N)
-```
-
-A range scan is commonly approximated as:
-
-```text
-O(log N + K)
-```
+Lookup is commonly described as approximately `O(log N)`, and a range scan as `O(log N + K)`.
 
 Where:
 
@@ -367,17 +365,7 @@ ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-The key columns are:
-
-```text
-customer_id, created_at
-```
-
-The payload columns are:
-
-```text
-status, total_amount
-```
+The key columns are `customer_id, created_at`; the payload columns are `status, total_amount`.
 
 ```mermaid
 flowchart TD
@@ -400,38 +388,11 @@ Be careful: adding many columns makes the index wider and more expensive to main
 
 ## 4.7 Partial and filtered workloads
 
-A partial index stores only rows satisfying a predicate.
+A partial index carries a `WHERE` predicate, so only the rows matching that predicate are stored in it.
 
-PostgreSQL example:
+That makes it valuable when the interesting rows are a small subset of a large table — pending orders, active users, unprocessed events: the index stays small, caches better, and costs nothing to maintain for the rows outside the predicate.
 
-```sql
-CREATE INDEX idx_orders_pending_created
-ON orders (created_at)
-WHERE status = 'PENDING';
-```
-
-Query:
-
-```sql
-SELECT id, created_at
-FROM orders
-WHERE status = 'PENDING'
-ORDER BY created_at;
-```
-
-This is useful when:
-
-- Pending rows are a small subset.
-- Queries frequently access that subset.
-- Indexing completed or archived rows provides little value.
-
-Benefits can include:
-
-- Smaller index
-- Better cache usage
-- Lower write maintenance for rows outside the predicate
-
-The query predicate must be compatible with the partial-index predicate. PostgreSQL must be able to prove during planning that the query satisfies the index condition.
+Partial indexes, including partial unique indexes and how the planner proves that a query predicate matches the index predicate, are covered in [PostgreSQL: JSONB, Partial Indexes, VACUUM](postgresql-jsonb-partial-index-vacuum.md).
 
 ---
 
@@ -589,11 +550,7 @@ Indexes may still be required for uniqueness or referential integrity, but not n
 
 A predicate is **sargable** when the database can use it as a search argument to navigate an index.
 
-Assume this index:
-
-```sql
-CREATE INDEX idx_orders_created_at ON orders (created_at);
-```
+Assume this index: `CREATE INDEX idx_orders_created_at ON orders (created_at);`
 
 This predicate is index-friendly:
 
@@ -602,11 +559,7 @@ WHERE created_at >= '2026-07-01'
   AND created_at <  '2026-08-01'
 ```
 
-This form may prevent normal use of the plain index because the function is applied to the indexed column:
-
-```sql
-WHERE DATE(created_at) = '2026-07-01'
-```
+This form may prevent normal use of the plain index because the function is applied to the indexed column: `WHERE DATE(created_at) = '2026-07-01'`
 
 A better rewrite is:
 
@@ -638,19 +591,11 @@ Expression indexes speed matching reads but add computation and maintenance cost
 
 ## 5.7 Leading-wildcard searches
 
-A normal B-tree can often use a known string prefix:
-
-```sql
-WHERE name LIKE 'Ava%'
-```
+A normal B-tree can often use a known string prefix: `WHERE name LIKE 'Ava%'`
 
 The matching values occupy a contiguous ordered region.
 
-A leading wildcard removes the known starting point:
-
-```sql
-WHERE name LIKE '%ava%'
-```
+A leading wildcard removes the known starting point: `WHERE name LIKE '%ava%'`
 
 The database cannot normally jump to one useful B-tree range because matching text may begin anywhere.
 
@@ -771,19 +716,7 @@ customer_id | status     | created_at
 
 ## 6.1 The leftmost-prefix idea
 
-For an index on:
-
-```text
-(a, b, c)
-```
-
-The most naturally supported prefixes are:
-
-```text
-(a)
-(a, b)
-(a, b, c)
-```
+For an index on `(a, b, c)`, the most naturally supported prefixes are `(a)`, `(a, b)`, and `(a, b, c)`.
 
 Typical effectiveness:
 
@@ -800,11 +733,7 @@ Modern optimizers may support techniques such as skip scan in some situations, b
 
 ## 6.2 Equality before range
 
-A practical design heuristic is:
-
-```text
-Equality columns -> range column -> ordering/covering needs
-```
+A practical design heuristic is `equality columns -> range column -> ordering/covering needs`.
 
 Query:
 
@@ -923,11 +852,6 @@ ON orders (customer_id, created_at DESC);
 CREATE INDEX idx_orders_customer_created_cover
 ON orders (customer_id, created_at DESC)
 INCLUDE (status, total_amount);
-
--- PostgreSQL partial index
-CREATE INDEX idx_orders_open_created
-ON orders (created_at DESC)
-WHERE status IN ('PENDING', 'PROCESSING');
 
 -- PostgreSQL expression index
 CREATE INDEX idx_users_normalized_email
@@ -1074,44 +998,9 @@ A B-tree is not always the correct answer simply because the query contains a `W
 
 Never judge an index only by its definition. Inspect the query plan using production-like data.
 
+Two things decide the verdict: whether the plan actually used the index you created, and whether its estimated row count is close to the actual row count — a large gap means the planner chose from bad information, and its choice of access method cannot be trusted. Plan syntax and every plan-node type are covered in [EXPLAIN and EXPLAIN ANALYZE](explain-analyze.md).
+
 ## 9.1 PostgreSQL
-
-Estimated plan:
-
-```sql
-EXPLAIN
-SELECT id, status, total_amount, created_at
-FROM orders
-WHERE tenant_id = 7
-  AND customer_id = 42
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-Executed plan with runtime measurements:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT id, status, total_amount, created_at
-FROM orders
-WHERE tenant_id = 7
-  AND customer_id = 42
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-`EXPLAIN ANALYZE` executes the statement. Use care with writes or expensive production queries.
-
-Possible plan nodes include:
-
-```text
-Seq Scan
-Index Scan
-Index Only Scan
-Bitmap Index Scan
-Bitmap Heap Scan
-Sort
-```
 
 Index usage statistics:
 
@@ -1137,11 +1026,7 @@ SELECT
         AS table_size;
 ```
 
-Planner statistics should be current:
-
-```sql
-ANALYZE orders;
-```
+Planner statistics should be current: `ANALYZE orders;`
 
 PostgreSQL normally relies on autovacuum and auto-analyze, but high-change or unusual tables may require tuning.
 
@@ -1149,108 +1034,9 @@ PostgreSQL normally relies on autovacuum and auto-analyze, but high-change or un
 
 ## 9.2 MySQL
 
-Estimated plan:
+Inspect the indexes that already exist on the table: `SHOW INDEX FROM orders;`
 
-```sql
-EXPLAIN FORMAT=TREE
-SELECT id, status, total_amount, created_at
-FROM orders
-WHERE tenant_id = 7
-  AND customer_id = 42
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-Executed plan:
-
-```sql
-EXPLAIN ANALYZE
-SELECT id, status, total_amount, created_at
-FROM orders
-WHERE tenant_id = 7
-  AND customer_id = 42
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-Inspect indexes:
-
-```sql
-SHOW INDEX FROM orders;
-```
-
-Refresh table statistics when appropriate:
-
-```sql
-ANALYZE TABLE orders;
-```
-
-Important MySQL plan fields and concepts include:
-
-- Chosen key/index
-- Estimated rows
-- Actual rows and loops with `EXPLAIN ANALYZE`
-- Index lookup or range scan
-- Covering-index indication
-- Filesort
-- Temporary table
-
----
-
-## 9.3 What to inspect in a plan
-
-### 1. Access method
-
-Did the engine choose:
-
-- Sequential/table scan?
-- Index lookup?
-- Range scan?
-- Index-only/covering scan?
-- Bitmap/index-merge approach?
-
-### 2. Estimated vs actual rows
-
-Large differences suggest stale or insufficient statistics, skewed data, or correlated predicates.
-
-```text
-Estimated rows: 10
-Actual rows:    250,000
-```
-
-A poor estimate can lead to the wrong join order or scan type.
-
-### 3. Rows removed by filtering
-
-If an index returns many candidate rows and most are later discarded, the index keys may not match the query well.
-
-### 4. Sorting
-
-Check whether the engine performs an explicit sort even though an ordering index was expected.
-
-Possible causes:
-
-- Index columns are in the wrong order.
-- Sort direction does not match a multicolumn requirement.
-- A leading column is not constrained.
-- Collation differs.
-- The optimizer estimates scan-and-sort as cheaper.
-
-### 5. Table/heap reads
-
-A covering index may still require table access, depending on the engine and row visibility. Measure actual buffers and I/O rather than assuming the word “covering” guarantees zero table reads.
-
-### 6. Total workload effect
-
-A query becoming faster does not prove the index is beneficial overall. Measure:
-
-- Read latency improvement
-- Insert/update/delete slowdown
-- Index size
-- Cache effect
-- Replication lag
-- Maintenance duration
-- Overall throughput
+Refresh table statistics when appropriate: `ANALYZE TABLE orders;`
 
 ---
 
@@ -1271,11 +1057,7 @@ flowchart TD
 
 ## Step 1: Start from queries, not columns
 
-Bad starting point:
-
-```text
-“This column looks important, so index it.”
-```
+Bad starting point: `“This column looks important, so index it.”`
 
 Better starting point:
 
@@ -1468,24 +1250,7 @@ flowchart TD
 
 ---
 
-# 13. Key Takeaways
-
-1. A B-tree keeps keys ordered and balanced, making it effective for equality, range, ordering, and prefix-based access patterns.
-2. Index benefit depends on **selectivity and rows fetched**, not merely on whether a column appears in `WHERE`.
-3. `ORDER BY ... LIMIT` is one of the strongest B-tree patterns because the engine can often stop early.
-4. Composite indexes are ordered from left to right. Leading columns determine how efficiently the engine can narrow the search.
-5. A useful design heuristic is **equality columns first, then range/order columns**, adjusted for the real workload.
-6. Covering indexes can reduce table reads, but wider indexes increase storage and write cost.
-7. Low-cardinality columns can still be valuable when combined with selective columns or used in a partial index.
-8. Functions applied to indexed columns and leading-wildcard searches commonly prevent normal B-tree navigation.
-9. More indexes improve some reads but slow writes, consume cache, enlarge backups, and increase operational work.
-10. The optimizer is allowed to ignore an index when a sequential scan is cheaper.
-11. Always validate with `EXPLAIN` and, when safe, `EXPLAIN ANALYZE` using production-like data.
-12. The best index is usually the **smallest measured index that supports an important query or constraint**.
-
----
-
-# 14. Official References
+# 13. Official References
 
 The content above was reviewed against current official documentation available in July 2026.
 

@@ -13,6 +13,28 @@ order: 6
 > - **`annotate()`** adds a calculated value to every row or group in a `QuerySet`.
 > - **`aggregate()`** calculates one summary result for the complete `QuerySet`.
 
+## In short
+
+- `Q` objects wrap query conditions so they can be composed with `|` (OR), `&` (AND) and `~` (NOT) — plain keyword arguments can only ever be `AND`ed, and positional `Q` arguments must come before any keyword arguments.
+- `F("field")` refers to a database column, so the arithmetic happens in the database: `F("views") + 1` is one atomic `UPDATE` with no read-modify-write race, but the Python object is stale afterwards until `refresh_from_db()`.
+- `annotate()` adds a value per row or per group and returns a `QuerySet` you can keep filtering; `aggregate()` is terminal and collapses the whole `QuerySet` into a single `dict`.
+- `values()` before `annotate()` defines the `GROUP BY` columns; `annotate()` before `values()` calculates per object and then chooses which fields are returned.
+- `filter()` before `annotate()` restricts which rows are aggregated; `filter()` after `annotate()` restricts on the aggregate itself, which becomes `HAVING`.
+- A model's `Meta.ordering` silently joins the `GROUP BY` of a grouped report — clear it with an empty `.order_by()` before `.values().annotate()`.
+- Joining two to-many relations in one query multiplies rows and double-counts — use `Count(..., distinct=True)` or separate queries and subqueries.
+
+```mermaid
+flowchart TD
+    Q[QuerySet of customers] --> A["annotate() adds a value per row or group"]
+    Q --> G["aggregate() collapses the whole queryset"]
+    A --> AR["Returns a QuerySet<br/>A = 5, B = 2, C = 0<br/>still filterable and orderable"]
+    G --> GR["Returns a dict<br/>total_orders = 7<br/>the chain ends here"]
+```
+
+**Interview answer:** `Q` objects wrap query conditions so they can be combined with `|`, `&` and `~`; you need them as soon as a filter contains an `OR` or is assembled dynamically, because keyword arguments in `filter()` are always `AND`ed together. `F` expressions name a column instead of a Python value, so `F("stock") - 1` is sent to the database as `stock = stock - 1` — one statement, no read-modify-write window. `annotate()` and `aggregate()` both compute aggregates, but `annotate()` attaches one value to every row or group and returns a `QuerySet` you can keep filtering and ordering, while `aggregate()` ends the chain and returns one dictionary for the entire queryset.
+
+**Gotcha:** Two `Count()` annotations over two different to-many relations in the same query do not give two independent counts — the joins multiply, so each count is inflated by the number of rows in the other relation. `distinct=True` rescues a `Count`, but nothing rescues a `Sum` that way; split those into separate queries or `Subquery` aggregates.
+
 ---
 
 # 1. Example Models
@@ -24,7 +46,6 @@ from decimal import Decimal
 
 from django.db import models
 
-
 class Customer(models.Model):
     name = models.CharField(max_length=120)
     email = models.EmailField(unique=True)
@@ -33,7 +54,6 @@ class Customer(models.Model):
 
     def __str__(self):
         return self.name
-
 
 class Product(models.Model):
     name = models.CharField(max_length=150)
@@ -50,7 +70,6 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
-
 
 class Order(models.Model):
     class Status(models.TextChoices):
@@ -76,7 +95,6 @@ class Order(models.Model):
         default=Decimal("0.00"),
     )
     created_at = models.DateTimeField(auto_now_add=True)
-
 
 class OrderItem(models.Model):
     order = models.ForeignKey(
@@ -164,11 +182,7 @@ flowchart LR
 
 # 3. `Q` Objects
 
-Import `Q` from `django.db.models`:
-
-```python
-from django.db.models import Q
-```
+Import `Q` from `django.db.models`: `from django.db.models import Q`
 
 A `Q` object represents one or more query conditions. It is mainly used when normal keyword arguments are not enough to express the required logic.
 
@@ -213,11 +227,7 @@ products = Product.objects.filter(
 )
 ```
 
-Conceptual SQL:
-
-```sql
-WHERE category = 'Laptop' OR price < 50
-```
+Conceptual SQL: `WHERE category = 'Laptop' OR price < 50`
 
 ### AND using `&`
 
@@ -246,11 +256,7 @@ Find all orders that are not cancelled.
 orders = Order.objects.filter(~Q(status=Order.Status.CANCELLED))
 ```
 
-A simpler form is also available:
-
-```python
-orders = Order.objects.exclude(status=Order.Status.CANCELLED)
-```
+A simpler form is also available: `orders = Order.objects.exclude(status=Order.Status.CANCELLED)`
 
 `~Q(...)` becomes more useful inside larger expressions.
 
@@ -295,7 +301,6 @@ Dynamic filtering is one of the most practical uses of `Q` objects in APIs and a
 
 ```python
 from django.db.models import Q
-
 
 def search_products(*, search=None, category=None, in_stock=None):
     filters = Q(is_active=True)
@@ -385,11 +390,7 @@ WHERE (status = 'paid' OR status = 'shipped')
 
 # 4. `F` Expressions
 
-Import `F` from `django.db.models`:
-
-```python
-from django.db.models import F
-```
+Import `F` from `django.db.models`: `from django.db.models import F`
 
 `F("field_name")` means:
 
@@ -491,11 +492,7 @@ orders = Order.objects.filter(
 )
 ```
 
-Conceptual SQL:
-
-```sql
-WHERE paid_amount < total_amount
-```
+Conceptual SQL: `WHERE paid_amount < total_amount`
 
 Find products where reserved stock is greater than available stock:
 
@@ -549,11 +546,7 @@ for item in items:
     print(item.line_total)
 ```
 
-The database calculates:
-
-```text
-line_total = quantity × unit_price
-```
+The database calculates: `line_total = quantity × unit_price`
 
 ### Referencing an annotation with `F`
 
@@ -927,17 +920,9 @@ result = Order.objects.filter(
 print(result)
 ```
 
-Example result:
+Example result: `{"total_revenue": Decimal("12500.00")}`
 
-```python
-{"total_revenue": Decimal("12500.00")}
-```
-
-Access the value:
-
-```python
-total_revenue = result["total_revenue"]
-```
+Access the value: `total_revenue = result["total_revenue"]`
 
 ### Empty querysets
 
@@ -1052,28 +1037,6 @@ result = (
 | Can continue filtering | Yes | No, because a dictionary has already been returned |
 | Typical SQL idea | Calculated `SELECT` column, often with `GROUP BY` | Summary such as `SUM`, `AVG` or `COUNT` |
 | Common use | Order count per customer | Total number of orders |
-
-## Visual Difference
-
-```text
-annotate()
-
-Customer A -> order_count = 5
-Customer B -> order_count = 2
-Customer C -> order_count = 0
-
-Returns: QuerySet<Customer>
-```
-
-```text
-aggregate()
-
-All customers -> total_orders = 7
-
-Returns: {"total_orders": 7}
-```
-
-## Easy Rule
 
 ```text
 Need one calculated value for every row or group?
@@ -1344,7 +1307,6 @@ For more complicated aggregations across multiple relationships, inspect the gen
 ```python
 from django.db.models import Q
 
-
 def product_search(query):
     return Product.objects.filter(
         Q(name__icontains=query)
@@ -1541,17 +1503,9 @@ queryset = Customer.objects.annotate(
 print(queryset.query)
 ```
 
-For database query plans:
+For database query plans: `print(queryset.explain())`
 
-```python
-print(queryset.explain())
-```
-
-When supported by the backend, additional options may be available:
-
-```python
-print(queryset.explain(analyze=True))
-```
+When supported by the backend, additional options may be available: `print(queryset.explain(analyze=True))`
 
 Use query inspection when:
 
@@ -1771,39 +1725,6 @@ Customer.objects.annotate(
     )
 )
 ```
-
----
-
-# 14. Final Understanding
-
-```text
-Q object
-    Builds complex logical conditions.
-    Think: WHERE with OR, AND, NOT and grouping.
-
-F expression
-    Refers to a database column.
-    Think: calculate or compare using current column values.
-
-annotate()
-    Adds a calculated value to every object or group.
-    Think: one result per row or group, still a QuerySet.
-
-aggregate()
-    Produces final summary values for the whole QuerySet.
-    Think: one dictionary containing totals or statistics.
-```
-
-The most important practical distinction is:
-
-```text
-Q controls which rows participate.
-F refers to values inside those rows.
-annotate calculates values per row or group.
-aggregate calculates final values across the queryset.
-```
-
-Once this flow is clear, many dashboard, inventory, financial, analytics and reporting requirements can be implemented cleanly with the Django ORM.
 
 ---
 

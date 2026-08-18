@@ -6,9 +6,34 @@ order: 3
 
 # API Versioning Strategies
 
-> **Category:** API Design & REST  
-> **Level:** Intermediate developer  
-> **Purpose:** Understand how REST APIs evolve without unexpectedly breaking existing clients.
+> Understand how REST APIs evolve without unexpectedly breaking existing clients.
+
+## In short
+
+- Versioning answers two independent questions: where the version is supplied (URI path, query parameter, header, media type, hostname) and how it is named (`v1`, semantic version, calendar date, stability channel).
+- URI path versioning such as `/api/v1/customers/101` is visible in logs, caches, and documentation, and is the practical default for most public and business APIs.
+- A header or query parameter suits platforms that pin a contract per client, media type versioning suits hypermedia APIs, and a separate hostname suits infrastructure-level isolation.
+- Breaking changes are removals, renames, type changes, newly required fields, and stricter validation; new endpoints and optional fields are backward compatible.
+- Expose major versions only, so `/api/v2` rather than `/api/v2.4.1`, and keep semantic versions for SDK packages instead of endpoint URLs.
+- Tolerant clients ignore unknown response fields and unexpected enum values; servers keep old fields during migration and never reuse a removed field name.
+- Retire predictably: run both versions in parallel, send `Deprecation` and `Sunset` headers with a migration link, monitor usage per version, then return `410 Gone`.
+
+```mermaid
+flowchart TD
+    A[Need API versioning] --> B{Is this a typical public or business REST API?}
+    B -->|Yes| C[Use URI major versioning: /v1]
+    B -->|No| D{Need per-client or per-request version pinning?}
+    D -->|Yes| E[Use custom header or query parameter]
+    D -->|No| F{Is representation negotiation central to the API?}
+    F -->|Yes| G[Consider media type versioning]
+    F -->|No| H{Need infrastructure-level isolation?}
+    H -->|Yes| I[Consider hostname versioning]
+    H -->|No| C
+```
+
+**Interview answer:** Put the major version in the URI path, `/api/v1/orders`, and create `v2` only when a change breaks the contract; everything backward compatible is added to the version already in use. Both versions run in parallel behind shared domain services, so only routers and schemas are duplicated, and the old version is deprecated with `Deprecation` and `Sunset` headers before it is retired. For a large platform whose customers upgrade independently, pin a calendar version through a header such as `X-API-Version: 2026-03-10` instead.
+
+**Gotcha:** Assuming additive changes are always safe — a new response field or a new enum value still breaks clients that reject unknown fields or switch exhaustively over enum values.
 
 ---
 
@@ -256,11 +281,7 @@ GET /api/customers/101?version=1
 GET /api/customers/101?version=2
 ```
 
-It can also use a date:
-
-```http
-GET /api/customers/101?api-version=2026-03-10
-```
+It can also use a date, as in `GET /api/customers/101?api-version=2026-03-10`.
 
 ## Advantages
 
@@ -289,17 +310,7 @@ GET /api/customers/101?api-version=2026-03-10
 GET /api/reports/42?api-version=2026-01-01
 ```
 
-Avoid using ambiguous parameter names such as:
-
-```text
-?v=2
-```
-
-Prefer an explicit name:
-
-```text
-?api-version=2
-```
+Avoid ambiguous parameter names such as `?v=2`. Prefer an explicit name such as `?api-version=2`.
 
 ---
 
@@ -313,11 +324,7 @@ Host: api.example.com
 X-API-Version: 2
 ```
 
-Date-based example:
-
-```http
-X-API-Version: 2026-03-10
-```
+A date-based value uses the same header, as in `X-API-Version: 2026-03-10`.
 
 GitHub uses this general approach with a date-based `X-GitHub-Api-Version` header. Stripe allows clients to override the API version through the `Stripe-Version` header.
 
@@ -375,17 +382,9 @@ GET /api/customers/101 HTTP/1.1
 Accept: application/vnd.example.v1+json
 ```
 
-Version 2:
+Version 2: `Accept: application/vnd.example.v2+json`
 
-```http
-Accept: application/vnd.example.v2+json
-```
-
-The server returns the selected representation:
-
-```http
-Content-Type: application/vnd.example.v2+json
-```
+The server returns the selected representation: `Content-Type: application/vnd.example.v2+json`
 
 ## Advantages
 
@@ -437,12 +436,7 @@ Vary: Accept
 
 # 5.5 Hostname Versioning
 
-Each version is exposed through a different hostname.
-
-```text
-https://v1.api.example.com/customers/101
-https://v2.api.example.com/customers/101
-```
+Each version is exposed through a different hostname, such as `https://v1.api.example.com/customers/101` and `https://v2.api.example.com/customers/101`.
 
 ## Advantages
 
@@ -471,13 +465,7 @@ This strategy should normally be chosen for operational isolation, not merely be
 
 # 6.1 Major Version Numbers
 
-Versions use simple major numbers:
-
-```text
-v1
-v2
-v3
-```
+Versions use simple major numbers such as `v1`, `v2`, and `v3`.
 
 ## Characteristics
 
@@ -507,17 +495,9 @@ Use this approach for most business REST APIs.
 
 # 6.2 Semantic Versioning
 
-Semantic Versioning uses:
+Semantic Versioning uses: `MAJOR.MINOR.PATCH`
 
-```text
-MAJOR.MINOR.PATCH
-```
-
-Example:
-
-```text
-2.4.1
-```
+Example: `2.4.1`
 
 Typical meaning:
 
@@ -535,11 +515,7 @@ Semantic Versioning is very useful for:
 
 It is usually unnecessary to expose every minor and patch version in REST endpoint URLs.
 
-Avoid:
-
-```text
-/api/v2.4.1/orders
-```
+Avoid: `/api/v2.4.1/orders`
 
 This creates too many externally visible versions and makes routing, documentation, and support more difficult.
 
@@ -561,11 +537,7 @@ The version is based on a release date.
 2026-07-29
 ```
 
-Some providers combine a date with a release name:
-
-```text
-2026-07-29.dahlia
-```
+Some providers combine a date with a release name: `2026-07-29.dahlia`
 
 ## Advantages
 
@@ -603,11 +575,7 @@ v1beta
 v1
 ```
 
-A common flow is:
-
-```text
-v1alpha ──► v1beta ──► v1
-```
+A common flow is: `v1alpha ──► v1beta ──► v1`
 
 ## Channel Meanings
 
@@ -647,32 +615,9 @@ Do not confuse a stability channel with a normal major version. `v1beta` indicat
 
 ## Practical Selection Guide
 
-```mermaid
-flowchart TD
-    A[Need API versioning] --> B{Is this a typical public or business REST API?}
-    B -->|Yes| C[Use URI major versioning: /v1]
-    B -->|No| D{Need per-client or per-request version pinning?}
-    D -->|Yes| E[Use custom header or query parameter]
-    D -->|No| F{Is representation negotiation central to the API?}
-    F -->|Yes| G[Consider media type versioning]
-    F -->|No| H{Need infrastructure-level isolation?}
-    H -->|Yes| I[Consider hostname versioning]
-    H -->|No| C
-```
+Use URI major versioning for a typical public or business REST API. Choose a custom header or a query parameter when clients need per-request or per-account version pinning, media type versioning when representation negotiation is central to the API, and hostname versioning only when infrastructure-level isolation is required.
 
-A practical default is:
-
-```text
-URI path + major version number
-/api/v1/resources
-```
-
-A practical platform pattern is:
-
-```text
-Header + calendar-based version
-X-API-Version: 2026-03-10
-```
+A practical default is a URI path plus a major version number, `/api/v1/resources`. A practical platform pattern is a calendar-based version carried in a header, `X-API-Version: 2026-03-10`.
 
 ---
 
@@ -811,9 +756,7 @@ from typing import Annotated
 from fastapi import APIRouter, FastAPI, HTTPException, Path
 from pydantic import BaseModel
 
-
 app = FastAPI(title="Customer API")
-
 
 # -----------------------------
 # Shared domain/service layer
@@ -829,7 +772,6 @@ CUSTOMERS = {
     }
 }
 
-
 def get_customer(customer_id: int) -> dict:
     customer = CUSTOMERS.get(customer_id)
 
@@ -837,7 +779,6 @@ def get_customer(customer_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Customer not found")
 
     return customer
-
 
 # -----------------------------
 # Version 1 contract
@@ -848,9 +789,7 @@ class CustomerV1(BaseModel):
     name: str
     address: str
 
-
 v1_router = APIRouter(prefix="/api/v1", tags=["Customers V1"])
-
 
 @v1_router.get("/customers/{customer_id}", response_model=CustomerV1)
 def read_customer_v1(
@@ -868,7 +807,6 @@ def read_customer_v1(
         ),
     )
 
-
 # -----------------------------
 # Version 2 contract
 # -----------------------------
@@ -878,15 +816,12 @@ class AddressV2(BaseModel):
     state: str
     country: str
 
-
 class CustomerV2(BaseModel):
     id: int
     full_name: str
     address: AddressV2
 
-
 v2_router = APIRouter(prefix="/api/v2", tags=["Customers V2"])
-
 
 @v2_router.get("/customers/{customer_id}", response_model=CustomerV2)
 def read_customer_v2(
@@ -903,7 +838,6 @@ def read_customer_v2(
             country=customer["country"],
         ),
     )
-
 
 app.include_router(v1_router)
 app.include_router(v2_router)
@@ -1031,9 +965,7 @@ Webhook consumers depend on payload shape just like normal API clients.
 
 Bad approach:
 
-```text
-Change every existing webhook payload immediately when v2 launches.
-```
+> Change every existing webhook payload immediately when v2 launches.
 
 Better approaches:
 
@@ -1185,11 +1117,7 @@ This data is essential before retiring a version.
 
 # 15. Practical Migration Example
 
-Suppose version 1 uses:
-
-```http
-POST /api/v1/payments
-```
+Suppose version 1 uses: `POST /api/v1/payments`
 
 ```json
 {
@@ -1243,19 +1171,16 @@ Phase 4
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True)
 class Money:
     value: int
     currency: str
-
 
 def parse_v1_payment(payload: dict) -> Money:
     return Money(
         value=payload["amount"],
         currency=payload["currency"],
     )
-
 
 def parse_v2_payment(payload: dict) -> Money:
     amount = payload["amount"]
@@ -1391,45 +1316,7 @@ A deployment should be blocked when an accidental breaking change is detected in
 
 ---
 
-# 17. Key Takeaways
-
-```text
-API versioning exists to protect client contracts during breaking changes.
-```
-
-- Versioning is mainly needed for breaking changes, not every feature.
-- Decide separately where the version is supplied and how it is named.
-- URI path versioning with major numbers is the simplest default for most REST APIs.
-- Header-based calendar versions work well for large developer platforms requiring per-client pinning.
-- Semantic versions are usually better for SDK packages than endpoint URLs.
-- Old and new versions should operate together during a migration period.
-- Use adapters so version-specific contracts share the same business logic.
-- Version webhooks and SDK compatibility explicitly.
-- Publish deprecation dates, monitor actual usage, and retire versions predictably.
-- A versioning strategy is incomplete without documentation, contract tests, observability, and a sunset policy.
-
-## Practical Recommendation
-
-For a normal production REST API:
-
-```http
-GET /api/v1/customers/101
-```
-
-Use `v2` only when a breaking change cannot be avoided.
-
-For a large platform API with independently upgrading customers:
-
-```http
-GET /customers/101
-X-API-Version: 2026-03-10
-```
-
-In both cases, preserve backward compatibility within a selected version and provide a formal migration lifecycle.
-
----
-
-# 18. Official References
+# 17. Official References
 
 - [Google AIP-185: API Versioning](https://google.aip.dev/185)
 - [Google AIP-180: Backwards Compatibility](https://google.aip.dev/180)

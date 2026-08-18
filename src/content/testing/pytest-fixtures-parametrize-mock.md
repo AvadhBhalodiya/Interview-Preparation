@@ -6,9 +6,34 @@ order: 2
 
 # Pytest: Fixtures, Parametrize, and Mocking
 
-> **Category:** Testing  
-> **Level:** Intermediate Python developer  
+> The three pytest features that do most of the work: fixtures for setup, parametrize for covering many cases, and mocking to isolate what you do not control.
+>
 > **Version reference:** pytest **9.1.1** and Python **3.10+** as of August 3, 2026
+
+## In short
+
+- A **fixture** is dependency injection for tests: the test names it as an argument, pytest builds it. `yield` splits the body into setup and teardown, and teardown still runs when the assertion fails.
+- **Scope** controls how often it is built — `function` (default), `class`, `module`, `package`, `session`. Widen it only for expensive resources, because wider scope means shared state.
+- `conftest.py` publishes fixtures to its directory and all child directories. Never import them; pytest discovers them. A **factory fixture** returns a builder function and replaces a family of near-identical fixtures.
+- **`@pytest.mark.parametrize`** runs one test body over many rows, each reported as its own case. `pytest.param` adds readable IDs and per-row marks such as `xfail`; `indirect=True` routes the value through a fixture instead.
+- Use a **parametrized fixture** when the resource configuration varies, and `parametrize` when the input or expected output varies.
+- **Mocking:** `Mock` for ordinary calls, `MagicMock` for magic methods, `AsyncMock` for awaitables. `return_value` gives one stable result; `side_effect` raises, returns a sequence, or computes from arguments.
+- Patch the name **where the code under test looks it up**, not where it was defined — and prefer `autospec=True` or `spec_set` so a renamed or re-signatured production API fails the test instead of silently passing.
+
+```mermaid
+flowchart TD
+    A[What is varying?] --> B{Reusable setup or resource?}
+    B -- Yes --> C[Fixture]
+    B -- No --> D{Input or expected output?}
+    D -- Yes --> E[Parametrize]
+    D -- No --> F{External dependency behavior?}
+    F -- Yes --> G[Mock or patch]
+    F -- Environment or global state --> H[monkeypatch]
+```
+
+**Interview answer:** Fixtures answer "what does this test need?" — they build the dependencies, and a `yield` fixture cleans them up afterwards even when the test fails. Parametrize answers "which cases should run?" — one test body, many rows, each reported separately so a single failing row is immediately identifiable. Mocking answers "which dependency should be replaced?" — it puts a controlled object at the boundary so the test does not depend on a network, a clock, or a live gateway. In practice they compose: a fixture supplies a `spec_set` mock, parametrize drives the input cases through it, and the assertions check both the returned value and the interaction that mattered.
+
+**Gotcha:** Patching where the function is defined instead of where it is looked up. If `payment_service.py` does `from app.gateway import charge`, then `charge` now lives in `app.payment_service` too, and `@patch("app.gateway.charge")` replaces a name nobody calls — the test passes while hitting the real dependency.
 
 ---
 
@@ -52,21 +77,11 @@ Mock        = Which real dependency should be replaced?
 
 ## 2.1 Installation
 
-For a reproducible project using the current major release:
+Pin the current major release, then check the version and run the suite:
 
 ```bash
 python -m pip install "pytest>=9.1,<10"
-```
-
-Check the installed version:
-
-```bash
 python -m pytest --version
-```
-
-Run the complete test suite:
-
-```bash
 python -m pytest
 ```
 
@@ -138,7 +153,6 @@ Fixtures provide **dependency injection for tests**. The test does not manually 
 ```python
 import pytest
 
-
 @pytest.fixture
 def sample_user() -> dict[str, object]:
     return {
@@ -147,31 +161,13 @@ def sample_user() -> dict[str, object]:
         "active": True,
     }
 
-
 def test_sample_user_is_active(sample_user: dict[str, object]) -> None:
     assert sample_user["active"] is True
 ```
 
-Execution flow:
+Pytest finds `test_sample_user_is_active`, notices the `sample_user` argument, executes that fixture, passes the returned dictionary into the test, and only then runs the assertion.
 
-```text
-1. pytest finds test_sample_user_is_active
-2. It notices the sample_user argument
-3. It executes the sample_user fixture
-4. It passes the returned dictionary into the test
-5. It executes the assertion
-```
-
-The fixture name should describe the resource or state it provides, such as:
-
-```text
-sample_user
-authenticated_client
-db_session
-payment_gateway
-order_factory
-frozen_clock
-```
+The fixture name should describe the resource or state it provides: `sample_user`, `authenticated_client`, `db_session`, `payment_gateway`, `order_factory`, `frozen_clock`.
 
 ## 3.3 Setup and Teardown with `yield`
 
@@ -180,14 +176,12 @@ Use `yield` when a resource must be cleaned up after the test.
 ```python
 import pytest
 
-
 class FakeConnection:
     def __init__(self) -> None:
         self.closed = False
 
     def close(self) -> None:
         self.closed = True
-
 
 @pytest.fixture
 def connection() -> FakeConnection:
@@ -198,7 +192,6 @@ def connection() -> FakeConnection:
 
     # Teardown phase
     connection.close()
-
 
 def test_connection_is_available(connection: FakeConnection) -> None:
     assert connection.closed is False
@@ -233,7 +226,6 @@ import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-
 @pytest.fixture
 def workspace() -> Path:
     with TemporaryDirectory() as directory:
@@ -258,7 +250,6 @@ Example:
 
 ```python
 import pytest
-
 
 @pytest.fixture(scope="session")
 def application_config() -> dict[str, str]:
@@ -297,21 +288,17 @@ A fixture can request another fixture exactly like a test does.
 ```python
 import pytest
 
-
 class UserRepository:
     def __init__(self, connection: dict[str, str]) -> None:
         self.connection = connection
-
 
 @pytest.fixture
 def db_connection() -> dict[str, str]:
     return {"database": "test_db"}
 
-
 @pytest.fixture
 def user_repository(db_connection: dict[str, str]) -> UserRepository:
     return UserRepository(connection=db_connection)
-
 
 def test_repository_uses_test_database(
     user_repository: UserRepository,
@@ -329,14 +316,7 @@ flowchart LR
 
 Pytest resolves the graph before running the test.
 
-When fixtures use `yield`, teardown happens in reverse dependency order:
-
-```text
-Setup:    db_connection → user_repository → test
-Teardown: test → user_repository → db_connection
-```
-
-This ordering is important when one resource depends on another resource remaining available during cleanup.
+When fixtures use `yield`, teardown happens in reverse dependency order: setup runs `db_connection` → `user_repository` → test, and teardown unwinds test → `user_repository` → `db_connection`. This ordering is important when one resource depends on another resource remaining available during cleanup.
 
 ## 3.6 Sharing Fixtures with `conftest.py`
 
@@ -346,7 +326,6 @@ Fixtures used by several test files usually belong in `conftest.py`.
 # tests/conftest.py
 
 import pytest
-
 
 @pytest.fixture
 def sample_customer() -> dict[str, object]:
@@ -362,25 +341,13 @@ The fixture is automatically discoverable by tests in the same directory and its
 ```python
 # tests/test_customer.py
 
-
 def test_customer_tier(sample_customer: dict[str, object]) -> None:
     assert sample_customer["tier"] == "gold"
 ```
 
 Do not import fixtures from `conftest.py` into the test module. Pytest discovers them automatically.
 
-A practical placement strategy:
-
-```text
-tests/conftest.py
-    Shared across most tests
-
-tests/api/conftest.py
-    Shared only by API tests
-
-tests/integration/conftest.py
-    Shared only by integration tests
-```
+A practical placement strategy is `tests/conftest.py` for fixtures shared across most tests, `tests/api/conftest.py` for those shared only by API tests, and `tests/integration/conftest.py` for those shared only by integration tests.
 
 Keep fixtures close to the tests that use them. A large root-level `conftest.py` with unrelated fixtures becomes difficult to navigate.
 
@@ -392,9 +359,7 @@ A factory fixture returns a function that can build customized test data.
 from collections.abc import Callable
 import pytest
 
-
 UserFactory = Callable[..., dict[str, object]]
-
 
 @pytest.fixture
 def user_factory() -> UserFactory:
@@ -412,7 +377,6 @@ def user_factory() -> UserFactory:
 
     return create_user
 
-
 def test_inactive_user(user_factory: UserFactory) -> None:
     user = user_factory(user_id=10, name="Riya", active=False)
 
@@ -425,15 +389,7 @@ def test_inactive_user(user_factory: UserFactory) -> None:
 
 Factory fixtures are useful when tests need similar data with small variations.
 
-Without a factory, developers often create many nearly identical fixtures:
-
-```text
-active_user
-inactive_user
-admin_user
-premium_user
-blocked_user
-```
+Without a factory, developers often create many nearly identical fixtures — `active_user`, `inactive_user`, `admin_user`, `premium_user`, `blocked_user`.
 
 A factory keeps the common defaults in one place while allowing each test to state only the important differences.
 
@@ -443,7 +399,6 @@ An autouse fixture runs automatically for every test in its visible scope.
 
 ```python
 import pytest
-
 
 @pytest.fixture(autouse=True)
 def set_test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,22 +423,15 @@ A fixture itself can run with several parameter values.
 ```python
 import pytest
 
-
 @pytest.fixture(params=["sqlite", "postgresql"], ids=["sqlite-db", "postgres-db"])
 def database_engine(request: pytest.FixtureRequest) -> str:
     return str(request.param)
-
 
 def test_database_engine_is_supported(database_engine: str) -> None:
     assert database_engine in {"sqlite", "postgresql"}
 ```
 
-Pytest creates two test instances:
-
-```text
-test_database_engine_is_supported[sqlite-db]
-test_database_engine_is_supported[postgres-db]
-```
+Pytest creates two test instances, `test_database_engine_is_supported[sqlite-db]` and `test_database_engine_is_supported[postgres-db]`.
 
 Use parametrized fixtures when the **resource configuration** varies. Use `@pytest.mark.parametrize` when the **test input or expected output** varies.
 
@@ -506,12 +454,10 @@ Pytest includes several fixtures that solve common testing tasks.
 ```python
 from pathlib import Path
 
-
 def write_report(directory: Path, content: str) -> Path:
     report_path = directory / "report.txt"
     report_path.write_text(content, encoding="utf-8")
     return report_path
-
 
 def test_write_report(tmp_path: Path) -> None:
     report_path = write_report(tmp_path, "completed")
@@ -524,7 +470,6 @@ def test_write_report(tmp_path: Path) -> None:
 ```python
 def greet(name: str) -> None:
     print(f"Hello, {name}")
-
 
 def test_greet(capsys) -> None:
     greet("Avadh")
@@ -546,10 +491,8 @@ Instead of this repetition:
 def test_add_positive_numbers() -> None:
     assert add(2, 3) == 5
 
-
 def test_add_zero() -> None:
     assert add(0, 7) == 7
-
 
 def test_add_negative_numbers() -> None:
     assert add(-2, -3) == -5
@@ -562,10 +505,8 @@ Use one parametrized test.
 ```python
 import pytest
 
-
 def add(left: int, right: int) -> int:
     return left + right
-
 
 @pytest.mark.parametrize(
     "left,right,expected",
@@ -603,25 +544,13 @@ def test_apply_discount(
     assert result == expected
 ```
 
-Keep each row focused on a meaningful behavior or boundary:
-
-```text
-normal value
-zero value
-minimum boundary
-maximum boundary
-invalid input
-special business rule
-```
+Keep each row focused on a meaningful behavior or boundary: a normal value, a zero value, the minimum and maximum boundaries, invalid input, and any special business rule.
 
 ## 4.3 Readable Test IDs
 
 Readable IDs make terminal output and CI reports easier to understand.
 
 ```python
-import pytest
-
-
 @pytest.mark.parametrize(
     "subtotal,discount_percent,expected",
     [
@@ -639,15 +568,7 @@ def test_apply_discount(
     assert result == expected
 ```
 
-Output becomes similar to:
-
-```text
-test_apply_discount[no-discount]
-test_apply_discount[standard-discount]
-test_apply_discount[premium-discount]
-```
-
-IDs should describe the behavior, not merely repeat raw values.
+Output becomes `test_apply_discount[no-discount]`, `test_apply_discount[standard-discount]`, and `test_apply_discount[premium-discount]`. IDs should describe the behavior, not merely repeat raw values.
 
 ## 4.4 Marks on Individual Cases
 
@@ -655,7 +576,6 @@ IDs should describe the behavior, not merely repeat raw values.
 
 ```python
 import pytest
-
 
 @pytest.mark.parametrize(
     "value,expected",
@@ -683,7 +603,6 @@ Stacking decorators creates the Cartesian product of values.
 ```python
 import pytest
 
-
 @pytest.mark.parametrize("currency", ["INR", "USD"])
 @pytest.mark.parametrize("payment_method", ["card", "upi"])
 def test_supported_payment_combinations(
@@ -694,14 +613,7 @@ def test_supported_payment_combinations(
     assert payment_method in {"card", "upi"}
 ```
 
-This runs four combinations:
-
-```text
-INR + card
-USD + card
-INR + upi
-USD + upi
-```
+This runs four combinations: `INR + card`, `USD + card`, `INR + upi`, and `USD + upi`.
 
 Use stacked parametrization when every combination is meaningful. If only selected combinations are valid, list explicit rows instead.
 
@@ -712,17 +624,14 @@ Indirect parametrization sends a parameter value into a fixture through `request
 ```python
 import pytest
 
-
 class FakeDatabase:
     def __init__(self, engine: str) -> None:
         self.engine = engine
-
 
 @pytest.fixture
 def database(request: pytest.FixtureRequest) -> FakeDatabase:
     engine = str(request.param)
     return FakeDatabase(engine=engine)
-
 
 @pytest.mark.parametrize(
     "database",
@@ -751,18 +660,13 @@ Pytest passes parameter objects as-is. It does not copy mutable values.
 ```python
 import pytest
 
-
 @pytest.mark.parametrize("items", [[1, 2]])
 def test_mutable_parameter(items: list[int]) -> None:
     items.append(3)
     assert items == [1, 2, 3]
 ```
 
-Avoid mutating shared parameter objects, or create a copy inside the test:
-
-```python
-local_items = items.copy()
-```
+Avoid mutating shared parameter objects, or take a copy inside the test with `local_items = items.copy()`.
 
 ---
 
@@ -817,7 +721,6 @@ Python provides these classes in `unittest.mock`.
 ```python
 from unittest.mock import Mock
 
-
 repository = Mock()
 repository.get_user.return_value = {"id": 1, "name": "Meera"}
 
@@ -831,7 +734,6 @@ repository.get_user.assert_called_once_with(1)
 
 ```python
 from unittest.mock import MagicMock
-
 
 resource = MagicMock()
 resource.__enter__.return_value = "connected"
@@ -848,7 +750,6 @@ resource.__exit__.assert_called_once()
 ```python
 from unittest.mock import AsyncMock
 
-
 async def test_async_client() -> None:
     client = AsyncMock()
     client.fetch_user.return_value = {"id": 7}
@@ -863,57 +764,31 @@ Async tests normally require an async pytest plugin such as `pytest-asyncio`, or
 
 ## 5.3 `return_value` and `side_effect`
 
-### Fixed return value
-
 ```python
 from unittest.mock import Mock
 
-
+# Fixed return value
 calculator = Mock()
 calculator.total.return_value = 500
-
 assert calculator.total() == 500
-```
 
-### Raise an exception
-
-```python
-from unittest.mock import Mock
-
-
+# Raise an exception: calling charge() now raises TimeoutError
 payment_gateway = Mock()
 payment_gateway.charge.side_effect = TimeoutError("Gateway timeout")
-```
 
-Calling `payment_gateway.charge()` now raises `TimeoutError`.
-
-### Return different values on consecutive calls
-
-```python
-from unittest.mock import Mock
-
-
+# Return different values on consecutive calls
 status_client = Mock()
 status_client.get_status.side_effect = ["pending", "processing", "completed"]
-
 assert status_client.get_status() == "pending"
 assert status_client.get_status() == "processing"
 assert status_client.get_status() == "completed"
-```
 
-### Compute behavior from arguments
-
-```python
-from unittest.mock import Mock
-
-
+# Compute behavior from the arguments
 def calculate_fee(amount: int) -> int:
     return amount // 100
 
-
 fee_service = Mock()
 fee_service.calculate.side_effect = calculate_fee
-
 assert fee_service.calculate(1000) == 10
 assert fee_service.calculate(2500) == 25
 ```
@@ -927,24 +802,17 @@ Mocks record how they were called.
 ```python
 from unittest.mock import Mock, call
 
-
 notifier = Mock()
 
 notifier.send("user-1", "Order created")
 notifier.send("user-1", "Payment completed")
-```
 
-Common assertions:
-
-```python
+# Common assertions
 notifier.send.assert_called()
 notifier.send.assert_called_with("user-1", "Payment completed")
 notifier.send.assert_called_once()  # Fails here because it was called twice
-```
 
-Check all calls:
-
-```python
+# Check every call, in order
 assert notifier.send.call_count == 2
 assert notifier.send.call_args_list == [
     call("user-1", "Order created"),
@@ -970,7 +838,6 @@ Do not assert every internal call. Tests become fragile when they duplicate the 
 ```python
 from unittest.mock import patch
 
-
 def test_generate_reference() -> None:
     with patch("orders.reference.uuid4", return_value="fixed-id"):
         result = generate_reference()
@@ -982,7 +849,6 @@ def test_generate_reference() -> None:
 
 ```python
 from unittest.mock import patch
-
 
 @patch("orders.notifications.send_email", autospec=True)
 def test_order_confirmation(mock_send_email) -> None:
@@ -999,7 +865,6 @@ def test_order_confirmation(mock_send_email) -> None:
 ```python
 from unittest.mock import patch
 
-
 @patch("orders.service.PaymentClient", autospec=True)
 def test_payment_client_is_used(mock_client_class) -> None:
     mock_client = mock_client_class.return_value
@@ -1011,11 +876,7 @@ def test_payment_client_is_used(mock_client_class) -> None:
     mock_client.charge.assert_called_once_with(amount=1000)
 ```
 
-When a class is patched, its instance is normally accessed through:
-
-```python
-mock_class.return_value
-```
+When a class is patched, its instance is normally accessed through `mock_class.return_value`.
 
 ## 5.6 Where to Patch
 
@@ -1027,37 +888,17 @@ Suppose the application contains:
 # app/payment_service.py
 from app.gateway import charge
 
-
 def process(amount: int) -> str:
     return charge(amount)
 ```
 
-The correct patch target is:
-
-```python
-@patch("app.payment_service.charge")
-```
-
-It is not:
-
-```python
-@patch("app.gateway.charge")
-```
-
-Why?
-
-```text
-app.payment_service imported charge into its own namespace.
-process() looks up app.payment_service.charge.
-Therefore, replace app.payment_service.charge.
-```
+The correct patch target is `@patch("app.payment_service.charge")`, not `@patch("app.gateway.charge")`. The reason is that `app.payment_service` imported `charge` into its own namespace, so `process()` looks up `app.payment_service.charge` — and that is the name which has to be replaced.
 
 Another import style behaves differently:
 
 ```python
 # app/payment_service.py
 import app.gateway
-
 
 def process(amount: int) -> str:
     return app.gateway.charge(amount)
@@ -1076,37 +917,26 @@ This is the most important practical rule in Python mocking.
 
 ## 5.7 `spec`, `spec_set`, and `autospec`
 
-Plain mocks allow arbitrary attributes, which can hide typos or outdated APIs.
+Plain mocks allow arbitrary attributes, which can hide typos or outdated APIs. A specification pins the mock to a real type.
 
 ```python
 from unittest.mock import Mock
 
-
-service = Mock()
-service.send_emial("hello")  # Typo, but a plain Mock accepts it
-```
-
-### `spec`
-
-```python
 class EmailService:
     def send_email(self, recipient: str, message: str) -> None:
         pass
 
+loose = Mock()
+loose.send_emial("hello")             # Typo, but a plain Mock accepts it
 
-service = Mock(spec=EmailService)
-service.send_email("a@example.com", "Hello")
+specced = Mock(spec=EmailService)
+specced.send_email("a@example.com", "Hello")
+specced.send_emial("hello")           # AttributeError: not on EmailService
+
+strict = Mock(spec_set=EmailService)  # Also blocks *setting* unknown attributes
 ```
 
-Accessing an attribute absent from `EmailService` raises `AttributeError`.
-
-### `spec_set`
-
-`spec_set` is stricter. It prevents both getting and setting attributes that are not defined by the specification.
-
-```python
-service = Mock(spec_set=EmailService)
-```
+`spec` raises `AttributeError` for any attribute absent from `EmailService`. `spec_set` is stricter still: it prevents both getting and setting attributes that the specification does not define.
 
 ### `autospec=True`
 
@@ -1114,7 +944,6 @@ service = Mock(spec_set=EmailService)
 
 ```python
 from unittest.mock import patch
-
 
 @patch("app.notifications.EmailService", autospec=True)
 def test_email_service(mock_email_service_class) -> None:
@@ -1130,71 +959,48 @@ def test_email_service(mock_email_service_class) -> None:
 
 Calling `send_email` with an incompatible signature raises `TypeError`.
 
-General preference:
-
-```text
-patch(..., autospec=True)
-Mock(spec_set=RealType)
-AsyncMock(spec=AsyncDependency)
-```
-
-These options keep mocks closer to the real interface and make tests fail when production APIs change.
+General preference: `patch(..., autospec=True)`, `Mock(spec_set=RealType)`, and `AsyncMock(spec=AsyncDependency)`. These options keep mocks closer to the real interface and make tests fail when production APIs change.
 
 ## 5.8 The `monkeypatch` Fixture
 
 `monkeypatch` is pytest’s built-in fixture for temporary modifications. Pytest automatically undoes changes after the test or fixture finishes.
 
-### Change an environment variable
+### Set and remove environment variables
 
 ```python
 import os
 import pytest
 
-
 def get_environment() -> str:
     return os.getenv("APP_ENV", "development")
-
 
 def test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "test")
 
     assert get_environment() == "test"
-```
 
-### Remove an environment variable
-
-```python
 def test_missing_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_ENV", raising=False)
 
     assert get_environment() == "development"
 ```
 
-### Replace an attribute
+### Replace an attribute or a dictionary entry
 
 ```python
 from pathlib import Path
+
 import pytest
 
+SETTINGS = {"currency": "INR", "tax_rate": 18}
 
 def get_config_path() -> Path:
     return Path.home() / ".myapp" / "config.toml"
-
 
 def test_config_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", lambda: Path("/test-user"))
 
     assert get_config_path() == Path("/test-user/.myapp/config.toml")
-```
-
-### Change a dictionary
-
-```python
-import pytest
-
-
-SETTINGS = {"currency": "INR", "tax_rate": 18}
-
 
 def test_currency_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(SETTINGS, "currency", "USD")
@@ -1229,23 +1035,19 @@ This example combines fixtures, parametrization, and mocking in a small payment 
 from dataclasses import dataclass
 from typing import Protocol
 
-
 class PaymentGateway(Protocol):
     def charge(self, *, customer_id: int, amount: int) -> str:
         """Return a payment transaction ID."""
         ...
 
-
 class AuditPublisher(Protocol):
     def publish(self, event: dict[str, object]) -> None:
         ...
-
 
 @dataclass(frozen=True)
 class PaymentResult:
     transaction_id: str
     amount: int
-
 
 class PaymentService:
     def __init__(
@@ -1297,18 +1099,15 @@ from shop.payment_service import (
     PaymentService,
 )
 
-
 @pytest.fixture
 def payment_gateway() -> Mock:
     gateway = Mock(spec_set=PaymentGateway)
     gateway.charge.return_value = "txn-123"
     return gateway
 
-
 @pytest.fixture
 def audit_publisher() -> Mock:
     return Mock(spec_set=AuditPublisher)
-
 
 @pytest.fixture
 def payment_service(
@@ -1337,8 +1136,9 @@ flowchart LR
 
 from unittest.mock import Mock
 
-from shop.payment_service import PaymentService
+import pytest
 
+from shop.payment_service import PaymentService
 
 def test_pay_charges_customer_and_publishes_event(
     payment_service: PaymentService,
@@ -1371,12 +1171,9 @@ This test verifies both:
 
 ## 6.4 Parametrized Validation Test
 
+Continuing in the same test module:
+
 ```python
-import pytest
-
-from shop.payment_service import PaymentService
-
-
 @pytest.mark.parametrize(
     "invalid_amount",
     [
@@ -1398,13 +1195,6 @@ One test definition now covers the complete invalid range represented by the sel
 ## 6.5 Confirm Dependencies Are Not Called on Validation Failure
 
 ```python
-from unittest.mock import Mock
-
-import pytest
-
-from shop.payment_service import PaymentService
-
-
 def test_invalid_payment_has_no_external_side_effects(
     payment_service: PaymentService,
     payment_gateway: Mock,
@@ -1422,13 +1212,6 @@ This protects an important business guarantee: invalid input must not create ext
 ## 6.6 Simulate a Gateway Failure
 
 ```python
-from unittest.mock import Mock
-
-import pytest
-
-from shop.payment_service import PaymentService
-
-
 def test_gateway_timeout_is_propagated_without_audit_event(
     payment_service: PaymentService,
     payment_gateway: Mock,
@@ -1446,16 +1229,7 @@ The fixture provides a default successful gateway, and this test overrides only 
 
 ## 6.7 What Each Feature Contributes
 
-```text
-Fixtures
-    Build PaymentService and reusable dependency mocks
-
-Parametrize
-    Run validation behavior for several invalid amounts
-
-Mocking
-    Control gateway results and verify external interactions
-```
+Fixtures built `PaymentService` and its reusable dependency mocks, parametrize ran the validation behavior across several invalid amounts, and mocking controlled the gateway result and verified the external interactions.
 
 The resulting tests remain small because setup, data variation, and dependency behavior are handled separately.
 
@@ -1473,20 +1247,7 @@ The resulting tests remain small because setup, data variation, and dependency b
 | Temporarily change environment state | `monkeypatch` | `APP_ENV`, current directory, configuration dictionary |
 | Verify a dependency call | Mock assertion | `assert_called_once_with(...)` |
 
-Decision flow:
-
-```mermaid
-flowchart TD
-    A[What is varying?] --> B{Reusable setup or resource?}
-    B -- Yes --> C[Fixture]
-    B -- No --> D{Input or expected output?}
-    D -- Yes --> E[Parametrize]
-    D -- No --> F{External dependency behavior?}
-    F -- Yes --> G[Mock or patch]
-    F -- Environment or global state --> H[monkeypatch]
-```
-
-These features are often used together rather than selected exclusively.
+The decision flow for choosing between them is the diagram in **In short** at the top of this note. These features are often used together rather than selected exclusively.
 
 ---
 
@@ -1510,31 +1271,11 @@ When setup is already clear from fixture names, comments are optional. The separ
 
 ## 8.1 Test One Behavior at a Time
 
-Prefer:
-
-```python
-def test_invalid_amount_does_not_call_gateway(...):
-    ...
-```
-
-Over a test that checks validation, successful payment, timeout handling, event publication, and logging in one long function.
+Prefer a narrow test such as `test_invalid_amount_does_not_call_gateway` over one long function that checks validation, successful payment, timeout handling, event publication, and logging together.
 
 ## 8.2 Name Tests by Behavior
 
-Useful pattern:
-
-```text
-test_<action>_<expected_result>
-```
-
-Examples:
-
-```text
-test_pay_returns_transaction_id
-test_pay_rejects_zero_amount
-test_gateway_timeout_does_not_publish_event
-test_gold_customer_receives_discount
-```
+A useful pattern is `test_<action>_<expected_result>` — for example `test_pay_returns_transaction_id`, `test_pay_rejects_zero_amount`, `test_gateway_timeout_does_not_publish_event`, and `test_gold_customer_receives_discount`.
 
 A good name makes the test suite read like executable documentation.
 
@@ -1558,88 +1299,26 @@ flowchart TD
 
 Integration tests can then verify that real components are wired together correctly.
 
-Mocks do not remove the need for integration tests. They answer a different question:
-
-```text
-Unit test        → Does this component behave correctly in isolation?
-Integration test → Do real components work correctly together?
-```
+Mocks do not remove the need for integration tests. They answer a different question: a unit test asks whether this component behaves correctly in isolation, while an integration test asks whether the real components work correctly together. Where each boundary belongs is covered in [Unit vs Integration vs E2E](unit-integration-e2e.md).
 
 ---
 
 # 9. Useful Commands
 
-Run all tests:
-
-```bash
-python -m pytest
-```
-
-Run with concise output:
-
-```bash
-python -m pytest -q
-```
-
-Run one file:
-
-```bash
-python -m pytest tests/test_payment_service.py
-```
-
-Run one test:
-
-```bash
-python -m pytest tests/test_payment_service.py::test_pay_charges_customer_and_publishes_event
-```
-
-Run one parametrized case by its ID:
-
-```bash
-python -m pytest "tests/test_payment_service.py::test_pay_rejects_non_positive_amounts[zero]"
-```
-
-Stop after the first failure:
-
-```bash
-python -m pytest -x
-```
-
-Show local variables in tracebacks:
-
-```bash
-python -m pytest -l
-```
-
-Show print output during execution:
-
-```bash
-python -m pytest -s
-```
-
-List available fixtures:
-
-```bash
-python -m pytest --fixtures
-```
-
-Show setup and fixture execution:
-
-```bash
-python -m pytest --setup-show
-```
-
-Run tests matching a name expression:
-
-```bash
-python -m pytest -k "payment and not timeout"
-```
-
-Run tests with a custom marker:
-
-```bash
-python -m pytest -m integration
-```
+| Command | Purpose |
+|---|---|
+| `python -m pytest` | Run all tests |
+| `python -m pytest -q` | Run with concise output |
+| `python -m pytest tests/test_payment_service.py` | Run one file |
+| `python -m pytest tests/test_payment_service.py::test_pay_charges_customer_and_publishes_event` | Run one test |
+| `python -m pytest "tests/test_payment_service.py::test_pay_rejects_non_positive_amounts[zero]"` | Run one parametrized case by its ID |
+| `python -m pytest -x` | Stop after the first failure |
+| `python -m pytest -l` | Show local variables in tracebacks |
+| `python -m pytest -s` | Show print output during execution |
+| `python -m pytest --fixtures` | List available fixtures |
+| `python -m pytest --setup-show` | Show setup and fixture execution |
+| `python -m pytest -k "payment and not timeout"` | Run tests matching a name expression |
+| `python -m pytest -m integration` | Run tests with a custom marker |
 
 ---
 
@@ -1647,27 +1326,11 @@ python -m pytest -m integration
 
 ## 10.1 Prefer Explicit Dependencies
 
-Constructor or function injection often produces cleaner tests than global imports.
-
-```python
-service = PaymentService(gateway=fake_gateway)
-```
-
-This is usually simpler than patching several global objects.
+Constructor or function injection often produces cleaner tests than global imports: `service = PaymentService(gateway=fake_gateway)` is usually simpler than patching several global objects.
 
 ## 10.2 Keep Fixtures Focused
 
-A fixture should have one clear responsibility.
-
-```text
-Good:
-    customer
-    payment_gateway
-    payment_service
-
-Harder to maintain:
-    complete_test_environment_with_customer_order_payment_and_notifications
-```
+A fixture should have one clear responsibility. `customer`, `payment_gateway`, and `payment_service` are each easy to reason about; `complete_test_environment_with_customer_order_payment_and_notifications` is not.
 
 Compose small fixtures through fixture dependencies.
 
@@ -1677,26 +1340,11 @@ Function-scoped fixtures provide the strongest isolation. Increase scope only wh
 
 ## 10.4 Put Cleanup in the Fixture
 
-The fixture that creates a resource should normally own its cleanup.
-
-```python
-@pytest.fixture
-def resource():
-    resource = create_resource()
-    yield resource
-    resource.close()
-```
-
-This keeps lifecycle management in one place.
+The fixture that creates a resource should normally own its cleanup: create it, `yield` it, then close it in the teardown half of the same fixture. This keeps lifecycle management in one place.
 
 ## 10.5 Give Parametrized Cases Meaningful IDs
 
-```python
-pytest.param(0, id="zero")
-pytest.param(-1, id="negative")
-```
-
-Readable IDs reduce investigation time when CI reports a single failing case.
+Readable IDs such as `pytest.param(0, id="zero")` and `pytest.param(-1, id="negative")` reduce investigation time when CI reports a single failing case.
 
 ## 10.6 Parametrize Behavior, Not Unrelated Scenarios
 
@@ -1719,12 +1367,7 @@ flowchart LR
 
 ## 10.8 Prefer `autospec` or `spec_set`
 
-Stricter mocks catch invalid attribute names and incompatible calls earlier.
-
-```python
-patch("app.service.Client", autospec=True)
-Mock(spec_set=ClientProtocol)
-```
+Stricter mocks catch invalid attribute names and incompatible calls earlier — `patch("app.service.Client", autospec=True)` and `Mock(spec_set=ClientProtocol)`.
 
 ## 10.9 Mock External Boundaries, Not Simple Internal Logic
 
@@ -1751,48 +1394,6 @@ A session-scoped mutable dictionary can leak changes across tests. Return fresh 
 ## 10.12 Use Realistic but Minimal Test Data
 
 Include only fields relevant to the behavior being tested. Large production-like payloads make tests noisy and harder to understand.
-
----
-
-# 11. Final Summary
-
-```text
-Fixtures
-    Reusable setup and dependency injection
-    Support setup/teardown with yield
-    Can depend on other fixtures
-    Can be shared through conftest.py
-
-Parametrize
-    Runs one test with multiple data sets
-    Supports readable IDs and per-case marks
-    Can parametrize tests or fixtures
-    Indirect mode sends values through fixtures
-
-Mocking
-    Replaces external or unpredictable dependencies
-    Controls return values and exceptions
-    Verifies important interactions
-    Works through Mock, MagicMock, AsyncMock, patch, and monkeypatch
-```
-
-The most maintainable pytest suites usually follow this pattern:
-
-```mermaid
-flowchart LR
-    A[Small focused fixtures] --> D[Readable test]
-    B[Meaningful parameter cases] --> D
-    C[Strict boundary mocks] --> D
-    D --> E[Fast feedback]
-    D --> F[Clear failures]
-    D --> G[Safer refactoring]
-```
-
-The central idea is separation of responsibility:
-
-- fixtures manage **test dependencies and lifecycle**;
-- parametrization manages **data variation**;
-- mocks manage **controlled collaboration with dependencies**.
 
 ---
 

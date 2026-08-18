@@ -6,17 +6,43 @@ order: 5
 
 # N+1 Queries: `select_related()` vs `prefetch_related()`
 
-> **Core idea:** An N+1 problem happens when Django runs one query to fetch a collection and then runs an additional query for every object in that collection. Use `select_related()` for **single-valued relationships** and `prefetch_related()` for **multi-valued relationships**.
+> An N+1 problem happens when Django runs one query to fetch a collection and then runs an additional query for every object in that collection. Use `select_related()` for **single-valued relationships** and `prefetch_related()` for **multi-valued relationships**.
+
+## In short
+
+- N+1 is **one query to load the list, plus one more query per row** whenever a loop, template, or serializer touches a related object — 100 books becomes 101 queries.
+- `select_related()` follows single-valued relations with a SQL `JOIN` and keeps everything in **one query**: forward `ForeignKey`, `OneToOneField`, reverse `OneToOneField`.
+- `prefetch_related()` runs **one extra query per relation** and matches the rows in Python: `ManyToManyField`, reverse `ForeignKey`, `GenericRelation`. Chain both when an endpoint needs both.
+- Use a `Prefetch` object when the related rows need filtering, ordering, or their own `select_related()`; `to_attr` stores the result as a plain list under an explicit name.
+- Nested DRF serializers are the classic place this bites — fix it in the ViewSet's `get_queryset()`, not in the serializer.
+- Counts and existence checks are not eager-loading problems: `annotate(Count(...))` or `Exists()` beats prefetching a whole collection just to measure it.
+- Detect it with `connection.queries` after `reset_queries()`, `assertNumQueries()` in tests, or the Django Debug Toolbar's duplicate-query panel.
+
+```mermaid
+flowchart LR
+    B[Book]
+    A[Author]
+    P[Publisher]
+    C[Categories]
+    R[Reviews]
+    U[Reviewer]
+
+    B -->|select_related| A
+    B -->|select_related| P
+    B -->|prefetch_related| C
+    B -->|prefetch_related| R
+    R -->|select_related inside Prefetch| U
+```
+
+**Interview answer:** N+1 means the ORM issues one query for the collection and then one extra query per object as the code walks a related field, so a list of 100 books quietly becomes 101 round trips. The fix is to declare the related data up front: `select_related()` pulls single-valued relations (`ForeignKey`, `OneToOneField`) into the same statement with a SQL `JOIN`, while `prefetch_related()` issues one batched query per multi-valued relation (`ManyToManyField`, reverse `ForeignKey`) and joins the rows in Python. In DRF I put both in `get_queryset()` so the loading plan matches what the serializer actually reads, and pin the result with `assertNumQueries()`.
+
+**Gotcha:** Calling `.filter()` on a prefetched relation throws the prefetch away. `prefetch_related("reviews")` only caches `book.reviews.all()`, so `book.reviews.filter(is_approved=True)` inside a loop runs a fresh query per book — recreating the exact N+1 the prefetch was meant to remove, on top of the wasted prefetch. Use `Prefetch("reviews", queryset=..., to_attr="approved_reviews")` instead.
 
 ---
 
 # 1. Why This Topic Matters
 
-Django makes related-object access look like normal Python attribute access:
-
-```python
-book.author.name
-```
+Django makes related-object access look like normal Python attribute access: `book.author.name` reads exactly like reading a plain attribute.
 
 However, accessing `book.author` may execute a database query.
 
@@ -56,18 +82,14 @@ The following models will be used throughout this guide.
 ```python
 from django.db import models
 
-
 class Publisher(models.Model):
     name = models.CharField(max_length=150)
-
 
 class Author(models.Model):
     name = models.CharField(max_length=150)
 
-
 class Category(models.Model):
     name = models.CharField(max_length=100)
-
 
 class Book(models.Model):
     title = models.CharField(max_length=200)
@@ -294,11 +316,7 @@ for book in books:
     print(book.title, book.author.name)
 ```
 
-Approximate query count:
-
-```text
-1 query for books and authors together
-```
+Approximate query count: `1 query for books and authors together`
 
 Conceptual SQL:
 
@@ -330,11 +348,7 @@ flowchart LR
 
 Django creates both `Book` and `Author` model objects from the joined result.
 
-Later access does not require a new query:
-
-```python
-book.author.name
-```
+Later access to `book.author.name` does not require a new query.
 
 ---
 
@@ -373,7 +387,6 @@ Suppose an author belongs to a country:
 ```python
 class Country(models.Model):
     name = models.CharField(max_length=100)
-
 
 class Author(models.Model):
     name = models.CharField(max_length=150)
@@ -439,11 +452,7 @@ Invalid use:
 Book.objects.select_related("categories")
 ```
 
-Use `prefetch_related()` instead:
-
-```python
-Book.objects.prefetch_related("categories")
-```
+Use `prefetch_related()` instead: `Book.objects.prefetch_related("categories")`
 
 ---
 
@@ -472,11 +481,7 @@ Book.objects.select_related("author").filter(title__icontains="django")
 
 ### Be explicit about fields
 
-Django allows:
-
-```python
-Book.objects.select_related()
-```
+Django allows: `Book.objects.select_related()`
 
 Without arguments, Django follows all non-null foreign keys it can find.
 
@@ -487,11 +492,7 @@ This is usually not recommended because it may create:
 - more data transfer
 - harder-to-understand SQL
 
-Prefer:
-
-```python
-Book.objects.select_related("author", "publisher")
-```
+Prefer: `Book.objects.select_related("author", "publisher")`
 
 ### Clear previous selections when necessary
 
@@ -567,11 +568,7 @@ Approximate query count:
 
 ## 5.2 How Prefetching Works
 
-Django first loads the parent objects:
-
-```sql
-SELECT * FROM book;
-```
+Django first loads the parent objects: `SELECT * FROM book;`
 
 It then collects their primary keys and loads all related rows in a batch:
 
@@ -603,11 +600,7 @@ flowchart TD
 
 ## 5.3 Reverse Foreign Key Example
 
-The reverse relationship from `Author` to `Book` is multi-valued:
-
-```python
-author.books.all()
-```
+The reverse relationship from `Author` to `Book` is multi-valued: `author.books.all()`
 
 Without prefetching:
 
@@ -697,11 +690,7 @@ for book in books:
 
 Why?
 
-`prefetch_related("categories")` prepares the result of:
-
-```python
-book.categories.all()
-```
+`prefetch_related("categories")` prepares the result of: `book.categories.all()`
 
 A later `.filter()` represents a new database query.
 
@@ -847,7 +836,6 @@ However, because each review has exactly one reviewer, the review prefetch can b
 ```python
 from django.db.models import Prefetch
 
-
 books = (
     Book.objects
     .select_related(
@@ -876,33 +864,9 @@ This combines the two strategies at the correct levels.
 
 ---
 
-## 7.1 Combined Relationship Diagram
-
-```mermaid
-flowchart LR
-    B[Book]
-    A[Author]
-    P[Publisher]
-    C[Categories]
-    R[Reviews]
-    U[Reviewer]
-
-    B -->|select_related| A
-    B -->|select_related| P
-    B -->|prefetch_related| C
-    B -->|prefetch_related| R
-    R -->|select_related inside Prefetch| U
-```
-
----
-
 # 8. Advanced Prefetching with `Prefetch`
 
-Import the `Prefetch` class:
-
-```python
-from django.db.models import Prefetch
-```
+Import the `Prefetch` class: `from django.db.models import Prefetch`
 
 Use it when the default related QuerySet is not sufficient.
 
@@ -960,11 +924,7 @@ book.approved_reviews    -> prefetched filtered list
 
 Without `to_attr`, putting filtered results into the related manager's cache can make the meaning of `book.reviews.all()` less obvious.
 
-With `to_attr`, the intent is explicit:
-
-```python
-book.approved_reviews
-```
+With `to_attr`, the intent is explicit: `book.approved_reviews`
 
 It also avoids accidentally running another query through the related manager.
 
@@ -1060,18 +1020,15 @@ N+1 problems frequently appear in serializers because serializers access related
 ```python
 from rest_framework import serializers
 
-
 class AuthorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Author
         fields = ["id", "name"]
 
-
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = ["id", "name"]
-
 
 class BookSerializer(serializers.ModelSerializer):
     author = AuthorSerializer()
@@ -1091,7 +1048,6 @@ A non-optimized ViewSet:
 
 ```python
 from rest_framework.viewsets import ReadOnlyModelViewSet
-
 
 class BookViewSet(ReadOnlyModelViewSet):
     queryset = Book.objects.all()
@@ -1138,7 +1094,6 @@ For counts, aggregation is often a better solution:
 
 ```python
 from django.db.models import Count
-
 
 queryset = Book.objects.annotate(
     review_count=Count("reviews"),
@@ -1215,7 +1170,6 @@ During development, with `DEBUG=True`:
 from django.db import connection
 from django.db import reset_queries
 
-
 reset_queries()
 
 books = Book.objects.all()
@@ -1248,7 +1202,6 @@ Django provides `assertNumQueries()`.
 
 ```python
 from django.test import TestCase
-
 
 class BookQueryTests(TestCase):
     def test_book_list_loads_authors_in_one_query(self):
@@ -1345,11 +1298,7 @@ Templates may hide method calls:
 {% endfor %}
 ```
 
-Without:
-
-```python
-Author.objects.prefetch_related("books")
-```
+Without: `Author.objects.prefetch_related("books")`
 
 this can create an N+1 problem.
 
@@ -1364,11 +1313,7 @@ class Author(models.Model):
 
 Calling this property for every author can execute one query per author.
 
-The query is hidden behind normal-looking attribute access:
-
-```python
-author.latest_book
-```
+The query is hidden behind normal-looking attribute access: `author.latest_book`
 
 ---
 
@@ -1538,11 +1483,7 @@ books = (
 
 ## Step 4: Evaluate the real code path
 
-Do not measure only this:
-
-```python
-list(books)
-```
+Do not measure only this: `list(books)`
 
 Also execute the accesses that matter:
 
@@ -1609,18 +1550,13 @@ class BookQuerySet(models.QuerySet):
             .prefetch_related("categories")
         )
 
-
 class Book(models.Model):
     # Fields...
 
     objects = BookQuerySet.as_manager()
 ```
 
-Usage:
-
-```python
-books = Book.objects.for_list_api()
-```
+Usage: `books = Book.objects.for_list_api()`
 
 A named QuerySet method communicates the intended loading contract.
 
@@ -1742,11 +1678,7 @@ Book.objects.select_related(
 )
 ```
 
-when the code only uses:
-
-```python
-book.title
-```
+when the code only uses: `book.title`
 
 Unnecessary eager loading replaces one kind of waste with another.
 
@@ -1772,86 +1704,7 @@ At high traffic, 21 queries per request is still expensive.
 
 ---
 
-# 14. Final Mental Model
-
-Think of the problem as a data-loading plan.
-
-```mermaid
-mindmap
-  root((Related Data))
-    Single-valued
-      ForeignKey
-      OneToOneField
-      select_related
-      SQL JOIN
-      Usually one query
-    Multi-valued
-      Reverse ForeignKey
-      ManyToManyField
-      prefetch_related
-      Separate batch queries
-      Python matching
-    Complex
-      Use both
-      Custom Prefetch
-      Filter related rows
-      Test query count
-      Profile memory
-```
-
-## Quick summary
-
-```text
-N+1 problem:
-One collection query + one related query per object
-
-select_related():
-Use SQL JOIN
-Best for ForeignKey and OneToOneField
-
-prefetch_related():
-Use separate batch queries and join results in Python
-Best for reverse ForeignKey and ManyToManyField
-
-Prefetch():
-Customize filtering, ordering, nested optimization, and to_attr
-
-Correct approach:
-Inspect access pattern -> choose strategy -> measure queries -> test it
-```
-
-## Practical example to remember
-
-```python
-books = (
-    Book.objects
-    .select_related(
-        "author",
-        "publisher",
-    )
-    .prefetch_related(
-        "categories",
-        Prefetch(
-            "reviews",
-            queryset=Review.objects.select_related("reviewer"),
-        ),
-    )
-)
-```
-
-Read it as:
-
-```text
-Join each book's one author and one publisher.
-Batch-load each book's category and review collections.
-While loading reviews, join each review's one reviewer.
-```
-
-That sentence captures the real difference between the two methods.
-
----
-
-# 15. Official References
+# 14. Official References
 
 This guide was verified against the Django 6.0 documentation.
 

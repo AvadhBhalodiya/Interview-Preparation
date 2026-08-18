@@ -2,20 +2,21 @@
 title: "Docker Images & Builds"
 group: "Docker"
 order: 1
+updated: "30 July 2026"
 ---
 
 # Docker: Image vs Container, Dockerfile, Layers, and Multi-Stage Builds
 
-> **Category:** AWS, Docker & DevOps  
-> **Level:** Intermediate developer (3+ years experience)  
-> **Last verified:** 30 July 2026  
-> **Goal:** Understand how Docker packages an application, how images and containers differ, how Dockerfiles create image layers, and how multi-stage builds produce smaller and safer production images.
+> Understand how Docker packages an application, how images and containers differ, how Dockerfiles create image layers, and how multi-stage builds produce smaller and safer production images.
 
----
+## In short
 
-# 1. Docker in One Picture
-
-Docker packages an application and everything required to run it into an **image**. Docker then starts an isolated process from that image, called a **container**.
+- **Image vs container:** an image is an immutable, read-only template — app code, runtime, dependencies, config defaults, startup command; a **container** is an isolated running (or stopped) process created from that image, with its own writable layer.
+- Images are a stack of **immutable, ordered layers** — once built, a layer's content never changes; a new build reuses unchanged layers and stacks new ones on top.
+- Every Dockerfile instruction that touches the filesystem or image config **creates a layer**, applied in order; Docker reuses a cached layer only when the instruction and its inputs are unchanged.
+- Cache invalidation **cascades downward**: once one instruction misses cache, every instruction after it reruns too — so copy dependency manifests (`requirements.txt`, `package.json`) and install dependencies **before** copying application source.
+- Deleting a file in a later layer (`RUN rm ...`) hides it from the merged filesystem view but does **not** remove its bytes from the earlier layer that added it — the image does not shrink; delete in the same `RUN`, or never let the file reach a layer at all.
+- **Multi-stage builds** let a `builder` stage carry compilers, headers, and source, while only the final artifact is `COPY --from=builder`'d into a minimal runtime stage — smaller image, smaller attack surface, no leaked build tooling.
 
 ```mermaid
 flowchart TD
@@ -23,12 +24,15 @@ flowchart TD
     B -->|docker run| C["Running Container<br/>isolated process, image layers,<br/>writable layer, runtime config"]
 ```
 
-A simple mental model is:
+**Interview answer:** A Docker image is an immutable, layered template — application code, runtime, dependencies, and a default startup command — built once by `docker build` from a Dockerfile. `docker run` starts a container from it: an isolated process that reuses the image's read-only layers and adds a thin writable layer on top for anything written at runtime. The same image can produce many independent containers, and removing a container never removes the image it came from.
 
-```mermaid
-flowchart LR
-    A[Dockerfile<br/>Recipe] --> B[Image<br/>Package] --> C[Container<br/>Running instance]
-```
+**Gotcha:** Deleting a large file in its own `RUN rm` after downloading it in an earlier `RUN` does not shrink the image — the bytes are already committed to the earlier layer, so they still ship. Delete in the **same** `RUN` instruction that created the file, or fetch it only inside a builder stage that never reaches the final image.
+
+---
+
+# 1. Docker in One Picture
+
+Docker packages an application and everything required to run it into an **image**. Docker then starts an isolated process from that image, called a **container**.
 
 - A **Dockerfile** describes how to build an image.
 - An **image** is the packaged application template.
@@ -50,17 +54,7 @@ A typical application image may contain:
 - Metadata such as exposed ports
 - A default startup command
 
-For example, a FastAPI image might contain:
-
-```text
-python:3.13-slim base filesystem
-        +
-Python packages from requirements.txt
-        +
-FastAPI application source code
-        +
-Uvicorn startup command
-```
+For example, a FastAPI image is `python:3.13-slim` as the base filesystem, plus Python packages from `requirements.txt`, the FastAPI application source, and the Uvicorn startup command.
 
 ## 2.1 Images are immutable
 
@@ -209,25 +203,11 @@ Image     = Application installer/template
 Container = Installed and running application instance
 ```
 
-Another useful analogy:
-
-```text
-Image     = Class
-Container = Object created from that class
-```
-
-The analogy is not technically exact, but it is useful when first explaining the relationship.
+This analogy is not technically exact, but it is useful when first explaining the relationship (the table's Class/Object row above is the more formal version).
 
 ## 4.2 Important distinction
 
-Deleting a container does not delete its source image.
-
-```bash
-docker rm orders-api
-docker image ls
-```
-
-The image remains available and can create another container.
+Deleting a container does not delete its source image: running `docker rm orders-api` followed by `docker image ls` still shows the image, and it remains available to create another container.
 
 Similarly, deleting an image generally requires that no existing container still depends on it, unless removal is forced.
 
@@ -275,13 +255,10 @@ Meaning:
 
 ## 5.3 Detached mode
 
+The `-d` option runs the container in the background:
+
 ```bash
 docker run -d --name orders-api -p 8000:8000 orders-api:1.0.0
-```
-
-The `-d` option runs the container in the background.
-
-```bash
 docker logs -f orders-api
 ```
 
@@ -308,15 +285,10 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-Build it:
+Build and run it:
 
 ```bash
 docker build -t fastapi-demo:1.0.0 .
-```
-
-Run it:
-
-```bash
 docker run --rm -p 8000:8000 fastapi-demo:1.0.0
 ```
 
@@ -338,13 +310,7 @@ Most filesystem-changing instructions create or contribute to image layers. Dock
 
 ## 6.2 Dockerfile syntax directive
 
-Modern Dockerfiles commonly begin with:
-
-```dockerfile
-# syntax=docker/dockerfile:1
-```
-
-This selects the current stable Dockerfile frontend syntax and enables current BuildKit Dockerfile features supported by the builder.
+Modern Dockerfiles commonly begin with a syntax directive, which selects the current stable Dockerfile frontend syntax and enables current BuildKit Dockerfile features supported by the builder:
 
 ```dockerfile
 # syntax=docker/dockerfile:1
@@ -358,13 +324,7 @@ FROM python:3.13-slim
 
 ## 7.1 `FROM`
 
-Defines the base image and starts a build stage.
-
-```dockerfile
-FROM python:3.13-slim
-```
-
-Every new `FROM` begins a new stage:
+Defines the base image and starts a build stage, for example `FROM python:3.13-slim`. Every new `FROM` begins a new stage:
 
 ```dockerfile
 FROM node:24-alpine AS build
@@ -374,9 +334,7 @@ FROM nginx:alpine AS runtime
 # Runtime stage
 ```
 
-A base image supplies the starting filesystem, tools, libraries, and metadata.
-
-Common choices:
+A base image supplies the starting filesystem, tools, libraries, and metadata. Common choices:
 
 ```dockerfile
 FROM python:3.13-slim
@@ -396,13 +354,7 @@ Use a base image that is:
 
 ## 7.2 `WORKDIR`
 
-Sets the working directory for subsequent instructions such as `RUN`, `COPY`, `CMD`, and `ENTRYPOINT`.
-
-```dockerfile
-WORKDIR /app
-```
-
-Prefer `WORKDIR` instead of repeatedly using `cd`:
+Sets the working directory for subsequent instructions such as `RUN`, `COPY`, `CMD`, and `ENTRYPOINT`. Prefer `WORKDIR` instead of repeatedly using `cd`:
 
 ```dockerfile
 # Preferred
@@ -420,13 +372,11 @@ If the directory does not exist, Docker creates it.
 Copies files from the build context into the image.
 
 ```dockerfile
+# Without WORKDIR set
 COPY requirements.txt /app/requirements.txt
 COPY app/ /app/app/
-```
 
-When `WORKDIR /app` is already set:
-
-```dockerfile
+# With WORKDIR /app already set
 COPY requirements.txt .
 COPY app/ ./app/
 ```
@@ -451,12 +401,7 @@ Executes a command during the image build.
 RUN pip install --no-cache-dir -r requirements.txt
 ```
 
-The command runs while building the image, not whenever a container starts.
-
-```text
-RUN  → build time
-CMD  → container start time
-```
+The command runs while building the image (`RUN` → build time), not whenever a container starts (`CMD` → container start time).
 
 Example package installation:
 
@@ -477,11 +422,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 ```
 
-A runtime value can override it:
-
-```bash
-docker run -e APP_ENV=production orders-api:1.0.0
-```
+A runtime value can override it: `docker run -e APP_ENV=production orders-api:1.0.0`
 
 Do not bake secrets into `ENV` because image metadata and layers may expose them.
 
@@ -494,11 +435,7 @@ ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version=$APP_VERSION
 ```
 
-Build with:
-
-```bash
-docker build --build-arg APP_VERSION=1.4.2 -t orders-api:1.4.2 .
-```
+Build with: `docker build --build-arg APP_VERSION=1.4.2 -t orders-api:1.4.2 .`
 
 `ARG` is mainly for build configuration. It is not a secure secret mechanism. Sensitive build credentials should use BuildKit secret mounts.
 
@@ -512,16 +449,9 @@ EXPOSE 8000
 
 `EXPOSE` does not publish the port to the host.
 
-You still need:
+You still need: `docker run -p 8000:8000 orders-api:1.0.0`
 
-```bash
-docker run -p 8000:8000 orders-api:1.0.0
-```
-
-```text
-EXPOSE 8000       = image metadata/documentation
--p 8000:8000      = actual host-to-container port mapping
-```
+`EXPOSE 8000` is image metadata/documentation; `-p 8000:8000` is the actual host-to-container port mapping.
 
 ## 7.9 `USER`
 
@@ -576,23 +506,11 @@ ENTRYPOINT ["python", "-m", "app.cli"]
 CMD ["serve"]
 ```
 
-This starts as:
+This starts as `python -m app.cli serve`.
 
-```text
-python -m app.cli serve
-```
+Arguments passed after the image name replace `CMD` arguments: `docker run app-cli migrate`
 
-Arguments passed after the image name replace `CMD` arguments:
-
-```bash
-docker run app-cli migrate
-```
-
-Effective command:
-
-```text
-python -m app.cli migrate
-```
+This produces the effective command `python -m app.cli migrate`.
 
 ---
 
@@ -611,16 +529,12 @@ Both instructions affect the command run when a container starts, but they serve
 CMD ["python", "app.py"]
 ```
 
-Default:
-
 ```bash
+# Default
 docker run my-app
 # Runs: python app.py
-```
 
-Override:
-
-```bash
+# Override
 docker run my-app python debug.py
 # Runs: python debug.py
 ```
@@ -632,31 +546,23 @@ ENTRYPOINT ["python", "-m", "app.cli"]
 CMD ["serve"]
 ```
 
-Default:
-
 ```bash
+# Default
 docker run my-app
 # Runs: python -m app.cli serve
-```
 
-Custom argument:
-
-```bash
+# Custom argument
 docker run my-app migrate
 # Runs: python -m app.cli migrate
 ```
 
 ## 8.3 Exec form vs shell form
 
-### Exec form
-
 ```dockerfile
+# Exec form (preferred) — application becomes PID 1 directly
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0"]
-```
 
-### Shell form
-
-```dockerfile
+# Shell form — runs through /bin/sh, uvicorn is not PID 1
 CMD uvicorn app.main:app --host 0.0.0.0
 ```
 
@@ -767,16 +673,13 @@ When the container modifies a file from a lower read-only layer, the storage mec
 Consider:
 
 ```dockerfile
+# Separate RUN instructions: the archive is committed to its own layer,
+# so a later "rm" only hides it from the merged view — the bytes remain
 RUN curl -o /tmp/sdk.tar.gz https://example.invalid/sdk.tar.gz
 RUN tar -xzf /tmp/sdk.tar.gz -C /opt
 RUN rm /tmp/sdk.tar.gz
-```
 
-The archive was added in an earlier layer. A later layer hides/deletes it from the merged filesystem view, but the bytes can remain in the earlier layer.
-
-Better:
-
-```dockerfile
+# Better: a single RUN instruction, so nothing is committed to a layer before rm
 RUN curl -o /tmp/sdk.tar.gz https://example.invalid/sdk.tar.gz \
     && tar -xzf /tmp/sdk.tar.gz -C /opt \
     && rm /tmp/sdk.tar.gz
@@ -930,31 +833,9 @@ RUN npm run build
 
 ## 11.3 Pin important versions
 
-A reproducible build should avoid uncontrolled dependency changes.
+A reproducible build should avoid uncontrolled changes to the base image version, application dependencies, OS packages where practical, and build tools — for example `FROM python:3.13.5-slim-bookworm` and pinned application versions such as `fastapi==0.x.y` and `uvicorn[standard]==0.x.y`.
 
-```text
-Base image version
-Application dependencies
-OS packages where practical
-Build tools
-```
-
-Examples:
-
-```dockerfile
-FROM python:3.13.5-slim-bookworm
-```
-
-```text
-fastapi==0.x.y
-uvicorn[standard]==0.x.y
-```
-
-For stronger deployment immutability, a base image can be pinned by digest:
-
-```dockerfile
-FROM python:3.13-slim@sha256:<digest>
-```
+For stronger deployment immutability, a base image can be pinned by digest: `FROM python:3.13-slim@sha256:<digest>`
 
 Tags are readable and convenient; digests identify exact immutable image content. Many teams use automated dependency tooling to update pinned versions and digests safely.
 
@@ -1012,17 +893,13 @@ Multi-stage builds provide:
 
 ## 12.3 Naming stages
 
+Name a stage with `AS`, then copy from it by name — clearer and safer than a numeric stage index such as `--from=0`:
+
 ```dockerfile
 FROM golang:1.25 AS builder
-```
-
-Copy from the named stage:
-
-```dockerfile
+# ...
 COPY --from=builder /src/server /usr/local/bin/server
 ```
-
-Names are clearer and safer than numeric stage indexes such as `--from=0`.
 
 ## 12.4 Build a specific target
 
@@ -1039,15 +916,13 @@ COPY . .
 CMD ["python", "-m", "app"]
 ```
 
-Build development target:
+Build a specific target:
 
 ```bash
+# Development target
 docker build --target development -t my-app:dev .
-```
 
-Build production target:
-
-```bash
+# Production target
 docker build --target production -t my-app:prod .
 ```
 
@@ -1166,9 +1041,7 @@ Only the `/wheels` artifacts move from the builder to the runtime stage. The bui
 
 ```bash
 docker build -t orders-api:1.0.0 .
-```
 
-```bash
 docker run --rm \
   --name orders-api \
   -p 8000:8000 \
@@ -1222,17 +1095,7 @@ EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
-Conceptual result:
-
-```text
-Builder image contains:
-Node.js + npm + source + dev dependencies + build output
-
-Final image contains:
-Nginx + compiled /dist files
-```
-
-The final image does not contain:
+The builder image carries Node.js, npm, source, dev dependencies, and the build output; the final image keeps only Nginx and the compiled `/dist` files. The final image does not contain:
 
 - Node.js runtime
 - npm cache
@@ -1293,11 +1156,7 @@ Do not ignore files required by the build. For example, ignoring `requirements.t
 
 ## 15.3 Check context transfer
 
-Build output often displays context transfer information:
-
-```text
-=> transferring context: 42.6kB
-```
+Build output often displays context transfer information: `=> transferring context: 42.6kB`
 
 An unexpectedly large value is a signal to review `.dockerignore`.
 
@@ -1307,19 +1166,7 @@ An unexpectedly large value is a signal to review `.dockerignore`.
 
 ## 16.1 Image reference format
 
-A complete image reference can include:
-
-```text
-registry/namespace/repository:tag
-```
-
-Example:
-
-```text
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:1.4.2
-```
-
-Components:
+A complete image reference follows `registry/namespace/repository:tag`, for example `123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:1.4.2`:
 
 ```text
 123456789012.dkr.ecr.ap-south-1.amazonaws.com  → registry
@@ -1329,40 +1176,15 @@ orders-api                                    → repository
 
 ## 16.2 Tags
 
-A tag is a human-readable pointer such as:
-
-```text
-orders-api:1.4.2
-orders-api:release-2026-07-30
-orders-api:latest
-```
+A tag is a human-readable pointer such as `orders-api:1.4.2`, `orders-api:release-2026-07-30`, or `orders-api:latest`.
 
 A tag can be moved to different image content. Therefore, `latest` does not mean newest by protocol; it is simply a conventional tag name and is used as the default when no tag is specified.
 
-Prefer immutable or traceable deployment tags:
-
-```text
-Git commit SHA
-Semantic version
-CI build number
-Release identifier
-```
-
-Example:
-
-```bash
-docker build -t orders-api:git-a31f92c .
-```
+Prefer immutable or traceable deployment tags — a Git commit SHA, semantic version, CI build number, or release identifier — for example `docker build -t orders-api:git-a31f92c .`.
 
 ## 16.3 Digests
 
-A digest identifies exact immutable image content.
-
-```text
-orders-api@sha256:abc123...
-```
-
-Production deployment systems may resolve a tag to a digest and deploy that exact digest for stronger reproducibility.
+A digest identifies exact immutable image content, such as `orders-api@sha256:abc123...`. Production deployment systems may resolve a tag to a digest and deploy that exact digest for stronger reproducibility.
 
 ## 16.4 Registries
 
@@ -1433,7 +1255,7 @@ docker run -d \
   postgres:17
 ```
 
-The volume remains independently of the container lifecycle.
+The volume remains independently of the container lifecycle. Volume types, mount syntax and networking between containers are covered in [Compose & Networking](docker-compose-networking.md).
 
 ## 17.3 Current Docker Engine storage note
 
@@ -1445,11 +1267,7 @@ On fresh installations of Docker Engine 29.0 and later, the containerd image sto
 
 ## 18.1 Use trusted, minimal base images
 
-```dockerfile
-FROM python:3.13-slim
-```
-
-A smaller image usually means:
+Use a trusted, minimal base image such as `python:3.13-slim`. A smaller image usually means:
 
 - Less data to transfer
 - Faster pull and startup preparation
@@ -1460,22 +1278,11 @@ Smallest is not always best. Alpine-based images use musl libc, which can create
 
 ## 18.2 Use multi-stage builds
 
-Keep build tools out of the runtime image.
-
-```text
-Builder: compiler + source + dev tools
-Runtime: executable + required libraries
-```
+Keep build tools out of the runtime image — the builder stage carries the compiler, source, and dev tools; the runtime stage carries only the executable and required libraries.
 
 ## 18.3 Run as non-root
 
-```dockerfile
-RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup appuser
-USER appuser
-```
-
-Also consider orchestrator-level restrictions such as read-only root filesystems, dropped Linux capabilities, and seccomp profiles.
+Create an unprivileged user and switch to it with `USER`, for example `RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser` followed by `USER appuser`. Also consider orchestrator-level restrictions such as read-only root filesystems, dropped Linux capabilities, and seccomp profiles.
 
 ## 18.4 Keep secrets outside the image
 
@@ -1505,39 +1312,19 @@ RUN --mount=type=secret,id=pip_config \
 
 ## 18.5 Keep the build context small
 
-Use `.dockerignore` and copy only required paths.
-
-```dockerfile
-COPY requirements.txt .
-COPY app/ ./app/
-```
-
-This is clearer than copying the entire repository when only two paths are required.
+Use `.dockerignore` and copy only required paths — for example `COPY requirements.txt .` and `COPY app/ ./app/` rather than copying the entire repository when only two paths are required.
 
 ## 18.6 Order instructions for caching
 
-```text
-Stable dependency descriptors first
-Frequently changing source code later
-```
+Order instructions by placing stable dependency descriptors first and frequently changing source code later.
 
 ## 18.7 Avoid unnecessary packages
 
-```dockerfile
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-Install only what the runtime actually needs.
+Install only what the runtime actually needs, and clean up package caches in the same layer, for example `apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*`.
 
 ## 18.8 Use exec-form startup commands
 
-```dockerfile
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-This improves signal handling and graceful shutdown behavior.
+Use exec-form startup commands such as `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]` — this improves signal handling and graceful shutdown behavior.
 
 ## 18.9 Design containers to be disposable
 
@@ -1569,17 +1356,7 @@ Avoid relying only on log files stored inside the ephemeral container layer.
 
 ## 18.11 Keep one main responsibility per container
 
-A container normally runs one main application responsibility, such as:
-
-```text
-API container
-Worker container
-Scheduler container
-Database container
-Reverse proxy container
-```
-
-This does not mean there can only be one operating-system process. The main process may create worker processes. The important design goal is a clear lifecycle and responsibility.
+A container normally runs one main application responsibility, such as an API container, worker container, scheduler container, database container, or reverse proxy container. This does not mean there can only be one operating-system process. The main process may create worker processes. The important design goal is a clear lifecycle and responsibility.
 
 ## 18.12 Scan and update images
 
@@ -1634,9 +1411,7 @@ flowchart TD
 
 ## 19.1 Example ECR tag
 
-```text
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:a31f92c
-```
+An ECR image reference looks like `123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:a31f92c`.
 
 ## 19.2 Build and push concept
 
@@ -1656,13 +1431,7 @@ Authentication is normally performed using the AWS CLI and a short-lived ECR aut
 
 ## 19.3 Runtime configuration belongs outside the image
 
-Same image:
-
-```text
-orders-api@sha256:abc...
-```
-
-Different environments:
+The same image (`orders-api@sha256:abc...`) is deployed to different environments, each with its own runtime configuration:
 
 ```text
 Development → development DB URL, lower resources
@@ -1690,10 +1459,8 @@ This provides traceability from a running workload back to its source revision a
 ## 20.1 Images
 
 ```bash
-# List images
 docker image ls
 
-# Build an image
 docker build -t orders-api:1.0.0 .
 
 # Build without normal cache reuse
@@ -1702,7 +1469,6 @@ docker build --no-cache -t orders-api:1.0.0 .
 # Show image details
 docker image inspect orders-api:1.0.0
 
-# Show layer history
 docker image history orders-api:1.0.0
 
 # Remove an image
@@ -1711,7 +1477,6 @@ docker image rm orders-api:1.0.0
 # Pull an image
 docker pull python:3.13-slim
 
-# Push an image
 docker push registry.example.com/orders-api:1.0.0
 ```
 
@@ -1721,16 +1486,11 @@ docker push registry.example.com/orders-api:1.0.0
 # Run interactively and remove on exit
 docker run --rm -it python:3.13-slim bash
 
-# Run in background
 docker run -d --name orders-api -p 8000:8000 orders-api:1.0.0
 
-# List running containers
 docker ps
-
-# List all containers
 docker ps -a
 
-# View logs
 docker logs -f orders-api
 
 # Execute a command in a running container
@@ -1742,7 +1502,6 @@ docker inspect orders-api
 # Show container resource usage
 docker stats
 
-# Stop and remove
 docker stop orders-api
 docker rm orders-api
 ```
@@ -1759,7 +1518,6 @@ docker buildx inspect
 # Build for the current platform
 docker buildx build -t orders-api:1.0.0 --load .
 
-# Build and push multiple platforms
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t registry.example.com/orders-api:1.0.0 \
@@ -1796,11 +1554,7 @@ Is the path relative to the build-context root?
 Is the file name case-correct?
 ```
 
-Build with plain progress output:
-
-```bash
-docker build --progress=plain -t orders-api:debug .
-```
+Build with plain progress output: `docker build --progress=plain -t orders-api:debug .`
 
 ## 21.2 Application starts and exits immediately
 
@@ -1814,11 +1568,7 @@ docker logs <container-name>
 docker inspect <container-name>
 ```
 
-Run an interactive shell:
-
-```bash
-docker run --rm -it --entrypoint sh orders-api:1.0.0
-```
+Run an interactive shell: `docker run --rm -it --entrypoint sh orders-api:1.0.0`
 
 ## 21.3 Port is not reachable
 
@@ -1842,11 +1592,7 @@ Listening only on `127.0.0.1` inside the container commonly prevents traffic arr
 
 ## 21.4 Image is unexpectedly large
 
-Inspect history:
-
-```bash
-docker image history orders-api:1.0.0
-```
+Inspect history: `docker image history orders-api:1.0.0`
 
 Review:
 
@@ -1872,11 +1618,7 @@ Review:
 - Different target platforms
 - CI builder cache not imported/exported
 
-Use:
-
-```bash
-docker build --progress=plain -t orders-api:1.0.0 .
-```
+Use: `docker build --progress=plain -t orders-api:1.0.0 .`
 
 Look for `CACHED` lines.
 
@@ -1884,37 +1626,10 @@ Look for `CACHED` lines.
 
 ```bash
 docker image inspect orders-api:1.0.0
-```
-
-```bash
 docker container inspect orders-api
 ```
 
 The image contains defaults; the container inspection shows the effective runtime configuration and overrides.
-
----
-
-# 22. Key Takeaways
-
-```mermaid
-flowchart TD
-    A[Dockerfile] -->|describes build steps| B[Image]
-    B -->|"immutable, reused by many containers"| C[Container]
-    C -->|"isolated process, read-only + writable layer"| D["Registry / Orchestrator<br/>distributes the same tested artifact"]
-```
-
-The most important points are:
-
-1. A **Docker image** is an immutable package; a **container** is an instance created from that package.
-2. A **Dockerfile** is the version-controlled recipe used to create the image.
-3. Docker images are assembled from **reusable, ordered layers**.
-4. A running container adds a **writable layer** above its read-only image layers.
-5. Layer order affects **build-cache reuse**, build speed, and sometimes image size.
-6. Copy dependency files before frequently changing application code to preserve cache reuse.
-7. Deleting a large file in a later layer does not necessarily remove its bytes from an earlier image layer.
-8. **Multi-stage builds** separate compilation/build tooling from the final runtime image.
-9. Production images should use trusted bases, non-root users, external secrets, small build contexts, and explicit startup commands.
-10. In AWS, build once, push the image to **Amazon ECR**, and deploy the same immutable artifact to ECS or EKS with environment-specific runtime configuration.
 
 ---
 

@@ -8,6 +8,28 @@ order: 3
 
 > In Python, a default argument is created **once when the function is defined**, not every time the function is called. If that default object is mutable and the function changes it, later calls reuse the already-modified object.
 
+## In short
+
+- Python evaluates a default expression once, while it executes the `def` statement, not on each call.
+- The resulting object is stored with the function and is visible through `function.__defaults__`.
+- Every call that omits the argument receives that same object, so an `append` or a key assignment persists into later calls.
+- The fix is an immutable sentinel: declare `items: list[str] | None = None` and create the fresh list inside the function body.
+- Branch on `if items is None`, not on `if not items`, so an empty list the caller genuinely passed is still used.
+- For dataclass fields use `field(default_factory=list)`, which calls the factory separately for each instance.
+- The rule is about evaluation timing rather than mutability alone: `datetime.now()` as a default freezes one timestamp at definition time.
+
+```mermaid
+flowchart TD
+    DEF[Function definition] --> SHARED["One shared []"]
+    SHARED --> C1["Call 1 appends 'apple'<br/>['apple']"]
+    SHARED --> C2["Call 2 appends 'banana'<br/>['apple', 'banana']"]
+    SHARED --> C3["Call 3 appends 'mango'<br/>['apple', 'banana', 'mango']"]
+```
+
+**Interview answer:** `def f(x=[])` evaluates that `[]` exactly once, when Python executes the `def` statement, and stores the resulting list with the function object. Every later call that omits `x` is handed that same list, so whatever the body appended is still there on the next call — the calls are unintentionally sharing one object. It is not an interpreter defect but a consequence of Python's defined function semantics, and the fix is to default to `None` and create the list inside the body.
+
+**Gotcha:** Replacing `if items is None` with `if not items`. It looks equivalent, but it also discards an empty list the caller deliberately supplied, so the caller's own object never receives the item.
+
 ---
 
 ## 1. What Is a Default Argument?
@@ -17,7 +39,6 @@ A default argument provides a value that Python uses when the caller does not pa
 ```python
 def greet(name: str = "Guest") -> str:
     return f"Hello, {name}!"
-
 
 print(greet("Avadh"))  # Hello, Avadh!
 print(greet())          # Hello, Guest!
@@ -79,15 +100,7 @@ flowchart LR
     N3 --> R3["['mango']"]
 ```
 
-### Actual Python Behaviour
-
-```mermaid
-flowchart TD
-    DEF[Function definition] --> SHARED["One shared []"]
-    SHARED --> C1["Call 1 appends 'apple'<br/>['apple']"]
-    SHARED --> C2["Call 2 appends 'banana'<br/>['apple', 'banana']"]
-    SHARED --> C3["Call 3 appends 'mango'<br/>['apple', 'banana', 'mango']"]
-```
+Actual Python behaviour is the diagram in **In short**: one list is created at the function definition and all three calls append to it.
 
 This behaviour is commonly called the **mutable default argument bug**, although it is a consequence of Python's defined function semantics rather than an interpreter defect.
 
@@ -95,18 +108,12 @@ This behaviour is commonly called the **mutable default argument bug**, although
 
 ## 3. Why Does It Happen?
 
-Python evaluates default argument expressions when it executes the function definition.
-
-```python
-def add_item(item: str, items: list[str] = []):
-    ...
-```
+Python evaluates default argument expressions when it executes the function definition, so the `[]` in `def add_item(item: str, items: list[str] = [])` runs once, at that moment.
 
 Conceptually, Python behaves approximately like this:
 
 ```python
 shared_default = []
-
 
 def add_item(item: str, items: list[str] = shared_default):
     items.append(item)
@@ -124,7 +131,6 @@ def add_item(item: str, items: list[str] = []) -> list[str]:
     items.append(item)
     return items
 
-
 print(add_item.__defaults__)
 # ([],)
 
@@ -141,7 +147,6 @@ The list inside `__defaults__` changes because it is the same list used by calls
 def collect(value: int, values: list[int] = []) -> tuple[list[int], int]:
     values.append(value)
     return values, id(values)
-
 
 first_values, first_id = collect(10)
 second_values, second_id = collect(20)
@@ -193,19 +198,7 @@ flowchart TD
 
 ### Why Use `is None`?
 
-Use identity comparison:
-
-```python
-if items is None:
-    items = []
-```
-
-Do not usually write:
-
-```python
-if not items:
-    items = []
-```
+Use identity comparison — `if items is None: items = []` — rather than the general falsy check `if not items: items = []`.
 
 The second version treats all falsy values as missing, including a valid empty list supplied by the caller.
 
@@ -216,7 +209,6 @@ def add_item(item: str, items: list[str] | None = None) -> list[str]:
 
     items.append(item)
     return items
-
 
 existing: list[str] = []
 result = add_item("apple", existing)
@@ -242,12 +234,7 @@ Common mutable types include:
 - Most custom class instances
 - Some third-party container objects
 
-```python
-numbers = [1, 2]
-numbers.append(3)
-
-print(numbers)  # [1, 2, 3]
-```
+For example, `numbers = [1, 2]` followed by `numbers.append(3)` leaves `numbers` as `[1, 2, 3]` — the same object, changed in place.
 
 ### Immutable Objects
 
@@ -264,12 +251,7 @@ Common immutable types include:
 - `frozenset`
 - Tuples containing only immutable objects
 
-```python
-name = "Python"
-name = name + " 3"
-```
-
-This creates a new string and rebinds `name`; it does not modify the original string.
+Writing `name = "Python"` and then `name = name + " 3"` creates a new string and rebinds `name`; it does not modify the original string.
 
 ### Safe Default Examples
 
@@ -277,14 +259,11 @@ This creates a new string and rebinds `name`; it does not modify the original st
 def connect(timeout: int = 30) -> None:
     ...
 
-
 def create_user(role: str = "viewer") -> None:
     ...
 
-
 def is_enabled(active: bool = True) -> bool:
     return active
-
 
 def process(limit: int | None = None) -> None:
     ...
@@ -335,82 +314,33 @@ def register_user(
     return users
 ```
 
-### 6.2 Dictionary Default
+### 6.2 Every Other Mutable Type Follows the Same Rule
 
-Incorrect:
+Nothing about the fix changes with the type. Only the value the sentinel branch creates is different:
 
-```python
-def build_response(
-    data: str,
-    metadata: dict[str, str] = {},
-) -> dict[str, object]:
-    metadata["status"] = "success"
-    return {"data": data, "metadata": metadata}
-```
+| Parameter | Incorrect default | Correct default | Created when `None` |
+| --- | --- | --- | --- |
+| `users: list[str]` | `= []` | `= None` | `users = []` |
+| `metadata: dict[str, str]` | `= {}` | `= None` | `metadata = {}` |
+| `permissions: set[str]` | `= set()` | `= None` | `permissions = set()` |
+| `context: RequestContext` | `= RequestContext()` | `= None` | `context = RequestContext()` |
 
-Correct:
-
-```python
-def build_response(
-    data: str,
-    metadata: dict[str, str] | None = None,
-) -> dict[str, object]:
-    if metadata is None:
-        metadata = {}
-
-    metadata["status"] = "success"
-    return {"data": data, "metadata": metadata}
-```
-
-### 6.3 Set Default
-
-Incorrect:
-
-```python
-def add_permission(
-    permission: str,
-    permissions: set[str] = set(),
-) -> set[str]:
-    permissions.add(permission)
-    return permissions
-```
-
-Correct:
-
-```python
-def add_permission(
-    permission: str,
-    permissions: set[str] | None = None,
-) -> set[str]:
-    if permissions is None:
-        permissions = set()
-
-    permissions.add(permission)
-    return permissions
-```
-
-### 6.4 Custom Object Default
-
-The issue is not limited to built-in containers.
+The last row matters most, because the issue is not limited to built-in containers. A class constructor in a default runs once at definition time too, so every call that omits the argument shares one instance.
 
 ```python
 class RequestContext:
     def __init__(self) -> None:
         self.logs: list[str] = []
 
-
-# Incorrect: one RequestContext is shared.
+# Incorrect: one RequestContext is shared by every call.
 def handle_request(
     message: str,
     context: RequestContext = RequestContext(),
 ) -> list[str]:
     context.logs.append(message)
     return context.logs
-```
 
-Correct:
-
-```python
+# Correct: a new RequestContext per call that omits the argument.
 def handle_request(
     message: str,
     context: RequestContext | None = None,
@@ -441,7 +371,6 @@ For codebases supporting Python versions before 3.10:
 ```python
 from typing import Optional
 
-
 def normalize_tags(
     tags: Optional[list[str]] = None,
 ) -> list[str]:
@@ -462,9 +391,7 @@ def add_default_role(
     result = list(roles) if roles is not None else []
     result.append("viewer")
     return result
-```
 
-```python
 original = ["editor"]
 updated = add_default_role(original)
 
@@ -488,7 +415,6 @@ Incorrect idea:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass
 class Team:
     members: list[str] = []
@@ -500,7 +426,6 @@ Use `field(default_factory=...)`:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class Team:
@@ -538,7 +463,6 @@ For a dictionary or set:
 ```python
 from dataclasses import dataclass, field
 
-
 @dataclass
 class UserSession:
     attributes: dict[str, str] = field(default_factory=dict)
@@ -549,7 +473,6 @@ Use a lambda when the initial value needs content:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class Configuration:
@@ -585,7 +508,6 @@ However, this design is usually less explicit than alternatives such as `functoo
 ```python
 from functools import cache
 
-
 @cache
 def fibonacci(number: int) -> int:
     if number < 2:
@@ -611,37 +533,9 @@ Use an intentional mutable default only when the shared behaviour is clearly doc
 
 ## 10. Practical Development Examples
 
-### 10.1 API Response Builder
+The bug is especially risky in server applications such as Django or FastAPI, because the function may run for many requests within the same long-lived process, and data from one request can remain in the list used by later requests.
 
-Incorrect:
-
-```python
-def api_response(
-    payload: object,
-    errors: list[str] = [],
-) -> dict[str, object]:
-    return {
-        "payload": payload,
-        "errors": errors,
-    }
-```
-
-A future modification may append errors and leak them into later responses.
-
-Correct:
-
-```python
-def api_response(
-    payload: object,
-    errors: list[str] | None = None,
-) -> dict[str, object]:
-    return {
-        "payload": payload,
-        "errors": list(errors) if errors is not None else [],
-    }
-```
-
-### 10.2 Recursive Tree Traversal
+### 10.1 Recursive Tree Traversal
 
 Incorrect:
 
@@ -682,7 +576,7 @@ def collect_names(
 
 The same list is intentionally passed through one recursive operation, while separate top-level calls start with new lists.
 
-### 10.3 Batch Processing Options
+### 10.2 Batch Processing Options
 
 Incorrect:
 
@@ -712,55 +606,6 @@ def process_batch(
 
 This version builds a new configuration dictionary and avoids mutating the caller's dictionary.
 
-### 10.4 Django or FastAPI Utility Function
-
-The bug is especially risky in server applications because the function may run for many requests within the same long-lived process.
-
-Incorrect:
-
-```python
-def serialize_users(
-    users: list[object],
-    result: list[dict[str, object]] = [],
-) -> list[dict[str, object]]:
-    for user in users:
-        result.append({"id": user.id, "name": user.name})
-
-    return result
-```
-
-Data from one request can remain in the list used by later requests.
-
-Correct:
-
-```python
-def serialize_users(
-    users: list[object],
-    result: list[dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
-    if result is None:
-        result = []
-
-    for user in users:
-        result.append({"id": user.id, "name": user.name})
-
-    return result
-```
-
-A simpler implementation may avoid the accumulator parameter completely:
-
-```python
-def serialize_users(
-    users: list[object],
-) -> list[dict[str, object]]:
-    return [
-        {"id": user.id, "name": user.name}
-        for user in users
-    ]
-```
-
-Prefer the simplest interface that satisfies the use case.
-
 ---
 
 ## 11. How to Detect and Test the Problem
@@ -773,7 +618,6 @@ A single test call may not expose the bug.
 def append_value(value: int, values: list[int] = []) -> list[int]:
     values.append(value)
     return values
-
 
 def test_calls_are_independent() -> None:
     first = append_value(1)
@@ -807,7 +651,6 @@ def create_values(values: list[int] | None = None) -> list[int]:
         values = []
 
     return values
-
 
 first = create_values()
 second = create_values()
@@ -843,7 +686,6 @@ def function(values: list[str] | None = None) -> list[str]:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class Report:
@@ -920,7 +762,6 @@ Any default expression is evaluated when the function is defined.
 ```python
 from datetime import datetime
 
-
 def create_event(created_at: datetime = datetime.now()) -> datetime:
     return created_at
 ```
@@ -932,7 +773,6 @@ Correct:
 ```python
 from datetime import datetime
 
-
 def create_event(created_at: datetime | None = None) -> datetime:
     if created_at is None:
         created_at = datetime.now()
@@ -942,26 +782,9 @@ def create_event(created_at: datetime | None = None) -> datetime:
 
 This is related to the same evaluation rule, even though `datetime` objects are immutable.
 
----
+### 12.7 Quick Reference
 
-## 13. Key Takeaways
-
-- Python evaluates default argument expressions once when the `def` statement executes.
-- Calls that omit an argument reuse the stored default object.
-- Mutating a default list, dictionary, set, or custom object changes what later calls receive.
-- Use `None` as a sentinel and create a fresh mutable object inside the function.
-- Use `is None`, not a general falsy check, when `None` specifically means “not supplied.”
-- Decide separately whether the function should mutate collections explicitly supplied by the caller.
-- Use `field(default_factory=list)` or another factory for mutable dataclass fields.
-- Intentional shared defaults are possible, but an explicit cache or state object is usually clearer.
-- Test functions across multiple calls because one call may not reveal the problem.
-- Configure linting rules to catch mutable defaults during development.
-
----
-
-## Quick Reference
-
-### Avoid
+Avoid:
 
 ```python
 def add_item(item: str, items: list[str] = []) -> list[str]:
@@ -969,7 +792,7 @@ def add_item(item: str, items: list[str] = []) -> list[str]:
     return items
 ```
 
-### Prefer
+Prefer:
 
 ```python
 def add_item(
@@ -983,11 +806,10 @@ def add_item(
     return items
 ```
 
-### Dataclass
+Dataclass:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class Cart:

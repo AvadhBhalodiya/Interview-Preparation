@@ -6,12 +6,33 @@ order: 6
 
 # Authentication and Authorization in REST APIs
 
-## AuthN vs AuthZ, OAuth 2.x, JWT, and API Keys
-
-> **Topic:** API Design & REST  
-> **Level:** Intermediate developer  
-> **Purpose:** Build a practical mental model for designing and securing production APIs  
+> Build a practical mental model for designing and securing production APIs
+>
 > **Standards note:** OAuth 2.0 remains the published framework. OAuth 2.1 was still an IETF draft as of July 2026, so current implementations should follow OAuth 2.0 together with the latest OAuth security best practices.
+
+## In short
+
+- Authentication — AuthN — verifies **who** is calling; authorization — AuthZ — decides **what** that verified identity may do, so the first check's output is the second check's input.
+- `401 Unauthorized` means the credential is missing or invalid; `403 Forbidden` means the identity is known and the operation is still refused.
+- OAuth 2.x is an authorization framework for **delegated** access: a client receives a scoped, short-lived access token instead of the user's password.
+- Authorization Code with PKCE is the flow for interactive clients and Client Credentials is for machine-to-machine; the implicit and password grants are out.
+- OpenID Connect adds the identity layer — the ID token is consumed by the client, the access token is sent to the API, and the two are never swapped.
+- JWT is a token **format**, not a protocol; an OAuth access token may equally be an opaque value that the API introspects.
+- A scope is a coarse client capability, not a complete authorization decision — the API must still check user, tenant, ownership and resource state.
+
+```mermaid
+flowchart LR
+    A[Client Request] --> B[Authentication]
+    B -->|Invalid identity| C[401 Unauthorized]
+    B -->|Valid identity| D[Authorization]
+    D -->|Not permitted| E[403 Forbidden]
+    D -->|Permitted| F[Business Logic]
+    F --> G[API Response]
+```
+
+**Interview answer:** Authentication establishes who the caller is, from a password, passkey, session or token; authorization then decides whether that identity may perform this particular action on this particular resource, which is why a successful login never implies access to everything. OAuth 2.x sits on the authorization side — it is a framework that lets a user delegate limited, scoped access to a client application without handing over their password, and the client then presents the resulting access token to the API. OAuth by itself does not log a user in; OpenID Connect adds that identity layer on top and returns an ID token describing the authentication event.
+
+**Gotcha:** Stopping at "the token is valid". A correct signature and the right scope say nothing about whether this user owns this particular record, so object-level and tenant checks still have to run on every request.
 
 ---
 
@@ -24,17 +45,7 @@ API security usually answers two different questions:
 2. Is it allowed to perform this action? → Authorization
 ```
 
-A request should normally pass through both checks:
-
-```mermaid
-flowchart LR
-    A[Client Request] --> B[Authentication]
-    B -->|Invalid identity| C[401 Unauthorized]
-    B -->|Valid identity| D[Authorization]
-    D -->|Not permitted| E[403 Forbidden]
-    D -->|Permitted| F[Business Logic]
-    F --> G[API Response]
-```
+A request should normally pass through both checks in that order, as in the pipeline diagram above: a failed identity check ends in `401 Unauthorized`, and a failed permission check ends in `403 Forbidden`.
 
 A successful login does **not** automatically mean that the user can access every resource.
 
@@ -170,11 +181,7 @@ if "user:delete" not in current_user.permissions:
 
 Checking only the role is often insufficient.
 
-Consider:
-
-```http
-GET /invoices/INV-500
-```
+Consider: `GET /invoices/INV-500`
 
 A customer may have the general `invoice:read` permission but should only access invoices belonging to their own organization.
 
@@ -235,9 +242,7 @@ Suppose a reporting application needs read-only access to a user's cloud files.
 
 ### Unsafe approach
 
-```text
-User gives cloud password to reporting application.
-```
+> User gives cloud password to reporting application.
 
 Problems:
 
@@ -325,11 +330,7 @@ orders:write
 profile:read
 ```
 
-Example token request:
-
-```text
-scope=orders:read profile:read
-```
+Example token request: `scope=orders:read profile:read`
 
 A scope should represent a meaningful API capability. It should not be treated as the only authorization control.
 
@@ -375,11 +376,7 @@ sequenceDiagram
 
 ### Step 1: Generate PKCE values
 
-The client generates a high-entropy random value:
-
-```text
-code_verifier = random secret
-```
+The client generates a high-entropy random value: `code_verifier = random secret`
 
 It derives a challenge:
 
@@ -534,11 +531,7 @@ Access token → sent to the API
 
 Do not send an ID token as a replacement for an access token unless a specific API contract explicitly defines such behavior.
 
-A typical OIDC request includes:
-
-```text
-scope=openid profile email
-```
+A typical OIDC request includes: `scope=openid profile email`
 
 The `openid` scope activates OpenID Connect behavior.
 
@@ -546,53 +539,11 @@ The `openid` scope activates OpenID Connect behavior.
 
 # 6. JSON Web Tokens — JWT
 
-A JSON Web Token is a compact, URL-safe format for carrying claims between parties.
+A JSON Web Token is a compact, URL-safe **token format** — not an authentication or authorization protocol. A signed JWT in JWS compact form is three Base64URL-encoded parts, `HEADER.PAYLOAD.SIGNATURE`: the header names the algorithm and signing key through `alg` and `kid`, the payload carries the claims, and the signature makes the first two parts tamper-evident.
 
-JWT is a **token format**, not an authentication or authorization protocol.
+JWTs commonly appear as OAuth access tokens, OpenID Connect ID tokens, service assertions, one-time action links and internal identity propagation. OAuth does not require an access token to be a JWT — an opaque value validated through introspection is equally valid, and section 9.3 compares the two.
 
-JWT can be used in:
-
-- OAuth access tokens
-- OpenID Connect ID tokens
-- Service assertions
-- One-time action links
-- Internal identity propagation
-
-## 6.1 JWT Structure
-
-A commonly used signed JWT in JWS compact form contains three Base64URL-encoded parts:
-
-```text
-HEADER.PAYLOAD.SIGNATURE
-```
-
-Example:
-
-```text
-eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleS0yMDI2In0
-.
-eyJzdWIiOiJ1c2VyLTEyMyIsImF1ZCI6Im9yZGVycy1hcGkiLCJleHAiOjE3NjAwMDAwMDB9
-.
-SIGNATURE
-```
-
-### Header
-
-```json
-{
-  "alg": "RS256",
-  "typ": "JWT",
-  "kid": "key-2026-07"
-}
-```
-
-| Claim | Meaning |
-|---|---|
-| `alg` | Signing algorithm |
-| `typ` | Token type hint |
-| `kid` | Identifier of the signing key |
-
-### Payload
+A typical OAuth access-token payload:
 
 ```json
 {
@@ -608,247 +559,40 @@ SIGNATURE
 }
 ```
 
-Common registered claims:
+The payload is encoded, **not** encrypted: anyone holding the token can Base64URL-decode and read it, so passwords, API secrets, private keys, payment data and unnecessary personal information do not belong in a signed JWT. Keep custom claims small. Encryption is a separate operation, represented by JWE.
 
-| Claim | Meaning |
+## 6.1 Validation checklist
+
+Decoding a JWT is not validating it. A resource server must satisfy every row below before it trusts a single claim.
+
+| Check | Expectation |
 |---|---|
-| `iss` | Issuer |
-| `sub` | Subject |
-| `aud` | Intended audience |
-| `exp` | Expiration time |
-| `nbf` | Not valid before |
-| `iat` | Issued at |
-| `jti` | Unique token identifier |
-
-Custom claims may include tenant, roles, permissions, or session information. Keep them small and avoid sensitive personal data.
-
-### Signature
-
-The issuer signs:
-
-```text
-Base64URL(header) + "." + Base64URL(payload)
-```
-
-The API validates the signature using a trusted secret or public key.
-
-## 6.2 Signing vs Encryption
-
-A signed JWT is generally **readable but tamper-evident**.
-
-Anyone who obtains the token can Base64URL-decode its header and payload.
-
-```text
-Signed JWT:
-- Payload is readable
-- Modification invalidates the signature
-- Data is not confidential
-```
-
-Encryption is a separate operation, commonly represented using JWE.
-
-Do not put the following in a normal signed JWT:
-
-- Passwords
-- API secrets
-- Private keys
-- Credit card data
-- Unnecessary sensitive personal information
-
-### Symmetric signing
-
-Example: `HS256`
-
-```text
-Issuer and verifier share the same secret.
-```
-
-Benefits:
-
-- Simple
-- Fast
-
-Trade-off:
-
-- Every verifier that knows the secret could also create valid tokens.
-
-### Asymmetric signing
-
-Examples: `RS256`, `PS256`, `ES256`, `EdDSA`
-
-```text
-Issuer signs with private key.
-APIs verify with public key.
-```
-
-Benefits:
-
-- Resource servers do not receive the private signing key.
-- Better separation between issuer and verifier.
-- Easier distribution through a JSON Web Key Set — JWKS.
-- Suitable for multiple APIs and services.
-
-## 6.3 JWT Validation
-
-Decoding a JWT is not validation.
-
-A resource server should validate all relevant security properties:
-
-```text
-1. Parse the token safely.
-2. Allow only expected algorithms.
-3. Select a trusted verification key.
-4. Verify the signature.
-5. Validate issuer.
-6. Validate audience.
-7. Validate expiration and not-before time.
-8. Validate token type or profile.
-9. Apply scope, permission and resource checks.
-```
-
-Conceptual Python example:
-
-```python
-from jwt import decode
-from jwt.exceptions import InvalidTokenError
-
-EXPECTED_ISSUER = "https://identity.example.com"
-EXPECTED_AUDIENCE = "orders-api"
-ALLOWED_ALGORITHMS = ["RS256"]
-
-def validate_access_token(token: str, public_key: str) -> dict:
-    try:
-        claims = decode(
-            token,
-            public_key,
-            algorithms=ALLOWED_ALGORITHMS,
-            issuer=EXPECTED_ISSUER,
-            audience=EXPECTED_AUDIENCE,
-            options={
-                "require": ["exp", "iss", "sub", "aud"],
-            },
-        )
-    except InvalidTokenError as exc:
-        raise AuthenticationError("Invalid access token") from exc
-
-    return claims
-```
-
-The exact library API varies, but the validation responsibilities remain the same.
-
-### Algorithm allowlist
-
-Never accept an algorithm merely because it appears in the untrusted token header.
-
-```python
-# Unsafe idea
-algorithm = untrusted_header["alg"]
-verify(token, algorithm=algorithm)
-```
-
-Use a server-side allowlist and a key configuration associated with the trusted issuer.
-
-### Issuer validation
-
-The API should accept tokens only from the expected issuer:
-
-```text
-iss = https://identity.example.com
-```
-
-Without issuer validation, a correctly signed token from another trusted-but-unrelated system might be accepted incorrectly.
-
-### Audience validation
-
-The audience restricts where the token is intended to be used:
-
-```text
-aud = orders-api
-```
-
-An access token created for `billing-api` should not automatically work against `orders-api`.
-
-### Expiration validation
-
-Reject tokens after `exp`.
-
-Allow only a small, deliberate clock-skew tolerance.
-
-### Key rotation
-
-The issuer can publish public keys through JWKS.
-
-```text
-Authorization Server
-    └── /.well-known/... metadata
-          └── jwks_uri
-                ├── current public key
-                └── previous public key during rotation
-```
-
-A resource server should:
-
-- Cache trusted keys.
-- Refresh keys when an unknown `kid` is encountered.
-- Enforce issuer and algorithm restrictions.
-- Handle rotation without disabling signature verification.
-- Avoid using arbitrary URLs supplied inside the token as key sources.
-
-## 6.4 JWT Revocation and Logout
-
-JWT access tokens are commonly validated locally, so an API may not contact the authorization server for every request.
-
-Benefit:
-
-```text
-Fast, distributed validation
-```
-
-Trade-off:
-
-```text
-A token may remain usable until expiry even after logout or permission changes.
-```
-
-Common strategies:
-
-### Short-lived access tokens
-
-Issue access tokens for a short duration, such as several minutes, based on the system's risk profile.
-
-### Refresh-token revocation
-
-Revoke the refresh token so no new access token can be issued.
-
-This does not automatically invalidate an already issued self-contained access token.
-
-### Denylist
-
-Store revoked token IDs or session IDs.
-
-```text
-jti → revoked until token expiration
-```
-
-This gives quicker revocation but adds shared state and a lookup.
-
-### Token introspection
-
-Use opaque tokens or introspection when the resource server must obtain the token's current active state from the authorization server.
-
-### Session or authorization version
-
-Include a version identifier and compare it with current server-side state for sensitive operations.
-
-### Important logout expectation
-
-Logout usually means:
-
-- End the local application session.
-- Delete or invalidate browser cookies.
-- Revoke refresh tokens where supported.
-- Prevent new access tokens.
-- Allow existing short-lived access tokens to expire, unless immediate revocation is required.
+| Algorithm | A server-side allowlist such as `RS256`; never take `alg` from the untrusted token header |
+| Key | A trusted key for the configured issuer, selected by `kid` from cached JWKS — never a URL supplied inside the token |
+| Signature | Verified before any claim is read |
+| `iss` | Exact match against the expected issuer, so a correctly signed token from an unrelated system is rejected |
+| `aud` | Must name this API; a token minted for `billing-api` must fail against `orders-api` |
+| `exp` / `nbf` | Inside the validity window, with only a small, deliberate clock-skew allowance |
+| Token type | Access token, ID token and one-time action token get separate, mutually exclusive rules |
+| Scope and resource | Checked after validation succeeds, against the actual user, tenant and object |
+
+Symmetric signing — `HS256` — shares one secret, so every verifier can also mint tokens. Asymmetric signing — `RS256`, `PS256`, `ES256`, `EdDSA` — keeps the private key at the issuer and publishes verification keys through a JSON Web Key Set, which is the right default as soon as more than one service validates tokens.
+
+## 6.2 Revocation and logout
+
+A self-contained JWT is validated locally, which is fast and needs no call to the authorization server on every request — but it also means the token normally stays usable until `exp` even after logout or a permission change.
+
+| Strategy | Effect |
+|---|---|
+| Short-lived access tokens | Bounds the damage without extra state; the usual first choice |
+| Refresh-token revocation | Stops new access tokens being issued; an already-issued one survives until it expires |
+| `jti` denylist | Immediate per-token revocation, at the cost of shared state and a lookup per request |
+| Session or authorization version | Revokes every token issued before a security event |
+| Opaque tokens with introspection | The authorization server stays authoritative on every request |
+
+Logout therefore means: end the local application session, clear or invalidate the browser cookies, revoke the refresh token or session family so no new access token can be minted, and let already-issued short-lived access tokens expire unless the risk profile demands immediate revocation.
+
+For the full treatment — algorithm-confusion and `none` attacks, weak HMAC secrets, `kid` and JWKS handling, claim-validation traps, revocation designs, browser storage and a production checklist — see [JWT Pitfalls](../security/jwt-pitfalls.md).
 
 ---
 
@@ -864,11 +608,7 @@ Host: api.example.com
 X-API-Key: sk_live_7Sg...
 ```
 
-A provider may alternatively use:
-
-```http
-Authorization: ApiKey sk_live_7Sg...
-```
+A provider may alternatively use: `Authorization: ApiKey sk_live_7Sg...`
 
 Use the header format defined by the API contract.
 
@@ -905,11 +645,7 @@ A static API key is a bearer credential. Anyone who obtains it may be able to us
 
 Use a cryptographically secure random generator.
 
-Example visible format:
-
-```text
-ak_live_<public-id>_<secret>
-```
+Example visible format: `ak_live_<public-id>_<secret>`
 
 The public identifier helps the server locate the record without storing the full secret as searchable plain text.
 
@@ -955,11 +691,7 @@ Provide:
 
 ### Keep keys out of URLs
 
-Avoid:
-
-```http
-GET /orders?api_key=SECRET
-```
+Avoid: `GET /orders?api_key=SECRET`
 
 URLs commonly appear in:
 
@@ -1093,63 +825,18 @@ Cookies and JWTs are not opposites. A cookie is a browser transport/storage mech
 
 # 10. REST API Status Codes
 
-## 10.1 `401 Unauthorized`
+| Code | Meaning | Use when |
+|---|---|---|
+| `401 Unauthorized` | Authentication failed | The credential is missing, invalid, expired, malformed or not acceptable for this API. Answer with `WWW-Authenticate: Bearer error="invalid_token"` |
+| `403 Forbidden` | Authenticated, not permitted | The identity is established and the operation is still refused: missing scope or permission, wrong tenant, no ownership |
+| `404 Not Found` | Existence not disclosed | Returning `404` in place of `403` hides whether a sensitive resource exists. A deliberate, consistent policy — never a substitute for the authorization check |
+| `429 Too Many Requests` | Rate limit exceeded | The client is over its quota; add `Retry-After`. Authentication and rate limiting are separate controls, and a valid credential does not imply unlimited usage |
 
-Use when authentication credentials are:
+The mental model that settles most of the confusion between the first two:
 
-- Missing
-- Invalid
-- Expired
-- Malformed
-- Not acceptable for this API
+> `401` = *who are you?* — the credential identified nobody. `403` = *I know who you are, and you may not* — the identity is established and the answer is still no.
 
-Example:
-
-```http
-HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer error="invalid_token"
-Content-Type: application/problem+json
-
-{
-  "type": "https://api.example.com/problems/invalid-token",
-  "title": "Authentication required",
-  "status": 401,
-  "detail": "The access token is missing, invalid, or expired."
-}
-```
-
-## 10.2 `403 Forbidden`
-
-Use when the identity is authenticated but lacks permission.
-
-```http
-HTTP/1.1 403 Forbidden
-Content-Type: application/problem+json
-
-{
-  "type": "https://api.example.com/problems/insufficient-permission",
-  "title": "Access denied",
-  "status": 403,
-  "detail": "The current identity cannot delete this invoice."
-}
-```
-
-## 10.3 `404 Not Found`
-
-For some sensitive resources, returning `404` instead of `403` can avoid revealing that the resource exists.
-
-This should be a deliberate, consistent policy—not a replacement for authorization checks.
-
-## 10.4 `429 Too Many Requests`
-
-Use when a client exceeds rate limits.
-
-```http
-HTTP/1.1 429 Too Many Requests
-Retry-After: 60
-```
-
-Authentication and rate limiting are separate controls. A valid credential does not imply unlimited usage.
+For the full status-code catalogue and error-body design, see [REST & HTTP Methods](rest-http-methods-status-codes.md).
 
 ---
 
@@ -1356,11 +1043,7 @@ Avoid exposing long-lived tokens to browser JavaScript.
 
 ## 13.2 Mobile or desktop application
 
-Use:
-
-```text
-OIDC / OAuth Authorization Code + PKCE
-```
+Use: `OIDC / OAuth Authorization Code + PKCE`
 
 Public clients cannot safely keep a permanent client secret inside distributed application binaries.
 
@@ -1521,51 +1204,7 @@ Do not return sensitive internal validation details to attackers. Detailed reaso
 
 ---
 
-# 15. Final Mental Model
-
-Remember these four lines:
-
-```text
-AuthN      = Verify identity.
-AuthZ      = Decide allowed actions.
-OAuth 2.x  = Framework for delegated authorization.
-JWT        = Format for carrying claims.
-API key    = Credential that usually identifies an API client.
-OIDC       = Authentication layer built on OAuth 2.0.
-```
-
-A secure REST request typically follows this path:
-
-```mermaid
-flowchart TD
-    A[Receive HTTPS Request]
-    B[Extract Credential]
-    C[Validate Session, Token or API Key]
-    D[Build Principal]
-    E[Check Scope / Permission]
-    F[Check Tenant and Resource Access]
-    G[Apply Business Rules]
-    H[Execute Operation]
-    I[Audit Result]
-
-    A --> B --> C
-    C -->|Invalid| X[401]
-    C -->|Valid| D --> E
-    E -->|Denied| Y[403]
-    E -->|Allowed| F
-    F -->|Denied| Y
-    F -->|Allowed| G
-    G -->|Denied| Y
-    G -->|Allowed| H --> I
-```
-
-The most important design principle is:
-
-> Authentication establishes identity, but authorization must still be enforced for every protected resource and action.
-
----
-
-# 16. Official References
+# 15. Official References
 
 The following sources define or provide current guidance for the concepts covered in this guide:
 

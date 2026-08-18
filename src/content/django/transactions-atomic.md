@@ -8,7 +8,37 @@ order: 7
 
 > A database transaction groups multiple database operations into one reliable unit: either **all operations succeed**, or **all of them are rolled back**.
 
-This guide targets **Django 6.0** and is also applicable to **Django 5.2 LTS** for the transaction features discussed here.
+## In short
+
+- Django runs in **autocommit** mode by default — every query commits on its own until you open an `atomic()` block.
+- `transaction.atomic()` works both as a context manager and as a decorator: it commits on a clean exit and rolls back when an exception **leaves** the block.
+- Catching the exception **inside** the same atomic block leaves the transaction marked for rollback, and the next query raises `TransactionManagementError`. Catch it outside the block, or wrap the risky statement in its own inner `atomic()`.
+- A nested `atomic()` is a **savepoint**, not a separate transaction: an inner rollback does not roll back the outer block, and an inner success is not a commit.
+- `transaction.on_commit()` is how you fire side effects — emails, Celery tasks, cache deletes — only after the data is durably committed.
+- `select_for_update()` locks the selected rows and must run inside a transaction; `F()` expressions push the arithmetic into the database and avoid the read-modify-write race entirely.
+- A rollback restores the database, not Python: model instances keep the values you assigned, so call `refresh_from_db()` after a rollback.
+
+```mermaid
+flowchart TD
+    A[Outer atomic begins] --> B[Database transaction starts]
+    B --> C[Operation A]
+    C --> D[Inner atomic begins]
+    D --> E[Create savepoint]
+    E --> F[Operation B]
+    F --> G{Inner exception?}
+    G -- Yes --> H[Rollback to savepoint]
+    G -- No --> I[Release savepoint]
+    H --> J[Continue or re-raise]
+    I --> K[Operation C]
+    J --> K
+    K --> L{Outer block succeeds?}
+    L -- Yes --> M[Commit transaction]
+    L -- No --> N[Rollback complete transaction]
+```
+
+**Interview answer:** `atomic()` opens a database transaction when the block is entered and commits it when the block exits normally; if an exception propagates out of the block, Django rolls the whole block back. Django is otherwise in autocommit mode, so `atomic()` is the only thing that turns several queries into one all-or-nothing unit. Nested blocks do not start new transactions — the outermost block owns the real `BEGIN`/`COMMIT` and every inner block is a savepoint, which is why only the outermost block truly commits and why `durable=True` exists to assert that a block is that outermost one.
+
+**Gotcha:** Catching the database exception inside the same `atomic()` block. The rollback is triggered by the exception crossing the block boundary, so a `try/except` placed inside keeps the block open with the transaction already marked for rollback, and the next query raises `TransactionManagementError` instead of the error you handled.
 
 ---
 
@@ -26,9 +56,9 @@ These operations belong to one business action. If the payment record fails afte
 Without a transaction:
 
 ```text
-Order created           ✅
-Stock reduced           ✅
-Payment record created  ❌
+Order created           ✓
+Stock reduced           ✓
+Payment record created  ✗
 Audit entry created     Not executed
 
 Result: incomplete and inconsistent data
@@ -37,9 +67,9 @@ Result: incomplete and inconsistent data
 With a transaction:
 
 ```text
-Order created           ✅
-Stock reduced           ✅
-Payment record created  ❌
+Order created           ✓
+Stock reduced           ✓
+Payment record created  ✗
 --------------------------------
 Entire operation rolled back
 ```
@@ -97,6 +127,8 @@ UPDATE product  -> committed
 
 If the second operation fails, the first operation normally remains committed.
 
+Django does automatically use transactions or savepoints for some multi-query ORM operations, such as certain bulk deletes or updates, to preserve data integrity. You should still define explicit transaction boundaries for your own business operations.
+
 ## Autocommit with `atomic()`
 
 When the same operations are wrapped in `atomic()`:
@@ -128,21 +160,11 @@ BEGIN
 ROLLBACK
 ```
 
-## Django may use transactions internally
-
-Django automatically uses transactions or savepoints for some multi-query ORM operations, such as certain bulk deletes or updates, to preserve data integrity.
-
-You should still define explicit transaction boundaries for your own business operations.
-
 ---
 
 # 3. Understanding `transaction.atomic`
 
-Import it from `django.db`:
-
-```python
-from django.db import transaction
-```
+Import it from `django.db`: `from django.db import transaction`
 
 The API can be used in two common forms:
 
@@ -279,11 +301,7 @@ with transaction.atomic():
     Order.objects.create(customer=customer)
 ```
 
-No exception leaves the block:
-
-```text
-COMMIT
-```
+No exception leaves the block: `COMMIT`
 
 ## Exception exit
 
@@ -293,11 +311,7 @@ with transaction.atomic():
     Payment.objects.create(order=order, amount=None)
 ```
 
-If the second query raises an exception:
-
-```text
-ROLLBACK
-```
+If the second query raises an exception: `ROLLBACK`
 
 ## The exception must leave the atomic block
 
@@ -340,26 +354,6 @@ Django usually behaves like this:
 | Inner atomic block | Creates savepoint |
 | Inner success | Releases savepoint |
 | Outer success | Commits transaction |
-
-## Savepoint diagram
-
-```mermaid
-flowchart TD
-    A[Outer atomic begins] --> B[Database transaction starts]
-    B --> C[Operation A]
-    C --> D[Inner atomic begins]
-    D --> E[Create savepoint]
-    E --> F[Operation B]
-    F --> G{Inner exception?}
-    G -- Yes --> H[Rollback to savepoint]
-    G -- No --> I[Release savepoint]
-    H --> J[Continue or re-raise]
-    I --> K[Operation C]
-    J --> K
-    K --> L{Outer block succeeds?}
-    L -- Yes --> M[Commit transaction]
-    L -- No --> N[Rollback complete transaction]
-```
 
 ## Inner rollback with outer continuation
 
@@ -521,23 +515,11 @@ except RuntimeError:
     pass
 ```
 
-The database update is rolled back, but the in-memory object may still contain:
+The database update is rolled back, but the in-memory object may still contain: `product.stock == 0`
 
-```python
-product.stock == 0
-```
+To synchronize it again: `product.refresh_from_db()`
 
-To synchronize it again:
-
-```python
-product.refresh_from_db()
-```
-
-or restore the value manually:
-
-```python
-product.stock = original_stock
-```
+or restore the value manually: `product.stock = original_stock`
 
 ## Practical rule
 
@@ -588,8 +570,8 @@ with transaction.atomic():
 Result:
 
 ```text
-Email sent       ✅
-Order committed  ❌
+Email sent       ✓
+Order committed  ✗
 ```
 
 Using `on_commit()`:
@@ -825,17 +807,9 @@ This can allow other transactions to create rows that reference the locked row t
 
 ## Lock only what you need
 
-Prefer:
+Prefer: `Product.objects.select_for_update().get(pk=product_id)`
 
-```python
-Product.objects.select_for_update().get(pk=product_id)
-```
-
-over locking a large queryset:
-
-```python
-Product.objects.select_for_update().all()
-```
+over locking a large queryset: `Product.objects.select_for_update().all()`
 
 Large lock sets increase waiting, contention, and deadlock risk.
 
@@ -1365,7 +1339,6 @@ The following example combines:
 from django.conf import settings
 from django.db import models
 
-
 class Product(models.Model):
     name = models.CharField(max_length=200)
     stock = models.PositiveIntegerField(default=0)
@@ -1373,7 +1346,6 @@ class Product(models.Model):
         max_digits=10,
         decimal_places=2,
     )
-
 
 class Order(models.Model):
     class Status(models.TextChoices):
@@ -1394,7 +1366,6 @@ class Order(models.Model):
         decimal_places=2,
     )
     created_at = models.DateTimeField(auto_now_add=True)
-
 
 class OrderItem(models.Model):
     order = models.ForeignKey(
@@ -1423,16 +1394,13 @@ from django.db import transaction
 
 from .models import Order, OrderItem, Product
 
-
 class InsufficientStockError(Exception):
     pass
-
 
 @dataclass(frozen=True)
 class OrderLineInput:
     product_id: int
     quantity: int
-
 
 @transaction.atomic
 def place_order(*, customer, lines: list[OrderLineInput]) -> Order:
@@ -1571,30 +1539,6 @@ flowchart TD
 | Test real commit/locking behavior | `TransactionTestCase` |
 | Use transactions from async code | One sync function called with `sync_to_async()` |
 | Coordinate another system reliably | Transactional outbox pattern |
-
----
-
-# 21. Key Takeaways
-
-```mermaid
-flowchart TD
-    A["transaction.atomic()"] -->|Success| B[Commit]
-    A -->|Exception| C[Rollback]
-```
-
-- Django uses autocommit mode by default.
-- `transaction.atomic()` groups related database operations.
-- Catch database exceptions outside the atomic block that should roll back.
-- Nested atomic blocks normally create savepoints.
-- An inner block does not permanently commit while an outer transaction remains active.
-- A rollback restores database state, not Python objects or external side effects.
-- Use `transaction.on_commit()` for emails, jobs, cache changes, and external integrations.
-- `atomic()` alone does not prevent every race condition.
-- Use `select_for_update()` for complex read-modify-write workflows.
-- Use `F()` expressions or conditional updates for simple atomic changes.
-- Keep transaction blocks short.
-- Use database constraints as the final data-integrity layer.
-- Test concurrency-sensitive code with the same database engine used in production.
 
 ---
 

@@ -2,14 +2,56 @@
 title: "PII & KYC Data"
 group: "Access & Data Protection"
 order: 7
+updated: "3 August 2026"
 ---
 
 # Handling PII and KYC Data
 
-> **Category:** Security  
-> **Audience:** Developers with 3+ years of experience  
-> **Last reviewed:** 3 August 2026  
-> **Scope:** Secure collection, verification, storage, access, sharing, retention, and deletion of Personally Identifiable Information (PII) and Know Your Customer (KYC) data.
+> Secure collection, verification, storage, access, sharing, retention, and deletion of Personally Identifiable Information (PII) and Know Your Customer (KYC) data.
+
+## In short
+
+- **PII** is any data that identifies a person directly or indirectly when combined with other fields; **KYC data** is a regulated superset that adds identity documents, biometrics, screening results, and risk decisions — every KYC record contains PII, but not every PII record is a KYC record.
+- The core design move is separation: the business database stores only a tokenized customer reference and workflow state, a dedicated **PII vault** holds encrypted sensitive fields behind strict service-to-service authorization, and documents sit in private object storage behind short-lived presigned URLs.
+- Encrypt in transit and at rest, but go further with **envelope encryption** — a per-record data-encryption key wraps the PII and a master key in KMS/HSM wraps that key — because disk encryption alone doesn't stop an application or a compromised database account from reading plaintext.
+- Access control is RBAC layered with **ABAC**: role, case assignment, purpose, device trust, and session MFA all have to match before an unmasked field is returned, and every full-PII view should itself generate an audit event.
+- PII must never end up in URLs, JWTs, logs, or error messages — use allowlisted response models and an allowlist logger (name what's safe to write) rather than trying to blacklist every sensitive field.
+- Retention and deletion are policy-as-code, not a one-off cleanup: automated expiry per data category, legal holds that suspend deletion, and a deletion job that reaches replicas, backups, caches, and vendors, not just the primary table.
+- Regulation drives concrete engineering requirements, not just paperwork — RBI's KYC direction sets risk-based re-KYC cycles (2/8/10 years) and bars fully automated rejection, while India's DPDP Act and GDPR drive breach-notification and data-subject-rights workflows.
+
+```mermaid
+flowchart TB
+    U[Web or Mobile Client]
+    G[API Gateway / WAF]
+    O[KYC Orchestration Service]
+    P[PII Vault]
+    D[Document Object Storage]
+    V[External Verification Provider]
+    B[Business Database]
+    S[Screening Service]
+    A[Immutable Audit Store]
+    R[Retention and Deletion Worker]
+    K[KMS / HSM]
+
+    U -->|TLS| G
+    G --> O
+    O -->|Tokenized customer reference| B
+    O -->|Encrypted PII| P
+    O -->|Presigned upload| D
+    O -->|Minimum required fields| V
+    O --> S
+    O --> A
+    P --> K
+    D --> K
+    R --> P
+    R --> D
+    R --> B
+    R --> A
+```
+
+**Interview answer:** Separate raw PII from the rest of the system: the business database keeps only a tokenized customer reference and workflow state, a PII vault holds field-level-encrypted identity data behind strict service-to-service authorization, and uploaded documents sit in private object storage reachable only through short-lived presigned URLs — all three protected by envelope encryption with keys in a KMS/HSM. Layer RBAC with contextual (ABAC) checks so a reviewer only sees an unmasked field when role, assigned case, and purpose all justify it, and audit every access. None of this matters without lifecycle controls — minimal collection, automated retention and deletion with legal-hold support, and the same governance extended to any third-party verification vendor.
+
+**Gotcha:** Stopping at "the database is encrypted." Column or disk encryption doesn't stop an over-privileged application account from reading plaintext, and it does nothing about PII that leaks sideways through logs, JWTs, URLs, or vendor payloads — most real KYC incidents are access-control and data-sprawl failures, not broken cryptography.
 
 ---
 
@@ -145,15 +187,7 @@ KYC security is therefore not simply “encrypt the database.” It requires con
 
 ## 4.1 Purpose Limitation
 
-Collect and use data only for a defined, communicated purpose.
-
-```text
-Valid:
-Collect passport number to verify identity.
-
-Invalid:
-Reuse the passport image for product analytics without an appropriate basis.
-```
+Collect and use data only for a defined, communicated purpose: collecting a passport number to verify identity is valid, but reusing that passport image for product analytics without an appropriate basis is not.
 
 ## 4.2 Data Minimization
 
@@ -262,37 +296,7 @@ Security requirements change during each stage.
 
 # 6. Secure KYC Architecture
 
-A good design separates raw PII from normal business data.
-
-```mermaid
-flowchart TB
-    U[Web or Mobile Client]
-    G[API Gateway / WAF]
-    O[KYC Orchestration Service]
-    P[PII Vault]
-    D[Document Object Storage]
-    V[External Verification Provider]
-    B[Business Database]
-    S[Screening Service]
-    A[Immutable Audit Store]
-    R[Retention and Deletion Worker]
-    K[KMS / HSM]
-
-    U -->|TLS| G
-    G --> O
-    O -->|Tokenized customer reference| B
-    O -->|Encrypted PII| P
-    O -->|Presigned upload| D
-    O -->|Minimum required fields| V
-    O --> S
-    O --> A
-    P --> K
-    D --> K
-    R --> P
-    R --> D
-    R --> B
-    R --> A
-```
+A good design separates raw PII from normal business data — see the architecture diagram in "In short" for the overall shape.
 
 ## Recommended separation
 
@@ -440,7 +444,7 @@ The original filename may contain PII and should not become the storage key or l
 
 ## 7.4 Identity Proofing
 
-Identity proofing answers two different questions:
+Identity proofing answers three different questions:
 
 ```text
 Resolution: Does this claimed identity exist?
@@ -692,11 +696,7 @@ Masking is a presentation control, not a replacement for encryption.
 
 ## 10.1 Keep PII out of URLs
 
-Bad:
-
-```http
-GET /customers?aadhaar=123412341234
-```
+Bad: `GET /customers?aadhaar=123412341234`
 
 Better:
 
@@ -1157,13 +1157,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-
 class KYCStatus(StrEnum):
     PENDING = "pending"
     IN_REVIEW = "in_review"
     VERIFIED = "verified"
     REJECTED = "rejected"
-
 
 @dataclass(frozen=True)
 class CustomerKYC:
@@ -1212,7 +1210,6 @@ A separate protected store maps `pii_token` to encrypted PII.
 ```python
 from pydantic import BaseModel
 
-
 class MaskedIdentityResponse(BaseModel):
     full_name: str
     document_type: str
@@ -1236,7 +1233,6 @@ def mask_identifier(value: str, visible_suffix: int = 4) -> str:
 
     hidden_length = len(normalized) - visible_suffix
     return ("*" * hidden_length) + normalized[-visible_suffix:]
-
 
 assert mask_identifier("123412341234") == "********1234"
 ```
@@ -1432,6 +1428,7 @@ These are not substitutes for applicable laws, but they provide practical contro
 - [ ] Notice version and processing basis are recorded.
 - [ ] PII is never sent in URLs or analytics events.
 - [ ] Document upload validates type, signature, size, and malware status.
+- [ ] Identity-proofing depth (simplified, standard, or enhanced due diligence) matches the customer's risk level.
 
 ## Storage
 
@@ -1458,6 +1455,7 @@ These are not substitutes for applicable laws, but they provide practical contro
 - [ ] Error responses do not reveal identities.
 - [ ] Webhooks use signature and replay validation.
 - [ ] Vendor payloads are minimized.
+- [ ] Third-party KYC vendors are evaluated and governed as part of the security boundary.
 - [ ] Logs use allowlisted fields and redaction.
 
 ## Retention and privacy
@@ -1479,22 +1477,7 @@ These are not substitutes for applicable laws, but they provide practical contro
 
 ---
 
-# 21. Key Takeaways
-
-1. Treat KYC data as one of the highest-sensitivity data categories in the system.
-2. Store raw PII separately from normal business records.
-3. Collect only fields required for a documented purpose.
-4. Use encryption, tokenization, strict key management, and private document storage.
-5. Apply RBAC together with contextual authorization and full audit trails.
-6. Keep PII out of URLs, JWTs, logs, error messages, analytics, and lower environments.
-7. Treat third-party KYC vendors as part of the security boundary.
-8. Implement retention and deletion as automated, testable workflows.
-9. Use risk-based identity proofing and enhanced due diligence where required.
-10. Build privacy rights and breach response into the platform rather than handling them manually after launch.
-
----
-
-# 22. Official References
+# 21. Official References
 
 1. **Digital Personal Data Protection Act, 2023 — MeitY**  
    https://www.meity.gov.in/content/digital-personal-data-protection-act-2023

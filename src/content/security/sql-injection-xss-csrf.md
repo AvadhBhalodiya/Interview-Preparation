@@ -2,29 +2,24 @@
 title: "Injection, XSS, CSRF"
 group: "Web Vulnerabilities"
 order: 2
+updated: "August 3, 2026"
 ---
 
 # SQL Injection, XSS, and CSRF
 
-> **Security guide for developers**  
 > Covers what each vulnerability is, how an attack works, its impact, and how to prevent it in real applications.
 >
-> **Last reviewed:** August 3, 2026  
 > **Reference baseline:** OWASP Top 10:2025 and OWASP Cheat Sheet Series
 
----
+## In short
 
-# 1. Security Overview
-
-SQL Injection, Cross-Site Scripting, and Cross-Site Request Forgery attack different trust boundaries in a web application.
-
-| Vulnerability | Main Target | Root Problem | Main Defense |
-|---|---|---|---|
-| **SQL Injection** | Database interpreter | User input becomes part of a SQL command | Parameterized queries |
-| **XSS** | Browser and application users | Untrusted data becomes executable browser content | Context-aware output encoding and sanitization |
-| **CSRF** | Authenticated user session | Browser sends authentication cookies with an attacker-triggered request | CSRF tokens, origin checks, and secure cookie settings |
-
-A useful mental model is:
+- All three are the same failure at different trust boundaries: data reaching somewhere that treats it as instructions. Validation on the way in is defence in depth, never the fix.
+- **SQL injection** — bind every value as a parameter so input can never become SQL syntax. Identifiers (table, column, sort direction) cannot be bound, so map them through a fixed allow-list.
+- **XSS** — encoding is context-dependent: HTML text, HTML attribute, JavaScript, URL, and CSS each need different treatment. Framework auto-escaping covers the common case; the bypass APIs (`|safe`, `dangerouslySetInnerHTML`, `innerHTML`) undo it.
+- Reflected and stored XSS travel through the server, but **DOM-based XSS never does** — the sink is in your JavaScript, so server-side escaping cannot help. Use `textContent` over `innerHTML`.
+- **CSRF** — a session cookie proves who the browser is logged in as, not that the user intended the action. Defend with a framework CSRF token, `SameSite` cookies, and `Origin`/Fetch Metadata checks.
+- CSRF only bites where the browser attaches credentials automatically. A token that JavaScript puts in an `Authorization` header is not auto-attached — but it then lives somewhere XSS can read it.
+- XSS undermines CSRF protection entirely: script running on your origin can simply read the token. Fixing XSS is a prerequisite, not a parallel task.
 
 ```mermaid
 flowchart LR
@@ -41,6 +36,22 @@ flowchart LR
         H --> I[Trusted application<br/>accepts forged action]
     end
 ```
+
+**Interview answer:** SQL injection and XSS share a root cause — untrusted data reaching an interpreter that parses it as instructions — and differ only in which interpreter: the database for SQL injection, fixed by parameter binding, and the browser for XSS, fixed by context-aware output encoding with sanitization only where real HTML is required. CSRF is different in kind: nothing is injected, the attacker simply causes the victim's browser to send a request that the server will authenticate automatically from its cookies, so the defence is proving intent with a CSRF token, `SameSite` cookies, and origin checks.
+
+**Gotcha:** Believing a value can be made "safe" once, on the way in. Safety is a property of the destination, not the string: parameterized SQL does not make a value safe to put in `innerHTML`, and HTML-escaping does not make it safe inside a `<script>` block or a `javascript:` URL.
+
+---
+
+# 1. Security Overview
+
+SQL Injection, Cross-Site Scripting, and Cross-Site Request Forgery attack different trust boundaries in a web application.
+
+| Vulnerability | Main Target | Root Problem | Main Defense |
+|---|---|---|---|
+| **SQL Injection** | Database interpreter | User input becomes part of a SQL command | Parameterized queries |
+| **XSS** | Browser and application users | Untrusted data becomes executable browser content | Context-aware output encoding and sanitization |
+| **CSRF** | Authenticated user session | Browser sends authentication cookies with an attacker-triggered request | CSRF tokens, origin checks, and secure cookie settings |
 
 The common security principle is:
 
@@ -105,11 +116,7 @@ When data and commands are mixed, malicious input may modify query logic.
 
 ## 2.2 How SQL Injection Works
 
-A normal request might contain:
-
-```text
-username=alice
-```
+A normal request might contain: `username=alice`
 
 The generated query becomes:
 
@@ -119,11 +126,7 @@ FROM users
 WHERE username = 'alice';
 ```
 
-A malicious input might contain SQL syntax that changes the condition. A classic demonstration string is:
-
-```text
-' OR '1'='1
-```
+A malicious input might contain SQL syntax that changes the condition. A classic demonstration string is: `' OR '1'='1`
 
 The resulting query could become:
 
@@ -424,7 +427,6 @@ from django.views.decorators.http import require_GET
 
 from .models import Product
 
-
 @require_GET
 def search_products(request):
     search = request.GET.get("search", "").strip()[:100]
@@ -444,7 +446,6 @@ Django ORM binds the search value instead of concatenating it into SQL.
 
 ```python
 from django.db import connection
-
 
 def find_customer_by_email(email: str):
     with connection.cursor() as cursor:
@@ -469,7 +470,6 @@ from sqlalchemy.orm import Session
 
 from app.models import Customer
 
-
 def get_customer_by_email(session: Session, email: str) -> Customer | None:
     statement = select(Customer).where(Customer.email == email)
     return session.execute(statement).scalar_one_or_none()
@@ -480,7 +480,6 @@ def get_customer_by_email(session: Session, email: str) -> Customer | None:
 ```python
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
 
 def get_customer_summary(session: Session, customer_id: str):
     statement = text(
@@ -513,7 +512,6 @@ SORT_DIRECTIONS = {
     "desc": desc,
 }
 
-
 def list_products(session, sort: str, direction: str):
     column = SORT_COLUMNS.get(sort, Product.created_at)
     order_function = SORT_DIRECTIONS.get(direction, desc)
@@ -538,11 +536,7 @@ Cross-Site Scripting occurs when untrusted content is inserted into a web page i
 
 The browser is the interpreter being attacked.
 
-A vulnerable page might render a search value directly:
-
-```html
-<p>Search results for: {{ untrusted_search }}</p>
-```
+A vulnerable page might render a search value directly: `<p>Search results for: {{ untrusted_search }}</p>`
 
 If the template engine does not escape output, an attacker may inject markup or script-capable content.
 
@@ -697,17 +691,9 @@ Characters such as `<`, `>`, `&`, `"`, and `'` are represented as text rather th
 
 Use attribute encoding and quote attribute values.
 
-Safer:
+Safer: `<input value="{{ user_value }}">`
 
-```html
-<input value="{{ user_value }}">
-```
-
-Riskier:
-
-```html
-<input value={{ user_value }}>
-```
+Riskier: `<input value={{ user_value }}>`
 
 Quoting prevents the value from easily breaking into a new attribute.
 
@@ -721,11 +707,7 @@ Quoting prevents the value from easily breaking into a new attribute.
 
 Embedding untrusted values directly inside executable JavaScript is difficult to secure and should be avoided when possible.
 
-A safer data transfer pattern is:
-
-```html
-<div id="profile" data-user-id="{{ user_id }}"></div>
-```
+A safer data transfer pattern is: `<div id="profile" data-user-id="{{ user_id }}"></div>`
 
 ```javascript
 const profile = document.getElementById("profile");
@@ -762,11 +744,7 @@ Avoid inserting untrusted data into CSS. When unavoidable, restrict values to a 
 
 Modern frameworks usually escape text interpolation by default.
 
-Django:
-
-```html
-<p>{{ display_name }}</p>
-```
+Django: `<p>{{ display_name }}</p>`
 
 React:
 
@@ -780,17 +758,9 @@ Both are normally safe for rendering text because the frameworks encode values.
 
 Security risk returns when developers bypass these protections.
 
-Django escape bypass:
+Django escape bypass: `{{ user_content|safe }}`
 
-```html
-{{ user_content|safe }}
-```
-
-React escape bypass:
-
-```jsx
-<div dangerouslySetInnerHTML={{ __html: userContent }} />
-```
+React escape bypass: `<div dangerouslySetInnerHTML={{ __html: userContent }} />`
 
 Use bypass features only when the content has been sanitized with a proven HTML sanitizer and the feature genuinely requires HTML.
 
@@ -820,17 +790,9 @@ Validation at input and encoding at output solve different problems.
 
 ### 3.5.3 Use safe DOM APIs
 
-For plain text:
+For plain text: `element.textContent = untrustedValue;`
 
-```javascript
-element.textContent = untrustedValue;
-```
-
-For attributes with fixed attribute names:
-
-```javascript
-element.setAttribute("title", untrustedValue);
-```
+For attributes with fixed attribute names: `element.setAttribute("title", untrustedValue);`
 
 For URLs, validate first:
 
@@ -932,11 +894,7 @@ CSP is valuable, but it should support—not replace—safe rendering, encoding,
 
 ### 3.5.6 Use secure cookie attributes
 
-For session cookies:
-
-```http
-Set-Cookie: session=<value>; Secure; HttpOnly; SameSite=Lax; Path=/
-```
+For session cookies: `Set-Cookie: session=<value>; Secure; HttpOnly; SameSite=Lax; Path=/`
 
 - `Secure`: send the cookie only over HTTPS.
 - `HttpOnly`: JavaScript cannot directly read the cookie.
@@ -1066,7 +1024,6 @@ Rich text should be sanitized before storage or before rendering. Do not mark ar
 
 ```python
 from django.http import JsonResponse
-
 
 def profile_api(request):
     return JsonResponse(
@@ -1283,11 +1240,7 @@ Avoid a naive double-submit design if cookie injection from subdomains or other 
 
 ### 4.4.4 Use `SameSite` cookies
 
-Example:
-
-```http
-Set-Cookie: session=<value>; Secure; HttpOnly; SameSite=Lax; Path=/
-```
+Example: `Set-Cookie: session=<value>; Secure; HttpOnly; SameSite=Lax; Path=/`
 
 Common modes:
 
@@ -1299,11 +1252,7 @@ Common modes:
 
 `SameSite` is defense in depth. Compatibility requirements, browser behavior, sibling subdomains, and cross-site business flows must be evaluated.
 
-Avoid setting an unnecessarily broad cookie domain:
-
-```http
-Domain=.example.com
-```
+Avoid setting an unnecessarily broad cookie domain: `Domain=.example.com`
 
 A broad domain shares the cookie with subdomains and increases risk if any subdomain is less trusted or points to third-party infrastructure.
 
@@ -1315,11 +1264,7 @@ Prefer host-only cookies when possible.
 
 For state-changing requests, the server can verify that the request originated from the expected origin.
 
-Example expected origin:
-
-```text
-https://app.example.com
-```
+Example expected origin: `https://app.example.com`
 
 Reject unexpected origins:
 
@@ -1362,11 +1307,7 @@ Use a fallback strategy for clients that do not send these headers.
 
 ### 4.4.7 Require custom headers for API requests
 
-A cross-origin HTML form cannot set arbitrary custom headers. An API can require a header such as:
-
-```http
-X-CSRF-Token: <token>
-```
+A cross-origin HTML form cannot set arbitrary custom headers. An API can require a header such as: `X-CSRF-Token: <token>`
 
 A permitted frontend origin can send it through `fetch` or Axios, subject to CORS rules and preflight checks.
 
@@ -1383,23 +1324,11 @@ The server must still:
 
 GET should retrieve data, not modify it.
 
-Unsafe:
+Unsafe: `GET /admin/users/42/delete`
 
-```http
-GET /admin/users/42/delete
-```
+Safer: `DELETE /api/admin/users/42`
 
-Safer:
-
-```http
-DELETE /api/admin/users/42
-```
-
-or:
-
-```http
-POST /admin/users/42/delete
-```
+or: `POST /admin/users/42/delete`
 
 Using POST or DELETE does not automatically prevent CSRF, but it prevents simple navigation and resource loading from changing state and allows standard CSRF defenses to be applied consistently.
 
@@ -1450,7 +1379,6 @@ View:
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect
 from django.views.decorators.http import require_POST
-
 
 @login_required
 @require_POST
@@ -1519,11 +1447,7 @@ Use several compatible controls rather than relying on one layer.
 
 ### 4.5.4 Token-authenticated API
 
-For an API where the client explicitly sends:
-
-```http
-Authorization: Bearer <access-token>
-```
+For an API where the client explicitly sends: `Authorization: Bearer <access-token>`
 
 Traditional CSRF risk is lower if:
 
@@ -1820,53 +1744,13 @@ Avoid logging:
 - [ ] Security logs generate actionable alerts.
 - [ ] Incident response procedures are documented and tested.
 
----
+The whole checklist reduces to three sentences:
 
-# 9. Key Takeaways
-
-## SQL Injection
-
-```text
-Do not build SQL by joining strings.
-Use parameters for values and allow-lists for identifiers.
-```
-
-The strongest design keeps SQL commands and untrusted data structurally separate.
-
-## XSS
-
-```text
-Do not let untrusted data become browser code.
-Encode for the output context and sanitize only when HTML is required.
-```
-
-Framework escaping is highly valuable, but bypass APIs and unsafe DOM operations can remove that protection.
-
-## CSRF
-
-```text
-A valid session cookie proves who the browser is logged in as.
-It does not prove that the user intentionally initiated the action.
-```
-
-Cookie-authenticated state-changing requests need a CSRF defense such as framework tokens, supported by secure cookie configuration and origin-aware controls.
-
-## Final mental model
-
-```text
-SQL Injection prevention:
-Data must not become SQL.
-
-XSS prevention:
-Data must not become browser code.
-
-CSRF prevention:
-A cross-site request must not become an authorized action.
-```
+> Data must not become SQL. Data must not become browser code. A cross-site request must not become an authorized action.
 
 ---
 
-# 10. References
+# 9. References
 
 1. [OWASP Top 10:2025 — A05 Injection](https://owasp.org/Top10/2025/A05_2025-Injection/)
 2. [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)

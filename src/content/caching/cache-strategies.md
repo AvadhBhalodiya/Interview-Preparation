@@ -6,9 +6,32 @@ order: 1
 
 # Redis Cache Strategies: Cache-Aside, Write-Through, and Write-Behind
 
-> **Topic:** Caching with Redis  
-> **Audience:** Backend developers with intermediate experience  
-> **Goal:** Understand how each caching strategy works, where it fits, and what consistency and failure trade-offs it introduces.
+> Understand how each caching strategy works, where it fits, and what consistency and failure trade-offs it introduces.
+
+## In short
+
+- **Cache-aside (lazy loading):** read Redis, fall back to the database on a miss, store the result with a TTL. Writes update the database and then `DEL` the key.
+- **Write-through:** the write updates the database and Redis before the request completes, so the record stays warm — at the cost of write latency and a dual-write gap.
+- **Write-behind:** the write lands in Redis and an asynchronous worker persists it later. Lowest write latency, highest failure complexity (retries, ordering, idempotency, recovery).
+- Redis and a database never share one atomic transaction, so every strategy has a dual-write gap. TTLs, versioning, invalidation events, and outboxes manage that gap rather than remove it.
+- The database is the source of truth in all three — except inside write-behind's pending window, where Redis becomes part of the durability model.
+- Only cache-aside populates on reads; the other two populate on writes, so they cache data nobody may ever ask for.
+- Choose per data domain, not once per application: catalog reads, profile updates, and page-view counters each want a different strategy.
+
+```mermaid
+flowchart TD
+    A{Is the database required to confirm every write?}
+    A -->|Yes| B{Can the cache be populated only when data is read?}
+    A -->|No| C{Can temporary DB lag and async recovery be accepted?}
+    B -->|Yes| CA[Cache-Aside]
+    B -->|No| WT[Write-Through]
+    C -->|Yes| WB[Write-Behind]
+    C -->|No| SYNC[Keep the database synchronous]
+```
+
+**Interview answer:** Start with cache-aside — it caches only data that is actually requested, keeps the database authoritative, and degrades safely when Redis is cold or unavailable. Move to write-through when records are commonly read straight after being written and keeping the cache warm is worth the extra write latency. Move to write-behind only when write throughput matters more than immediate durability, and only if you can build retries, idempotency, ordering, and recovery around the async worker.
+
+**Gotcha:** On a cache-aside write, delete the key rather than overwriting it with the new value. Overwriting duplicates the read path's serialization logic in the write path, and lets a slower concurrent write leave a value in Redis that the database never held.
 
 ---
 
@@ -163,10 +186,8 @@ redis_client = Redis(
 
 CACHE_TTL_SECONDS = 300
 
-
 def product_cache_key(product_id: int) -> str:
     return f"cache:product:{product_id}"
-
 
 def get_product(product_id: int, repository: Any) -> dict | None:
     key = product_cache_key(product_id)
@@ -194,7 +215,6 @@ def get_product(product_id: int, repository: Any) -> dict | None:
 
     return payload
 
-
 def update_product(
     product_id: int,
     changes: dict,
@@ -220,7 +240,6 @@ Repeated requests for a missing object can also overload the database. A short-l
 
 ```python
 NOT_FOUND_MARKER = "__NOT_FOUND__"
-
 
 def get_product_with_negative_cache(
     product_id: int,
@@ -291,11 +310,7 @@ Cache-aside is usually the default choice for:
 
 In write-through caching, a write is not considered complete until the durable database update and cache synchronization have been performed as part of the request path.
 
-Conceptually, the application writes through a caching layer:
-
-```text
-Application -> Cache Layer -> Database
-```
+Conceptually, the application writes through a caching layer: `Application -> Cache Layer -> Database`
 
 In many Redis-based applications, the service itself coordinates both writes because open-source Redis does not automatically persist arbitrary cached objects into an external SQL database.
 
@@ -349,7 +364,6 @@ redis_client = Redis(
     port=6379,
     decode_responses=True,
 )
-
 
 def update_product_write_through(
     product_id: int,
@@ -527,7 +541,6 @@ redis_client = Redis(
 
 STREAM_NAME = "write_behind:products"
 
-
 def update_product_write_behind(
     product_id: int,
     changes: dict,
@@ -599,7 +612,6 @@ import socket
 from typing import Any
 
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
-
 
 def process_write_behind_events(repository: Any) -> None:
     while True:
@@ -769,36 +781,9 @@ Mitigations:
 
 ## 6.2 Cache-Aside: Cache Stampede
 
-A hot key expires and many requests miss simultaneously.
+Because cache-aside populates only on a miss, a hot key expiring means every concurrent request for it misses at the same moment and queries the database together. This is the one failure mode that is inherent to the strategy rather than to a particular implementation of it.
 
-```mermaid
-flowchart LR
-    REQ[100 concurrent requests] --> Q1[Database query]
-    REQ --> Q2[Database query]
-    REQ --> Q3[Database query]
-    REQ --> Q4[... one per request]
-```
-
-Mitigations:
-
-- request coalescing or single-flight loading,
-- short Redis lock around cache regeneration,
-- stale-while-revalidate,
-- TTL jitter,
-- proactive refresh for hot keys.
-
-### TTL jitter example
-
-```python
-import random
-
-base_ttl = 300
-ttl = base_ttl + random.randint(-30, 30)
-
-redis_client.set(key, value, ex=ttl)
-```
-
-Jitter prevents many related keys from expiring at exactly the same time.
+The problem and its mitigations — request coalescing, distributed locking, stale-while-revalidate, early refresh, probabilistic early expiration, TTL jitter, prewarming, negative caching, and backpressure — are covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md). The two that this note applies directly are TTL jitter (section 8.3) and hot-key regeneration locks (section 8.6).
 
 ## 6.3 Write-Through: Database Succeeds, Redis Fails
 
@@ -886,18 +871,7 @@ Use:
 
 # 7. Choosing the Right Strategy
 
-Use the following decision flow:
-
-```mermaid
-flowchart TD
-    A{Is the database required to confirm every write?}
-    A -->|Yes| B{Can the cache be populated only when data is read?}
-    A -->|No| C{Can temporary DB lag and async recovery be accepted?}
-    B -->|Yes| CA[Cache-Aside]
-    B -->|No| WT[Write-Through]
-    C -->|Yes| WB[Write-Behind]
-    C -->|No| SYNC[Keep the database synchronous]
-```
+The decision flow is the diagram in **In short** at the top of this note. These are the criteria behind each of its branches.
 
 ## Prefer Cache-Aside When
 
@@ -958,10 +932,15 @@ The TTL should be based on the acceptable staleness window, not an arbitrary rou
 
 ## 8.3 Add TTL Jitter
 
-When many keys are loaded together, identical TTLs can cause synchronized expiration.
+When many keys are loaded together, identical TTLs cause synchronized expiration. Randomize each TTL around its base value so related keys do not all expire in the same second.
 
-```text
-Actual TTL = Base TTL ± Random Jitter
+```python
+import random
+
+base_ttl = 300
+ttl = base_ttl + random.randint(-30, 30)
+
+redis_client.set(key, value, ex=ttl)
 ```
 
 ## 8.4 Cache Stable DTOs, Not ORM Objects
@@ -992,11 +971,7 @@ Versioning helps when:
 
 A simple lock can allow one process to rebuild a missing hot key while others wait briefly or serve stale data.
 
-Conceptual command:
-
-```text
-SET lock:product:42 <unique-token> NX PX 5000
-```
+Conceptual command: `SET lock:product:42 <unique-token> NX PX 5000`
 
 The lock should:
 
@@ -1147,29 +1122,7 @@ The strategy should be selected per data domain, not once for the entire applica
 
 ---
 
-# 10. Key Takeaways
-
-1. **Cache-aside is the safest general-purpose starting point.**  
-   Read Redis first, load from the database on a miss, and invalidate Redis after database updates.
-
-2. **Write-through keeps recently written data warm.**  
-   It improves read-after-write behavior but adds write latency and still has a dual-write consistency gap.
-
-3. **Write-behind optimizes write latency and throughput.**  
-   It moves database persistence to an asynchronous worker and therefore requires durability, retries, ordering, idempotency, and recovery.
-
-4. **Redis and a database do not normally share one atomic transaction.**  
-   TTLs, versioning, invalidation events, outbox patterns, and reconciliation are practical tools for managing this boundary.
-
-5. **The database is usually the source of truth—except in deliberate write-behind designs.**  
-   When Redis accepts writes before the database, Redis becomes part of the system's durability model.
-
-6. **Choose the strategy for each data domain.**  
-   Catalog data, profiles, counters, inventory, and payments have different consistency requirements.
-
----
-
-## Quick Mental Model
+# 10. Quick Mental Model
 
 ```text
 Cache-Aside:

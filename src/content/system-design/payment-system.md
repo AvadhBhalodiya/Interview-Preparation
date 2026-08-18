@@ -6,9 +6,39 @@ order: 10
 
 # Design a Payment System
 
-> **Category:** System Design  
-> **Level:** Intermediate backend developer  
-> **Goal:** Design a reliable, secure, scalable payment platform that can accept payments, track their lifecycle, maintain accurate financial records, process refunds, and recover safely from failures.
+> Design a reliable, secure, scalable payment platform that can accept payments, track their lifecycle, maintain accurate financial records, process refunds, and recover safely from failures.
+
+## In short
+
+- The **payment intent** is the stable business object; each provider call is a separate **attempt**, so one payment can have many attempts but only one successful money movement.
+- Authorize, capture, settle, refund, and chargeback are distinct steps — a payment can be `CAPTURED` internally while provider settlement is still pending.
+- Every status change goes through an explicit, validated state transition; `PROCESSING` and unknown outcomes are normal states, not edge cases.
+- Idempotency keys sit at every boundary — merchant to API, orchestrator to provider, event to consumer — because retries and duplicate deliveries are unavoidable.
+- Money lives in an immutable **double-entry ledger**, not in a mutable balance column; corrections are new compensating transactions, never edits.
+- Events are published through a **transactional outbox**, never as a dual write of "update the row, then publish".
+- Reconciliation against provider and bank reports is the final safety net, because a timeout is not a failure until the provider says so.
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> REQUIRES_CONFIRMATION
+    REQUIRES_CONFIRMATION --> REQUIRES_ACTION
+    REQUIRES_CONFIRMATION --> PROCESSING
+    REQUIRES_ACTION --> PROCESSING
+    PROCESSING --> AUTHORIZED
+    PROCESSING --> CAPTURED
+    PROCESSING --> FAILED
+    AUTHORIZED --> CAPTURED
+    AUTHORIZED --> CANCELLED
+    CAPTURED --> PARTIALLY_REFUNDED
+    CAPTURED --> REFUNDED
+    CAPTURED --> DISPUTED
+    PARTIALLY_REFUNDED --> REFUNDED
+```
+
+**Interview answer:** Model the merchant's goal as a payment intent whose status only moves through validated transitions, and record each provider call as a separate attempt so a retry never becomes a second charge. Require an idempotency key on every mutating request, pass a stable operation key on to the provider, and commit the state change, the idempotency result, and the outbox event in one database transaction. Keep the money itself in an immutable double-entry ledger and reconcile against the provider's settlement report — a payment system is a distributed financial workflow, not an API that calls a gateway.
+
+**Gotcha:** Treating a provider timeout as a decline. The charge may well have succeeded; retrying it, or failing over to a second provider, before verifying the outcome of the first attempt is exactly how a customer gets charged twice.
 
 ---
 
@@ -16,17 +46,7 @@ order: 10
 
 We are designing an online payment platform used by applications such as an e-commerce website, subscription platform, marketplace, insurance portal, or SaaS product.
 
-The platform should allow a merchant application to:
-
-- Create a payment for an order.
-- Collect money through an external payment service provider.
-- Handle synchronous and asynchronous payment results.
-- Prevent duplicate charges when clients retry requests.
-- Track authorization, capture, failure, cancellation, and settlement.
-- Issue full or partial refunds.
-- Maintain an auditable record of every financial movement.
-- Reconcile internal records with provider and bank reports.
-- Support multiple payment providers in the future.
+The platform should let a merchant application create a payment for an order, collect the money through an external payment service provider, and handle both synchronous and asynchronous results without ever charging a retrying client twice. It tracks authorization, capture, failure, cancellation, and settlement, issues full or partial refunds, keeps an auditable record of every financial movement, reconciles internal records against provider and bank reports, and leaves room to add more providers later.
 
 A payment system does **not** move money entirely by itself. It usually integrates with payment gateways, processors, card networks, banks, wallets, or real-time payment rails.
 
@@ -48,33 +68,11 @@ The payment system is responsible for coordinating this workflow and keeping its
 
 ## 2.1 Included in the design
 
-This design covers:
-
-- One-time online payments.
-- Authorization and capture.
-- Synchronous provider API calls.
-- Asynchronous provider webhooks.
-- Refunds and reversals.
-- Internal double-entry ledger.
-- Reconciliation.
-- Multiple currencies.
-- Horizontal scaling.
-- High availability and disaster recovery.
-- Card, bank, wallet, or UPI-like provider integrations through a common abstraction.
+This design covers one-time online payments in multiple currencies: authorization and capture, synchronous provider API calls, asynchronous provider webhooks, refunds and reversals, an internal double-entry ledger, and reconciliation. It also covers horizontal scaling, high availability and disaster recovery, and card, bank, wallet, or UPI-like integrations behind a common provider abstraction.
 
 ## 2.2 Outside the initial scope
 
-The first version does not deeply implement:
-
-- Recurring billing and subscription scheduling.
-- Merchant onboarding and KYC.
-- Cross-border foreign-exchange conversion.
-- Tax calculation.
-- Payouts to marketplace sellers.
-- Full dispute evidence management.
-- Direct integration with card networks.
-
-These can be added later without changing the core payment model.
+The first version does not deeply implement recurring billing and subscription scheduling, merchant onboarding and KYC, cross-border foreign-exchange conversion, tax calculation, payouts to marketplace sellers, full dispute evidence management, or direct integration with card networks. These can be added later without changing the core payment model.
 
 ## 2.3 Example scale
 
@@ -96,99 +94,31 @@ The exact numbers are less important than showing how the design grows with traf
 
 ## 3.1 Functional requirements
 
-### Payment creation
-
-A merchant creates a payment using:
-
-- Merchant identifier.
-- Order identifier.
-- Amount.
-- Currency.
-- Customer identifier.
-- Payment method token.
-- Idempotency key.
-
-### Payment processing
-
-The system should:
-
-- Validate the request.
-- Select a payment provider.
-- Authorize or charge the payment.
-- Store provider references.
-- Return the latest known payment state.
-
-### Payment status
-
-The merchant should be able to retrieve the current payment state.
-
-### Capture
-
-For an authorization-first flow, the merchant can capture the amount later.
-
-### Cancellation
-
-An uncaptured authorization can be cancelled or allowed to expire.
-
-### Refund
-
-A captured payment can be partially or fully refunded.
-
-### Webhooks
-
-The system receives provider events and sends merchant events.
-
-### Ledger
-
-Every confirmed money movement creates balanced ledger entries.
-
-### Reconciliation
-
-The system compares internal data with provider settlement reports.
+| Capability | Behaviour |
+|---|---|
+| Payment creation | A merchant creates a payment from a merchant identifier, order identifier, amount, currency, customer identifier, payment method token, and idempotency key. |
+| Payment processing | Validate the request, select a provider, authorize or charge, store provider references, and return the latest known state. |
+| Payment status | The merchant can retrieve the current payment state at any time. |
+| Capture | In an authorization-first flow, the merchant can capture the amount later. |
+| Cancellation | An uncaptured authorization can be cancelled or allowed to expire. |
+| Refund | A captured payment can be partially or fully refunded. |
+| Webhooks | The system receives provider events and sends merchant events. |
+| Ledger | Every confirmed money movement creates balanced ledger entries. |
+| Reconciliation | The system compares internal data with provider settlement reports. |
 
 ---
 
 ## 3.2 Non-functional requirements
 
-### Correctness
-
-Correctness is more important than very low latency. A slow payment is inconvenient; an incorrect financial record is dangerous.
-
-### Availability
-
-The payment API should remain available during partial failures wherever possible.
-
-A realistic target might be:
-
-- Payment creation API: 99.99% availability.
-- Read-only payment status API: 99.99% or higher.
-- Background reconciliation: lower immediate availability, but strict completion targets.
-
-### Durability
-
-Once the system tells a merchant that a payment is successful, the associated records must be durably stored.
-
-### Idempotency
-
-Retrying the same logical operation must not charge the customer twice.
-
-### Auditability
-
-The system must record:
-
-- Who initiated an operation.
-- What request was received.
-- Which state transitions occurred.
-- Which provider response was received.
-- Which ledger entries were posted.
-
-### Security
-
-Sensitive payment data must be protected in transit and at rest. Raw card data should ideally never enter the merchant backend or the core payment service.
-
-### Consistency
-
-Strong consistency is required inside critical financial transaction boundaries. Eventual consistency is acceptable for notifications, dashboards, search, and analytics.
+| Requirement | What it means here |
+|---|---|
+| Correctness | More important than very low latency. A slow payment is inconvenient; an incorrect financial record is dangerous. |
+| Availability | The payment API stays available during partial failures where possible: roughly 99.99% for payment creation, the same or better for read-only status, and lower immediate availability but strict completion targets for background reconciliation. |
+| Durability | Once the system tells a merchant a payment succeeded, the associated records must be durably stored. |
+| Idempotency | Retrying the same logical operation must not charge the customer twice. |
+| Auditability | Record who initiated an operation, what request arrived, which state transitions occurred, which provider response came back, and which ledger entries were posted. |
+| Security | Sensitive payment data is protected in transit and at rest; raw card data should ideally never enter the merchant backend or the core payment service. |
+| Consistency | Strong inside critical financial transaction boundaries, eventual for notifications, dashboards, search, and analytics. |
 
 ---
 
@@ -198,14 +128,7 @@ Strong consistency is required inside critical financial transaction boundaries.
 
 A payment intent represents the merchant's intention to collect a specific amount from a customer.
 
-It is useful because a payment can require multiple steps:
-
-- Payment method collection.
-- Customer authentication.
-- Authorization.
-- Capture.
-- Retry with another provider.
-- Asynchronous confirmation.
+It is useful because a payment can require multiple steps: payment method collection, customer authentication, authorization, capture, a retry with another provider, and asynchronous confirmation.
 
 The payment intent remains the stable business object while individual attempts may succeed or fail.
 
@@ -233,9 +156,7 @@ No final settlement may have occurred yet.
 
 Example:
 
-```text
-Hotel blocks ₹10,000 on a card at check-in.
-```
+> Hotel blocks ₹10,000 on a card at check-in.
 
 ## 4.4 Capture
 
@@ -243,9 +164,7 @@ Capture confirms that the merchant wants to collect an authorized amount.
 
 Example:
 
-```text
-Hotel captures ₹8,500 at check-out and releases the remaining hold.
-```
+> Hotel captures ₹8,500 at check-out and releases the remaining hold.
 
 ## 4.5 Settlement
 
@@ -272,54 +191,22 @@ A chargeback occurs when the customer challenges a payment through the issuer or
 # 5. High-Level Architecture
 
 ```mermaid
-flowchart TB
-    Client[Web / Mobile Client]
-    Merchant[Merchant Backend]
-    Gateway[API Gateway]
-    Auth[Authentication and Rate Limiting]
-    PaymentAPI[Payment API]
-    Orchestrator[Payment Orchestrator]
-    Risk[Risk Service]
-    Router[Provider Router]
-    AdapterA[Provider A Adapter]
-    AdapterB[Provider B Adapter]
-    DB[(Primary Payment Database)]
-    Ledger[Ledger Service]
-    LedgerDB[(Ledger Database)]
-    Outbox[(Outbox Table)]
-    Broker[(Event Broker)]
-    Webhook[Provider Webhook Service]
-    MerchantWebhook[Merchant Notification Service]
-    Reconciliation[Reconciliation Service]
-    ObjectStore[(Reports / Object Storage)]
-
-    Client --> Merchant
-    Merchant --> Gateway
-    Gateway --> Auth
-    Auth --> PaymentAPI
-    PaymentAPI --> Orchestrator
-    Orchestrator --> Risk
-    Orchestrator --> Router
-    Router --> AdapterA
-    Router --> AdapterB
-    AdapterA --> PSPA[Provider A]
-    AdapterB --> PSPB[Provider B]
-    Orchestrator --> DB
-    Orchestrator --> Ledger
-    Ledger --> LedgerDB
-    Orchestrator --> Outbox
-    Outbox --> Broker
-    PSPA --> Webhook
-    PSPB --> Webhook
-    Webhook --> DB
-    Webhook --> Outbox
-    Broker --> MerchantWebhook
-    MerchantWebhook --> Merchant
-    Reconciliation --> PSPA
-    Reconciliation --> PSPB
-    Reconciliation --> DB
-    Reconciliation --> LedgerDB
-    Reconciliation --> ObjectStore
+flowchart LR
+    Merchant --> Gateway[API Gateway]
+    Gateway --> API[Payment API and Orchestrator]
+    API --> PaymentDB[(Payment DB)]
+    API --> Risk[Risk]
+    API --> Router[Provider Router]
+    Router --> Providers[Provider Adapters and PSPs]
+    API --> Ledger[Immutable Ledger]
+    API --> Outbox[(Transactional Outbox)]
+    Outbox --> Events[Event Broker]
+    Providers --> Webhooks[Webhook Ingestion]
+    Webhooks --> PaymentDB
+    Events --> Notifications[Merchant Notifications]
+    Providers --> Reconciliation[Reconciliation]
+    PaymentDB --> Reconciliation
+    Ledger --> Reconciliation
 ```
 
 ## 5.1 Main design principle
@@ -334,95 +221,34 @@ Keep the synchronous request path focused on the minimum work required to safely
 6. Commit required ledger and outbox records.
 7. Return the latest known state.
 
-Move non-critical work to asynchronous consumers:
-
-- Email and push notifications.
-- Merchant webhooks.
-- Analytics.
-- Search indexing.
-- Reporting.
-- Data warehouse updates.
+Move non-critical work — email and push notifications, merchant webhooks, analytics, search indexing, reporting, and data warehouse updates — to asynchronous consumers.
 
 ---
 
 # 6. Core Components
 
-## 6.1 API gateway
+| Component | Responsibilities |
+|---|---|
+| API gateway | TLS termination, authentication, request size limits, rate limiting, routing, request identifiers, basic schema validation, DDoS protection. No payment business logic. |
+| Payment API | Merchant-facing endpoints. Validates merchant ownership, amount, and currency; demands an idempotency key on mutating operations; returns stable payment representations and hides provider-specific detail. |
+| Payment orchestrator | Owns the workflow: state-transition validation, risk coordination, provider routing, the authorization and capture flow, retry classification, recording attempts, updating payment state, and triggering ledger and event creation. |
+| Provider router | Chooses the provider for one attempt from method, currency, country, provider health, cost, historical success rate, merchant preference, amount, and regulatory constraints. The decision is deterministic per attempt and stored. |
+| Provider adapters | Translate the internal domain model into one provider's API, so nothing else depends on a provider SDK. |
+| Risk service | Evaluates the transaction before money moves, returning `ALLOW`, `DENY`, `REVIEW`, or `REQUIRE_ADDITIONAL_AUTHENTICATION`. |
+| Ledger service | Records balanced financial entries. Append-oriented, strongly consistent, auditable, protected from arbitrary updates, and able to reject an unbalanced transaction. |
+| Webhook service | Receives provider callbacks, verifies signatures, stores the raw event, deduplicates, acknowledges quickly, and processes asynchronously. |
+| Reconciliation service | Compares internal payments, internal ledger records, provider transaction data, provider settlement reports, and bank statements where available, then raises exceptions for investigation or automated correction. |
 
-Responsibilities:
+The orchestrator is the central domain component, but it should not become a single large class. Internally it divides into command handlers such as `CreatePaymentHandler`, `ConfirmPaymentHandler`, `CapturePaymentHandler`, `CancelPaymentHandler`, `RefundPaymentHandler`, and `ApplyProviderEventHandler`.
 
-- TLS termination.
-- Authentication.
-- Request size limits.
-- Rate limiting.
-- Routing.
-- Request identifiers.
-- Basic schema validation.
-- DDoS protection.
+The payment system should also define what happens when risk evaluation is unavailable. For high-risk payments, fail closed. For low-risk, low-value use cases, a carefully controlled fail-open policy may be acceptable.
 
-The gateway should not contain payment business logic.
-
-## 6.2 Payment API
-
-The Payment API exposes merchant-facing endpoints.
-
-Responsibilities:
-
-- Validate merchant ownership.
-- Validate amount and currency.
-- Require idempotency keys for mutating operations.
-- Return stable payment representations.
-- Hide provider-specific details.
-
-## 6.3 Payment orchestrator
-
-The orchestrator owns the payment workflow.
-
-Responsibilities:
-
-- State-transition validation.
-- Risk-check coordination.
-- Provider routing.
-- Authorization and capture workflow.
-- Retry classification.
-- Recording payment attempts.
-- Updating the latest payment state.
-- Triggering ledger and event creation.
-
-This is the central domain component, but it should not become a single large class. Internally, it can be divided into command handlers such as:
-
-```text
-CreatePaymentHandler
-ConfirmPaymentHandler
-CapturePaymentHandler
-CancelPaymentHandler
-RefundPaymentHandler
-ApplyProviderEventHandler
-```
-
-## 6.4 Provider router
-
-The router selects a provider based on rules such as:
-
-- Payment method type.
-- Currency.
-- Customer or merchant country.
-- Provider health.
-- Cost.
-- Historical success rate.
-- Merchant preference.
-- Transaction amount.
-- Regulatory constraints.
-
-The router should make a deterministic decision for a specific attempt and store that decision.
-
-## 6.5 Provider adapters
+## 6.1 Provider adapter interface
 
 Each adapter translates the internal domain model to a provider-specific API.
 
 ```python
 from typing import Protocol
-
 
 class PaymentProvider(Protocol):
     def authorize(self, request: "AuthorizeRequest") -> "ProviderResult": ...
@@ -437,54 +263,6 @@ class PaymentProvider(Protocol):
 ```
 
 The rest of the system should not directly depend on a provider SDK.
-
-## 6.6 Risk service
-
-The risk service evaluates the transaction before money movement.
-
-Possible outputs:
-
-- `ALLOW`
-- `DENY`
-- `REVIEW`
-- `REQUIRE_ADDITIONAL_AUTHENTICATION`
-
-The payment system should define what happens when risk evaluation is unavailable. For high-risk payments, fail closed. For low-risk, low-value use cases, a carefully controlled fail-open policy may be acceptable.
-
-## 6.7 Ledger service
-
-The ledger service records balanced financial entries.
-
-It must be:
-
-- Append-oriented.
-- Strongly consistent.
-- Auditable.
-- Protected from arbitrary updates.
-- Able to reject unbalanced transactions.
-
-## 6.8 Webhook service
-
-The webhook service:
-
-- Receives provider callbacks.
-- Verifies signatures.
-- Stores the raw event.
-- Deduplicates events.
-- Acknowledges quickly.
-- Processes the event asynchronously.
-
-## 6.9 Reconciliation service
-
-The reconciliation service compares:
-
-- Internal payment records.
-- Internal ledger records.
-- Provider transaction data.
-- Provider settlement reports.
-- Bank statements, when available.
-
-It creates exceptions for investigation or automated correction.
 
 ---
 
@@ -510,46 +288,14 @@ A payment should follow explicit state transitions. Avoid allowing any service t
 | `FAILED` | Payment cannot continue without a new attempt or method. |
 | `DISPUTED` | A dispute or chargeback exists. |
 
-## 7.2 State diagram
+## 7.2 Transition validation
 
-```mermaid
-stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> REQUIRES_PAYMENT_METHOD
-    CREATED --> REQUIRES_CONFIRMATION
-    REQUIRES_PAYMENT_METHOD --> REQUIRES_CONFIRMATION
-    REQUIRES_CONFIRMATION --> REQUIRES_ACTION
-    REQUIRES_CONFIRMATION --> PROCESSING
-    REQUIRES_CONFIRMATION --> AUTHORIZED
-    REQUIRES_CONFIRMATION --> CAPTURED
-    REQUIRES_CONFIRMATION --> FAILED
-    REQUIRES_ACTION --> PROCESSING
-    REQUIRES_ACTION --> AUTHORIZED
-    REQUIRES_ACTION --> CAPTURED
-    REQUIRES_ACTION --> FAILED
-    PROCESSING --> AUTHORIZED
-    PROCESSING --> CAPTURED
-    PROCESSING --> FAILED
-    AUTHORIZED --> PARTIALLY_CAPTURED
-    AUTHORIZED --> CAPTURED
-    AUTHORIZED --> CANCELLED
-    PARTIALLY_CAPTURED --> CAPTURED
-    PARTIALLY_CAPTURED --> CANCELLED
-    CAPTURED --> PARTIALLY_REFUNDED
-    CAPTURED --> REFUNDED
-    CAPTURED --> DISPUTED
-    PARTIALLY_REFUNDED --> PARTIALLY_REFUNDED
-    PARTIALLY_REFUNDED --> REFUNDED
-    PARTIALLY_REFUNDED --> DISPUTED
-```
-
-## 7.3 Transition validation
-
-Use a transition matrix or domain method:
+The spine of the machine is drawn in the diagram at the top of this note. The complete matrix, including the branches that diagram leaves out, belongs in a transition table or domain method:
 
 ```python
 ALLOWED_TRANSITIONS = {
     "CREATED": {"REQUIRES_PAYMENT_METHOD", "REQUIRES_CONFIRMATION", "CANCELLED"},
+    "REQUIRES_PAYMENT_METHOD": {"REQUIRES_CONFIRMATION", "CANCELLED"},
     "REQUIRES_CONFIRMATION": {
         "REQUIRES_ACTION",
         "PROCESSING",
@@ -557,11 +303,13 @@ ALLOWED_TRANSITIONS = {
         "CAPTURED",
         "FAILED",
     },
+    "REQUIRES_ACTION": {"PROCESSING", "AUTHORIZED", "CAPTURED", "FAILED"},
     "PROCESSING": {"AUTHORIZED", "CAPTURED", "FAILED"},
     "AUTHORIZED": {"PARTIALLY_CAPTURED", "CAPTURED", "CANCELLED"},
+    "PARTIALLY_CAPTURED": {"CAPTURED", "CANCELLED"},
     "CAPTURED": {"PARTIALLY_REFUNDED", "REFUNDED", "DISPUTED"},
+    "PARTIALLY_REFUNDED": {"PARTIALLY_REFUNDED", "REFUNDED", "DISPUTED"},
 }
-
 
 def validate_transition(current: str, target: str) -> None:
     if target not in ALLOWED_TRANSITIONS.get(current, set()):
@@ -680,13 +428,7 @@ Content-Type: application/json
 }
 ```
 
-Represent monetary values in the smallest supported currency unit.
-
-For INR:
-
-```text
-₹5,000.00 -> 500000 paise
-```
+Represent monetary values in the smallest supported currency unit: for INR, `₹5,000.00 -> 500000 paise`.
 
 Response:
 
@@ -968,34 +710,11 @@ Idempotency is one of the most important parts of payment design.
 
 ## 11.1 The problem
 
-The merchant sends a payment request. The provider charges the customer, but the network connection fails before the merchant receives the response.
-
-The merchant retries:
-
-```text
-Request 1 -> Customer charged -> Response lost
-Request 2 -> Customer charged again
-```
-
-Without idempotency, one logical purchase can become two charges.
+The merchant sends a payment request. The provider charges the customer, but the network connection fails before the merchant receives the response. The merchant retries, the customer is charged again, and one logical purchase has become two charges.
 
 ## 11.2 Idempotency key behavior
 
-The merchant sends a unique key for each logical operation:
-
-```http
-Idempotency-Key: checkout-ORD-9001-payment-v1
-```
-
-The server stores:
-
-- Merchant ID.
-- Idempotency key.
-- Operation.
-- Hash of normalized request parameters.
-- Processing state.
-- Created resource ID.
-- Final response.
+The merchant sends a unique key for each logical operation, such as `Idempotency-Key: checkout-ORD-9001-payment-v1`. Against that key the server stores the merchant ID, the operation, a hash of the normalized request parameters, the processing state, the created resource ID, and the final response.
 
 ## 11.3 Processing algorithm
 
@@ -1033,27 +752,13 @@ Do not rely on a cache alone. A cache can improve performance, but the authorita
 
 ## 11.5 Provider idempotency
 
-Also pass a stable operation key to the payment provider when supported.
-
-Use separate keys for separate operations:
-
-```text
-payment:create:pay_123
-payment:capture:pay_123:capture_1
-payment:refund:pay_123:refund_1
-```
+Also pass a stable operation key to the payment provider when supported, using a separate key per operation: `payment:create:pay_123`, `payment:capture:pay_123:capture_1`, `payment:refund:pay_123:refund_1`.
 
 The internal idempotency layer protects your API. Provider idempotency protects retries between your system and the provider.
 
 ## 11.6 Idempotency is not only request deduplication
 
-A correct design also needs:
-
-- Unique provider event IDs.
-- Unique ledger transaction references.
-- Unique merchant webhook delivery IDs.
-- State-transition validation.
-- Safe consumers that tolerate duplicate events.
+A correct design also needs unique provider event IDs, unique ledger transaction references, unique merchant webhook delivery IDs, state-transition validation, and consumers that tolerate duplicate events.
 
 At-least-once delivery plus idempotent consumers is normally more practical than assuming perfect end-to-end exactly-once delivery.
 
@@ -1067,11 +772,7 @@ Use an immutable double-entry ledger for actual financial accounting.
 
 ## 12.1 Why a separate ledger?
 
-A payment status can change for operational reasons:
-
-```text
-PROCESSING -> CAPTURED -> REFUNDED -> DISPUTED
-```
+A payment status can change for operational reasons: `PROCESSING -> CAPTURED -> REFUNDED -> DISPUTED`
 
 Financial movements should remain as a permanent history:
 
@@ -1085,11 +786,7 @@ Never overwrite the original capture entry. Add compensating transactions.
 
 ## 12.2 Double-entry rule
 
-For every ledger transaction:
-
-```text
-Total debits = Total credits
-```
+For every ledger transaction, `Total debits = Total credits`.
 
 The exact debit and credit naming depends on the accounting model, but the entries must balance per currency.
 
@@ -1162,12 +859,7 @@ CREATE TABLE ledger_entries (
 );
 ```
 
-Before committing:
-
-```sql
--- Conceptual validation performed in application or database procedure
-SUM(DEBIT amount) = SUM(CREDIT amount)
-```
+Before committing, the application or a database procedure must assert `SUM(DEBIT amount) = SUM(CREDIT amount)` for the transaction.
 
 ## 12.8 Ledger invariants
 
@@ -1185,14 +877,7 @@ SUM(DEBIT amount) = SUM(CREDIT amount)
 
 ## 13.1 Strong consistency areas
 
-Use a relational transaction for closely related critical writes such as:
-
-- Payment state update.
-- Payment attempt update.
-- Idempotency result update.
-- Outbox event insertion.
-
-Example:
+Use a single relational transaction for closely related critical writes: the payment state update, the payment attempt update, the idempotency result update, and the outbox event insertion.
 
 ```sql
 BEGIN;
@@ -1275,14 +960,7 @@ Instead:
 
 ## 14.1 The dual-write problem
 
-Suppose the payment service does this:
-
-```text
-1. Update database to CAPTURED
-2. Publish PaymentCaptured event
-```
-
-Failure cases:
+Suppose the payment service updates the database to `CAPTURED` and then publishes a `PaymentCaptured` event as two independent steps. Two failure cases follow:
 
 - Database succeeds, event publish fails: merchant never receives notification.
 - Event publish succeeds, database fails: consumers see a capture that is not in the database.
@@ -1354,23 +1032,11 @@ Version events so consumers can evolve independently.
 
 Partition events by `payment_id` so events for one payment preserve order within a partition.
 
-```text
-Partition key = payment_id
-```
-
 Global ordering is unnecessary and expensive. Per-payment ordering is normally sufficient.
 
 ## 14.6 Dead-letter queue
 
-After controlled retries, move repeatedly failing messages to a dead-letter queue.
-
-Store:
-
-- Original event.
-- Consumer name.
-- Failure reason.
-- Attempt count.
-- First and last failure time.
+After controlled retries, move repeatedly failing messages to a dead-letter queue, storing the original event, the consumer name, the failure reason, the attempt count, and the first and last failure time.
 
 Provide a replay tool that keeps the original event ID.
 
@@ -1378,16 +1044,7 @@ Provide a replay tool that keeps the original event ID.
 
 # 15. Webhook Processing
 
-Provider webhooks are asynchronous notifications such as:
-
-```text
-payment.authorized
-payment.captured
-payment.failed
-refund.succeeded
-refund.failed
-dispute.created
-```
+Provider webhooks are asynchronous notifications such as `payment.authorized`, `payment.captured`, `payment.failed`, `refund.succeeded`, `refund.failed`, and `dispute.created`.
 
 ## 15.1 Webhook endpoint flow
 
@@ -1410,47 +1067,25 @@ flowchart TD
 
 ## 15.2 Signature verification
 
-Verification should use:
-
-- Raw request bytes.
-- Provider signature header.
-- Endpoint secret.
-- Timestamp tolerance.
-- Constant-time comparison where applicable.
+Verification should use the raw request bytes, the provider signature header, the endpoint secret, a timestamp tolerance, and constant-time comparison where applicable.
 
 Do not parse and reserialize JSON before verifying a signature if the provider signs the raw body.
 
 ## 15.3 Acknowledge quickly
 
-The webhook endpoint should normally:
-
-1. Verify.
-2. Deduplicate and persist.
-3. Enqueue.
-4. Return success.
+The webhook endpoint should normally verify, deduplicate and persist, enqueue, then return success.
 
 Long business processing inside the HTTP request increases provider retries and duplicate deliveries.
 
 ## 15.4 Duplicate events
 
-Providers may retry events. Deduplicate using:
-
-```text
-(provider, provider_event_id)
-```
+Providers may retry events. Deduplicate on `(provider, provider_event_id)`.
 
 Do not deduplicate only by payment ID because different events can legitimately exist for one payment.
 
 ## 15.5 Out-of-order events
 
-Possible arrival order:
-
-```text
-payment.captured arrives first
-payment.authorized arrives later
-```
-
-Solutions:
+`payment.captured` can arrive before `payment.authorized`. Solutions:
 
 - Validate state transitions.
 - Store event creation time and provider sequence number when available.
@@ -1459,30 +1094,9 @@ Solutions:
 
 ## 15.6 Merchant webhooks
 
-Send merchant notifications asynchronously.
+Send merchant notifications asynchronously. Each delivery should include the event ID, event type, event creation time, payment ID, current payment state, a signature, and a delivery attempt ID.
 
-Each delivery should include:
-
-- Event ID.
-- Event type.
-- Event creation time.
-- Payment ID.
-- Current payment state.
-- Signature.
-- Delivery attempt ID.
-
-Retry with exponential backoff and jitter.
-
-```text
-Attempt 1: immediately
-Attempt 2: after 30 seconds
-Attempt 3: after 2 minutes
-Attempt 4: after 10 minutes
-Attempt 5: after 1 hour
-...
-```
-
-The merchant must deduplicate by event ID.
+Retry with exponential backoff and jitter — immediately, then after 30 seconds, 2 minutes, 10 minutes, 1 hour, and so on. The merchant must deduplicate by event ID.
 
 ---
 
@@ -1490,17 +1104,7 @@ The merchant must deduplicate by event ID.
 
 ## 16.1 Refund constraints
 
-Before creating a refund:
-
-```text
-remaining_refundable = amount_captured - amount_refunded - pending_refund_amount
-```
-
-Require:
-
-```text
-requested_refund <= remaining_refundable
-```
+Before creating a refund, compute `remaining_refundable = amount_captured - amount_refunded - pending_refund_amount` and require `requested_refund <= remaining_refundable`.
 
 Lock the payment or use an atomic conditional update to prevent two concurrent refunds exceeding the captured amount.
 
@@ -1533,11 +1137,7 @@ Do not immediately create a second refund. Query the provider using the refund o
 
 ## 16.5 Reversal
 
-If a payment is authorized but not captured, cancel the authorization rather than creating a refund.
-
-```text
-AUTHORIZED -> CANCELLED
-```
+If a payment is authorized but not captured, cancel the authorization (`AUTHORIZED -> CANCELLED`) rather than creating a refund.
 
 ## 16.6 Chargeback
 
@@ -1557,46 +1157,12 @@ Payment systems must be designed around ambiguous and partial failures.
 
 ## 17.1 Failure categories
 
-### Validation failure
-
-Examples:
-
-- Invalid amount.
-- Unsupported currency.
-- Missing payment method.
-
-Do not retry without changing the request.
-
-### Business decline
-
-Examples:
-
-- Insufficient funds.
-- Authentication failed.
-- Payment method expired.
-- Risk rejected.
-
-Retry only according to the provider's advice and business rules.
-
-### Technical transient failure
-
-Examples:
-
-- Connection reset.
-- Provider `5xx`.
-- Rate limit.
-- Temporary database issue.
-
-Retry with backoff, jitter, and a bounded attempt count.
-
-### Unknown outcome
-
-Examples:
-
-- Provider request timed out after being sent.
-- Worker crashed after provider success but before local persistence.
-
-Do not classify as failure. Mark the operation `UNKNOWN` or `PROCESSING` and run a status inquiry.
+| Category | Examples | Retry rule |
+|---|---|---|
+| Validation failure | Invalid amount, unsupported currency, missing payment method. | Do not retry without changing the request. |
+| Business decline | Insufficient funds, authentication failed, payment method expired, risk rejected. | Retry only according to the provider's advice and business rules. |
+| Technical transient failure | Connection reset, provider `5xx`, rate limit, temporary database issue. | Retry with backoff, jitter, and a bounded attempt count. |
+| Unknown outcome | Provider request timed out after being sent; worker crashed after provider success but before local persistence. | Never classify as failure. Mark the operation `UNKNOWN` or `PROCESSING` and run a status inquiry. |
 
 ## 17.2 Retry policy
 
@@ -1604,13 +1170,7 @@ Do not classify as failure. Mark the operation `UNKNOWN` or `PROCESSING` and run
 retry_delay = min(base_delay * 2^attempt, maximum_delay) + random_jitter
 ```
 
-Use different policies for:
-
-- Safe read requests.
-- Idempotent provider writes.
-- Webhook delivery.
-- Event consumption.
-- Reconciliation fetches.
+Use different policies for safe read requests, idempotent provider writes, webhook delivery, event consumption, and reconciliation fetches.
 
 Never blindly retry a payment write unless the provider supports idempotency or you can safely check the result first.
 
@@ -1653,15 +1213,7 @@ Safe approach:
 
 ## 17.5 Recovery workers
 
-Run background jobs for:
-
-- Payments stuck in `PROCESSING`.
-- Attempts with unknown outcome.
-- Unpublished outbox events.
-- Pending merchant webhooks.
-- Refunds awaiting confirmation.
-- Ledger commands awaiting posting.
-- Reconciliation exceptions.
+Run background jobs for payments stuck in `PROCESSING`, attempts with an unknown outcome, unpublished outbox events, pending merchant webhooks, refunds awaiting confirmation, ledger commands awaiting posting, and reconciliation exceptions.
 
 Use distributed leases or `FOR UPDATE SKIP LOCKED` to divide work safely.
 
@@ -1750,12 +1302,7 @@ Use several levels:
 
 ## 18.5 Reconciliation should not silently rewrite history
 
-Repairs must create:
-
-- A correction command.
-- An audit record.
-- New ledger entries if financial correction is required.
-- A reference to the source report or provider API response.
+Every repair must create a correction command, an audit record, new ledger entries where a financial correction is required, and a reference back to the source report or provider API response.
 
 ---
 
@@ -1769,13 +1316,7 @@ Store workflow state in durable systems, not process memory.
 
 ## 19.2 Database scaling
 
-Start with a relational database because payments need:
-
-- Transactions.
-- Unique constraints.
-- Row locking.
-- Strong consistency.
-- Flexible operational queries.
+Start with a relational database, because payments need transactions, unique constraints, row locking, strong consistency, and flexible operational queries.
 
 Typical evolution:
 
@@ -1789,34 +1330,19 @@ flowchart TD
 
 ## 19.3 Read replicas
 
-Use replicas for:
-
-- Merchant payment history.
-- Support dashboards.
-- Reports.
-- Analytics extraction.
+Use replicas for merchant payment history, support dashboards, reports, and analytics extraction.
 
 Read the primary after writes when immediate consistency is required.
 
 ## 19.4 Partitioning
 
-Time-based partitioning works well for append-heavy tables:
-
-- Payment events.
-- Provider events.
-- Webhook deliveries.
-- Audit logs.
-- Outbox archives.
+Time-based partitioning works well for append-heavy tables such as payment events, provider events, webhook deliveries, audit logs, and outbox archives.
 
 Hash partitioning by merchant or payment ID helps distribute hot traffic.
 
 ## 19.5 Sharding
 
-Possible shard key:
-
-```text
-shard = hash(merchant_id) % number_of_shards
-```
+Possible shard key: `shard = hash(merchant_id) % number_of_shards`
 
 Advantages:
 
@@ -1829,39 +1355,17 @@ Challenges:
 - Cross-merchant reporting becomes harder.
 - Resharding requires careful tooling.
 
-A virtual-shard mapping provides flexibility:
-
-```text
-merchant -> virtual shard -> physical database
-```
+A virtual-shard mapping provides flexibility: `merchant -> virtual shard -> physical database`
 
 ## 19.6 Ledger scaling
 
-Ledger writes should prioritize consistency over arbitrary horizontal distribution.
-
-Partition by:
-
-- Legal entity.
-- Currency.
-- Merchant group.
-- Account namespace.
+Ledger writes should prioritize consistency over arbitrary horizontal distribution. Partition by legal entity, currency, merchant group, or account namespace.
 
 Keep all entries for one ledger transaction on the same partition.
 
 ## 19.7 Event broker scaling
 
-Partition topics by payment ID or merchant ID.
-
-Example topics:
-
-```text
-payment-events
-refund-events
-provider-webhook-events
-ledger-commands
-merchant-webhook-deliveries
-reconciliation-results
-```
+Partition topics by payment ID or merchant ID. Example topics: `payment-events`, `refund-events`, `provider-webhook-events`, `ledger-commands`, `merchant-webhook-deliveries`, `reconciliation-results`.
 
 ## 19.8 Caching
 
@@ -1881,14 +1385,7 @@ Do not use cache as the source of truth for:
 
 ## 19.9 Backpressure
 
-When a downstream system is slow:
-
-- Bound queues.
-- Limit concurrent provider calls.
-- Apply merchant quotas.
-- Reject excess load predictably.
-- Delay non-critical processing.
-- Preserve critical payment and ledger paths.
+When a downstream system is slow, bound the queues, limit concurrent provider calls, apply merchant quotas, reject excess load predictably, and delay non-critical processing — always preserving the critical payment and ledger paths.
 
 ---
 
@@ -1914,13 +1411,7 @@ sequenceDiagram
     B->>M: Send token, not raw card data
 ```
 
-The core payment API receives a token such as:
-
-```text
-pm_tok_abc123
-```
-
-It should not receive the card number or security code.
+The core payment API receives a token such as `pm_tok_abc123`. It should never receive the card number or security code.
 
 ## 20.2 Never store prohibited authentication data
 
@@ -1928,81 +1419,37 @@ Do not store sensitive authentication data such as card verification values afte
 
 ## 20.3 Encryption
 
-Use:
-
-- TLS for all network communication.
-- Encryption at rest for databases, queues, object storage, and backups.
-- Field-level encryption for highly sensitive identifiers.
-- Managed keys or HSM-backed keys for critical cryptographic operations.
-- Regular key rotation.
+Use TLS for all network communication and encryption at rest for databases, queues, object storage, and backups. Add field-level encryption for highly sensitive identifiers, managed or HSM-backed keys for critical cryptographic operations, and regular key rotation.
 
 ## 20.4 Tokenization
 
-Replace sensitive payment credentials with tokens.
-
-```text
-Card PAN -> Provider vault -> Payment method token
-```
+Replace sensitive payment credentials with tokens: `Card PAN -> Provider vault -> Payment method token`.
 
 The token should be useless outside its intended merchant, account, or provider context where possible.
 
 ## 20.5 Access control
 
-Use least privilege:
-
-- Payment API can create payment records.
-- Webhook processor can update allowed payment fields.
-- Ledger posting service can append entries.
-- Reporting jobs receive read-only access.
-- Human operators use audited, role-based tools.
+Use least privilege: the payment API can create payment records, the webhook processor can update only allowed payment fields, the ledger posting service can append entries, reporting jobs get read-only access, and human operators work through audited, role-based tools.
 
 For sensitive operations, combine RBAC with contextual checks such as merchant ownership, environment, amount limit, and approval status.
 
 ## 20.6 Secrets
 
-Store provider credentials in a managed secret store, not source code or plain environment files committed to Git.
-
-Use:
-
-- Rotation.
-- Versioning.
-- Short-lived credentials when supported.
-- Separate credentials per environment.
-- Restricted access paths.
+Store provider credentials in a managed secret store, not in source code or plain environment files committed to Git. Use rotation, versioning, short-lived credentials where supported, separate credentials per environment, and restricted access paths.
 
 ## 20.7 Logging rules
 
-Never log:
-
-- Full card numbers.
-- Card verification values.
-- Unredacted authentication tokens.
-- Full bank credentials.
-- Secrets or signing keys.
+Never log full card numbers, card verification values, unredacted authentication tokens, full bank credentials, or secrets and signing keys.
 
 Use structured redaction before logs leave the application process.
 
 ## 20.8 Webhook security
 
-- Verify cryptographic signatures.
-- Check timestamp tolerance.
-- Use HTTPS.
-- Rotate webhook secrets.
-- Deduplicate event IDs.
-- Optionally allow-list provider network ranges only as an additional control, not a replacement for signatures.
+Verify cryptographic signatures, check timestamp tolerance, use HTTPS, rotate webhook secrets, and deduplicate event IDs. Allow-listing provider network ranges is an optional extra control, never a replacement for signatures.
 
 ## 20.9 Audit logs
 
-Record security-sensitive actions:
-
-```text
-Manual refund approved
-Merchant routing rule changed
-Provider secret rotated
-Ledger adjustment posted
-Reconciliation exception overridden
-User permissions changed
-```
+Record security-sensitive actions: a manual refund approved, a merchant routing rule changed, a provider secret rotated, a ledger adjustment posted, a reconciliation exception overridden, user permissions changed.
 
 Audit records should be append-only and protected from the application role that performs the original action.
 
@@ -2014,17 +1461,7 @@ Fraud controls run before or during payment authorization.
 
 ## 21.1 Common signals
 
-- Payment amount.
-- Merchant category.
-- Customer history.
-- Device fingerprint.
-- IP reputation.
-- Billing and shipping mismatch.
-- Velocity: number of attempts over time.
-- Repeated failures across cards.
-- Country mismatch.
-- Suspicious account creation patterns.
-- Provider risk score.
+Payment amount, merchant category, customer history, device fingerprint, IP reputation, billing and shipping mismatch, velocity (attempts over time), repeated failures across cards, country mismatch, suspicious account creation patterns, and the provider's own risk score.
 
 ## 21.2 Risk workflow
 
@@ -2042,28 +1479,13 @@ flowchart LR
 
 ## 21.3 Velocity counters
 
-Redis or another low-latency store can maintain counters such as:
-
-```text
-attempts per card token per 10 minutes
-attempts per customer per hour
-failed attempts per IP per day
-total value per merchant per minute
-```
+Redis or another low-latency store can maintain counters such as attempts per card token per 10 minutes, attempts per customer per hour, failed attempts per IP per day, and total value per merchant per minute.
 
 Risk decisions and the input summary should be stored for auditability.
 
 ## 21.4 Risk availability trade-off
 
-Risk checks add latency and another dependency.
-
-Use:
-
-- Strict timeouts.
-- Circuit breakers.
-- Cached static rules.
-- Local fallback rules.
-- Risk-based fail-open or fail-closed policy.
+Risk checks add latency and another dependency. Contain them with strict timeouts, circuit breakers, cached static rules, local fallback rules, and an explicit risk-based fail-open or fail-closed policy.
 
 ---
 
@@ -2071,48 +1493,15 @@ Use:
 
 ## 22.1 Structured logs
 
-Include identifiers such as:
-
-```text
-request_id
-trace_id
-merchant_id
-payment_id
-attempt_id
-provider
-provider_request_id
-idempotency_key_hash
-event_id
-```
+Include identifiers such as `request_id`, `trace_id`, `merchant_id`, `payment_id`, `attempt_id`, `provider`, `provider_request_id`, `idempotency_key_hash`, and `event_id`.
 
 Do not log the raw idempotency key if merchants may place sensitive information inside it. Store or log a hash.
 
 ## 22.2 Metrics
 
-### Business metrics
+**Business:** payment attempts per second, authorization success rate, capture success rate, payment success rate broken down by provider, currency, method, and merchant, refund rate, chargeback rate, average payment amount, settlement variance.
 
-- Payment attempts per second.
-- Authorization success rate.
-- Capture success rate.
-- Payment success rate by provider, currency, method, and merchant.
-- Refund rate.
-- Chargeback rate.
-- Average payment amount.
-- Settlement variance.
-
-### Technical metrics
-
-- API latency percentiles.
-- Provider latency percentiles.
-- Provider error rate.
-- Database transaction latency.
-- Lock wait time.
-- Queue lag.
-- Outbox unpublished count.
-- Webhook retry count.
-- Stuck payments.
-- Reconciliation mismatch count.
-- Ledger posting delay.
+**Technical:** API and provider latency percentiles, provider error rate, database transaction latency, lock wait time, queue lag, unpublished outbox count, webhook retry count, stuck payments, reconciliation mismatch count, ledger posting delay.
 
 ## 22.3 Tracing
 
@@ -2134,31 +1523,11 @@ Do not place raw sensitive data in spans.
 
 ## 22.4 Alerts
 
-Alert on symptoms that affect money or customer experience:
-
-- Success rate drops significantly.
-- Provider timeouts exceed threshold.
-- Payments remain `PROCESSING` too long.
-- Ledger transactions become unbalanced.
-- Outbox backlog grows.
-- Reconciliation mismatches exceed threshold.
-- Merchant webhook queue is delayed.
-- Database replication lag becomes unsafe.
+Alert on symptoms that affect money or customer experience: a significant drop in success rate, provider timeouts above threshold, payments sitting in `PROCESSING` too long, unbalanced ledger transactions, a growing outbox backlog, reconciliation mismatches above threshold, a delayed merchant webhook queue, and unsafe database replication lag.
 
 ## 22.5 Operational dashboard
 
-A useful payment operations dashboard shows:
-
-```text
-Current success rate
-Payment volume and value
-Provider health
-Payments in unknown state
-Webhook delivery health
-Refund backlog
-Settlement status
-Reconciliation exceptions
-```
+A useful payment operations dashboard shows the current success rate, payment volume and value, provider health, payments in an unknown state, webhook delivery health, refund backlog, settlement status, and open reconciliation exceptions.
 
 ---
 
@@ -2168,39 +1537,17 @@ Supporting multiple providers improves reach, cost optimization, and resilience,
 
 ## 23.1 Routing inputs
 
-```text
-payment_method
-currency
-country
-merchant
-amount
-provider availability
-provider historical success rate
-cost
-fraud score
-regulatory rule
-```
+`payment_method`, `currency`, `country`, `merchant`, `amount`, provider availability, provider historical success rate, cost, fraud score, and any regulatory rule that forces or forbids a route.
 
 ## 23.2 Weighted routing
 
-Example:
-
-```text
-Provider A: 70%
-Provider B: 30%
-```
+Split traffic by weight — for example 70% to provider A and 30% to provider B.
 
 Use consistent hashing for controlled experiments so retries do not randomly move between providers.
 
 ## 23.3 Health-aware routing
 
-Track provider health using:
-
-- Recent latency.
-- Timeout rate.
-- Technical error rate.
-- Authorization rate compared with baseline.
-- Provider status API.
+Track provider health using recent latency, timeout rate, technical error rate, authorization rate compared with baseline, and the provider's status API.
 
 A low authorization rate can be caused by customer quality rather than provider health, so compare like-for-like traffic.
 
@@ -2212,7 +1559,6 @@ Normalize provider results:
 from dataclasses import dataclass
 from enum import Enum
 
-
 class ProviderOutcome(str, Enum):
     SUCCEEDED = "SUCCEEDED"
     REQUIRES_ACTION = "REQUIRES_ACTION"
@@ -2220,7 +1566,6 @@ class ProviderOutcome(str, Enum):
     PROCESSING = "PROCESSING"
     UNKNOWN = "UNKNOWN"
     TECHNICAL_FAILURE = "TECHNICAL_FAILURE"
-
 
 @dataclass(frozen=True)
 class ProviderResult:
@@ -2252,12 +1597,7 @@ Timeout after request was sent -> verify outcome before failover
 
 ## 24.1 Multi-availability-zone deployment
 
-Deploy:
-
-- API instances across multiple availability zones.
-- Database with synchronous standby or managed multi-zone failover.
-- Event brokers with replicated partitions.
-- Redundant NAT or private connectivity paths to providers.
+Deploy API instances across multiple availability zones, a database with a synchronous standby or managed multi-zone failover, event brokers with replicated partitions, and redundant NAT or private connectivity paths to the providers.
 
 ## 24.2 Regional strategy
 
@@ -2274,13 +1614,7 @@ flowchart LR
     PrimaryBroker -->|replication| DRBroker[(DR Broker)]
 ```
 
-Active-active payment writes across regions are difficult because of:
-
-- Idempotency ownership.
-- Global uniqueness.
-- Conflicting state transitions.
-- Ledger ordering.
-- Provider region restrictions.
+Active-active payment writes across regions are difficult because of idempotency ownership, global uniqueness, conflicting state transitions, ledger ordering, and provider region restrictions.
 
 Use active-active only when business requirements justify the complexity.
 
@@ -2299,28 +1633,13 @@ These are examples, not universal targets. Financial and regulatory requirements
 
 ## 24.4 Backups
 
-Use:
-
-- Automated database snapshots.
-- Point-in-time recovery.
-- Cross-region copies where required.
-- Encrypted backups.
-- Regular restore testing.
+Use automated database snapshots, point-in-time recovery, cross-region copies where required, encrypted backups, and regular restore testing.
 
 A backup that has never been restored is an assumption, not a recovery plan.
 
 ## 24.5 Disaster recovery testing
 
-Test:
-
-- Database failover.
-- Provider outage.
-- Queue outage.
-- Lost webhook events.
-- Region evacuation.
-- Secret rotation failure.
-- Replay from outbox or event log.
-- Reconciliation after recovery.
+Test database failover, a provider outage, a queue outage, lost webhook events, region evacuation, secret rotation failure, replay from the outbox or event log, and reconciliation after recovery.
 
 ---
 
@@ -2344,32 +1663,13 @@ The design is technology-independent, but a realistic implementation could use:
 
 ## 25.1 Start simple
 
-A strong first production version can be:
-
-```text
-Modular payment service
-PostgreSQL
-Redis
-Transactional outbox
-Managed queue
-One provider adapter
-Webhook worker
-Ledger module or service
-Daily reconciliation
-```
+A strong first production version is a modular payment service on PostgreSQL and Redis, with a transactional outbox, a managed queue, one provider adapter, a webhook worker, a ledger module or service, and daily reconciliation.
 
 Do not introduce dozens of microservices before the domain and traffic require them.
 
 ## 25.2 When to separate services
 
-Separate a component when it needs independent:
-
-- Scaling.
-- Security boundary.
-- Availability target.
-- Data ownership.
-- Release lifecycle.
-- Team ownership.
+Separate a component when it needs an independent scaling profile, security boundary, availability target, data ownership, release lifecycle, or owning team.
 
 The ledger is a strong candidate for separation because it has stricter invariants and access control than normal payment workflow data.
 
@@ -2379,176 +1679,41 @@ The ledger is a strong candidate for separation because it has stricter invarian
 
 ## 26.1 Synchronous versus asynchronous response
 
-### Synchronous
-
-Advantages:
-
-- Simple merchant experience.
-- Immediate result.
-
-Disadvantages:
-
-- Higher latency.
-- More sensitive to provider outages.
-- Cannot avoid asynchronous provider behavior.
-
-### Asynchronous
-
-Advantages:
-
-- Better resilience.
-- Handles long-running payment methods.
-
-Disadvantages:
-
-- Merchant must poll or consume webhooks.
-- More complex state handling.
+| Response style | Advantages | Disadvantages |
+|---|---|---|
+| Synchronous | Simple merchant experience, immediate result. | Higher latency, more sensitive to provider outages, and it still cannot avoid asynchronous provider behavior. |
+| Asynchronous | Better resilience, handles long-running payment methods. | The merchant must poll or consume webhooks, and state handling is more complex. |
 
 Practical design: return immediate results when available, but always support `PROCESSING` and asynchronous completion.
 
 ## 26.2 One database versus database per service
 
-### One database
-
-Advantages:
-
-- Easy ACID transactions.
-- Simpler operations.
-- Faster development.
-
-Disadvantages:
-
-- Strong coupling.
-- Harder independent scaling.
-- Larger failure domain.
-
-### Database per service
-
-Advantages:
-
-- Clear ownership.
-- Independent scaling.
-- Stronger boundaries.
-
-Disadvantages:
-
-- Distributed consistency.
-- More reconciliation.
-- More operational complexity.
+| Layout | Advantages | Disadvantages |
+|---|---|---|
+| One database | Easy ACID transactions, simpler operations, faster development. | Strong coupling, harder independent scaling, larger failure domain. |
+| Database per service | Clear ownership, independent scaling, stronger boundaries. | Distributed consistency, more reconciliation, more operational complexity. |
 
 Start with clear schemas and ownership. Split only when justified.
 
 ## 26.3 Strong consistency versus availability
 
-Use strong consistency for:
-
-- Idempotency ownership.
-- Refund limits.
-- Ledger posting.
-- State transitions.
-
-Use eventual consistency for:
-
-- Notifications.
-- Search.
-- Analytics.
-- Merchant dashboards where slight delay is acceptable.
+Use strong consistency for idempotency ownership, refund limits, ledger posting, and state transitions. Eventual consistency is fine for notifications, search, analytics, and merchant dashboards where a slight delay is acceptable.
 
 ## 26.4 Build versus use a provider
 
-Most companies should integrate with established payment providers rather than directly connecting to payment networks.
+Most companies should integrate with established payment providers rather than connecting to payment networks directly.
 
-Build internal capabilities for:
-
-- Payment orchestration.
-- Provider abstraction.
-- Merchant APIs.
-- Ledger.
-- Reconciliation.
-- Risk rules.
-- Reporting.
-
-Use providers for:
-
-- Payment credential vaulting.
-- Network connectivity.
-- Authentication flows.
-- Local payment method integration.
-- Regulatory and acquiring capabilities.
+Build internally the parts that encode your business: payment orchestration, provider abstraction, merchant APIs, the ledger, reconciliation, risk rules, and reporting. Use providers for payment credential vaulting, network connectivity, authentication flows, local payment method integration, and regulatory and acquiring capabilities.
 
 ## 26.5 Exactly-once versus effectively-once
 
 Perfect end-to-end exactly-once processing across HTTP clients, databases, queues, providers, and merchant systems is not a realistic general assumption.
 
-Design for effectively-once business behavior using:
-
-- Idempotency keys.
-- Unique constraints.
-- Durable operation records.
-- Transactional outbox.
-- Deduplicated consumers.
-- State-machine validation.
-- Immutable ledger references.
-- Reconciliation.
+Design instead for effectively-once business behavior, built from idempotency keys, unique constraints, durable operation records, the transactional outbox, deduplicating consumers, state-machine validation, immutable ledger references, and reconciliation.
 
 ---
 
-# 27. Final Design Summary
-
-A reliable payment system can be understood through five central ideas.
-
-## 27.1 Stable payment intent
-
-Represent the merchant's payment goal as a stable payment object. Record each provider call as a separate attempt.
-
-```text
-Payment -> one logical business operation
-Attempt -> one provider execution
-```
-
-## 27.2 Explicit state machine
-
-Allow only valid payment transitions. Handle `PROCESSING` and unknown outcomes as normal states, not edge cases.
-
-## 27.3 Idempotency at every boundary
-
-Use durable idempotency for merchant requests, provider requests, events, ledger postings, and webhook deliveries.
-
-## 27.4 Immutable financial ledger
-
-Keep payment workflow state separate from accounting. Record every money movement as balanced, append-only ledger entries.
-
-## 27.5 Reconciliation as the final safety net
-
-Compare internal records against provider and bank records. Repair mismatches through audited correction workflows.
-
-## 27.6 Compact architecture view
-
-```mermaid
-flowchart LR
-    Merchant --> API[Payment API]
-    API --> PaymentDB[(Payment DB)]
-    API --> Risk[Risk]
-    API --> Router[Provider Router]
-    Router --> Providers[Payment Providers]
-    API --> Ledger[Immutable Ledger]
-    API --> Outbox[(Transactional Outbox)]
-    Outbox --> Events[Event Broker]
-    Providers --> Webhooks[Webhook Ingestion]
-    Webhooks --> PaymentDB
-    Events --> Notifications[Merchant Notifications]
-    Providers --> Reconciliation[Reconciliation]
-    PaymentDB --> Reconciliation
-    Ledger --> Reconciliation
-```
-
-The most important interview-level conclusion is:
-
-> A payment system is not just an API that calls a gateway. It is a distributed financial workflow that must safely handle duplicate requests, uncertain external outcomes, asynchronous events, immutable money records, and reconciliation.
-
----
-
-# 28. References
+# 27. References
 
 The following official references are useful for validating production design details:
 

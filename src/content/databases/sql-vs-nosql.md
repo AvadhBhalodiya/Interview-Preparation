@@ -2,23 +2,53 @@
 title: "SQL vs NoSQL"
 group: "Postgres & NoSQL"
 order: 11
+updated: "July 2026"
 ---
 
 # SQL vs NoSQL — When to Use Each
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer  
-> **Last reviewed:** July 2026
-
-SQL and NoSQL are not opposing technologies where one is always better than the other. They are different approaches to storing, querying, and scaling data.
-
-The practical question is not:
-
 > “Which database is the best?”
-
-It is:
-
+>
 > “Which database model matches this application's data, access patterns, consistency requirements, and scale?”
+
+## In short
+
+- **SQL is the safe default** for business systems: related tables, transactions across several rows, database-enforced constraints, and ad hoc joins and reporting when the questions keep changing.
+- **NoSQL is a category, not one model** — document, key-value, wide-column, and graph stores solve different problems, so choose the model rather than the label.
+- Document stores fit aggregates read and written together; key-value fits lookups by a known key; wide-column fits partitioned write-heavy event data; graph fits multi-hop relationship traversal.
+- **NoSQL is not schema-free or transaction-free** — MongoDB is atomic per document and supports costlier multi-document transactions, DynamoDB makes you choose eventual or strong reads, and Cassandra tunes consistency per operation.
+- **SQL scales too**, through read replicas, partitioning, caching, sharding, and distributed SQL; NoSQL scale still depends on a partition key that spreads traffic instead of creating hot partitions.
+- Duplicated data is often intentional in NoSQL, because an order-time snapshot of a product name and price is correct business behavior, not a modeling mistake.
+- Polyglot persistence is normal, but one system must own each business fact, and every extra database adds synchronization, backup, monitoring, and cost.
+
+```mermaid
+flowchart TD
+    A[Start with application requirements] --> B{Are multi-record transactions and integrity constraints central?}
+
+    B -->|Yes| SQL[Prefer SQL]
+    B -->|No or limited| C{Are complex joins and changing reports important?}
+
+    C -->|Yes| SQL
+    C -->|No| D{Which access pattern dominates?}
+
+    D -->|Whole JSON-like aggregate| DOC[Document database]
+    D -->|Lookup by known key| KV[Key-value database]
+    D -->|Massive partitioned event workload| WC[Wide-column database]
+    D -->|Relationship and path traversal| GRAPH[Graph database]
+
+    SQL --> E{Does one database satisfy every workload?}
+    DOC --> E
+    KV --> E
+    WC --> E
+    GRAPH --> E
+
+    E -->|No| HYBRID[Use polyglot persistence carefully]
+    E -->|Yes| ONE[Keep the architecture simple]
+```
+
+**Interview answer:** I choose NoSQL when a specific non-relational model matches the workload better than tables do — a document store when the application reads and writes a whole aggregate such as an order or a profile, a key-value store when access is by a known key such as a session or a cart, a wide-column store for high-volume partitioned event data, and a graph database when multi-hop relationships are the actual query. I stay relational when correctness depends on multi-record transactions, integrity constraints, or reporting that will keep changing, which covers most business systems. In practice I start with PostgreSQL and add a specialized store only when a demonstrated workload justifies the extra operational complexity.
+
+**Gotcha:** Treating “NoSQL” as a single decision — key-value, document, wide-column, and graph stores solve different problems, and picking one for scale the system does not have usually ends with joins re-implemented in application code.
 
 ---
 
@@ -181,13 +211,7 @@ Key:   session:9f82a
 Value: {"user_id": 42, "expires_at": "2026-07-27T18:00:00Z"}
 ```
 
-The access pattern is usually simple:
-
-```text
-GET session:9f82a
-SET session:9f82a {...}
-DELETE session:9f82a
-```
+The access pattern is usually simple: `GET`, `SET`, and `DELETE` against that key.
 
 **Good fit:**
 
@@ -459,32 +483,7 @@ A graph database can traverse these relationships more naturally than repeatedly
 
 # 7. Decision Flow
 
-```mermaid
-flowchart TD
-    A[Start with application requirements] --> B{Are multi-record transactions and integrity constraints central?}
-
-    B -->|Yes| SQL[Prefer SQL]
-    B -->|No or limited| C{Are complex joins and changing reports important?}
-
-    C -->|Yes| SQL
-    C -->|No| D{Which access pattern dominates?}
-
-    D -->|Whole JSON-like aggregate| DOC[Document database]
-    D -->|Lookup by known key| KV[Key-value database]
-    D -->|Massive partitioned event workload| WC[Wide-column database]
-    D -->|Relationship and path traversal| GRAPH[Graph database]
-
-    SQL --> E{Does one database satisfy every workload?}
-    DOC --> E
-    KV --> E
-    WC --> E
-    GRAPH --> E
-
-    E -->|No| HYBRID[Use polyglot persistence carefully]
-    E -->|Yes| ONE[Keep the architecture simple]
-```
-
-A useful default is:
+The decision flow at the top of this note narrows a workload down to one model. A useful default is:
 
 > Start with a relational database when requirements are uncertain. Add a specialized NoSQL system only when a clear workload justifies the operational complexity.
 
@@ -649,16 +648,7 @@ Many NoSQL databases support transactions, but the **scope, performance characte
 
 ## 10.1 SQL Transaction Model
 
-Relational databases commonly support transactions across several rows and tables:
-
-```text
-BEGIN
-  ├── Create order
-  ├── Reserve inventory
-  ├── Create payment record
-  └── Update customer balance
-COMMIT or ROLLBACK
-```
+Relational databases commonly support transactions across several rows and tables, so creating an order, reserving inventory, recording a payment, and updating a customer balance can commit or roll back as one unit. The guarantees behind that are covered in [ACID Properties](acid-properties.md), and the concurrency trade-offs in [Transaction Isolation Levels](transaction-isolation-levels.md).
 
 This model is valuable when several related changes must remain consistent.
 
@@ -744,21 +734,9 @@ A good partition key:
 - Avoids one very hot customer, tenant, date, or device
 - Keeps related data together without creating unbounded partitions
 
-Example of a risky key:
+A risky key such as `partition_key = current_date` sends all of today's writes to one partition, while combining fields, such as `partition_key = device_id + event_date`, spreads them.
 
-```text
-partition_key = current_date
-```
-
-All of today's writes may target one partition.
-
-A better model may combine fields:
-
-```text
-partition_key = device_id + event_date
-```
-
-The correct design depends on traffic distribution and query requirements.
+The correct design depends on traffic distribution and query requirements. The mechanics are covered in [Replication, Sharding and Partitioning](replication-sharding-partitioning.md) and [DynamoDB Keys and Single-Table Design](dynamodb-keys-single-table.md).
 
 ---
 
@@ -902,34 +880,6 @@ Before selecting a database, answer the following.
 - What are the compliance and data-residency requirements?
 - What is the total cost, not only the initial infrastructure cost?
 
-## Decision Summary
-
-```text
-Choose SQL when:
-- Relationships are important
-- Transactions span multiple records
-- Integrity constraints matter
-- Queries and reports will evolve
-
-Choose a document database when:
-- Data is naturally an aggregate
-- Records vary in structure
-- Related data is normally read together
-
-Choose a key-value database when:
-- Access is primarily by known key
-- Very low latency is important
-- The data model is simple
-
-Choose a wide-column database when:
-- The workload is distributed and write-heavy
-- Queries are known in advance
-- Partition-based access fits naturally
-
-Choose a graph database when:
-- Relationships and multi-hop traversal are the main problem
-```
-
 ---
 
 # 15. Best Practices
@@ -999,20 +949,7 @@ Many performance issues come from missing indexes, inefficient queries, excessiv
 
 ---
 
-# 16. Key Takeaways
-
-1. **SQL is a strong default** for business systems with relationships, transactions, integrity rules, and changing queries.
-2. **NoSQL is a category, not one database model.** Document, key-value, wide-column, and graph databases solve different problems.
-3. **NoSQL does not mean schema-free or transaction-free.** The schema may be enforced differently, and transaction scope varies by database.
-4. **SQL databases can scale**, while NoSQL databases still require careful partition and access-pattern design.
-5. **Data duplication may be intentional** in NoSQL when it improves read performance or preserves historical snapshots.
-6. **Consistency should match business risk.** A stale feed count and a stale account balance are not equivalent.
-7. **One application can use both**, but every additional database increases operational and synchronization complexity.
-8. **Choose from requirements, not trends.** Data shape, queries, invariants, throughput, latency, availability, and team capability should drive the decision.
-
----
-
-# 17. References
+# 16. References
 
 The following official documentation was used to verify current product behavior and terminology:
 

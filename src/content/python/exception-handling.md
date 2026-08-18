@@ -8,6 +8,33 @@ order: 17
 
 > Exception handling lets a program respond to runtime failures in a controlled way. Good exception design keeps normal business logic readable, preserves debugging information, and gives callers enough context to decide what to do next.
 
+## In short
+
+- `try` guards the risky statement, `except` handles a matching failure, `else` runs only when nothing was raised, and `finally` always runs — including on `return`, `break`, and `continue`.
+- A raised exception unwinds the call stack until a handler matches, so handle it at the layer that has enough context to retry, translate, or report it.
+- Handlers are tested top to bottom, so a child must come before its parent: `except OSError` above `except FileNotFoundError` makes the specific block unreachable.
+- `BaseException` sits above `Exception` and holds `SystemExit`, `KeyboardInterrupt`, and `GeneratorExit`; application code catches `Exception`, and only at a boundary.
+- `raise DomainError(...) from exc` keeps the technical cause, a bare `raise` re-raises with the original traceback, and `from None` deliberately suppresses the context.
+- Create a custom exception when the failure belongs to your domain, give it structured attributes instead of a message callers have to parse, and put one package-level base class above the family.
+- Convert vendor exceptions at the repository or gateway boundary so the rest of the application never depends on a specific database library's exception classes.
+
+```mermaid
+flowchart TD
+    A[Execute statement] --> B{Exception raised?}
+    B -- No --> C[Continue normal flow]
+    B -- Yes --> D[Search current try block]
+    D --> E{Matching except block?}
+    E -- Yes --> F[Run handler]
+    E -- No --> G[Move up the call stack]
+    G --> H{Handler found?}
+    H -- Yes --> F
+    H -- No --> I[Terminate current program flow and print traceback]
+```
+
+**Interview answer:** When an exception is raised, Python stops normal execution and unwinds the call stack until it finds a matching `except`, checking handlers top to bottom and running `finally` on the way out; `else` keeps the success path outside the protected block so a handler only covers the operation it understands. I catch specific exceptions at the layer that has enough context to act — retry, convert, or return an error response — and let unexpected ones reach the application boundary, where they are logged once. I define a custom exception when the failure belongs to the domain and no built-in type communicates it, normally one package-level base class with subclasses that carry structured attributes, raised with `from exc` so the original cause survives.
+
+**Gotcha:** Catching `Exception` (or a bare `except:`) and swallowing it with `pass`. It makes failures invisible, hides programming defects, and can leave the system in an incorrect state; at `BaseException` level it also blocks `Ctrl+C`. Ordering a broad handler before a narrow one is the same mistake in another shape — the specific handler simply never runs.
+
 ---
 
 # 1. Errors and Exceptions
@@ -19,34 +46,15 @@ Python programs mainly face two categories of errors.
 A syntax error means Python cannot understand the source code.
 
 ```python
-def calculate_total(items)
+def calculate_total(items)   # SyntaxError: expected ':'
     return sum(items)
 ```
 
-The missing colon prevents the program from starting:
-
-```text
-SyntaxError: expected ':'
-```
-
-Syntax errors are detected while Python parses the code. A `try` block normally cannot recover from a syntax error in the same source file because that file cannot be executed successfully.
+The missing colon prevents the program from starting. Syntax errors are detected while Python parses the code. A `try` block normally cannot recover from a syntax error in the same source file because that file cannot be executed successfully.
 
 ## 1.2 Exceptions
 
-An exception happens while syntactically valid code is running.
-
-```python
-price = 100
-quantity = 0
-
-average = price / quantity
-```
-
-This raises:
-
-```text
-ZeroDivisionError: division by zero
-```
+An exception happens while syntactically valid code is running: with `quantity = 0`, the expression `price / quantity` raises `ZeroDivisionError: division by zero`.
 
 Common runtime exceptions include:
 
@@ -69,31 +77,14 @@ An exception is an object. Its class describes the failure category, while its m
 
 # 2. How Exceptions Flow Through a Program
 
-When an exception is raised, Python stops normal execution and searches for a matching handler.
-
-```mermaid
-flowchart TD
-    A[Execute statement] --> B{Exception raised?}
-    B -- No --> C[Continue normal flow]
-    B -- Yes --> D[Search current try block]
-    D --> E{Matching except block?}
-    E -- Yes --> F[Run handler]
-    E -- No --> G[Move up the call stack]
-    G --> H{Handler found?}
-    H -- Yes --> F
-    H -- No --> I[Terminate current program flow and print traceback]
-```
-
-Consider the following call chain:
+When an exception is raised, Python stops normal execution and searches for a matching handler. Consider the following call chain:
 
 ```python
 def load_user(user_id: int) -> dict:
     return query_database(user_id)
 
-
 def query_database(user_id: int) -> dict:
     raise ConnectionError("Database is unavailable")
-
 
 try:
     user = load_user(42)
@@ -112,16 +103,7 @@ This process is called **exception propagation** or **stack unwinding**.
 
 # 3. The `try` and `except` Blocks
 
-The basic structure is:
-
-```python
-try:
-    risky_operation()
-except SpecificException:
-    handle_failure()
-```
-
-Example:
+The basic structure is a `try` block guarding the risky call and an `except` clause naming the exception it handles:
 
 ```python
 def divide(total: float, count: int) -> float:
@@ -135,32 +117,14 @@ The `except` block runs only when the protected code raises the specified except
 
 ## 3.1 Accessing the exception object
 
-Use `as` to access details:
+Use `as` to access details. The variable `exc` is the exception instance, and its standard attributes carry the message:
 
 ```python
 try:
     age = int("unknown")
 except ValueError as exc:
-    print(f"Invalid age: {exc}")
-```
-
-The variable `exc` is the exception instance.
-
-Useful standard attributes include:
-
-```python
-try:
-    int("abc")
-except ValueError as exc:
-    print(exc.args)
-    print(str(exc))
-```
-
-Possible output:
-
-```text
-("invalid literal for int() with base 10: 'abc'",)
-invalid literal for int() with base 10: 'abc'
+    print(str(exc))    # invalid literal for int() with base 10: 'unknown'
+    print(exc.args)    # ("invalid literal for int() with base 10: 'unknown'",)
 ```
 
 ## 3.2 Keep the `try` block narrow
@@ -211,6 +175,12 @@ finally:
     clean_up()
 ```
 
+| `try` outcome | What runs |
+|---|---|
+| Succeeds | `else` runs, then `finally` |
+| Raises a matching exception | The matching `except` runs, then `finally` |
+| Raises an unhandled exception | No `except` matches, `finally` runs, then the exception propagates |
+
 ## 4.1 `else`
 
 The `else` block runs only when the `try` block finishes without an exception.
@@ -236,20 +206,7 @@ except ValueError:
     ...
 ```
 
-If `start_server()` unexpectedly raises `ValueError`, the handler may incorrectly treat it as a parsing problem.
-
-A clearer version is:
-
-```python
-try:
-    port = int(raw_port)
-except ValueError as exc:
-    raise ValueError("Port must be an integer") from exc
-else:
-    start_server(port)
-```
-
-The handler now covers only the operation it understands.
+If `start_server()` unexpectedly raises `ValueError`, the handler may incorrectly treat it as a parsing problem. Moving `start_server(port)` into an `else` block, the way `parse_port()` does above, keeps the handler covering only the operation it understands.
 
 ## 4.2 `finally`
 
@@ -435,17 +392,7 @@ def calculate_discount(price: float, percentage: float) -> float:
 
 ## 7.1 Raise a class or instance
 
-Both forms are valid:
-
-```python
-raise ValueError
-```
-
-```python
-raise ValueError("percentage must be between 0 and 100")
-```
-
-Raising an instance is more useful because it includes a meaningful message.
+Both `raise ValueError` and `raise ValueError("percentage must be between 0 and 100")` are valid. Raising an instance is more useful because it includes a meaningful message.
 
 ## 7.2 Re-raise the current exception
 
@@ -459,16 +406,7 @@ except PaymentGatewayError:
     raise
 ```
 
-Do not replace it with `raise exc` when you want to preserve the original traceback location:
-
-```python
-try:
-    process_payment()
-except PaymentGatewayError as exc:
-    raise  # Preferred
-```
-
-`raise exc` raises the same object again from the current line and can make the traceback less clear.
+Do not replace it with `raise exc` when you want to preserve the original traceback location: `raise exc` raises the same object again from the current line and can make the traceback less clear.
 
 ## 7.3 Choose the correct exception type
 
@@ -520,17 +458,7 @@ This is called **explicit exception chaining**.
 
 ## 8.1 Why chaining matters
 
-The higher-level exception gives business context:
-
-```text
-Could not load customer 42
-```
-
-The original exception preserves the technical cause:
-
-```text
-database connection refused
-```
+The higher-level exception gives business context (`Could not load customer 42`), while the original exception preserves the technical cause (`database connection refused`).
 
 Without chaining, developers may lose the information needed to debug the root failure.
 
@@ -623,17 +551,7 @@ class InsufficientBalanceError(Exception):
         super().__init__(message)
 ```
 
-Raise it:
-
-```python
-raise InsufficientBalanceError(
-    account_id="ACC-1042",
-    available=500.0,
-    requested=700.0,
-)
-```
-
-Handle its structured information:
+The keyword-only signature forces call sites to be explicit: `raise InsufficientBalanceError(account_id="ACC-1042", available=500.0, requested=700.0)`. A handler can then read the structured information instead of the message:
 
 ```python
 try:
@@ -650,22 +568,7 @@ Calling `super().__init__(message)` ensures standard exception behaviour, includ
 
 ## 9.2 Naming convention
 
-Custom exception names normally end with `Error`:
-
-```python
-class ValidationError(Exception):
-    pass
-
-
-class ResourceNotFoundError(Exception):
-    pass
-
-
-class PaymentDeclinedError(Exception):
-    pass
-```
-
-The name should describe the failed condition, not the operation that happened to detect it.
+Custom exception names normally end with `Error`: `ValidationError`, `ResourceNotFoundError`, `PaymentDeclinedError`. The name should describe the failed condition, not the operation that happened to detect it.
 
 ---
 
@@ -677,22 +580,17 @@ A larger application benefits from one package-level base exception.
 class OrderServiceError(Exception):
     """Base exception for the order service."""
 
-
 class OrderNotFoundError(OrderServiceError):
     """Raised when an order does not exist."""
-
 
 class InvalidOrderStateError(OrderServiceError):
     """Raised when an operation is invalid for the current order state."""
 
-
 class PaymentError(OrderServiceError):
     """Base exception for payment-related failures."""
 
-
 class PaymentDeclinedError(PaymentError):
     """Raised when a payment provider declines a payment."""
-
 
 class PaymentGatewayUnavailableError(PaymentError):
     """Raised when the payment provider cannot be reached."""
@@ -740,10 +638,8 @@ Example:
 class CustomerServiceError(Exception):
     pass
 
-
 class CustomerUnavailableError(CustomerServiceError):
     pass
-
 
 class CustomerRepository:
     def get(self, customer_id: int) -> dict:
@@ -882,14 +778,13 @@ For ordinary single-failure code, normal `try` and `except` remain the standard 
 
 # 13. Exceptions in Real Applications
 
-## 13.1 Validation layer
+## 13.1 Validation and repository layers
 
-Use exceptions when a function cannot fulfil its documented contract.
+Use exceptions when a function cannot fulfil its documented contract. A validation error can subclass the built-in exception that already describes it.
 
 ```python
 class InvalidEmailError(ValueError):
     pass
-
 
 def normalize_email(email: str) -> str:
     normalized = email.strip().lower()
@@ -900,31 +795,9 @@ def normalize_email(email: str) -> str:
     return normalized
 ```
 
-The caller can decide how the error should appear in an API, form, or command-line interface.
+The caller can decide how the error should appear in an API, form, or command-line interface. One layer down, the repository does the complementary job: it converts vendor-specific exceptions into application-specific ones with `raise ... from exc`, as the `CustomerRepository` example in section 10.1 shows.
 
-## 13.2 Repository layer
-
-Convert vendor-specific exceptions into application-specific exceptions.
-
-```python
-class RepositoryError(Exception):
-    pass
-
-
-class UserRepositoryUnavailableError(RepositoryError):
-    pass
-
-
-def get_user(user_id: int) -> dict:
-    try:
-        return database.query_user(user_id)
-    except DatabaseTimeoutError as exc:
-        raise UserRepositoryUnavailableError(
-            f"Could not load user {user_id}"
-        ) from exc
-```
-
-## 13.3 Service layer
+## 13.2 Service layer
 
 Differentiate recoverable business outcomes from unexpected technical failures.
 
@@ -932,14 +805,11 @@ Differentiate recoverable business outcomes from unexpected technical failures.
 class CheckoutError(Exception):
     pass
 
-
 class ProductOutOfStockError(CheckoutError):
     pass
 
-
 class PaymentDeclinedError(CheckoutError):
     pass
-
 
 def checkout(command: CheckoutCommand) -> Order:
     inventory.reserve(command.items)
@@ -960,7 +830,7 @@ except CheckoutError as exc:
     return error_response(status=400, code="CHECKOUT_FAILED", detail=str(exc))
 ```
 
-## 13.4 Retryable and non-retryable errors
+## 13.3 Retryable and non-retryable errors
 
 Exception types can communicate retry behaviour.
 
@@ -968,10 +838,8 @@ Exception types can communicate retry behaviour.
 class ExternalServiceError(Exception):
     pass
 
-
 class TemporaryExternalServiceError(ExternalServiceError):
     """The operation may succeed when retried."""
-
 
 class PermanentExternalServiceError(ExternalServiceError):
     """Retrying the same request is not expected to help."""
@@ -1001,7 +869,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 def run_job(job_id: str) -> None:
     try:
         process_job(job_id)
@@ -1010,11 +877,7 @@ def run_job(job_id: str) -> None:
         raise
 ```
 
-`logger.error()` does not automatically include a traceback unless `exc_info=True` is supplied:
-
-```python
-logger.error("Job processing failed", exc_info=True)
-```
+`logger.error()` does not automatically include a traceback unless `exc_info=True` is supplied, as in `logger.error("Job processing failed", exc_info=True)`.
 
 ## 14.1 Log at the right boundary
 
@@ -1034,13 +897,7 @@ A cleaner approach is:
 
 ## 14.2 Do not expose internal details
 
-A server can log detailed information internally:
-
-```text
-Database connection failed for host db.internal:5432
-```
-
-But the public API response should be safe and stable:
+A server can log detailed information internally, such as `Database connection failed for host db.internal:5432`, but the public API response should be safe and stable:
 
 ```json
 {
@@ -1055,14 +912,7 @@ Tracebacks, SQL statements, credentials, tokens, file paths, and internal hostna
 
 # 15. Exceptions and Context Managers
 
-A context manager controls setup and cleanup around a block.
-
-```python
-with acquire_lock("inventory"):
-    update_inventory()
-```
-
-Its protocol uses:
+A context manager controls setup and cleanup around a block, as in `with acquire_lock("inventory"):`. Its protocol uses two methods:
 
 ```python
 class ManagedResource:
@@ -1091,16 +941,7 @@ class IgnoreFileNotFound:
         return exc_type is FileNotFoundError
 ```
 
-Usage:
-
-```python
-with IgnoreFileNotFound():
-    delete_file("temporary.txt")
-```
-
-Suppress exceptions only when the missing failure is truly acceptable. Silent suppression can hide defects.
-
-The standard library already provides a focused helper:
+Suppress exceptions only when the missing failure is truly acceptable. Silent suppression can hide defects. The standard library already provides a focused helper for exactly this case:
 
 ```python
 from contextlib import suppress
@@ -1119,7 +960,6 @@ Using `pytest`:
 
 ```python
 import pytest
-
 
 def test_withdraw_rejects_insufficient_balance() -> None:
     with pytest.raises(InsufficientBalanceError) as captured:
@@ -1146,7 +986,6 @@ Using `unittest`:
 ```python
 import unittest
 
-
 class WithdrawalTests(unittest.TestCase):
     def test_rejects_insufficient_balance(self) -> None:
         with self.assertRaises(InsufficientBalanceError):
@@ -1157,18 +996,9 @@ class WithdrawalTests(unittest.TestCase):
 
 # 17. Best Practices
 
-## 17.1 Catch specific exceptions
+## 17.1 Catch specific exceptions and keep the protected block small
 
-```python
-try:
-    port = int(raw_port)
-except ValueError:
-    ...
-```
-
-Specific handlers clearly document expected failures and avoid hiding unrelated defects.
-
-## 17.2 Keep protected code small
+Name the exception you expect, and wrap only the statement that can raise it.
 
 ```python
 try:
@@ -1179,9 +1009,9 @@ except json.JSONDecodeError as exc:
 process_payload(payload)
 ```
 
-Only JSON parsing is expected to raise `JSONDecodeError`.
+Only JSON parsing is expected to raise `JSONDecodeError`. Specific handlers clearly document expected failures and avoid hiding unrelated defects.
 
-## 17.3 Preserve the original cause
+## 17.2 Preserve the original cause
 
 ```python
 try:
@@ -1194,7 +1024,7 @@ except GatewayTimeout as exc:
 
 This gives callers domain meaning while retaining debugging detail.
 
-## 17.4 Use exceptions for exceptional outcomes
+## 17.3 Use exceptions for exceptional outcomes
 
 Do not use exceptions as a replacement for simple normal branching.
 
@@ -1222,7 +1052,7 @@ def get_active_user(user_id: int) -> User:
 
 The right choice depends on the function's contract.
 
-## 17.5 Do not silently swallow failures
+## 17.4 Do not silently swallow failures
 
 ```python
 try:
@@ -1243,7 +1073,7 @@ except ProfileServiceUnavailableError:
     profile = create_basic_profile(user_id)
 ```
 
-## 17.6 Use cleanup abstractions
+## 17.5 Use cleanup abstractions
 
 Prefer context managers over manual cleanup:
 
@@ -1255,7 +1085,7 @@ with database.transaction():
 
 They centralize cleanup and transaction behaviour.
 
-## 17.7 Document public exceptions
+## 17.6 Document public exceptions
 
 A public function should make important exception behaviour clear.
 
@@ -1273,7 +1103,7 @@ def reserve_stock(product_id: str, quantity: int) -> Reservation:
 
 This helps callers understand which failures they are expected to handle.
 
-## 17.8 Keep error messages useful
+## 17.7 Keep error messages useful
 
 A strong message explains:
 
@@ -1291,57 +1121,6 @@ raise InsufficientStockError(
 ```
 
 Avoid including secrets, access tokens, passwords, or sensitive personal information.
-
----
-
-# 18. Quick Revision
-
-## Core structure
-
-```python
-try:
-    result = risky_operation()
-except ExpectedError as exc:
-    handle_expected_failure(exc)
-else:
-    use_successful_result(result)
-finally:
-    release_resources()
-```
-
-## Control flow
-
-| `try` outcome | What runs |
-|---|---|
-| Succeeds | `else` runs, then `finally` |
-| Raises a matching exception | The matching `except` runs, then `finally` |
-| Raises an unhandled exception | No `except` matches, `finally` runs, then the exception propagates |
-
-## Key rules
-
-| Requirement | Recommended approach |
-|---|---|
-| Handle an expected failure | Catch its specific exception |
-| Translate a low-level failure | Raise a domain exception using `from exc` |
-| Release a resource | Use a context manager or `finally` |
-| Preserve a traceback | Use bare `raise` |
-| Represent a domain failure | Create a custom `Exception` subclass |
-| Support broad package handling | Define one package-level base exception |
-| Store machine-readable details | Add exception attributes |
-| Add diagnostic context | Use `add_note()` or exception chaining |
-| Handle concurrent failures | Use `ExceptionGroup` and `except*` |
-| Log an active exception | Use `logger.exception()` |
-
-## Mental model
-
-```mermaid
-flowchart LR
-    A[Detect failure] --> B[Raise a precise exception]
-    B --> C[Propagate through layers]
-    C --> D[Add context or translate]
-    D --> E[Handle at the correct boundary]
-    E --> F[Recover, retry, return an error, or stop]
-```
 
 > [!KEY]
 > Good exception handling does not mean catching every error. It means representing failures clearly, handling expected problems at the correct layer, preserving useful debugging context, and allowing unexpected failures to remain visible.

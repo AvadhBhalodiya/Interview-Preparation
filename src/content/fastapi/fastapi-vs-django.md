@@ -2,15 +2,56 @@
 title: "FastAPI vs Django"
 group: "Docs & Framework Choice"
 order: 8
+updated: "July 27, 2026"
 ---
 
 # FastAPI vs Django: When to Pick Which
 
-> **Topic:** FastAPI  
-> **Audience:** Python developers with 3+ years of experience  
-> **Purpose:** Understand the practical differences between FastAPI and Django and make a confident framework choice for real projects and technical discussions  
-> **Last verified:** July 27, 2026  
+> Understand the practical differences between FastAPI and Django and make a confident framework choice for real projects and technical discussions
+>
 > **Versions referenced:** FastAPI 0.139.0 and Django 6.0.7
+
+## In short
+
+- FastAPI is an API-first toolkit: Pydantic validation, async/ASGI by default, dependency injection, and automatic OpenAPI docs. Django is a full batteries-included web platform: ORM, migrations, admin, auth, sessions, forms, and templates.
+- For APIs, the fair comparison is FastAPI vs. Django + Django REST Framework (DRF), not bare Django — DRF is what adds serializers, viewsets, routers, and permissions.
+- Pick FastAPI for API-only services, microservices, high-concurrency async I/O, and AI/ML inference endpoints, where the team is willing to assemble its own ORM, auth, and project structure.
+- Pick Django (usually with DRF) for database-heavy business applications that need a built-in admin, users/sessions/permissions, forms, and fast CRUD delivery.
+- Both frameworks support async today, but async only helps I/O-bound waiting, not CPU-bound work, and one blocking call in the request path removes the benefit either way.
+- Real-world latency is usually dominated by database queries, external calls, and serialization, not framework overhead, so "FastAPI is faster" is rarely the deciding factor.
+- The choice isn't always exclusive: a common pattern pairs a Django core (business data, admin, auth) with a FastAPI service for a specialized async or AI workload.
+
+```mermaid
+flowchart TD
+    Start[What are you building?]
+    FullStack{Do you need built-in admin,<br/>ORM, auth, forms, or templates?}
+    APIOnly{Is it mainly an API or<br/>independent service?}
+    AsyncNeed{Is high-concurrency async I/O<br/>a major requirement?}
+    DataHeavy{Is it a relational,<br/>CRUD-heavy business system?}
+    Django[Django + DRF]
+    FastAPI[FastAPI]
+    Evaluate[Evaluate team skills and ecosystem]
+    Hybrid[Consider Django core + FastAPI service]
+
+    Start --> FullStack
+    FullStack -- Yes --> DataHeavy
+    DataHeavy -- Yes --> Django
+    DataHeavy -- No --> Evaluate
+
+    FullStack -- No --> APIOnly
+    APIOnly -- Yes --> AsyncNeed
+    AsyncNeed -- Yes --> FastAPI
+    AsyncNeed -- No --> Evaluate
+
+    Evaluate --> Django
+    Evaluate --> FastAPI
+
+    Django -. Specialized async or AI component .-> Hybrid
+```
+
+**Interview answer:** Pick FastAPI when the system is mainly an API or independent service with heavy async I/O and the team wants control over its own ORM, auth, and architecture — microservices, public APIs, AI inference. Pick Django, usually with DRF, when it is a database-heavy business application that needs a built-in admin, authentication/sessions, and fast CRUD delivery. Many real systems use both: Django as the business core, FastAPI for a specialized async or AI service.
+
+**Gotcha:** Assuming "FastAPI is faster" settles the decision. Database time, external calls, and serialization dominate real-world latency far more than framework overhead, so the right basis for the choice is product shape — focused API vs. integrated business application — not a benchmark chart.
 
 ---
 
@@ -100,15 +141,7 @@ Core Django can return JSON, but Django REST Framework adds the API-specific fea
 - Browsable API
 - OpenAPI schema support
 
-Therefore, use the following comparison in practice:
-
-```text
-API-only or service-oriented application:
-FastAPI
-
-Database-heavy business application with APIs:
-Django + Django REST Framework
-```
+Therefore, in practice: an API-only or service-oriented application points to FastAPI, while a database-heavy business application with APIs points to Django + Django REST Framework.
 
 ---
 
@@ -388,23 +421,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 app = FastAPI()
 
-
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     price: float = Field(gt=0)
     is_active: bool = True
-
 
 class ProductResponse(ProductCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
 
-
 def get_current_user() -> dict:
     # Replace with real token validation.
     return {"id": 42, "role": "admin"}
-
 
 @app.post(
     "/products",
@@ -448,7 +477,6 @@ These are selected and configured separately.
 
 from django.db import models
 
-
 class Product(models.Model):
     name = models.CharField(max_length=120)
     price = models.DecimalField(max_digits=10, decimal_places=2)
@@ -467,7 +495,6 @@ class Product(models.Model):
 from rest_framework import serializers
 
 from .models import Product
-
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -493,7 +520,6 @@ from rest_framework.viewsets import ModelViewSet
 
 from .models import Product
 from .serializers import ProductSerializer
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -529,7 +555,6 @@ urlpatterns = [
 from django.contrib import admin
 
 from .models import Product
-
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
@@ -604,20 +629,7 @@ A single synchronous middleware or blocking library can reduce the benefit of an
 
 ## 8.3 Performance Is More Than Framework Overhead
 
-Application response time is often dominated by:
-
-```text
-Database query time
-+ external API latency
-+ serialization cost
-+ cache access
-+ network overhead
-+ business logic
-```
-
-Framework overhead may be a small part of total latency.
-
-A useful performance model is:
+Application response time is often dominated by database query time, external API latency, serialization cost, cache access, network overhead, and business logic — framework overhead is usually a small part of the total:
 
 ```text
 Total latency =
@@ -663,15 +675,7 @@ Common choices include:
 - Direct database drivers
 - Repository abstractions
 
-A common relational stack is:
-
-```text
-FastAPI
-+ Pydantic
-+ SQLAlchemy
-+ Alembic
-+ PostgreSQL
-```
+A common relational stack is FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
 
 This provides flexibility, but the team must define:
 
@@ -732,7 +736,6 @@ Example:
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
-
 
 def require_admin(user: Annotated[dict, Depends(get_current_user)]) -> dict:
     if user["role"] != "admin":
@@ -925,14 +928,7 @@ FastAPI works naturally with:
 
 Dependency injection makes external components replaceable during tests.
 
-Example concept:
-
-```python
-app.dependency_overrides[get_current_user] = lambda: {
-    "id": 1,
-    "role": "admin",
-}
-```
+Example concept: `app.dependency_overrides[get_current_user] = lambda: {"id": 1, "role": "admin"}`.
 
 ## Django Testing Style
 
@@ -1090,36 +1086,6 @@ Use both only when the boundary provides clear operational or domain value.
 
 # 16. Decision Framework
 
-## Decision Tree
-
-```mermaid
-flowchart TD
-    Start[What are you building?]
-    FullStack{Do you need built-in admin,<br/>ORM, auth, forms, or templates?}
-    APIOnly{Is it mainly an API or<br/>independent service?}
-    AsyncNeed{Is high-concurrency async I/O<br/>a major requirement?}
-    DataHeavy{Is it a relational,<br/>CRUD-heavy business system?}
-    Django[Django + DRF]
-    FastAPI[FastAPI]
-    Evaluate[Evaluate team skills and ecosystem]
-    Hybrid[Consider Django core + FastAPI service]
-
-    Start --> FullStack
-    FullStack -- Yes --> DataHeavy
-    DataHeavy -- Yes --> Django
-    DataHeavy -- No --> Evaluate
-
-    FullStack -- No --> APIOnly
-    APIOnly -- Yes --> AsyncNeed
-    AsyncNeed -- Yes --> FastAPI
-    AsyncNeed -- No --> Evaluate
-
-    Evaluate --> Django
-    Evaluate --> FastAPI
-
-    Django -. Specialized async or AI component .-> Hybrid
-```
-
 ## Quick Selection Rules
 
 ### Pick FastAPI when most statements are true
@@ -1206,13 +1172,7 @@ A blocking database or SDK call inside an `async def` function can block the eve
 
 ## 18.4 Use Decimal for Money
 
-For financial applications, avoid binary floating-point fields for persisted money.
-
-```python
-from decimal import Decimal
-```
-
-Use suitable database decimal types and define currency, precision, and rounding rules explicitly.
+For financial applications, avoid binary floating-point fields for persisted money — use Python's `Decimal` (`from decimal import Decimal`) with suitable database decimal types, and define currency, precision, and rounding rules explicitly.
 
 ## 18.5 Measure Before Optimizing
 
@@ -1246,44 +1206,6 @@ Extract a service when there is a concrete reason, such as:
 FastAPI remains in the `0.x` version series and evolves actively. Pin dependencies and review release notes before upgrades.
 
 For Django, use a currently supported release series and apply patch/security releases promptly.
-
----
-
-# 19. Final Summary
-
-The practical distinction is:
-
-```text
-FastAPI optimizes the API development experience.
-
-Django optimizes the complete web application development experience.
-```
-
-Choose **FastAPI** for:
-
-- Focused APIs
-- Microservices
-- AI and data services
-- High-concurrency I/O workloads
-- API gateways
-- External integration services
-- Teams that need component-level flexibility
-
-Choose **Django + DRF** for:
-
-- Business platforms
-- Relational, CRUD-heavy systems
-- Admin-driven operations
-- Authentication and permission-heavy applications
-- Server-rendered websites
-- Workflow systems
-- Products that benefit from an integrated framework
-
-The strongest engineering answer is not that one framework is universally better.
-
-It is:
-
-> FastAPI is usually the better API-first service framework, while Django is usually the better integrated business-application framework. The correct choice depends on the product boundary, data model, operational needs, async workload, and team architecture.
 
 ---
 

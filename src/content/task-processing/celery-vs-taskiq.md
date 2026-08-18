@@ -2,14 +2,45 @@
 title: "Celery vs Taskiq"
 group: "Scheduling & Frameworks"
 order: 6
+updated: "July 30, 2026"
 ---
 
 # Celery vs Taskiq
 
-> **Category:** Async & Task Processing  
-> **Audience:** Python developers with 3+ years of experience  
-> **Updated:** July 30, 2026  
+> Two Python task queues compared: Celery's mature ecosystem against Taskiq's async-native design, and how to choose between them.
+>
 > **Version snapshot:** Celery 5.6.x · Taskiq 0.12.4
+
+## In short
+
+- Both frameworks implement the same model: a producer publishes a task message to a **broker**, a separate **worker** process consumes and executes it, and an optional **result backend** stores task state and return value.
+- The real difference is the execution model, not the syntax: Celery's default `prefork` pool runs each task in a child process, while Taskiq runs tasks on an `asyncio` event loop.
+- Celery's built-in pool list has no native asyncio pool, so an `async def` task needs a bridge such as `asyncio.run(...)`; Taskiq runs synchronous functions on a `ThreadPoolExecutor`, or a `ProcessPoolExecutor` for CPU-heavy work.
+- Publishing differs the same way: Celery is `add.delay(10, 20)` from synchronous code, Taskiq is `await add.kiq(10, 20)` from asynchronous code.
+- Celery is the mature side — first-class Django integration, Canvas chains, groups and chords, routing, revocation, Celery Beat, Flower; Taskiq is the modern side — FastAPI integration, strong typing, dependency injection, middleware retries, Prometheus and OpenTelemetry, TaskiqScheduler.
+- Match the framework to the dominant workload: CPU-heavy work and Django ORM operations suit Celery prefork, high-concurrency async I/O suits Taskiq.
+- Neither framework provides exactly-once execution; both are effectively at-least-once when configured for reliability, so every important task must be idempotent.
+
+```mermaid
+flowchart LR
+    A[Web API / Producer] -->|Publish task message| B[(Message Broker)]
+    B -->|Consume message| C[Worker 1]
+    B -->|Consume message| D[Worker 2]
+    B -->|Consume message| E[Worker N]
+
+    C --> F[(Result Backend)]
+    D --> F
+    E --> F
+
+    G[Scheduler] -->|Periodic tasks| B
+    H[Monitoring] -.-> C
+    H -.-> D
+    H -.-> E
+```
+
+**Interview answer:** Choose Taskiq when the service is genuinely async-first — FastAPI or AioHTTP, async SQLAlchemy, async HTTP clients — so that publishing, dependencies, and worker execution all stay inside the `asyncio` model, and the workload is network-bound rather than CPU-bound. Choose Celery for Django, mainly synchronous or CPU-heavy work, complex fan-out and fan-in Canvas workflows, task routing, remote worker control, or when the organization already operates Celery. Do not select Taskiq only because the API is written in FastAPI; the worker workload and dependency stack must be genuinely asynchronous as well.
+
+**Gotcha:** Selecting a broker because it is easy to set up rather than for its delivery behavior. Taskiq's Redis pub/sub and Redis list-queue brokers have no acknowledgement support, so a message can be lost if the worker dies during processing; use the Redis Stream broker when task durability matters.
 
 ---
 
@@ -55,23 +86,6 @@ Celery and Taskiq both implement this general model.
 ---
 
 # 2. Common Architecture
-
-```mermaid
-flowchart LR
-    A[Web API / Producer] -->|Publish task message| B[(Message Broker)]
-    B -->|Consume message| C[Worker 1]
-    B -->|Consume message| D[Worker 2]
-    B -->|Consume message| E[Worker N]
-
-    C --> F[(Result Backend)]
-    D --> F
-    E --> F
-
-    G[Scheduler] -->|Periodic tasks| B
-    H[Monitoring] -.-> C
-    H -.-> D
-    H -.-> E
-```
 
 ## Main Components
 
@@ -149,7 +163,6 @@ app = Celery(
     backend="redis://localhost:6379/1",
 )
 
-
 @app.task
 def add(x: int, y: int) -> int:
     return x + y
@@ -163,11 +176,7 @@ task_result = add.delay(10, 20)
 print(task_result.id)
 ```
 
-Run a worker:
-
-```bash
-celery -A tasks worker --loglevel=INFO
-```
+Run a worker with `celery -A tasks worker --loglevel=INFO`.
 
 ## Celery Mental Model
 
@@ -213,7 +222,6 @@ from taskiq_redis import RedisStreamBroker
 
 broker = RedisStreamBroker("redis://localhost:6379")
 
-
 @broker.task
 async def add(x: int, y: int) -> int:
     return x + y
@@ -227,11 +235,7 @@ task = await add.kiq(10, 20)
 print(task.task_id)
 ```
 
-Run a worker:
-
-```bash
-taskiq worker tasks:broker
-```
+Run a worker with `taskiq worker tasks:broker`.
 
 ## Taskiq Mental Model
 
@@ -339,11 +343,9 @@ from celery import Celery
 
 app = Celery("tasks", broker="redis://localhost:6379/0")
 
-
 async def fetch_remote_data() -> dict:
     await asyncio.sleep(1)
     return {"status": "ok"}
-
 
 @app.task
 def fetch_remote_data_task() -> dict:
@@ -512,7 +514,6 @@ Poor retry candidates:
 class TemporaryServiceError(Exception):
     pass
 
-
 @app.task(
     bind=True,
     autoretry_for=(TemporaryServiceError,),
@@ -552,7 +553,6 @@ broker = RedisStreamBroker(
         max_delay_exponent=300,
     ),
 )
-
 
 @broker.task(
     retry_on_error=True,
@@ -608,17 +608,7 @@ app.conf.beat_schedule = {
 }
 ```
 
-Start Beat:
-
-```bash
-celery -A tasks beat --loglevel=INFO
-```
-
-Start worker:
-
-```bash
-celery -A tasks worker --loglevel=INFO
-```
+Start Beat with `celery -A tasks beat --loglevel=INFO` and the worker with `celery -A tasks worker --loglevel=INFO`.
 
 Keep Beat and workers as separate production processes.
 
@@ -638,23 +628,12 @@ scheduler = TaskiqScheduler(
     sources=[LabelScheduleSource(broker)],
 )
 
-
 @broker.task(schedule=[{"cron": "0 2 * * *"}])
 async def generate_daily_report() -> None:
     ...
 ```
 
-Run the scheduler:
-
-```bash
-taskiq scheduler tasks:scheduler
-```
-
-Run the worker:
-
-```bash
-taskiq worker tasks:broker
-```
+Run the scheduler with `taskiq scheduler tasks:scheduler` and the worker with `taskiq worker tasks:broker`.
 
 Taskiq also supports dynamic schedule sources, including Redis-based sources.
 
@@ -669,10 +648,6 @@ Celery includes mature workflow primitives.
 ### Chain
 
 Execute tasks sequentially.
-
-```text
-Task A --> Task B --> Task C
-```
 
 ```python
 from celery import chain
@@ -775,11 +750,7 @@ Flower provides:
 - Worker shutdown or restart controls
 - Graphs and statistics
 
-Example:
-
-```bash
-celery -A tasks flower
-```
+Start it with `celery -A tasks flower`.
 
 ## 11.2 Taskiq
 
@@ -935,10 +906,8 @@ celery_app.conf.update(
 ```python
 from celery_app import celery_app
 
-
 class TemporaryOCRFailure(Exception):
     pass
-
 
 @celery_app.task(
     bind=True,
@@ -1040,10 +1009,8 @@ import httpx
 
 from broker import broker
 
-
 class TemporaryAnalysisFailure(Exception):
     pass
-
 
 @broker.task(
     retry_on_error=True,
@@ -1085,7 +1052,6 @@ from fastapi import APIRouter, status
 from tasks import analyze_document
 
 router = APIRouter()
-
 
 @router.post(
     "/documents/{document_id}/analyze",
@@ -1200,14 +1166,6 @@ Examples:
 
 Taskiq can efficiently run many async operations while they wait for I/O.
 
-```mermaid
-flowchart TB
-    L[One worker event loop] --> A[Task A waits for API]
-    L --> B[Task B waits for DB]
-    L --> C[Task C waits for S3]
-    L --> D[Task D continues running]
-```
-
 ## 16.2 CPU-Bound Workloads
 
 Examples:
@@ -1220,13 +1178,6 @@ Examples:
 - Data compression
 
 Celery's prefork model is a strong default because multiple processes can use multiple CPU cores.
-
-```text
-CPU Core 1 <-- Celery child process 1
-CPU Core 2 <-- Celery child process 2
-CPU Core 3 <-- Celery child process 3
-CPU Core 4 <-- Celery child process 4
-```
 
 Taskiq can use process executors for synchronous CPU-heavy functions, but Celery has more established operational patterns for this workload.
 
@@ -1244,17 +1195,7 @@ This prevents large tasks from blocking small urgent tasks.
 
 ## 16.4 Avoid Oversized Messages
 
-Bad:
-
-```python
-process_document.delay(large_base64_file)
-```
-
-Better:
-
-```python
-process_document.delay(document_id)
-```
+Publish `process_document.delay(document_id)`, not `process_document.delay(large_base64_file)`.
 
 Store large data in:
 
@@ -1307,7 +1248,6 @@ from taskiq import InMemoryBroker
 
 test_broker = InMemoryBroker()
 
-
 @test_broker.task
 async def add(x: int, y: int) -> int:
     return x + y
@@ -1317,7 +1257,6 @@ Example test:
 
 ```python
 import pytest
-
 
 @pytest.mark.asyncio
 async def test_add() -> None:
@@ -1427,18 +1366,19 @@ flowchart TD
     J -->|No| K[Benchmark Taskiq with process executor]
 ```
 
-## Simple Rule
+## Practical Recommendation for Common Python Stacks
 
-```text
-Django + synchronous workload + mature operations
-    --> Celery
-
-FastAPI + async I/O workload + modern typed API
-    --> Taskiq
-
-Complex orchestration, regardless of web framework
-    --> Usually Celery or a dedicated workflow engine
-```
+| Stack | Recommended Starting Point |
+|---|---|
+| Django + PostgreSQL + Redis | Celery |
+| Django + CPU-heavy document processing | Celery |
+| FastAPI + async SQLAlchemy + async HTTP | Taskiq |
+| FastAPI + existing company-wide Celery cluster | Celery |
+| FastAPI + complex fan-out/fan-in workflows | Celery |
+| FastAPI + high-volume async API calls | Taskiq |
+| Small async microservice | Taskiq |
+| Enterprise platform with many worker controls | Celery |
+| Long-running business workflow | Dedicated workflow engine may be better |
 
 ---
 
@@ -1448,13 +1388,7 @@ These practices apply to both Celery and Taskiq.
 
 ## 21.1 Pass Identifiers, Not Large Objects
 
-```python
-# Recommended
-await process_order.kiq(order_id)
-
-# Avoid
-await process_order.kiq(full_order_object)
-```
+Publish `await process_order.kiq(order_id)`, not `await process_order.kiq(full_order_object)`.
 
 ## 21.2 Make Every Important Task Idempotent
 
@@ -1489,12 +1423,7 @@ Separate workloads by:
 
 ## 21.5 Configure Timeouts
 
-Every external call should have a timeout.
-
-```python
-async with httpx.AsyncClient(timeout=30) as client:
-    ...
-```
+Every external call should have a timeout, for example `async with httpx.AsyncClient(timeout=30) as client`.
 
 A task timeout is not a substitute for an HTTP or database timeout.
 
@@ -1565,59 +1494,7 @@ Task messages and results may contain confidential data.
 
 ---
 
-# 22. Final Recommendation
-
-## Choose Celery by Default When
-
-You need a proven general-purpose background processing system with mature Django support, complex workflows, task routing, remote worker control, and a large operational ecosystem.
-
-## Choose Taskiq by Default When
-
-You are building a genuinely async-first service and want tasks, publishing, dependencies, HTTP calls, and database operations to remain within the `asyncio` model.
-
-## Practical Recommendation for Common Python Stacks
-
-| Stack | Recommended Starting Point |
-|---|---|
-| Django + PostgreSQL + Redis | Celery |
-| Django + CPU-heavy document processing | Celery |
-| FastAPI + async SQLAlchemy + async HTTP | Taskiq |
-| FastAPI + existing company-wide Celery cluster | Celery |
-| FastAPI + complex fan-out/fan-in workflows | Celery |
-| FastAPI + high-volume async API calls | Taskiq |
-| Small async microservice | Taskiq |
-| Enterprise platform with many worker controls | Celery |
-| Long-running business workflow | Dedicated workflow engine may be better |
-
-## Interview-Level Summary
-
-Celery and Taskiq solve the same high-level problem: moving work from an application process to distributed background workers.
-
-The architectural difference is:
-
-```text
-Celery:
-Mature task-processing platform centered on traditional worker pools,
-especially prefork, with rich orchestration and operations.
-
-Taskiq:
-Modern async-first task-processing platform centered on asyncio,
-strong typing, dependency injection, and modular integrations.
-```
-
-The correct choice depends less on which syntax looks cleaner and more on:
-
-- Sync versus async workload
-- Broker reliability
-- Workflow complexity
-- Operational requirements
-- Framework integration
-- Team experience
-- Ecosystem maturity
-
----
-
-# 23. Official References
+# 22. Official References
 
 - Celery stable documentation: https://docs.celeryq.dev/en/stable/
 - Celery concurrency guide: https://docs.celeryq.dev/en/stable/userguide/concurrency/

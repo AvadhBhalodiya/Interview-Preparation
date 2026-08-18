@@ -8,6 +8,32 @@ order: 12
 
 > Python's asynchronous model lets one thread manage many waiting I/O operations efficiently. A coroutine runs until it reaches an `await`, temporarily gives control back to the event loop, and resumes when the awaited operation is ready.
 
+## In short
+
+- `async def` defines a coroutine function; calling it only creates a coroutine object, which does nothing until it is awaited or scheduled.
+- `await` suspends the current coroutine and hands control back to the event loop, which then runs another ready task.
+- The event loop runs one task at a time until that task completes, raises, or reaches an `await`; scheduling is cooperative, so a task has to yield voluntarily.
+- Consecutive `await` statements are still sequential — overlap independent work with `asyncio.create_task()`, `TaskGroup`, or `gather()`.
+- `asyncio` provides concurrency, not CPU parallelism, so it pays off for work dominated by waiting on external systems.
+- Blocking synchronous code freezes the whole loop: move it to `asyncio.to_thread()`, and heavy CPU work to a process pool or a separate worker.
+- Timeouts, cancellation, cleanup in `finally`, and bounded concurrency are core design concerns, not optional extras.
+
+```mermaid
+flowchart TD
+    A[Ready task queue] --> B[Run one task]
+    B --> C{What happened?}
+    C -->|Task completed| D[Store result or exception]
+    C -->|Reached await| E[Register I/O, timer, or Future]
+    E --> F[Run another ready task]
+    F --> A
+    G[I/O or timer becomes ready] --> H[Move waiting task to ready queue]
+    H --> A
+```
+
+**Interview answer:** A coroutine runs on the event-loop thread until it reaches an `await`. There it registers the pending I/O, timer, or Future with the loop and gives control back, so the loop can run another ready task; when the awaited operation becomes ready, the loop moves that coroutine back to the ready queue and resumes it where it stopped. `await` does not make an operation faster — it lets one thread do other useful work while that operation waits.
+
+**Gotcha:** `await` is not a background-job instruction. `result_a = await fetch_a()` followed by `result_b = await fetch_b()` runs the two calls in sequence, and because scheduling is cooperative, a single blocking synchronous call inside a coroutine — `time.sleep()`, a long CPU loop, a synchronous database driver — stalls every other task on that loop.
+
 ---
 
 # 1. Why Asynchronous Programming Exists
@@ -21,19 +47,7 @@ Many backend applications spend more time **waiting** than computing:
 - Waiting for a socket
 - Waiting for a file or subprocess
 
-A normal synchronous function blocks while it waits:
-
-```python
-response = call_external_api()  # Thread waits here
-process(response)
-```
-
-An asynchronous function can pause during that waiting period and allow another coroutine to run:
-
-```python
-response = await call_external_api()  # Current coroutine pauses
-process(response)
-```
+A normal synchronous function blocks while it waits: in `response = call_external_api()`, the thread sits there until the response arrives. An asynchronous function can pause during that waiting period and allow another coroutine to run, so `response = await call_external_api()` suspends only the current coroutine.
 
 The important idea is:
 
@@ -64,12 +78,7 @@ Async programming is especially valuable when an application must handle many in
 
 ## 2.1 Synchronous
 
-Operations run one after another. The next operation cannot proceed until the current operation finishes.
-
-```python
-result_a = fetch_a()
-result_b = fetch_b()
-```
+Operations run one after another. The next operation cannot proceed until the current operation finishes, so `result_b = fetch_b()` starts only once `result_a = fetch_a()` has returned.
 
 ## 2.2 Asynchronous
 
@@ -82,51 +91,11 @@ result_b = await fetch_b()
 
 This code is asynchronous, but it is still **sequential** because the second call starts only after the first one finishes.
 
-## 2.3 Concurrency
+## 2.3 Concurrency, parallelism, and workload type
 
-Multiple operations make progress during overlapping periods.
+`asyncio` provides **concurrency** — many operations making progress during overlapping periods on one thread — and not CPU parallelism across cores. It therefore fits work dominated by waiting on external systems: network requests, database and Redis calls, sockets, and files.
 
-```text
-Task A: running → waiting → running
-Task B:          running → waiting → running
-```
-
-Concurrency is about managing multiple in-progress tasks.
-
-## 2.4 Parallelism
-
-Multiple operations execute at exactly the same time, usually on different CPU cores.
-
-```text
-CPU Core 1: Task A executing
-CPU Core 2: Task B executing
-```
-
-`asyncio` mainly provides **concurrency**, not CPU parallelism.
-
-## 2.5 I/O-bound work
-
-Work dominated by waiting for external systems:
-
-- Network requests
-- Database calls
-- Redis operations
-- Socket communication
-- File operations
-
-Async programming is commonly useful here.
-
-## 2.6 CPU-bound work
-
-Work dominated by computation:
-
-- Image processing
-- Video encoding
-- Data compression
-- Large mathematical calculations
-- Machine-learning inference
-
-CPU-bound work usually needs processes, native code that releases the GIL, or a separate worker system rather than only `asyncio`.
+See [Multithreading vs Multiprocessing vs Asyncio](threading-multiprocessing-asyncio.md) for the full concurrency-versus-parallelism taxonomy and how to tell CPU-bound work from I/O-bound work.
 
 ---
 
@@ -149,21 +118,15 @@ Calling a coroutine function does not immediately execute its body. It creates a
 
 ```python
 coroutine = fetch_user()
-
-print(coroutine)
-# <coroutine object fetch_user at ...>
+print(coroutine)  # <coroutine object fetch_user at ...>
 ```
 
 The coroutine runs only when it is:
 
-- Awaited
+- Awaited, as in `user = await fetch_user()`
 - Wrapped in a task
 - Passed to an API that schedules it
 - Executed through an event-loop entry point
-
-```python
-user = await fetch_user()
-```
 
 ## 3.3 Function vs object
 
@@ -176,33 +139,13 @@ flowchart TD
 
 ## 3.4 A coroutine may not contain `await`
 
-This is valid:
-
-```python
-async def get_constant() -> int:
-    return 42
-```
-
-However, it gains no practical concurrency benefit because it never suspends.
-
-Use a normal `def` when a function performs only synchronous work:
-
-```python
-def get_constant() -> int:
-    return 42
-```
+An `async def get_constant() -> int: return 42` is valid, but it gains no practical concurrency benefit because it never suspends. Use a normal `def` when a function performs only synchronous work.
 
 ---
 
 # 4. `await` and Awaitable Objects
 
-`await` pauses the current coroutine until an awaitable produces a result.
-
-```python
-result = await some_operation()
-```
-
-While the coroutine is paused, the event loop can run another ready task.
+`await` pauses the current coroutine until an awaitable produces a result. While the coroutine is paused, the event loop can run another ready task.
 
 ## 4.1 Main awaitable types
 
@@ -230,8 +173,7 @@ async def calculate() -> int:
     return 10
 
 async def main() -> None:
-    value = await calculate()
-    print(value)  # 10
+    print(await calculate())  # 10
 ```
 
 ## 4.3 `await` propagates exceptions
@@ -249,13 +191,7 @@ async def main() -> None:
 
 ## 4.4 `await` is not a background-job instruction
 
-This:
-
-```python
-result = await fetch_data()
-```
-
-means:
+`result = await fetch_data()` means:
 
 1. Start or continue `fetch_data()`.
 2. Pause the current coroutine when `fetch_data()` suspends.
@@ -278,19 +214,7 @@ It repeatedly:
 4. Resumes tasks whose awaited operations are ready.
 5. Repeats until the program finishes.
 
-## Event-loop diagram
-
-```mermaid
-flowchart TD
-    A[Ready task queue] --> B[Run one task]
-    B --> C{What happened?}
-    C -->|Task completed| D[Store result or exception]
-    C -->|Reached await| E[Register I/O, timer, or Future]
-    E --> F[Run another ready task]
-    F --> A
-    G[I/O or timer becomes ready] --> H[Move waiting task to ready queue]
-    H --> A
-```
+The "In short" diagram at the top of this note shows one turn of that cycle.
 
 ## Simplified pseudocode
 
@@ -312,13 +236,6 @@ Real event-loop implementations are more sophisticated, but this model is enough
 
 A task gives other tasks a chance to run when it reaches a suspension point, normally an `await`.
 
-```python
-async def task_a() -> None:
-    print("A1")
-    await asyncio.sleep(1)
-    print("A2")
-```
-
 If a coroutine performs long synchronous computation without awaiting, it can block the entire event loop.
 
 ```python
@@ -337,18 +254,15 @@ Consider two coroutines:
 ```python
 import asyncio
 
-
 async def download(name: str, delay: float) -> None:
     print(f"{name}: started")
     await asyncio.sleep(delay)
     print(f"{name}: completed")
 
-
 async def main() -> None:
     async with asyncio.TaskGroup() as task_group:
         task_group.create_task(download("A", 2))
         task_group.create_task(download("B", 1))
-
 
 asyncio.run(main())
 ```
@@ -386,12 +300,10 @@ Use `asyncio.run()` as the normal entry point for a standalone async program:
 ```python
 import asyncio
 
-
 async def main() -> None:
     print("Application started")
     await asyncio.sleep(0.5)
     print("Application finished")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -407,29 +319,17 @@ if __name__ == "__main__":
 
 ## 7.1 One top-level entry point
 
-Prefer one top-level call:
-
-```python
-asyncio.run(main())
-```
-
-Do not repeatedly call `asyncio.run()` inside normal application logic.
+Prefer one top-level call to `asyncio.run(main())`. Do not repeatedly call `asyncio.run()` inside normal application logic.
 
 ## 7.2 Already-running event loops
 
-Frameworks such as FastAPI, Starlette, Jupyter, and async test runners may already manage the event loop.
-
-Inside an existing async function, use `await`:
+Frameworks such as FastAPI, Starlette, Jupyter, and async test runners may already manage the event loop. Inside an existing async function, use `await`, and never call `asyncio.run()` from inside a running loop:
 
 ```python
 async def endpoint() -> dict[str, object]:
     return await load_data()
-```
 
-Do not call `asyncio.run()` from inside a running event loop:
-
-```python
-async def endpoint() -> None:
+async def broken_endpoint() -> None:
     asyncio.run(load_data())  # RuntimeError
 ```
 
@@ -445,11 +345,9 @@ This distinction is one of the most important async concepts.
 import asyncio
 import time
 
-
 async def operation(name: str, delay: float) -> str:
     await asyncio.sleep(delay)
     return name
-
 
 async def main() -> None:
     started = time.perf_counter()
@@ -459,7 +357,6 @@ async def main() -> None:
 
     elapsed = time.perf_counter() - started
     print(first, second, round(elapsed, 2))
-
 
 asyncio.run(main())
 ```
@@ -478,11 +375,9 @@ total:      [────────────────────── 
 import asyncio
 import time
 
-
 async def operation(name: str, delay: float) -> str:
     await asyncio.sleep(delay)
     return name
-
 
 async def main() -> None:
     started = time.perf_counter()
@@ -495,7 +390,6 @@ async def main() -> None:
 
     elapsed = time.perf_counter() - started
     print(first, second, round(elapsed, 2))
-
 
 asyncio.run(main())
 ```
@@ -531,12 +425,7 @@ result_b = await task_b
 
 # 9. Tasks and Structured Concurrency
 
-A task schedules a coroutine to run concurrently on the event loop.
-
-```python
-task = asyncio.create_task(fetch_user())
-user = await task
-```
+A task schedules a coroutine to run concurrently on the event loop: `task = asyncio.create_task(fetch_user())`, and later `user = await task`.
 
 ## 9.1 Why tasks exist
 
@@ -553,14 +442,7 @@ flowchart TD
 
 ## 9.2 Naming tasks
 
-Task names improve logs and debugging:
-
-```python
-task = asyncio.create_task(
-    fetch_user(),
-    name="fetch-user-42",
-)
-```
+Task names improve logs and debugging: `asyncio.create_task(fetch_user(), name="fetch-user-42")`.
 
 ## 9.3 Prefer `TaskGroup` for related tasks
 
@@ -569,16 +451,13 @@ task = asyncio.create_task(
 ```python
 import asyncio
 
-
 async def fetch_profile() -> dict[str, str]:
     await asyncio.sleep(0.5)
     return {"name": "Aarav"}
 
-
 async def fetch_permissions() -> list[str]:
     await asyncio.sleep(0.5)
     return ["read", "write"]
-
 
 async def main() -> None:
     async with asyncio.TaskGroup() as task_group:
@@ -590,7 +469,6 @@ async def main() -> None:
     permissions = permissions_task.result()
 
     print(profile, permissions)
-
 
 asyncio.run(main())
 ```
@@ -618,18 +496,15 @@ When a child task fails with a non-cancellation exception, `TaskGroup` cancels t
 ```python
 import asyncio
 
-
 async def successful_job() -> None:
     try:
         await asyncio.sleep(5)
     finally:
         print("successful_job cleanup")
 
-
 async def failing_job() -> None:
     await asyncio.sleep(0.2)
     raise RuntimeError("Job failed")
-
 
 async def main() -> None:
     try:
@@ -639,7 +514,6 @@ async def main() -> None:
     except* RuntimeError as group:
         for error in group.exceptions:
             print(error)
-
 
 asyncio.run(main())
 ```
@@ -657,11 +531,9 @@ Use `gather()` when you want results in input order:
 ```python
 import asyncio
 
-
 async def fetch(item_id: int) -> str:
     await asyncio.sleep(0.1)
     return f"item-{item_id}"
-
 
 async def main() -> None:
     results = await asyncio.gather(
@@ -673,7 +545,6 @@ async def main() -> None:
     print(results)
     # ['item-1', 'item-2', 'item-3']
 
-
 asyncio.run(main())
 ```
 
@@ -681,11 +552,7 @@ The operations run concurrently, but returned results correspond to the original
 
 ### Exception behavior
 
-By default, the first propagated exception is raised to the caller:
-
-```python
-results = await asyncio.gather(task_a(), task_b())
-```
+By default, the first propagated exception from `await asyncio.gather(task_a(), task_b())` is raised to the caller.
 
 `gather()` and `TaskGroup` do not have identical failure semantics. For a group of related child operations that should succeed or fail as one unit, `TaskGroup` is generally easier to reason about.
 
@@ -696,11 +563,9 @@ Use `as_completed()` when you want results as soon as each operation finishes:
 ```python
 import asyncio
 
-
 async def fetch(name: str, delay: float) -> str:
     await asyncio.sleep(delay)
     return name
-
 
 async def main() -> None:
     tasks = [
@@ -712,7 +577,6 @@ async def main() -> None:
     async for completed_task in asyncio.as_completed(tasks):
         result = await completed_task
         print(result)
-
 
 asyncio.run(main())
 ```
@@ -759,11 +623,9 @@ Use `asyncio.timeout()` to limit a block of async work:
 ```python
 import asyncio
 
-
 async def slow_operation() -> str:
     await asyncio.sleep(5)
     return "done"
-
 
 async def main() -> None:
     try:
@@ -773,28 +635,17 @@ async def main() -> None:
     except TimeoutError:
         print("Operation exceeded its time limit")
 
-
 asyncio.run(main())
 ```
 
 ## 11.2 `asyncio.wait_for()`
 
-Use `wait_for()` to limit one awaitable:
-
-```python
-result = await asyncio.wait_for(
-    slow_operation(),
-    timeout=1.0,
-)
-```
-
-When the timeout expires, the awaited task is cancelled and `TimeoutError` is raised.
+Use `wait_for()` to limit one awaitable: `result = await asyncio.wait_for(slow_operation(), timeout=1.0)`. When the timeout expires, the awaited task is cancelled and `TimeoutError` is raised.
 
 ## 11.3 Explicit cancellation
 
 ```python
 import asyncio
-
 
 async def worker() -> None:
     try:
@@ -807,7 +658,6 @@ async def worker() -> None:
     finally:
         print("worker cleanup completed")
 
-
 async def main() -> None:
     task = asyncio.create_task(worker())
 
@@ -818,7 +668,6 @@ async def main() -> None:
         await task
     except asyncio.CancelledError:
         print("worker was cancelled")
-
 
 asyncio.run(main())
 ```
@@ -839,15 +688,7 @@ sequenceDiagram
 
 ## 11.5 Cleanup with `finally`
 
-Always place resource cleanup in `finally` or use an async context manager:
-
-```python
-async def process_connection(connection) -> None:
-    try:
-        await connection.process()
-    finally:
-        await connection.close()
-```
+Always place resource cleanup in `finally` or use an async context manager, so a cancelled task still closes what it opened.
 
 ## 11.6 Do not silently swallow `CancelledError`
 
@@ -866,12 +707,7 @@ Catching it without re-raising may break expected cancellation behavior.
 
 ## 11.7 Shielding
 
-`asyncio.shield()` prevents cancellation of a specific inner awaitable when its caller is cancelled:
-
-```python
-task = asyncio.create_task(save_audit_record())
-result = await asyncio.shield(task)
-```
+`asyncio.shield()` prevents cancellation of a specific inner awaitable when its caller is cancelled, as in `result = await asyncio.shield(task)` around a `save_audit_record()` task.
 
 Use shielding carefully. It can make operation lifetimes harder to manage, and the caller still receives `CancelledError`.
 
@@ -886,7 +722,6 @@ The event loop must not be blocked by ordinary slow synchronous code.
 ```python
 import time
 
-
 async def bad_handler() -> None:
     time.sleep(5)  # Blocks the event-loop thread
 ```
@@ -897,7 +732,6 @@ Use async-compatible operations:
 
 ```python
 import asyncio
-
 
 async def good_handler() -> None:
     await asyncio.sleep(5)
@@ -911,10 +745,8 @@ Use `asyncio.to_thread()` for blocking I/O functions that do not have an async A
 import asyncio
 from pathlib import Path
 
-
 def read_large_file(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
 
 async def main() -> None:
     content = await asyncio.to_thread(
@@ -922,7 +754,6 @@ async def main() -> None:
         Path("data.txt"),
     )
     print(len(content))
-
 
 asyncio.run(main())
 ```
@@ -960,7 +791,6 @@ Unlimited task creation can overload your own application or a downstream servic
 ```python
 import asyncio
 
-
 async def fetch_item(
     item_id: int,
     semaphore: asyncio.Semaphore,
@@ -970,7 +800,6 @@ async def fetch_item(
         await asyncio.sleep(0.5)
         return f"item-{item_id}"
 
-
 async def main() -> None:
     semaphore = asyncio.Semaphore(3)
 
@@ -979,7 +808,6 @@ async def main() -> None:
     )
 
     print(results)
-
 
 asyncio.run(main())
 ```
@@ -998,7 +826,6 @@ Use bounded concurrency to respect:
 
 ```python
 import asyncio
-
 
 class Counter:
     def __init__(self) -> None:
@@ -1019,13 +846,11 @@ Even though `asyncio` normally runs in one thread, race conditions can still hap
 ```python
 import asyncio
 
-
 async def producer(queue: asyncio.Queue[int]) -> None:
     for item in range(5):
         await queue.put(item)
 
     await queue.put(-1)  # Sentinel
-
 
 async def consumer(queue: asyncio.Queue[int]) -> None:
     while True:
@@ -1040,7 +865,6 @@ async def consumer(queue: asyncio.Queue[int]) -> None:
         finally:
             queue.task_done()
 
-
 async def main() -> None:
     queue: asyncio.Queue[int] = asyncio.Queue(maxsize=10)
 
@@ -1050,7 +874,6 @@ async def main() -> None:
     await producer_task
     await queue.join()
     await consumer_task
-
 
 asyncio.run(main())
 ```
@@ -1065,14 +888,7 @@ Async syntax extends beyond function calls.
 
 ## 14.1 Async context manager
 
-An async context manager performs asynchronous setup and cleanup:
-
-```python
-async with database.transaction():
-    await database.execute(...)
-```
-
-Its class implements:
+An async context manager performs asynchronous setup and cleanup, as in `async with database.transaction():`. Its class implements two async dunder methods, and instances are then used with `async with AsyncResource() as resource:`.
 
 ```python
 class AsyncResource:
@@ -1082,13 +898,6 @@ class AsyncResource:
 
     async def __aexit__(self, exc_type, exc, traceback):
         print("close resource")
-```
-
-Usage:
-
-```python
-async with AsyncResource() as resource:
-    print(resource)
 ```
 
 Typical examples:
@@ -1107,17 +916,14 @@ An async iterator can wait between produced values:
 import asyncio
 from collections.abc import AsyncIterator
 
-
 async def stream_events() -> AsyncIterator[str]:
     for event_id in range(3):
         await asyncio.sleep(0.5)
         yield f"event-{event_id}"
 
-
 async def main() -> None:
     async for event in stream_events():
         print(event)
-
 
 asyncio.run(main())
 ```
@@ -1144,12 +950,10 @@ from dataclasses import dataclass
 import asyncio
 import httpx
 
-
 @dataclass(frozen=True)
 class UserDashboard:
     user: dict[str, object]
     orders: list[dict[str, object]]
-
 
 class DashboardService:
     def __init__(self, client: httpx.AsyncClient) -> None:
@@ -1187,7 +991,6 @@ class DashboardService:
             orders=orders_task.result(),
         )
 
-
 async def main() -> None:
     timeout = httpx.Timeout(5.0)
 
@@ -1208,7 +1011,6 @@ async def main() -> None:
             return
 
         print(dashboard)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -1238,7 +1040,6 @@ A low-level function should add context or raise a domain-specific exception:
 ```python
 class UserServiceUnavailableError(RuntimeError):
     pass
-
 
 async def load_user(user_id: int) -> dict[str, object]:
     try:
@@ -1302,12 +1103,10 @@ from typing import Generic, TypeVar
 
 T = TypeVar("T")
 
-
 @dataclass(frozen=True)
 class OperationResult(Generic[T]):
     value: T | None = None
     error: Exception | None = None
-
 
 async def capture(awaitable) -> OperationResult:
     try:
@@ -1324,15 +1123,7 @@ Do not catch `BaseException` for ordinary operation failures because that would 
 
 ## 17.1 Enable asyncio debug mode
 
-```python
-asyncio.run(main(), debug=True)
-```
-
-Or set:
-
-```bash
-PYTHONASYNCIODEBUG=1 python app.py
-```
+Pass `asyncio.run(main(), debug=True)`, or run the process with `PYTHONASYNCIODEBUG=1 python app.py`.
 
 Debug mode can help identify:
 
@@ -1346,24 +1137,13 @@ Debug mode can help identify:
 ```python
 for task in asyncio.all_tasks():
     print(task.get_name(), task.done())
-```
 
-Current task:
-
-```python
 current = asyncio.current_task()
 ```
 
 ## 17.3 Add meaningful task names
 
-```python
-asyncio.create_task(
-    process_order(order_id),
-    name=f"process-order-{order_id}",
-)
-```
-
-This improves task dumps, logs, and debugging output.
+Name a task after the work it does, such as `asyncio.create_task(process_order(order_id), name=f"process-order-{order_id}")`. This improves task dumps, logs, and debugging output.
 
 ## 17.4 Log operation boundaries
 
@@ -1381,7 +1161,6 @@ Useful log fields include:
 ```python
 import time
 
-
 async def timed_operation() -> None:
     started = time.perf_counter()
 
@@ -1398,7 +1177,6 @@ With `pytest` and `pytest-asyncio`:
 
 ```python
 import pytest
-
 
 @pytest.mark.asyncio
 async def test_fetch_user() -> None:
@@ -1465,14 +1243,7 @@ An async endpoint with a blocking database driver still blocks its event-loop th
 
 ## 19.2 Always define timeouts
 
-External operations should not wait forever:
-
-```python
-async with asyncio.timeout(5):
-    result = await call_service()
-```
-
-Also configure timeouts in the client library itself.
+External operations should not wait forever, so wrap them in `async with asyncio.timeout(5):`. Also configure timeouts in the client library itself.
 
 ## 19.3 Bound concurrency
 
@@ -1492,7 +1263,6 @@ The event loop keeps weak references to tasks. If an application intentionally c
 
 ```python
 background_tasks: set[asyncio.Task[object]] = set()
-
 
 def start_background_task(coroutine) -> None:
     task = asyncio.create_task(coroutine)
@@ -1528,21 +1298,7 @@ A service shutdown should:
 
 ## 19.7 Avoid unnecessary async wrappers
 
-This adds no value:
-
-```python
-async def add(a: int, b: int) -> int:
-    return a + b
-```
-
-Prefer:
-
-```python
-def add(a: int, b: int) -> int:
-    return a + b
-```
-
-Use `async def` when the function needs asynchronous operations or must satisfy an async interface.
+An `async def add(a: int, b: int) -> int: return a + b` adds no value, because nothing in it suspends; prefer a plain `def add(...)`. Use `async def` when the function needs asynchronous operations or must satisfy an async interface.
 
 ## 19.8 Measure real performance
 
@@ -1560,49 +1316,16 @@ Track:
 
 High concurrency can expose downstream bottlenecks rather than remove them.
 
----
+## 19.9 Compact reference
 
-# 20. Final Mental Model
-
-```mermaid
-flowchart LR
-    A[Call async function] --> B[Coroutine object]
-    B --> C{How is it used?}
-    C -->|await| D[Run as part of current task]
-    C -->|create_task| E[Schedule concurrent task]
-    D --> F[Coroutine reaches await]
-    E --> F
-    F --> G[Give control to event loop]
-    G --> H[Run another ready task]
-    I[I/O, timer, or Future completes] --> J[Original task becomes ready]
-    J --> K[Coroutine resumes]
-```
-
-Remember these points:
-
-1. `async def` defines a coroutine function.
-2. Calling it creates a coroutine object; it does not necessarily run immediately.
-3. `await` pauses the current coroutine and allows the event loop to run other ready tasks.
-4. Multiple `await` statements can still be sequential.
-5. `asyncio.create_task()` schedules concurrent work.
-6. `TaskGroup` gives related tasks a clear, structured lifetime.
-7. Async is most effective for high-concurrency I/O-bound workloads.
-8. Blocking synchronous work can freeze the event loop.
-9. Timeouts, cancellation, cleanup, and concurrency limits are core design concerns.
-10. Async improves resource utilization while waiting; it does not make computation inherently faster.
-
----
-
-## Compact Reference
+One skeleton that combines a deadline, structured concurrency, named tasks, and correct cancellation handling:
 
 ```python
 import asyncio
 
-
 async def operation(name: str, delay: float) -> str:
     await asyncio.sleep(delay)
     return name
-
 
 async def main() -> None:
     try:
@@ -1625,7 +1348,6 @@ async def main() -> None:
     except asyncio.CancelledError:
         print("Main task cancelled")
         raise
-
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -6,21 +6,40 @@ order: 5
 
 # DRF Pagination, Filtering & Throttling
 
-> **Core idea:** Pagination controls **how much data** is returned, filtering controls **which data** is returned, and throttling controls **how frequently** a client can call the API.
+> Pagination controls **how much data** is returned, filtering controls **which data** is returned, and throttling controls **how frequently** a client can call the API.
 
-These three features are commonly used together on list endpoints. They help an API stay fast, predictable, secure, and easier for frontend or third-party clients to consume.
+## In short
+
+- DRF enables **none** of this by default: `DEFAULT_PAGINATION_CLASS`, `PAGE_SIZE`, and `DEFAULT_THROTTLE_CLASSES` are all empty, and an unpaginated list endpoint is a production incident waiting for the table to grow.
+- Three pagination classes: `PageNumberPagination` (`?page=2`, numbered UIs, needs a `count` query), `LimitOffsetPagination` (`?limit=25&offset=50`, flexible, slow at deep offsets), `CursorPagination` (`?cursor=…`, large or fast-changing data, no total count, needs stable indexed `ordering`).
+- Ordering must be deterministic — `("-created_at", "-id")`, never a bare `.all()` — or records shift between pages as rows are inserted.
+- **Mandatory** restrictions (tenant, owner, visibility) belong in `get_queryset()`, never in a client-supplied query parameter. `DjangoFilterBackend`, `SearchFilter`, and `OrderingFilter` are for *optional* client choices on top of that.
+- `filterset_fields` handles simple generated lookups; a `filterset_class` (a `FilterSet`) gives friendly parameter names, ranges, method filters, and validation. Always give `ordering_fields` an explicit allowlist rather than `"__all__"`.
+- Throttling identifies the caller and counts in Django's cache: `AnonRateThrottle` by IP, `UserRateThrottle` by user ID, `ScopedRateThrottle` by `throttle_scope`. Rates come from `DEFAULT_THROTTLE_RATES` as `"100/hour"`; every configured throttle must pass, which is how burst plus sustained limits combine.
+- Multi-instance deployments need a **shared** cache (Redis) or each process throttles independently. DRF's counters race under concurrency, so treat them as a usage policy, not as enforcement or billing.
+
+```mermaid
+flowchart TD
+    A["GET /api/products/?status=active&ordering=-price"] --> B["Authentication<br/>Determine request.user and request.auth"]
+    B --> C["Permissions<br/>Is the user allowed to access this endpoint?"]
+    C --> D{"Throttling<br/>Has this user or IP exceeded a configured request rate?"}
+    D -->|Allowed| E["get_queryset()<br/>Enforce user/tenant scope"]
+    D -->|Exceeded| F["HTTP 429<br/>Too Many Requests"]
+    E --> G["Filter backends<br/>Filter, search, and order"]
+    G --> H["Pagination<br/>Select one result slice"]
+    H --> I["Serializer<br/>Convert model objects into response data"]
+    I --> J[HTTP response]
+```
+
+**Interview answer:** These are three separate concerns applied in a fixed order. Throttling runs first and answers "may this client make a request at all"; then `get_queryset()` applies the restrictions that are not negotiable, such as the caller's tenant; then the filter backends apply what the client asked for — structured filters, free-text search, ordering; and only then does pagination slice the ordered result so the serializer touches 25 rows instead of 200,000. The choice that usually matters most is pagination style: page numbers for an admin table, cursors for a feed, because a deep `offset` still makes the database walk every skipped row.
+
+**Gotcha:** Paginating a queryset with no deterministic ordering. If two rows share a `created_at` the database is free to return them in either order, so a row can appear on page 1 and page 2, or never appear at all. Always end the ordering with a unique tie-breaker such as `-id`.
 
 ---
 
 # 1. Overview
 
-Consider an endpoint containing hundreds of thousands of products:
-
-```http
-GET /api/products/
-```
-
-Returning every product in one response would:
+Consider an endpoint containing hundreds of thousands of products. Returning every one of them from a single `GET /api/products/` would:
 
 - increase database workload;
 - increase serialization time;
@@ -39,33 +58,9 @@ DRF provides separate tools for separate responsibilities:
 | Ordering | Control result order | `?ordering=-price` |
 | Throttling | Limit request frequency | 60 requests per minute |
 
-## Simple mental model
-
-```text
-Throttling:
-    Can this client make the request now?
-
-Filtering:
-    Which records match the request?
-
-Ordering:
-    In which sequence should records appear?
-
-Pagination:
-    Which small part of the ordered result should be returned?
-```
-
 ## Important defaults
 
-DRF does not enable pagination or throttling automatically.
-
-```text
-DEFAULT_PAGINATION_CLASS = None
-PAGE_SIZE = None
-DEFAULT_THROTTLE_CLASSES = []
-```
-
-You must configure these features globally or apply them to individual views.
+DRF does not enable pagination or throttling automatically — `DEFAULT_PAGINATION_CLASS` and `PAGE_SIZE` are `None`, and `DEFAULT_THROTTLE_CLASSES` is empty. You must configure these features globally or apply them to individual views.
 
 ---
 
@@ -80,7 +75,6 @@ The examples in this guide use a product API.
 
 from django.conf import settings
 from django.db import models
-
 
 class Product(models.Model):
     class Status(models.TextChoices):
@@ -127,7 +121,6 @@ from rest_framework import serializers
 
 from .models import Product
 
-
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
@@ -172,13 +165,7 @@ DRF includes three main pagination styles:
 
 ## 3.1 PageNumberPagination
 
-The client requests a page number.
-
-```http
-GET /api/products/?page=2
-```
-
-A normal paginated response looks like this:
+The client requests a page number with `GET /api/products/?page=2`. A normal paginated response looks like this:
 
 ```json
 {
@@ -213,32 +200,19 @@ REST_FRAMEWORK = {
 
 This configuration affects generic list views and viewsets unless a view overrides it.
 
-### Custom page-number pagination
+### Custom page-number pagination, applied to one ViewSet
 
 ```python
 # common/pagination.py
-
 from rest_framework.pagination import PageNumberPagination
-
 
 class StandardPageNumberPagination(PageNumberPagination):
     page_size = 25
     page_query_param = "page"
     page_size_query_param = "page_size"
     max_page_size = 100
-```
 
-The client may now request a different page size:
-
-```http
-GET /api/products/?page=2&page_size=50
-```
-
-Because `max_page_size` is `100`, this request cannot force the server to return more than 100 records.
-
-### Apply it to one ViewSet
-
-```python
+# products/views.py
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from common.pagination import StandardPageNumberPagination
@@ -246,20 +220,15 @@ from common.pagination import StandardPageNumberPagination
 from .models import Product
 from .serializers import ProductSerializer
 
-
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     pagination_class = StandardPageNumberPagination
 ```
 
-### Request the final page
+Because `page_size_query_param` is set, the client may now request `?page=2&page_size=50` — and because `max_page_size` is `100`, no request can force the server to return more than 100 records.
 
-`PageNumberPagination` supports the special `last` value by default:
-
-```http
-GET /api/products/?page=last
-```
+`PageNumberPagination` also supports the special value `?page=last` by default.
 
 ### Best use cases
 
@@ -283,43 +252,21 @@ This style uses two values:
 - `limit`: maximum number of records to return;
 - `offset`: number of matching records to skip.
 
-```http
-GET /api/products/?limit=25&offset=50
-```
+So `GET /api/products/?limit=25&offset=50` means: skip the first 50 matching records, return the next 25. When `PAGE_SIZE` is configured, the client may omit `limit` and send only `?offset=50`.
 
-This means:
-
-```text
-Skip the first 50 matching records.
-Return the next 25 records.
-```
-
-### Global configuration
+### Configuration
 
 ```python
 # settings.py
-
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": (
         "rest_framework.pagination.LimitOffsetPagination"
     ),
     "PAGE_SIZE": 25,
 }
-```
 
-When `PAGE_SIZE` is configured, the client may omit `limit`:
-
-```http
-GET /api/products/?offset=50
-```
-
-### Custom class
-
-```python
-# common/pagination.py
-
+# common/pagination.py — or subclass it for per-view control
 from rest_framework.pagination import LimitOffsetPagination
-
 
 class StandardLimitOffsetPagination(LimitOffsetPagination):
     default_limit = 25
@@ -339,28 +286,9 @@ Use limit/offset pagination when:
 
 ### Main trade-offs
 
-Large offsets may be expensive:
+Large offsets may be expensive: for `GET /api/products/?limit=25&offset=900000` the database may still need to locate or scan every skipped row.
 
-```http
-GET /api/products/?limit=25&offset=900000
-```
-
-The database may still need to locate or scan many skipped rows.
-
-Records may also shift between requests when rows are inserted or deleted.
-
-```text
-Request 1:
-offset=0, limit=25
-
-A new record is inserted at the beginning.
-
-Request 2:
-offset=25, limit=25
-
-Result:
-A previously seen record may move into the second response.
-```
+Records may also shift between requests when rows are inserted or deleted. If a new record arrives at the top of the ordering between a client's `offset=0` request and its `offset=25` request, everything slides down by one and a record already shown on the first page reappears on the second.
 
 ---
 
@@ -396,14 +324,11 @@ Cursor pagination normally does not return a total count.
 
 from rest_framework.pagination import CursorPagination
 
-
 class ProductCursorPagination(CursorPagination):
     page_size = 25
     cursor_query_param = "cursor"
     ordering = ("-created_at", "-id")
-```
 
-```python
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -412,23 +337,9 @@ class ProductViewSet(ReadOnlyModelViewSet):
 
 ### Why ordering matters
 
-Cursor pagination requires a stable ordering value.
+Cursor pagination requires a stable ordering value. A suitable ordering field should normally be stable after creation, non-null, indexed, unique or nearly unique, and convertible to a string.
 
-A suitable ordering field should normally be:
-
-- stable after creation;
-- non-null;
-- indexed;
-- unique or nearly unique;
-- convertible to a string.
-
-A practical ordering is:
-
-```python
-ordering = ("-created_at", "-id")
-```
-
-`created_at` provides chronological ordering. `id` provides a deterministic tie-breaker.
+In `("-created_at", "-id")`, `created_at` provides chronological ordering and `id` provides a deterministic tie-breaker.
 
 ### Cursor behavior
 
@@ -476,7 +387,6 @@ You can customize the response shape while retaining DRF pagination behavior.
 
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-
 
 class StandardPagination(PageNumberPagination):
     page_size = 25
@@ -551,7 +461,6 @@ from rest_framework.views import APIView
 
 from .models import Product
 from .serializers import ProductSerializer
-
 
 class ProductListAPIView(APIView):
     def get(self, request):
@@ -647,7 +556,6 @@ from rest_framework.generics import ListAPIView
 from .models import Order
 from .serializers import OrderSerializer
 
-
 class MyOrderListView(ListAPIView):
     serializer_class = OrderSerializer
 
@@ -713,13 +621,11 @@ For simple cases this works well. For multiple validated query parameters, a `Fi
 
 `DjangoFilterBackend` is provided through the `django-filter` package.
 
-### Installation
+### Installation and configuration
 
 ```bash
 pip install django-filter
 ```
-
-### Add the application
 
 ```python
 # settings.py
@@ -728,11 +634,7 @@ INSTALLED_APPS = [
     # ...
     "django_filters",
 ]
-```
 
-### Global configuration
-
-```python
 REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
@@ -745,7 +647,6 @@ REST_FRAMEWORK = {
 ```python
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.viewsets import ReadOnlyModelViewSet
-
 
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
@@ -762,13 +663,7 @@ GET /api/products/?category=electronics
 GET /api/products/?status=active&category=electronics
 ```
 
-Multiple parameters are normally combined using `AND`:
-
-```text
-status = active
-AND
-category = electronics
-```
+Multiple parameters are normally combined using `AND`, so the last request means `status = active AND category = electronics`.
 
 ### Lookup expressions
 
@@ -822,7 +717,6 @@ import django_filters
 
 from .models import Product
 
-
 class ProductFilter(django_filters.FilterSet):
     min_price = django_filters.NumberFilter(
         field_name="price",
@@ -862,7 +756,6 @@ class ProductFilter(django_filters.FilterSet):
 ```python
 from django_filters.rest_framework import DjangoFilterBackend
 
-
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -900,11 +793,7 @@ class ProductFilter(django_filters.FilterSet):
         return queryset
 ```
 
-Request:
-
-```http
-GET /api/products/?available=true
-```
+Request: `GET /api/products/?available=true`
 
 ### Comma-separated list filter
 
@@ -914,7 +803,6 @@ class CharInFilter(
     django_filters.CharFilter,
 ):
     pass
-
 
 class ProductFilter(django_filters.FilterSet):
     categories = CharInFilter(
@@ -927,11 +815,7 @@ class ProductFilter(django_filters.FilterSet):
         fields = []
 ```
 
-Request:
-
-```http
-GET /api/products/?categories=electronics,books,office
-```
+Request: `GET /api/products/?categories=electronics,books,office`
 
 > [!NOTE]
 > Use either `filterset_fields` for simple generated filters or `filterset_class` for a custom filter class. A custom `FilterSet` gives better control as requirements grow.
@@ -955,7 +839,6 @@ Product `42` may exist, but DRF can return `404 Not Found` when it does not matc
 ```python
 from rest_framework.filters import SearchFilter
 
-
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
@@ -966,11 +849,7 @@ class ProductViewSet(ReadOnlyModelViewSet):
     ]
 ```
 
-Request:
-
-```http
-GET /api/products/?search=keyboard
-```
+Request: `GET /api/products/?search=keyboard`
 
 ### Search related fields
 
@@ -1010,35 +889,21 @@ This means:
 
 ### Multiple search terms
 
-The default search behavior supports multiple terms.
+The default search behavior supports multiple terms. A returned object must match **all** of them, although each term may match a different configured field. Quoting treats a phrase as one term.
 
 ```http
 GET /api/products/?search=wireless keyboard
-```
-
-The returned object must match all provided search terms, although each term can match a different configured field.
-
-Quoted phrases can be treated as one term:
-
-```http
 GET /api/products/?search="wireless keyboard"
 ```
 
 ### Filtering versus searching
 
-Use structured filters for typed conditions:
+Use structured filters for typed conditions and search for human-entered text. Do not replace structured filters with one large search parameter.
 
 ```http
-GET /api/products/?status=active&min_price=100
+GET /api/products/?status=active&min_price=100    # structured filter
+GET /api/products/?search=mechanical keyboard     # free-text search
 ```
-
-Use search for human-entered text:
-
-```http
-GET /api/products/?search=mechanical keyboard
-```
-
-Do not replace structured filters with one large search parameter.
 
 ---
 
@@ -1048,7 +913,6 @@ Do not replace structured filters with one large search parameter.
 
 ```python
 from rest_framework.filters import OrderingFilter
-
 
 class ProductViewSet(ReadOnlyModelViewSet):
     queryset = Product.objects.all()
@@ -1072,40 +936,16 @@ GET /api/products/?ordering=-price
 GET /api/products/?ordering=category,-created_at
 ```
 
-A minus sign means descending order:
-
-```text
-price      -> lowest price first
--price     -> highest price first
-```
+A minus sign means descending order, so `?ordering=price` puts the lowest price first and `?ordering=-price` the highest.
 
 ### Explicitly allow ordering fields
 
-Prefer:
+`ordering_fields` is an allowlist, and `"__all__"` should be a deliberate choice — an explicit list prevents clients from ordering by sensitive or expensive fields. The separate `ordering` attribute sets the default, and a stable default is what keeps pagination predictable.
 
 ```python
-ordering_fields = [
-    "name",
-    "price",
-    "created_at",
-]
+ordering_fields = ["name", "price", "created_at"]   # allowlist
+ordering = ["-created_at", "-id"]                   # deterministic default
 ```
-
-Avoid exposing every field unless it is intentional:
-
-```python
-ordering_fields = "__all__"
-```
-
-An explicit allowlist prevents clients from ordering by sensitive or expensive fields.
-
-### Define a default ordering
-
-```python
-ordering = ["-created_at", "-id"]
-```
-
-Stable default ordering is important for predictable pagination.
 
 ---
 
@@ -1132,6 +972,8 @@ Typical uses:
 > [!IMPORTANT]
 > DRF throttling is an application-level usage policy. It is not complete protection against DDoS attacks, credential attacks, or malicious traffic. Use a CDN, WAF, API gateway, reverse proxy, and endpoint-specific security controls where required.
 
+The general rate-limiting algorithms behind such gateways — token bucket, leaky bucket, fixed and sliding windows, and the `Retry-After` and `RateLimit-*` response headers — are covered in [Rate Limiting](../api-design/rate-limiting.md). This section is about DRF's own throttle classes.
+
 ---
 
 ## Global configuration
@@ -1151,33 +993,9 @@ REST_FRAMEWORK = {
 }
 ```
 
-Valid periods are based on:
+A rate is written `"<count>/<period>"` where the period is `second`, `minute`, `hour`, or `day` — for example `"10/second"`, `"60/minute"`, `"1000/hour"`, `"10000/day"`. DRF only inspects the first character after `/` to determine the period, so full words are simply easier to read.
 
-```text
-second
-minute
-hour
-day
-```
-
-Examples:
-
-```python
-"10/second"
-"60/minute"
-"1000/hour"
-"10000/day"
-```
-
-DRF uses the first character after `/` to determine the period, so full words are usually easier to read.
-
-When the request exceeds the configured rate:
-
-```http
-HTTP/1.1 429 Too Many Requests
-```
-
-Example response:
+Exceeding the rate produces `HTTP 429 Too Many Requests`:
 
 ```json
 {
@@ -1242,25 +1060,19 @@ Use it for a general per-user API allowance.
 
 ```python
 # common/throttles.py
-
 from rest_framework.throttling import UserRateThrottle
-
 
 class ProductRateThrottle(UserRateThrottle):
     scope = "products"
-```
 
-```python
 # settings.py
-
 REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "products": "120/minute",
     },
 }
-```
 
-```python
+# products/views.py
 class ProductViewSet(ReadOnlyModelViewSet):
     throttle_classes = [ProductRateThrottle]
 ```
@@ -1286,19 +1098,15 @@ REST_FRAMEWORK = {
 }
 ```
 
-Views define their scope:
+Views then declare which scope they belong to:
 
 ```python
 class ProductViewSet(ReadOnlyModelViewSet):
     throttle_scope = "products"
-```
 
-```python
 class ReportAPIView(APIView):
     throttle_scope = "reports"
-```
 
-```python
 class ExportAPIView(APIView):
     throttle_scope = "exports"
 ```
@@ -1316,7 +1124,6 @@ This supports different endpoint cost profiles:
 ```python
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import ModelViewSet
-
 
 class ProductViewSet(ModelViewSet):
     queryset = Product.objects.all()
@@ -1356,37 +1163,19 @@ REST_FRAMEWORK = {
 
 ## 5.4 Burst and Sustained Limits
 
-One rate is often insufficient.
-
-A practical API may need both:
-
-```text
-Burst limit:
-    Protect against sudden spikes.
-
-Sustained limit:
-    Control long-term consumption.
-```
-
-### Throttle classes
+One rate is often insufficient: a **burst** limit protects against sudden spikes, while a **sustained** limit controls long-term consumption. Declaring two scoped throttles gives you both.
 
 ```python
 # common/throttles.py
-
 from rest_framework.throttling import UserRateThrottle
-
 
 class BurstRateThrottle(UserRateThrottle):
     scope = "burst"
 
-
 class SustainedRateThrottle(UserRateThrottle):
     scope = "sustained"
-```
 
-### Settings
-
-```python
+# settings.py
 REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "common.throttles.BurstRateThrottle",
@@ -1399,15 +1188,7 @@ REST_FRAMEWORK = {
 }
 ```
 
-Every configured throttle is checked.
-
-```text
-Burst check passes
-        +
-Daily check fails
-        =
-Request is rejected
-```
+Every configured throttle is checked, so a request that passes the burst check but fails the daily check is still rejected.
 
 ---
 
@@ -1470,29 +1251,24 @@ flowchart LR
 
 ### Dedicated throttle cache
 
+A throttle class can point at a named cache through its `cache` attribute, keeping throttle counters off the general-purpose cache.
+
 ```python
 CACHES = {
     "default": {
-        "BACKEND": (
-            "django.core.cache.backends.locmem.LocMemCache"
-        ),
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     },
     "throttling": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": "redis://redis:6379/2",
         "OPTIONS": {
-            "CLIENT_CLASS": (
-                "django_redis.client.DefaultClient"
-            ),
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
     },
 }
-```
 
-```python
 from django.core.cache import caches
 from rest_framework.throttling import UserRateThrottle
-
 
 class RedisUserRateThrottle(UserRateThrottle):
     cache = caches["throttling"]
@@ -1545,7 +1321,6 @@ This example combines:
 
 from rest_framework.pagination import PageNumberPagination
 
-
 class StandardPagination(PageNumberPagination):
     page_size = 25
     page_size_query_param = "page_size"
@@ -1560,7 +1335,6 @@ class StandardPagination(PageNumberPagination):
 import django_filters
 
 from .models import Product
-
 
 class ProductFilter(django_filters.FilterSet):
     min_price = django_filters.NumberFilter(
@@ -1598,10 +1372,8 @@ class ProductFilter(django_filters.FilterSet):
 
 from rest_framework.throttling import UserRateThrottle
 
-
 class ProductBurstThrottle(UserRateThrottle):
     scope = "product_burst"
-
 
 class ProductSustainedThrottle(UserRateThrottle):
     scope = "product_sustained"
@@ -1626,7 +1398,6 @@ from .throttles import (
     ProductBurstThrottle,
     ProductSustainedThrottle,
 )
-
 
 class ProductViewSet(ReadOnlyModelViewSet):
     serializer_class = ProductSerializer
@@ -1693,7 +1464,6 @@ from rest_framework.routers import DefaultRouter
 
 from .views import ProductViewSet
 
-
 router = DefaultRouter()
 router.register(
     prefix="products",
@@ -1718,48 +1488,13 @@ GET /api/products/
     &page_size=25
 ```
 
-Actual processing:
-
-```text
-1. Authenticate the user.
-
-2. Check IsAuthenticated permission.
-
-3. Check burst throttle.
-
-4. Check sustained throttle.
-
-5. Restrict queryset to the user's organization.
-
-6. Apply status, category, and price filters.
-
-7. Apply text search.
-
-8. Apply descending price ordering.
-
-9. Select the requested page.
-
-10. Serialize and return the current page.
-```
+Processing order: authenticate the user, check `IsAuthenticated`, check the burst throttle, check the sustained throttle, restrict the queryset to the user's organization, apply the status/category/price filters, apply the text search, apply descending price ordering, select the requested page, then serialize and return that page.
 
 ---
 
-# 7. Request Processing Flow
+# 7. Responsibility Mapping
 
-```mermaid
-flowchart TD
-    A["GET /api/products/?status=active&ordering=-price"] --> B["Authentication<br/>Determine request.user and request.auth"]
-    B --> C["Permissions<br/>Is the user allowed to access this endpoint?"]
-    C --> D{"Throttling<br/>Has this user or IP exceeded a configured request rate?"}
-    D -->|Allowed| E["get_queryset()<br/>Enforce user/tenant scope"]
-    D -->|Exceeded| F["HTTP 429<br/>Too Many Requests"]
-    E --> G["Filter backends<br/>Filter, search, and order"]
-    G --> H["Pagination<br/>Select one result slice"]
-    H --> I["Serializer<br/>Convert model objects into response data"]
-    I --> J[HTTP response]
-```
-
-## Responsibility mapping
+The request-processing diagram for this pipeline is in **In short** at the top of this note.
 
 | Responsibility | Correct location |
 |---|---|
@@ -1795,39 +1530,20 @@ Indexes should match real query patterns. Use database query plans to confirm th
 
 ## Deterministic ordering
 
-Avoid unspecified ordering:
-
-```python
-queryset = Product.objects.all()
-```
-
-Prefer:
-
-```python
-queryset = Product.objects.order_by(
-    "-created_at",
-    "-id",
-)
-```
-
 Stable ordering prevents records from moving unpredictably between pages.
+
+```python
+queryset = Product.objects.all()                            # avoid: unspecified order
+queryset = Product.objects.order_by("-created_at", "-id")   # prefer
+```
 
 ## N+1 queries
 
-Pagination reduces the number of parent objects, but serializer relationships can still create N+1 queries.
+Pagination reduces the number of parent objects, but serializer relationships can still create N+1 queries. Use `select_related()` for foreign key and one-to-one relationships and `prefetch_related()` for many-to-many and reverse relationships.
 
 ```python
-queryset = (
-    Product.objects
-    .select_related("organization")
-    .prefetch_related("tags")
-)
+queryset = Product.objects.select_related("organization").prefetch_related("tags")
 ```
-
-Use:
-
-- `select_related()` for foreign key and one-to-one relationships;
-- `prefetch_related()` for many-to-many and reverse relationships.
 
 ## Count query cost
 
@@ -1872,224 +1588,124 @@ Prefer cursor pagination for large chronological datasets and infinite scrolling
 
 Test API behavior, not only class attributes.
 
-## Pagination test
+## Pagination, filtering, search, and ordering
+
+Assert on the response body, since that is what the client sees.
 
 ```python
+from decimal import Decimal
+
 import pytest
 from rest_framework.test import APIClient
 
 from products.models import Product
 
-
-@pytest.mark.django_db
-def test_product_list_is_paginated(
-    user,
-    organization,
-):
-    Product.objects.bulk_create(
-        [
-            Product(
-                organization=organization,
-                name=f"Product {index}",
-                category="electronics",
-                price="100.00",
-            )
-            for index in range(30)
-        ]
-    )
-
+@pytest.fixture
+def api(user):
     client = APIClient()
     client.force_authenticate(user=user)
+    return client
 
-    response = client.get("/api/products/")
+@pytest.mark.django_db
+def test_product_list_is_paginated(api, organization):
+    Product.objects.bulk_create([
+        Product(
+            organization=organization,
+            name=f"Product {index}",
+            category="electronics",
+            price="100.00",
+        )
+        for index in range(30)
+    ])
+
+    response = api.get("/api/products/")
 
     assert response.status_code == 200
     assert response.data["count"] == 30
-    assert len(response.data["results"]) == 25
+    assert len(response.data["results"]) == 25     # page_size, not the total
     assert response.data["next"] is not None
-```
 
-## Filtering test
-
-```python
 @pytest.mark.django_db
-def test_filter_products_by_status(
-    user,
-    product_factory,
-):
+def test_filter_products_by_status(api, product_factory):
     product_factory(status="active")
     product_factory(status="inactive")
 
-    client = APIClient()
-    client.force_authenticate(user=user)
+    response = api.get("/api/products/", {"status": "active"})
 
-    response = client.get(
-        "/api/products/",
-        {"status": "active"},
-    )
-
-    assert response.status_code == 200
-
-    assert all(
-        product["status"] == "active"
-        for product in response.data["results"]
-    )
-```
-
-## Price range test
-
-```python
-from decimal import Decimal
-
+    assert all(p["status"] == "active" for p in response.data["results"])
 
 @pytest.mark.django_db
-def test_filter_products_by_price_range(
-    user,
-    product_factory,
-):
-    product_factory(price=Decimal("50.00"))
-    product_factory(price=Decimal("200.00"))
-    product_factory(price=Decimal("900.00"))
+def test_filter_products_by_price_range(api, product_factory):
+    for amount in ("50.00", "200.00", "900.00"):
+        product_factory(price=Decimal(amount))
 
-    client = APIClient()
-    client.force_authenticate(user=user)
-
-    response = client.get(
-        "/api/products/",
-        {
-            "min_price": "100",
-            "max_price": "500",
-        },
+    response = api.get(
+        "/api/products/", {"min_price": "100", "max_price": "500"}
     )
 
-    prices = {
-        Decimal(item["price"])
-        for item in response.data["results"]
-    }
-
+    prices = {Decimal(item["price"]) for item in response.data["results"]}
     assert prices == {Decimal("200.00")}
-```
 
-## Search test
-
-```python
 @pytest.mark.django_db
-def test_search_products(
-    user,
-    product_factory,
-):
+def test_search_products(api, product_factory):
     product_factory(name="Mechanical Keyboard")
     product_factory(name="Gaming Mouse")
 
-    client = APIClient()
-    client.force_authenticate(user=user)
+    response = api.get("/api/products/", {"search": "keyboard"})
 
-    response = client.get(
-        "/api/products/",
-        {"search": "keyboard"},
-    )
+    names = {p["name"] for p in response.data["results"]}
+    assert names == {"Mechanical Keyboard"}
 
-    names = {
-        product["name"]
-        for product in response.data["results"]
-    }
-
-    assert "Mechanical Keyboard" in names
-    assert "Gaming Mouse" not in names
-```
-
-## Ordering test
-
-```python
 @pytest.mark.django_db
-def test_order_products_by_price(
-    user,
-    product_factory,
-):
+def test_order_products_by_price(api, product_factory):
     product_factory(price="500.00")
     product_factory(price="100.00")
 
-    client = APIClient()
-    client.force_authenticate(user=user)
+    response = api.get("/api/products/", {"ordering": "price"})
 
-    response = client.get(
-        "/api/products/",
-        {"ordering": "price"},
-    )
-
-    prices = [
-        Decimal(item["price"])
-        for item in response.data["results"]
-    ]
-
+    prices = [Decimal(item["price"]) for item in response.data["results"]]
     assert prices == sorted(prices)
 ```
 
-## Tenant-isolation test
+## Tenant isolation
+
+The most important test in this file: prove the mandatory `get_queryset()` restriction holds.
 
 ```python
 @pytest.mark.django_db
 def test_user_cannot_access_another_organization_product(
-    user,
-    another_organization,
-    product_factory,
+    api, another_organization, product_factory
 ):
-    other_product = product_factory(
-        organization=another_organization
-    )
+    other_product = product_factory(organization=another_organization)
 
-    client = APIClient()
-    client.force_authenticate(user=user)
+    response = api.get("/api/products/")
 
-    response = client.get("/api/products/")
-
-    returned_ids = {
-        item["id"]
-        for item in response.data["results"]
-    }
-
+    returned_ids = {item["id"] for item in response.data["results"]}
     assert other_product.id not in returned_ids
 ```
 
 ## Throttling test
 
-Use a dedicated low-rate throttle for predictable tests.
+Use a dedicated low-rate throttle so the limit is reached predictably, and make sure the view under test actually uses it.
 
 ```python
 # tests/throttles.py
-
 from rest_framework.throttling import UserRateThrottle
-
 
 class TestUserThrottle(UserRateThrottle):
     rate = "2/minute"
-```
 
-```python
-import pytest
+# tests/test_throttling.py
 from django.core.cache import cache
-from rest_framework.test import APIClient
-
 
 @pytest.mark.django_db
-def test_request_is_throttled_after_limit(user):
-    cache.clear()
+def test_request_is_throttled_after_limit(api):
+    cache.clear()   # throttle state persists between tests otherwise
 
-    client = APIClient()
-    client.force_authenticate(user=user)
-
-    first = client.get("/api/products/")
-    second = client.get("/api/products/")
-    third = client.get("/api/products/")
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert third.status_code == 429
+    assert api.get("/api/products/").status_code == 200
+    assert api.get("/api/products/").status_code == 200
+    assert api.get("/api/products/").status_code == 429
 ```
-
-Ensure the tested view uses `TestUserThrottle` during this test.
-
-Clear throttle cache state between tests to prevent one test from affecting another.
 
 ---
 
@@ -2145,95 +1761,7 @@ Document:
 
 ---
 
-# 11. Quick Revision
-
-```text
-PAGINATION
-==========
-
-Question:
-How much data should one response contain?
-
-PageNumberPagination
-    ?page=2
-
-    Best for:
-    Numbered pages and admin tables.
-
-LimitOffsetPagination
-    ?limit=25&offset=50
-
-    Best for:
-    Flexible API integrations.
-
-CursorPagination
-    ?cursor=...
-
-    Best for:
-    Large, changing, sequential datasets.
-
-
-FILTERING
-=========
-
-Question:
-Which records should be returned?
-
-get_queryset()
-    Mandatory user, tenant, URL, and business restrictions.
-
-DjangoFilterBackend
-    Exact, choice, range, date, and custom filters.
-
-SearchFilter
-    Human-entered free-text search.
-
-OrderingFilter
-    Client-selected ordering over allowed fields.
-
-
-THROTTLING
-==========
-
-Question:
-How frequently may the client call the endpoint?
-
-AnonRateThrottle
-    Limits unauthenticated clients, usually by IP.
-
-UserRateThrottle
-    Limits authenticated users by user ID.
-
-ScopedRateThrottle
-    Applies different rates to different API sections.
-
-Burst + sustained throttles
-    Control both short spikes and long-term consumption.
-```
-
-## Final mental model
-
-```text
-Authentication identifies the client.
-
-Permissions decide whether the client has access.
-
-Throttling decides whether the request may run now.
-
-get_queryset() applies mandatory visibility restrictions.
-
-Filtering decides which records match.
-
-Ordering decides their sequence.
-
-Pagination selects a manageable slice.
-
-Serialization creates the response representation.
-```
-
----
-
-# 12. Official References
+# 11. Official References
 
 - [Django REST Framework — Pagination](https://www.django-rest-framework.org/api-guide/pagination/)
 - [Django REST Framework — Filtering](https://www.django-rest-framework.org/api-guide/filtering/)

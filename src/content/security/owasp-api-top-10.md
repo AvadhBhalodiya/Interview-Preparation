@@ -6,10 +6,33 @@ order: 3
 
 # OWASP API Security Top 10 — Developer Guide
 
-> **Category:** Security  
-> **Edition covered:** OWASP API Security Top 10 — 2023  
-> **Audience:** Backend/API developers with 3+ years of experience  
-> **Goal:** Understand the most important API-specific security risks and the practical controls used to prevent them.
+> Understand the most important API-specific security risks and the practical controls used to prevent them.
+>
+> **Edition covered:** OWASP API Security Top 10 — 2023
+
+## In short
+
+- The list is deliberately API-specific and assumes you already handle injection, dependencies, and XSS. Its dominant theme is **authorization**, which appears three separate times: object (API1), property (API3), and function (API5).
+- **BOLA (API1)** is the number-one API risk. The endpoint authenticates the caller, then loads whatever object ID the URL contains, so an authenticated attacker changes `/orders/1001` to `/orders/1002`. Fix it by scoping the lookup to the caller *in the query*, never by fetching first and checking afterwards.
+- Guessable IDs are not the vulnerability and UUIDs are not the fix. Random identifiers raise the cost of enumeration; they do not add an authorization check.
+- **BOPLA (API3)** is two mirrored bugs: excessive data exposure serialising a whole model outwards, and mass assignment binding a whole request body inwards. Explicit request and response schemas close both.
+- **BFLA (API5)** is about operations rather than records — an admin endpoint protected only by the UI not linking to it. Every privileged function needs a server-side permission check.
+- API4 and API6 look alike but differ: unrestricted resource consumption is technical exhaustion (CPU, memory, third-party cost), while sensitive business-flow abuse is *valid* requests at inhuman scale, which rate limits alone do not stop.
+- **SSRF (API7)** follows any user-supplied URL the server fetches. Blocklists lose to redirects, DNS rebinding, and alternate encodings, so allow-list destinations, block internal ranges, and do not follow redirects.
+
+```mermaid
+flowchart TD
+    A[Authenticate identity] --> B[Authorize function]
+    B --> C[Authorize object]
+    C --> D[Authorize properties]
+    D --> E[Validate business rules]
+    E --> F[Control resource usage]
+    F --> G[Perform and audit the action]
+```
+
+**Interview answer:** APIs hand the client direct control of object IDs, field names, and endpoint paths, which is why authorization dominates the API Top 10 rather than injection. BOLA is ranked first: the endpoint validates the token and then trusts the identifier in the URL, so an authenticated user can read or modify another user's records just by changing a number. The fix is to make ownership part of the query rather than a check bolted on after the fetch, and to test cross-user access automatically — a scanner cannot infer who is supposed to own what, so these bugs survive every automated tool.
+
+**Gotcha:** Switching to UUIDs and considering BOLA fixed. An identifier that leaks through a webhook payload, a shared link, or another endpoint's response still works perfectly, because nothing in the request path ever asked whether this caller owns this object.
 
 ---
 
@@ -210,11 +233,7 @@ order = Order.objects.get(
 - Test by replacing IDs with IDs belonging to another user or tenant.
 - Check nested resources as well as top-level resources.
 
-Example nested endpoint:
-
-```http
-GET /organizations/20/projects/700
-```
+Example nested endpoint: `GET /organizations/20/projects/700`
 
 The API must validate that:
 
@@ -417,7 +436,6 @@ class ProfileUpdate(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
 
-
 class PublicProfileResponse(BaseModel):
     id: int
     display_name: str
@@ -578,17 +596,13 @@ The UI never displays this option, but the endpoint lacks a role check and perfo
 
 **Horizontal escalation:** A user accesses another user's data at the same privilege level.
 
-```text
-Customer A reads Customer B's invoice.
-```
+> Customer A reads Customer B's invoice.
 
 This is commonly BOLA.
 
 **Vertical escalation:** A lower-privileged user executes an admin or manager function.
 
-```text
-Normal user disables another user's account.
-```
+> Normal user disables another user's account.
 
 This is commonly BFLA.
 
@@ -600,7 +614,6 @@ from enum import StrEnum
 class Permission(StrEnum):
     USER_DELETE = "user:delete"
     USER_READ = "user:read"
-
 
 def require_permission(user, permission: Permission) -> None:
     if permission not in user.permissions:
@@ -938,17 +951,9 @@ Improper inventory management includes unknown, undocumented, outdated, abandone
 
 ## 12.3 Example
 
-The current mobile application uses:
+The current mobile application uses: `https://api.example.com/v3/users/me`
 
-```http
-https://api.example.com/v3/users/me
-```
-
-An older API remains active:
-
-```http
-https://api.example.com/v1/users/42
-```
+An older API remains active: `https://api.example.com/v1/users/42`
 
 Version 3 enforces tenant-aware authorization. Version 1 does not.
 
@@ -1214,7 +1219,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 bearer = HTTPBearer(auto_error=False)
 
-
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ):
@@ -1270,12 +1274,10 @@ async def get_order(
 ```python
 from pydantic import BaseModel, ConfigDict, Field
 
-
 class OrderUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     delivery_note: str | None = Field(default=None, max_length=500)
-
 
 class AdminOrderUpdateRequest(OrderUpdateRequest):
     status: str | None = None
@@ -1289,7 +1291,6 @@ Separate schemas make property-level permissions visible and reviewable.
 ```python
 from collections.abc import Callable
 
-
 def require_permission(permission: str) -> Callable:
     async def dependency(
         current_user: Annotated[User, Depends(get_current_user)],
@@ -1299,7 +1300,6 @@ def require_permission(permission: str) -> Callable:
         return current_user
 
     return dependency
-
 
 @router.delete("/admin/users/{user_id}")
 async def delete_user(
@@ -1323,7 +1323,6 @@ The service layer should still enforce domain and tenant rules.
 ```python
 from fastapi import Query
 
-
 @router.get("/events")
 async def list_events(
     limit: int = Query(default=20, ge=1, le=100),
@@ -1339,7 +1338,6 @@ import uuid
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -1393,11 +1391,7 @@ For each protected operation, create test identities such as:
 - Administrator
 - Disabled or deleted user
 
-Test the combination of:
-
-```text
-Identity x Function x Object x Property
-```
+Test the combination of: `Identity x Function x Object x Property`
 
 Example test table:
 
@@ -1508,36 +1502,11 @@ Security gates should be risk-based. A critical authorization regression should 
 - [ ] Logs avoid credentials and sensitive personal data.
 - [ ] Alerts cover unusual authentication, authorization, cost, and business activity.
 
----
-
-# 19. Key Takeaways
-
-1. A valid token does not guarantee authorization.
-2. Check access at the object, property, and function levels.
-3. Use explicit input and output schemas rather than exposing database models directly.
-4. Rate limits must cover technical resources, third-party costs, and business abuse.
-5. Never allow unrestricted server-side fetching of user-provided URLs.
-6. Treat third-party API data as untrusted input.
-7. Maintain an accurate inventory of all API versions, hosts, and environments.
-8. Build security controls into shared application patterns and CI/CD.
-9. Test negative cases and cross-user or cross-tenant access continuously.
-10. Use defense in depth; no single control protects the entire API.
-
-A concise secure-request model is:
-
-```mermaid
-flowchart TD
-    A[Authenticate identity] --> B[Authorize function]
-    B --> C[Authorize object]
-    C --> D[Authorize properties]
-    D --> E[Validate business rules]
-    E --> F[Control resource usage]
-    F --> G[Perform and audit the action]
-```
+Three items above carry disproportionate weight and are worth re-reading before any API design review: treat third-party API responses as untrusted input, keep an accurate inventory of every version, host, and environment, and test cross-user and cross-tenant access continuously — that last one is the only reliable way to catch BOLA, because no scanner knows who should own what.
 
 ---
 
-# 20. Official References
+# 19. Official References
 
 - OWASP API Security Project: https://owasp.org/www-project-api-security/
 - OWASP API Security Top 10: https://owasp.org/API-Security/

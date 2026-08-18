@@ -6,9 +6,30 @@ order: 5
 
 # Transaction Isolation Levels
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer  
-> **Purpose:** Understand how concurrent database transactions interact, which anomalies each isolation level prevents, and how to choose the right level in production.
+> Understand how concurrent database transactions interact, which anomalies each isolation level prevents, and how to choose the right level in production.
+
+## In short
+
+- An isolation level defines how much one transaction is protected from the uncommitted or concurrent activity of other transactions.
+- The four standard levels are `READ UNCOMMITTED`, `READ COMMITTED`, `REPEATABLE READ`, and `SERIALIZABLE`; each stronger level trades concurrency for correctness.
+- The anomalies you must be able to name: dirty read, non-repeatable read, phantom read, lost update, write skew, serialization anomaly.
+- Defaults differ by engine: PostgreSQL, SQL Server, and Oracle default to `READ COMMITTED`; MySQL InnoDB defaults to `REPEATABLE READ`.
+- Snapshot isolation is not the same as serializable: write skew lets two transactions update different rows and together break a cross-row rule.
+- `SERIALIZABLE` may abort a transaction with a serialization failure, so the application must retry the **entire** transaction, not only the last write.
+- Choose the weakest level that still guarantees the business invariant, and back it with constraints, atomic conditional SQL, and targeted row locks.
+
+```mermaid
+flowchart LR
+    A[Business invariant] --> B[Constraint or atomic SQL]
+    B --> C[Explicit row/range coordination if needed]
+    C --> D[Choose isolation level]
+    D --> E[Handle blocking, deadlocks, and retries]
+    E --> F[Test with real concurrency]
+```
+
+**Interview answer:** `READ UNCOMMITTED` allows dirty reads; `READ COMMITTED` prevents dirty reads but gives each statement a fresh committed view, so non-repeatable reads and phantoms remain possible; `REPEATABLE READ` gives the transaction a stable view and prevents non-repeatable reads, while the standard minimum still permits phantoms; `SERIALIZABLE` prevents serialization anomalies, so the committed outcome matches some one-at-a-time order. In practice I start from the invariant that must never be violated, keep the engine default plus constraints and atomic updates, and escalate to explicit locking or `SERIALIZABLE` with retries only when the rule spans rows or predicates.
+
+**Gotcha:** The standard's level names describe a minimum, not what your engine actually does — PostgreSQL runs `READ UNCOMMITTED` as `READ COMMITTED` and its `REPEATABLE READ` already blocks the standard phantom-read phenomenon, so verify the exact engine and version instead of trusting the name.
 
 ---
 
@@ -108,11 +129,7 @@ A dirty read occurs when one transaction reads data written by another transacti
 
 ### Example
 
-Initial balance:
-
-```text
-account.balance = $1,000
-```
+Initial balance: `account.balance = $1,000`
 
 Timeline:
 
@@ -207,11 +224,7 @@ A lost update occurs when two transactions read the same value, calculate new va
 
 ### Example
 
-Initial stock:
-
-```text
-stock = 10
-```
+Initial stock: `stock = 10`
 
 ```text
 Transaction A                       Transaction B
@@ -222,17 +235,9 @@ Writes stock = 8                    Writes stock = 7
 COMMIT                              COMMIT
 ```
 
-Expected stock:
+Expected stock: `10 - 2 - 3 = 5`
 
-```text
-10 - 2 - 3 = 5
-```
-
-Actual stock:
-
-```text
-7
-```
+Actual stock: `7`
 
 Transaction A's update was lost.
 
@@ -269,9 +274,7 @@ Write skew can happen when two transactions read the same consistent snapshot, u
 
 Business rule:
 
-```text
-At least one doctor must remain on call.
-```
+> At least one doctor must remain on call.
 
 Initial data:
 
@@ -307,23 +310,11 @@ Write skew is a major reason why **snapshot isolation is not automatically equiv
 
 A serialization anomaly means the final result of concurrent transactions cannot be explained by any valid serial order.
 
-Serializable isolation aims to guarantee:
+Serializable isolation aims to guarantee: `Concurrent result = result of some one-at-a-time transaction order`
 
-```text
-Concurrent result = result of some one-at-a-time transaction order
-```
+For two transactions, acceptable serial outcomes are: `A then B`
 
-For two transactions, acceptable serial outcomes are:
-
-```text
-A then B
-```
-
-or:
-
-```text
-B then A
-```
+or: `B then A`
 
 If the concurrent outcome is impossible under both orders, a serialization anomaly occurred.
 
@@ -385,11 +376,7 @@ SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 
 ### Snapshot scope
 
-A useful mental model is:
-
-```text
-New committed view for each statement
-```
+A useful mental model is: `New committed view for each statement`
 
 ```mermaid
 sequenceDiagram
@@ -438,11 +425,7 @@ SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
 ### Snapshot scope
 
-In MVCC-based implementations, the mental model is often:
-
-```text
-One stable snapshot for the transaction
-```
+In MVCC-based implementations, the mental model is often: `One stable snapshot for the transaction`
 
 ```mermaid
 sequenceDiagram
@@ -574,11 +557,7 @@ A lock-based system controls access to data using locks such as:
 - **Update lock:** helps coordinate a read that may become a write.
 - **Range or predicate lock:** protects a search range from matching inserts or changes.
 
-```text
-Reader acquires shared lock
-Writer needs exclusive lock
-Incompatible locks cause blocking
-```
+A reader acquires a shared lock and a writer needs an exclusive lock, so incompatible locks on the same data cause blocking.
 
 ### Strengths
 
@@ -600,13 +579,6 @@ Incompatible locks cause blocking
 MVCC stores or reconstructs multiple versions of a row.
 
 A reader can see an older committed version while another transaction updates the current version.
-
-```text
-Row version history
-
-Version 1: price = $100, visible to older snapshot
-Version 2: price = $120, visible after writer commits
-```
 
 ```mermaid
 flowchart LR
@@ -755,17 +727,8 @@ Transaction B continues using the current committed row
 
 Database support differs, but common variants include:
 
-```sql
-FOR UPDATE NOWAIT
-```
-
-Fail immediately when the row is already locked.
-
-```sql
-FOR UPDATE SKIP LOCKED
-```
-
-Skip locked rows. This is useful for worker queues but must be used only when skipping is valid for the workflow.
+- `FOR UPDATE NOWAIT` fails immediately when the row is already locked.
+- `FOR UPDATE SKIP LOCKED` skips locked rows. This is useful for worker queues but must be used only when skipping is valid for the workflow.
 
 ---
 
@@ -836,14 +799,7 @@ VALUES (501, 'A-10', 9001);
 
 Only one can satisfy the primary-key constraint.
 
-This is usually safer than:
-
-```text
-Check whether seat is free
-Then insert
-```
-
-because the check and insert are separate operations unless protected by locking or serializable isolation.
+This is usually safer than a `check whether the seat is free, then insert` sequence in application code, because the check and insert are separate operations unless protected by locking or serializable isolation.
 
 ---
 
@@ -851,9 +807,7 @@ because the check and insert are separate operations unless protected by locking
 
 Business rule:
 
-```text
-A room may have at most 10 active bookings for a date.
-```
+> A room may have at most 10 active bookings for a date.
 
 A simple pattern is:
 
@@ -1078,11 +1032,7 @@ Current Oracle documentation describes `READ COMMITTED` as the default behavior 
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 ```
 
-or at session scope:
-
-```sql
-ALTER SESSION SET ISOLATION_LEVEL = SERIALIZABLE;
-```
+or at session scope: `ALTER SESSION SET ISOLATION_LEVEL = SERIALIZABLE;`
 
 The transaction-setting statement must be placed according to Oracle's transaction rules, normally before other transactional work.
 
@@ -1244,96 +1194,23 @@ Fewer round trips and fewer read/write gaps usually mean fewer concurrency risks
 
 ---
 
-## 11.3 Pessimistic locking
+## 11.3 Locking
 
-Pessimistic locking assumes conflicts are likely.
+Isolation alone does not prevent a lost update: two transactions can both read a row, both calculate a new value from what they read, and the second write silently overwrites the first.
 
-```sql
-SELECT ... FOR UPDATE;
-```
+The fix is either a pessimistic lock taken at read time or an optimistic version check enforced at write time.
 
-Use it when:
-
-- the transaction is short;
-- the locked resource is clear;
-- conflict probability is high;
-- waiting is acceptable.
+See [Optimistic vs Pessimistic Locking](locking-optimistic-pessimistic.md) for `SELECT ... FOR UPDATE`, the version-column pattern, and how to choose between them.
 
 ---
 
-## 11.4 Optimistic locking
+## 11.4 Idempotency and external side effects
 
-Optimistic locking assumes conflicts are uncommon.
+A database commit plus an external side effect is not atomic, so a retry after a serialization failure, a deadlock, or an uncertain commit outcome must not apply the effect twice.
 
-Common implementation:
+Make the retried operation idempotent, and record the pending side effect in the same transaction as the domain change so a separate publisher can deliver it afterwards.
 
-```text
-version column
-updated_at check
-ETag / If-Match at the HTTP layer
-```
-
-Use it when:
-
-- records are read much more often than updated;
-- user edits may take a long time;
-- blocking a row during user interaction would be unacceptable.
-
----
-
-## 11.5 Idempotency
-
-A retried transaction or API request must not create duplicate external effects.
-
-Example:
-
-```sql
-CREATE TABLE payment_requests (
-    idempotency_key VARCHAR(100) PRIMARY KEY,
-    payment_id      BIGINT NOT NULL,
-    created_at      TIMESTAMP NOT NULL
-);
-```
-
-The same idempotency key should map to the same logical operation.
-
-This is especially important when retrying after:
-
-- serialization failures;
-- deadlocks;
-- connection timeouts;
-- uncertain commit outcomes.
-
----
-
-## 11.6 Transactional outbox
-
-Avoid sending a message directly in the middle of a transaction:
-
-```text
-Update database
-Send message to broker
-Commit database
-```
-
-A failure between these steps can create inconsistent outcomes.
-
-Instead, write the domain change and an outbox record in the same database transaction:
-
-```sql
-BEGIN;
-
-UPDATE orders
-SET status = 'PAID'
-WHERE id = 501;
-
-INSERT INTO outbox_events (event_type, aggregate_id, payload)
-VALUES ('OrderPaid', 501, '{...}');
-
-COMMIT;
-```
-
-A separate publisher safely sends pending outbox events.
+See [HTTP Idempotency and Methods](../api-design/idempotency-http-methods.md) for idempotency keys and the retry contract.
 
 ---
 
@@ -1448,15 +1325,11 @@ Isolation problems are often workload-dependent and may not appear in single-use
 
 Do not begin with:
 
-```text
-Which isolation level should this endpoint use?
-```
+> Which isolation level should this endpoint use?
 
 Begin with:
 
-```text
-Which database states must never be committed?
-```
+> Which database states must never be committed?
 
 Examples:
 
@@ -1571,78 +1444,7 @@ Always inspect the SQL and understand the database guarantee.
 
 ---
 
-# 14. Interview-Relevant Summary
-
-## 14.1 Core definition
-
-A transaction isolation level controls which concurrent changes a transaction can observe and which concurrency anomalies are permitted.
-
-## 14.2 The four levels
-
-```text
-READ UNCOMMITTED
-    Can read uncommitted data
-
-READ COMMITTED
-    Reads only committed data
-    Usually a new view per statement
-
-REPEATABLE READ
-    Provides a stable view for repeated reads
-    Exact phantom behavior is database-specific
-
-SERIALIZABLE
-    Committed outcome must match some serial order
-    May require blocking or transaction retries
-```
-
-## 14.3 Most important practical insight
-
-Isolation-level names are not enough.
-
-You must know:
-
-1. the business invariant;
-2. the database engine's exact behavior;
-3. whether the operation uses ordinary reads, locking reads, or writes;
-4. whether constraints can enforce the rule;
-5. how the application handles deadlocks and serialization failures.
-
-## 14.4 Quick selection summary
-
-```text
-Simple independent statements
-    READ COMMITTED + constraints + atomic SQL
-
-Stable multi-query report
-    REPEATABLE READ / snapshot-style transaction
-
-Read-modify-write on a known row
-    SELECT ... FOR UPDATE or optimistic version check
-
-Cross-row or predicate invariant
-    SERIALIZABLE, coordination locking, or schema redesign
-
-High-contention critical workflow
-    Short transaction + deterministic lock order + retry strategy
-```
-
-## 14.5 Final mental model
-
-```mermaid
-flowchart LR
-    A[Business invariant] --> B[Constraint or atomic SQL]
-    B --> C[Explicit row/range coordination if needed]
-    C --> D[Choose isolation level]
-    D --> E[Handle blocking, deadlocks, and retries]
-    E --> F[Test with real concurrency]
-```
-
-The best solution is usually not "increase the isolation level everywhere." It is a combination of correct schema design, atomic SQL, targeted locking, appropriate isolation, short transactions, and reliable retry handling.
-
----
-
-# 15. Official References
+# 14. Official References
 
 The database-specific notes in this guide were checked against current official documentation in July 2026.
 

@@ -6,21 +6,57 @@ order: 4
 
 # Redis Data Structures
 
-> **Topic:** Caching with Redis  
-> **Level:** Intermediate developer  
-> **Purpose:** Understand how Redis data structures work, when to use each one, and how they support real-world caching and backend systems.
+> Understand how Redis data structures work, when to use each one, and how they support real-world caching and backend systems.
+
+## In short
+
+- Redis is a data-structure server, not a key-value store. The value behind a key can be a hash, list, set, sorted set, stream, JSON document, time series, or vector set, and the server operates on it in place.
+- A key has exactly one type. A command belonging to another type returns `WRONGTYPE`, so the type is a modelling decision made once per key.
+- The core six: **String** (whole values, counters, locks), **Hash** (flat objects, field-level updates), **List** (queues, recent items), **Set** (uniqueness, membership), **Sorted Set** (ranking, scheduling, sliding windows), **Stream** (events with consumer groups and replay).
+- Choose by operation, not by data shape. If you would read a collection into the application, change it, and write it back, there is usually a command that does it atomically on the server: `INCR`, `HINCRBY`, `ZINCRBY`, `LTRIM`.
+- List versus Stream is the queue question: a List entry is gone the moment it is popped, while a Stream entry survives until acknowledged — which is what makes consumer groups, retries, and replay possible.
+- Approximate structures (HyperLogLog, Bloom, Cuckoo, Count-Min Sketch, Top-K, t-digest) trade exactness for a fixed, tiny memory footprint. Use them when "close enough" is a valid answer.
+- Most operations are O(1) or O(log N), but anything that returns a whole collection — `SMEMBERS`, `HGETALL`, `LRANGE 0 -1` — is O(N) on a single-threaded server.
+
+```mermaid
+flowchart TD
+    A[What does the value represent?]
+
+    A --> B{One complete value?}
+    B -->|Yes| S[String]
+
+    B -->|No| C{Object or document?}
+    C -->|Flat fields| H[Hash]
+    C -->|Nested fields or arrays| J[JSON]
+
+    A --> D{Collection?}
+    D --> E{Must members be unique?}
+    E -->|No, ordered by insertion| L[List]
+    E -->|Yes, no ranking| SE[Set]
+    E -->|Yes, ranked by score| Z[Sorted Set]
+
+    A --> F{Event processing?}
+    F -->|Consumer groups or replay| ST[Stream]
+    F -->|Simple queue only| L
+
+    A --> G{Specialized requirement?}
+    G -->|Boolean flags by numeric ID| BM[Bitmap]
+    G -->|Approximate unique count| HL[HyperLogLog]
+    G -->|Nearby locations| GEO[Geospatial]
+    G -->|Timestamped metrics| TS[Time Series]
+    G -->|Vector similarity| VS[Vector Set]
+    G -->|Sparse numeric indexes| AR[Array]
+```
+
+**Interview answer:** Pick the structure from the operation the application must perform, not from the shape of the data. A leaderboard is a Sorted Set because ranking and range queries are single commands against it; a session is a Hash because one field can be updated without rewriting the object; a reliable job queue is a Stream rather than a List because only a Stream can redeliver a message whose consumer died mid-work. Getting that choice right removes application-side sorting, extra round trips, and read-modify-write races in one decision.
+
+**Gotcha:** Redis executes commands on a single thread, so one O(N) command on a large collection stalls every other client. `KEYS *`, `HGETALL` on a hash with a million fields, or `LRANGE list 0 -1` are not merely slow for the caller — they block the whole server. That is why bounded collections and the `SCAN`, `HSCAN`, `SSCAN`, and `ZSCAN` iterators matter far more here than in a threaded database.
 
 ---
 
 # 1. Redis Is More Than a Key-Value Cache
 
-Redis stores data using the following model:
-
-```text
-key -> value
-```
-
-The important point is that the value does not have to be a plain string. It can be a hash, list, set, sorted set, stream, JSON document, time series, vector set, and more.
+Redis stores data as `key -> value`. The important point is that the value does not have to be a plain string. It can be a hash, list, set, sorted set, stream, JSON document, time series, vector set, and more.
 
 ```mermaid
 flowchart LR
@@ -53,26 +89,14 @@ Every Redis key has one primary value type.
 
 ```redis
 SET product:101 "Laptop"
-TYPE product:101
+TYPE product:101              # => string
 ```
 
-Output:
-
-```text
-string
-```
-
-A key created as one type cannot be used with commands belonging to another type.
+A key created as one type cannot be used with commands belonging to another type. The second command below fails with `WRONGTYPE Operation against a key holding the wrong kind of value`:
 
 ```redis
 SET user:1 "Avadh"
 HSET user:1 email "user@example.com"
-```
-
-The second command fails with:
-
-```text
-WRONGTYPE Operation against a key holding the wrong kind of value
 ```
 
 ## 2.1 Generic Key Commands
@@ -95,19 +119,9 @@ These commands work with most Redis data types:
 
 > Use `SCAN` in application and production tooling. Avoid using `KEYS *` on a large production database because it scans the complete keyspace in one blocking operation.
 
-## 2.2 TTL Applies to the Key
+## 2.2 Expiration Is a Property of the Key
 
-A Redis key can have an expiration regardless of its data type.
-
-```redis
-HSET session:abc123 user_id 42 role admin
-EXPIRE session:abc123 1800
-TTL session:abc123
-```
-
-When the TTL reaches zero, the complete key and its value are removed.
-
-Modern Redis versions also support expiration for individual hash fields, but key-level expiration remains the most common caching model.
+Expiration belongs to the key, not to the type stored in it: any key can carry a TTL, and when it lapses the whole value goes with it. The commands, the exact semantics of which operations preserve or clear a TTL, and per-field hash expiration are covered in [TTL and Eviction Policies](ttl-eviction-policies.md).
 
 ---
 
@@ -201,11 +215,7 @@ INCRBY api:requests 10
 DECR api:requests
 ```
 
-For floating-point numbers:
-
-```redis
-INCRBYFLOAT wallet:42 12.50
-```
+For floating-point numbers: `INCRBYFLOAT wallet:42 12.50`
 
 ## 4.5 Common Use Cases
 
@@ -287,11 +297,7 @@ HSET product:101 \
 EXPIRE product:101 300
 ```
 
-The application can retrieve only the required fields:
-
-```redis
-HMGET product:101 name price
-```
+The application can retrieve only the required fields: `HMGET product:101 name price`
 
 ## 5.4 Hash vs Serialized JSON String
 
@@ -311,11 +317,7 @@ Use a hash for a flat record. Use Redis JSON when nested document operations are
 
 Recent Redis versions support expiration on individual hash fields. This can be useful when fields have independent lifetimes, such as per-user temporary attributes.
 
-Example command family:
-
-```text
-HEXPIRE, HPEXPIRE, HEXPIREAT, HPEXPIREAT, HTTL, HPTTL
-```
+Example command family: `HEXPIRE, HPEXPIRE, HEXPIREAT, HPEXPIREAT, HTTL, HPTTL`
 
 Key-level TTL is still simpler and should be preferred when all fields represent one cached object.
 
@@ -381,11 +383,7 @@ LPUSH jobs:email '{"job_id":1,"template":"welcome"}'
 RPOP jobs:email
 ```
 
-Blocking consumption:
-
-```redis
-BRPOP jobs:email 5
-```
+Blocking consumption: `BRPOP jobs:email 5`
 
 This waits for up to five seconds when the list is empty.
 
@@ -477,23 +475,11 @@ SADD developers:python user:1 user:2 user:3
 SADD developers:django user:2 user:3 user:4
 ```
 
-Intersection:
+Intersection: `SINTER developers:python developers:django`
 
-```redis
-SINTER developers:python developers:django
-```
+Union: `SUNION developers:python developers:django`
 
-Union:
-
-```redis
-SUNION developers:python developers:django
-```
-
-Difference:
-
-```redis
-SDIFF developers:python developers:django
-```
+Difference: `SDIFF developers:python developers:django`
 
 These operations make sets useful for relationship and permission logic.
 
@@ -659,11 +645,7 @@ XRANGE orders:events - +
 XREAD COUNT 10 STREAMS orders:events 0-0
 ```
 
-To wait for new entries:
-
-```redis
-XREAD BLOCK 5000 STREAMS orders:events $
-```
+To wait for new entries: `XREAD BLOCK 5000 STREAMS orders:events $`
 
 ## 9.3 Consumer Groups
 
@@ -681,11 +663,7 @@ flowchart LR
     C3 --> ACK3[XACK]
 ```
 
-Create a group:
-
-```redis
-XGROUP CREATE orders:events order-processors 0 MKSTREAM
-```
+Create a group: `XGROUP CREATE orders:events order-processors 0 MKSTREAM`
 
 Read as a group member:
 
@@ -695,23 +673,11 @@ XREADGROUP GROUP order-processors worker-1 \
     STREAMS orders:events >
 ```
 
-Acknowledge a processed message:
+Acknowledge a processed message: `XACK orders:events order-processors 1785421200000-0`
 
-```redis
-XACK orders:events order-processors 1785421200000-0
-```
+Inspect pending messages: `XPENDING orders:events order-processors`
 
-Inspect pending messages:
-
-```redis
-XPENDING orders:events order-processors
-```
-
-Recover abandoned work:
-
-```redis
-XAUTOCLAIM orders:events order-processors worker-2 60000 0-0 COUNT 10
-```
+Recover abandoned work: `XAUTOCLAIM orders:events order-processors worker-2 60000 0-0 COUNT 10`
 
 ## 9.4 Delivery Semantics
 
@@ -734,11 +700,7 @@ flowchart TD
 
 ## 9.5 Stream Trimming
 
-Prevent unbounded growth:
-
-```redis
-XADD orders:events MAXLEN ~ 100000 * type created order_id 9002
-```
+Prevent unbounded growth: `XADD orders:events MAXLEN ~ 100000 * type created order_id 9002`
 
 The `~` allows approximate trimming, which is generally more efficient.
 
@@ -820,11 +782,7 @@ Setting bit `1,000,000,000` may allocate a large string even when only one bit i
 
 Bitfields pack several integers into one Redis string and allow atomic reads, writes, and increments.
 
-Example layout:
-
-```text
-| plan: 2 bits | retries: 4 bits | region: 3 bits | flags: 7 bits |
-```
+Example layout: `| plan: 2 bits | retries: 4 bits | region: 3 bits | flags: 7 bits |`
 
 ## 11.1 Commands
 
@@ -836,17 +794,9 @@ BITFIELD account:42 \
     GET u4 2
 ```
 
-Increment a packed value:
+Increment a packed value: `BITFIELD account:42 INCRBY u4 2 1`
 
-```redis
-BITFIELD account:42 INCRBY u4 2 1
-```
-
-Overflow behavior can be configured:
-
-```redis
-BITFIELD account:42 OVERFLOW SAT INCRBY u4 2 20
-```
+Overflow behavior can be configured: `BITFIELD account:42 OVERFLOW SAT INCRBY u4 2 20`
 
 ## 11.2 Common Use Cases
 
@@ -918,11 +868,7 @@ GEOADD restaurants \
     72.8562 19.0178 lower-parel
 ```
 
-The command order is:
-
-```text
-longitude latitude member
-```
+The command order is: `longitude latitude member`
 
 ## 13.2 Search Nearby Locations
 
@@ -1059,11 +1005,7 @@ Probabilistic structures trade perfect accuracy for lower memory usage and fast 
 
 ## 16.1 Bloom Filter
 
-A Bloom filter answers:
-
-```text
-"Has this item probably been seen?"
-```
+A Bloom filter answers: `"Has this item probably been seen?"`
 
 ```redis
 BF.ADD seen:articles article:101
@@ -1262,35 +1204,7 @@ Because arrays are newer, verify server and client-library compatibility before 
 
 # 19. Choosing the Correct Data Structure
 
-```mermaid
-flowchart TD
-    A[What does the value represent?]
-
-    A --> B{One complete value?}
-    B -->|Yes| S[String]
-
-    B -->|No| C{Object or document?}
-    C -->|Flat fields| H[Hash]
-    C -->|Nested fields or arrays| J[JSON]
-
-    A --> D{Collection?}
-    D --> E{Must members be unique?}
-    E -->|No, ordered by insertion| L[List]
-    E -->|Yes, no ranking| SE[Set]
-    E -->|Yes, ranked by score| Z[Sorted Set]
-
-    A --> F{Event processing?}
-    F -->|Consumer groups or replay| ST[Stream]
-    F -->|Simple queue only| L
-
-    A --> G{Specialized requirement?}
-    G -->|Boolean flags by numeric ID| BM[Bitmap]
-    G -->|Approximate unique count| HL[HyperLogLog]
-    G -->|Nearby locations| GEO[Geospatial]
-    G -->|Timestamped metrics| TS[Time Series]
-    G -->|Vector similarity| VS[Vector Set]
-    G -->|Sparse numeric indexes| AR[Array]
-```
+The decision flow is the diagram in **In short** at the top of this note. Below is the same decision expressed as a lookup table.
 
 ## 19.1 Quick Decision Table
 
@@ -1316,91 +1230,37 @@ flowchart TD
 
 ---
 
-# 20. Caching Design Patterns Using Data Structures
+# 20. Which Structure to Cache Into
 
-## 20.1 Cache-Aside with a String
+The caching patterns themselves live in sibling notes: cache-aside, write-through, and write-behind in [Cache Strategies](cache-strategies.md); negative caching and stampede protection in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md); versioned keys and tag sets in [Cache Invalidation](cache-invalidation.md).
 
-```mermaid
-sequenceDiagram
-    participant App
-    participant Redis
-    participant DB
+What belongs here is the narrower question those patterns leave open: once you have decided to cache a record, which structure should hold it?
 
-    App->>Redis: GET product:101
-    alt Cache hit
-        Redis-->>App: Cached JSON
-    else Cache miss
-        Redis-->>App: nil
-        App->>DB: SELECT product 101
-        DB-->>App: Product row
-        App->>Redis: SET product:101 JSON EX 300
-        App-->>App: Return product
-    end
-```
-
-Typical value:
+## 20.1 String vs Hash for a Cached Record
 
 ```redis
-SET cache:product:101 '{"id":101,"name":"Keyboard"}' EX 300
-```
-
-## 20.2 Cache-Aside with a Hash
-
-```redis
-HSET cache:product:101 name "Keyboard" price "2499" stock "25"
+SET   cache:product:101 '{"id":101,"name":"Keyboard","price":"2499"}' EX 300
+HSET  cache:product:101 name "Keyboard" price "2499" stock "25"
 EXPIRE cache:product:101 300
 ```
 
-This is useful when endpoints request different subsets of a flat object.
+| | String of serialized JSON | Hash of fields |
+|---|---|---|
+| Read the whole record | One `GET`, one deserialization | One `HGETALL`, no parsing |
+| Read two fields | Fetch and parse everything | `HMGET`, transfers only those fields |
+| Update one field | Read, parse, modify, re-serialize, write | `HSET` on that field alone |
+| Increment a numeric field | Read-modify-write race unless scripted | `HINCRBY`, atomic |
+| Nested or array values | Natural | Not supported; use JSON |
+| Set a TTL | Included in `SET` | Needs a separate `EXPIRE` |
 
-## 20.3 Negative Caching
+The rule of thumb: a String when the record is read and replaced whole, a Hash when endpoints read or update field subsets, and JSON when the document is genuinely nested.
 
-Cache the fact that a record does not exist for a short time:
+## 20.2 Structures That Support Invalidation
 
-```redis
-SET cache:product:999 "__NOT_FOUND__" EX 30
-```
+Two structures exist mainly to make invalidation cheaper, and both are described in full in [Cache Invalidation](cache-invalidation.md):
 
-This prevents repeated database queries for the same missing record.
-
-The negative TTL should usually be shorter than the positive-cache TTL.
-
-## 20.4 Cache Versioning
-
-```text
-product:v1:101
-product:v2:101
-```
-
-When the serialized shape changes, increment the version rather than relying on every old key to be immediately invalidated.
-
-## 20.5 Cache Tags with Sets
-
-Associate cached keys with a logical group:
-
-```redis
-SADD cache-tag:category:electronics \
-    cache:product:101 \
-    cache:product:102
-```
-
-On invalidation, retrieve and delete the associated keys.
-
-For atomic, high-volume invalidation, use a Lua script, Redis function, or application-side pipelining.
-
-## 20.6 Preventing Cache Stampede
-
-When a popular key expires, many requests may query the database simultaneously.
-
-A common approach:
-
-```redis
-SET lock:cache:product:101 worker-7 NX EX 10
-```
-
-The lock winner refreshes the cache. Other workers briefly wait, return stale data, or use another fallback strategy.
-
-For correctness-sensitive distributed locks, understand ownership tokens, safe release, failure handling, and the limitations of a single Redis node.
+- A **String** holding a namespace version, bumped with `INCR`, invalidates every key built from it at once.
+- A **Set** used as a tag (`SADD cache-tag:category:electronics cache:product:101 ...`) records which keys depend on an entity, so one change can delete exactly those. For high-volume invalidation, do the read-and-delete in a Lua script or a pipeline rather than in two round trips.
 
 ---
 
@@ -1436,11 +1296,7 @@ counter = counter + 1
 SET counter
 ```
 
-Use:
-
-```redis
-INCR counter
-```
+Use: `INCR counter`
 
 Instead of reading a sorted set, sorting in application code, and replacing it, use `ZADD`, `ZINCRBY`, and range commands.
 
@@ -1495,16 +1351,9 @@ Data structures consume RAM, and memory usage includes more than raw values:
 - Expiration metadata
 - Replication and persistence buffers
 
-Inspect a key:
-
 ```redis
-MEMORY USAGE product:101
-```
-
-Inspect server memory:
-
-```redis
-INFO memory
+MEMORY USAGE product:101      # bytes used by one key
+INFO memory                   # server-wide memory report
 ```
 
 ## 22.2 Many Tiny Keys vs One Large Collection
@@ -1615,39 +1464,9 @@ Possible solutions:
 
 ## 23.1 Use Predictable Names
 
-Recommended pattern:
+Follow a `<domain>:<entity>:<id>:<purpose>` pattern — `billing:invoice:9001`, `auth:session:abc123`, `user:42:permissions`. Key names are stored in memory too, so keep them clear and stable without padding them out: `product:101`, not `production-application-cached-product-object-with-id:101`. Full key-design guidance is in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
-```text
-<domain>:<entity>:<id>:<purpose>
-```
-
-Examples:
-
-```text
-billing:invoice:9001
-auth:session:abc123
-catalog:product:101
-user:42:permissions
-rate-limit:user:42
-```
-
-## 23.2 Keep Names Clear but Not Wastefully Long
-
-Key names consume memory. Use clear, stable naming without repeating unnecessary text.
-
-Good:
-
-```text
-product:101
-```
-
-Needlessly verbose:
-
-```text
-production-application-cached-product-object-with-id:101
-```
-
-## 23.3 Use Hash Tags in Redis Cluster When Needed
+## 23.2 Use Hash Tags in Redis Cluster When Needed
 
 Keys inside the same `{...}` hash tag map to the same cluster slot:
 
@@ -1661,7 +1480,7 @@ This enables multi-key operations on those keys in Redis Cluster.
 
 Do not place every key under the same hash tag because that defeats data distribution.
 
-## 23.4 Match Structure to Access Pattern
+## 23.3 Match Structure to Access Pattern
 
 Do not model Redis exactly like a relational database.
 
@@ -1681,13 +1500,7 @@ Redis modelling should be driven by commands and access paths.
 
 # 24. Practical Python Example
 
-Install the client:
-
-```bash
-pip install redis
-```
-
-Example using `redis-py`:
+Install the client with `pip install redis`. Example using `redis-py`:
 
 ```python
 from __future__ import annotations
@@ -1698,7 +1511,6 @@ from typing import Any
 from redis import Redis
 from redis.exceptions import RedisError
 
-
 redis_client = Redis(
     host="localhost",
     port=6379,
@@ -1708,18 +1520,15 @@ redis_client = Redis(
     socket_timeout=2,
 )
 
-
 def cache_product(product: dict[str, Any], ttl_seconds: int = 300) -> None:
     """Cache a complete product as a serialized string."""
     key = f"cache:product:{product['id']}"
     redis_client.set(key, json.dumps(product), ex=ttl_seconds)
 
-
 def get_cached_product(product_id: int) -> dict[str, Any] | None:
     """Return a cached product, or None on a cache miss."""
     value = redis_client.get(f"cache:product:{product_id}")
     return json.loads(value) if value is not None else None
-
 
 def cache_user_profile(
     user_id: int,
@@ -1733,7 +1542,6 @@ def cache_user_profile(
     pipe.hset(key, mapping=profile)
     pipe.expire(key, ttl_seconds)
     pipe.execute()
-
 
 def record_product_view(product_id: int, user_id: int) -> None:
     """Update exact and approximate analytics."""
@@ -1750,7 +1558,6 @@ def record_product_view(product_id: int, user_id: int) -> None:
 
     pipe.execute()
 
-
 def publish_order_event(order_id: int, event_type: str) -> str:
     """Append an event to a Redis stream."""
     return redis_client.xadd(
@@ -1762,7 +1569,6 @@ def publish_order_event(order_id: int, event_type: str) -> str:
         maxlen=100_000,
         approximate=True,
     )
-
 
 def health_check() -> bool:
     try:
@@ -1788,44 +1594,7 @@ This demonstrates the main Redis design principle:
 
 ---
 
-# 25. Summary
-
-Redis provides purpose-built data structures that allow common backend operations to happen directly and atomically on the server.
-
-The most important structures for normal application development are:
-
-- **String:** Complete cached values, tokens, counters, and simple locks
-- **Hash:** Flat objects and field-level updates
-- **List:** Simple queues, stacks, and recent items
-- **Set:** Unique membership, deduplication, and relationships
-- **Sorted Set:** Ranking, scheduling, priority, and time-window logic
-- **Stream:** Event logs, consumer groups, acknowledgement, and replay
-
-Specialized structures solve more focused problems:
-
-- **Bitmap and Bitfield:** Compact Boolean and numeric state
-- **HyperLogLog:** Approximate unique counts
-- **Geospatial:** Nearby-location queries
-- **JSON:** Nested document manipulation
-- **Time Series:** Timestamped measurements
-- **Probabilistic structures:** Memory-efficient approximations
-- **Vector Set:** Similarity search
-- **Array:** Sparse direct-index storage and ring buffers
-
-The correct Redis structure reduces:
-
-- Application-side processing
-- Network round trips
-- Race conditions
-- Memory usage
-- Database load
-- Implementation complexity
-
-The wrong structure often creates expensive scans, difficult invalidation, large values, hot keys, or unnecessary application logic.
-
----
-
-# 26. Official References
+# 25. Official References
 
 - [Redis data types](https://redis.io/docs/latest/develop/data-types/)
 - [Compare Redis data types](https://redis.io/docs/latest/develop/data-types/compare-data-types/)

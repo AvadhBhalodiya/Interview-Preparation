@@ -2,63 +2,52 @@
 title: "Design a Notification System"
 group: "Classic Designs"
 order: 15
+updated: "August 2026"
 ---
 
 # Design a Multi-Channel Notification System
 
-> **Category:** System Design  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Last updated:** August 2026
+> Designing a system that delivers email, SMS, push and in-app messages reliably, with user preferences, retries, deduplication and rate limits.
+
+## In short
+
+- Model three levels: a **notification** is business intent, a **message** is the rendered per-channel copy, a **delivery attempt** is one call to a provider — one notification fans out to many messages, each message to many attempts.
+- Transactional traffic (OTP, receipts, security alerts) is triggered by activity and generally overrides marketing opt-outs; promotional traffic needs consent, frequency caps and unsubscribe, so the two get separate queues, worker pools and sending domains.
+- Accept and persist the intent, return `202` immediately, then orchestrate asynchronously into per-channel priority queues whose workers reach providers only through adapters.
+- Queue delivery is at-least-once, so idempotency keys, a claim-style status update before sending, and a unique `(provider, provider_event_id)` on callbacks are mandatory rather than optional.
+- Producers must publish through a transactional outbox: the business write and the event publish are two systems, and a crash between them silently loses the notification.
+- Retry only temporary errors with exponential backoff plus jitter, park exhausted jobs in a DLQ, and fail over to a second provider on definite rejection — never on an ambiguous timeout after send.
+- Fan out early for small transactional groups and late for large campaigns, so a ten-million-recipient send does not burst the queues.
+
+```mermaid
+flowchart LR
+    P[API requests and domain events] --> IN[Ingestion: validate, dedupe, persist]
+    IN --> DB[(Notification DB)]
+    IN --> ORCH[Orchestrator]
+    ORCH --> PREF[Preferences and templates]
+    ORCH --> SCHED[Scheduler]
+    ORCH --> Q[[Per-channel priority queues]]
+    SCHED --> Q
+    Q --> W[Channel workers]
+    W --> ADP[Provider adapters]
+    ADP --> EXT[Email / SMS / Push providers]
+    EXT --> WH[Webhook receiver]
+    WH --> DB
+```
+
+**Interview answer:** Accept the intent, persist it durably, and return `202` — never call a provider on the request path. An orchestrator then resolves preferences, renders a version-pinned template, and writes one message per eligible channel onto that channel's priority queue; workers consume those, call providers through adapters, and provider webhooks feed final delivery state back. Reliability comes from durable queues plus at-least-once processing made safe by idempotency at the API, worker, provider and callback levels, with classified retries, exponential backoff and a dead-letter queue.
+
+**Gotcha:** Treating `provider_accepted` as `delivered`. The provider has only queued the message — the mailbox can still bounce it, the carrier can drop the SMS, the device token can be stale. Final state arrives later on an asynchronous callback, so status transitions must tolerate duplicate, late and out-of-order events.
 
 ---
 
 # 1. Introduction
 
-A **multi-channel notification system** sends messages to users through different communication channels, such as:
+A **multi-channel notification system** sends messages to users through email, SMS, mobile push, web push, an in-app inbox, and chat channels such as WhatsApp. Typical examples are an OTP by SMS, an order confirmation by email, a payment-failure alert by push and email, a promotional offer by email, and a social notification in the application's inbox.
 
-- Email
-- SMS
-- Mobile push notifications
-- Web push notifications
-- In-app notifications
-- WhatsApp or other chat channels
+The main challenge is not calling an email or SMS provider. A production system has to absorb high traffic across different provider APIs while honouring user preferences, templates and localization, retries and duplicate prevention, scheduling, delivery tracking, rate limits, provider outages, and security and regulatory requirements.
 
-Examples include:
-
-- An OTP sent by SMS
-- An order confirmation sent by email
-- A payment-failure alert sent through push and email
-- A promotional offer sent through email
-- A social notification shown in the application's notification inbox
-
-The main challenge is not simply calling an email or SMS provider. A production system must handle:
-
-- High traffic
-- Different provider APIs
-- User preferences
-- Templates and localization
-- Retries and duplicate prevention
-- Scheduling
-- Delivery tracking
-- Rate limits
-- Failures and provider outages
-- Security and regulatory requirements
-
-The system should isolate product services from provider-specific logic.
-
-```text
-Order Service should say:
-
-    "Notify user 123 that order 789 was shipped"
-
-It should not need to know:
-
-    - Which email provider is used
-    - Which SMS provider is used
-    - Whether the user disabled SMS
-    - How the message is formatted
-    - How retries are performed
-```
+The system should isolate product services from provider-specific logic. The Order Service should only need to say *notify user 123 that order 789 was shipped*. It should not need to know which email or SMS provider is used, whether the user disabled SMS, how the message is formatted, or how retries are performed.
 
 ---
 
@@ -89,49 +78,20 @@ The system should support:
 
 ## 2.2 Non-Functional Requirements
 
-### Availability
-
-The ingestion API should remain available even when an external provider is unavailable.
-
-### Scalability
-
-The system should scale from a few notifications per second to hundreds of thousands or millions per minute.
-
-### Durability
-
-An accepted notification should not disappear because a worker crashes.
-
-### Low Latency
-
-Critical notifications such as OTPs and security alerts should be dispatched within seconds.
-
-### Extensibility
-
-Adding a new channel or provider should not require major changes to business services.
-
-### Observability
-
-The system should expose queue delays, provider errors, delivery rates, retry counts, and end-to-end latency.
-
-### Security
-
-Sensitive data, provider credentials, user contact details, and webhook endpoints must be protected.
-
-### Cost Efficiency
-
-Bulk and low-priority traffic should not consume the same expensive resources as critical traffic.
+| Property | Target |
+|---|---|
+| Availability | The ingestion API stays available even when an external provider is unavailable. |
+| Scalability | Scale from a few notifications per second to hundreds of thousands or millions per minute. |
+| Durability | An accepted notification must not disappear because a worker crashed. |
+| Low latency | Critical notifications such as OTPs and security alerts dispatch within seconds. |
+| Extensibility | Adding a channel or provider must not require major changes to business services. |
+| Observability | Expose queue delays, provider errors, delivery rates, retry counts, and end-to-end latency. |
+| Security | Protect sensitive data, provider credentials, user contact details, and webhook endpoints. |
+| Cost efficiency | Bulk and low-priority traffic must not consume the same expensive resources as critical traffic. |
 
 ## 2.3 Out of Scope
 
-Depending on the interview scope, the following can be excluded initially:
-
-- Full marketing-campaign management
-- Customer journey builders
-- Content recommendation
-- Advanced email layout editors
-- Machine-learning-based send-time optimization
-- Telecom carrier infrastructure
-- Provider-internal delivery mechanisms
+Depending on the interview scope, exclude full marketing-campaign management, customer journey builders, content recommendation, advanced email layout editors, machine-learning-based send-time optimization, telecom carrier infrastructure, and provider-internal delivery mechanisms.
 
 ---
 
@@ -141,33 +101,9 @@ Depending on the interview scope, the following can be excluded initially:
 
 These terms should be modeled separately.
 
-### Notification
-
-A business-level intent.
-
-```text
-Notify user 42 that invoice INV-981 is overdue.
-```
-
-### Message
-
-A rendered, channel-specific representation.
-
-```text
-Email message:
-Subject: Invoice INV-981 is overdue
-Body: Your invoice of ₹12,000 was due on 2 August 2026.
-```
-
-### Delivery Attempt
-
-One attempt to send a message through a provider.
-
-```text
-Attempt 1 -> SendGrid -> timeout
-Attempt 2 -> SendGrid -> accepted
-Provider callback -> delivered
-```
+- **Notification** — the business-level intent: *notify user 42 that invoice INV-981 is overdue*.
+- **Message** — a rendered, channel-specific representation: an email with subject `Invoice INV-981 is overdue` and a body giving the ₹12,000 amount and its 2 August due date.
+- **Delivery attempt** — one attempt to send a message through a provider: `attempt 1 → SendGrid → timeout`, then `attempt 2 → SendGrid → accepted`, then a provider callback reporting `delivered`.
 
 A single notification can create multiple messages, and each message can have multiple delivery attempts.
 
@@ -186,135 +122,47 @@ flowchart LR
 
 ## 3.2 Transactional vs Promotional Notifications
 
-### Transactional
+| | Transactional | Promotional |
+|---|---|---|
+| Trigger | User or system activity | Marketing or engagement campaign |
+| Examples | OTP, password reset, payment receipt, order update, security alert | Discount campaign, product recommendations, newsletter, re-engagement |
+| Consent | Usually sent even if marketing notifications are disabled | Requires explicit consent |
+| Timing | High importance, low latency | Can be delayed, often sent in large batches |
+| Controls | Strict audit and security requirements | Strong unsubscribe and frequency-control requirements |
 
-Triggered by user or system activity.
-
-Examples:
-
-- OTP
-- Password reset
-- Payment receipt
-- Order update
-- Security alert
-
-Characteristics:
-
-- High importance
-- Low latency
-- Usually sent even if marketing notifications are disabled
-- Strict audit and security requirements
-
-### Promotional
-
-Used for marketing or engagement.
-
-Examples:
-
-- Discount campaign
-- Product recommendations
-- Newsletter
-- Re-engagement message
-
-Characteristics:
-
-- Requires consent
-- Can be delayed
-- Often sent in large batches
-- Strong unsubscribe and frequency-control requirements
-
-Keep transactional and promotional traffic separated through different:
-
-- Queues
-- Worker pools
-- Provider accounts or sending domains
-- Rate limits
-- Monitoring dashboards
-
-This prevents a large marketing campaign from delaying OTPs.
+Keep the two apart through different queues, worker pools, provider accounts or sending domains, rate limits and monitoring dashboards. This is what prevents a large marketing campaign from delaying OTPs.
 
 ## 3.3 Push vs Pull Channels
 
-### Push Channels
-
-The system sends content to an external destination.
-
-- Email
-- SMS
-- Mobile push
-- Web push
-- WhatsApp
-
-### Pull or Stored Channels
-
-The application stores the notification, and the user retrieves it.
-
-- In-app inbox
-- Notification center
-- Activity feed
-
-An in-app notification is usually stored in the application's database and exposed through an API.
+**Push channels** — email, SMS, mobile push, web push, WhatsApp — send content to an external destination. **Pull or stored channels** — the in-app inbox, notification center and activity feed — store the notification for the user to retrieve, usually in the application's own database behind an API.
 
 ---
 
 # 4. High-Level Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Producers
-        OS[Order Service]
-        PS[Payment Service]
-        AS[Auth Service]
-        CS[Campaign Service]
-        ADM[Admin Portal]
-    end
+flowchart LR
+    A[Business Events / API Requests]
+    A --> B[Durable Ingestion]
+    B --> C[Orchestrator]
+    C --> D[Preferences]
+    C --> E[Templates]
+    C --> F[Scheduler]
+    C --> G[[Per-Channel Priority Queues]]
+    G --> H[Idempotent Workers]
+    H --> I[Provider Adapters]
+    I --> J[External Providers]
+    J --> K[Signed Webhooks]
+    K --> L[Delivery State and Analytics]
 
-    OS --> API
-    PS --> BUS
-    AS --> API
-    CS --> API
-    ADM --> API
-
-    API[Notification API]
-    BUS[Event Bus]
-    API --> INGEST
-    BUS --> INGEST
-
-    INGEST[Ingestion and Validation]
-    INGEST --> DB[(Notification DB)]
-    INGEST --> ORCH[Notification Orchestrator]
-
-    ORCH --> PREF[Preference Service]
-    ORCH --> TEMPLATE[Template Service]
-    ORCH --> SCHED[Scheduler]
-    ORCH --> EMAILQ[[Email Queue]]
-    ORCH --> SMSQ[[SMS Queue]]
-    ORCH --> PUSHQ[[Push Queue]]
-    ORCH --> INAPPQ[[In-App Queue]]
-
-    SCHED --> EMAILQ
-    SCHED --> SMSQ
-    SCHED --> PUSHQ
-    SCHED --> INAPPQ
-
-    EMAILQ --> EW[Email Workers]
-    SMSQ --> SW[SMS Workers]
-    PUSHQ --> PW[Push Workers]
-    INAPPQ --> IW[In-App Workers]
-
-    EW --> EMAILP[Email Provider]
-    SW --> SMSP[SMS Provider]
-    PW --> FCM[FCM / APNs]
-    IW --> INBOX[(Inbox Store)]
-
-    EMAILP --> WEBHOOK[Webhook Receiver]
-    SMSP --> WEBHOOK
-    FCM --> WEBHOOK
-
-    WEBHOOK --> DB
-    WEBHOOK --> EVENTQ[[Delivery Event Queue]]
-    EVENTQ --> ANALYTICS[Analytics and Audit]
+    M[Retries + Backoff + DLQ] -. protects .-> G
+    N[Rate Limits + Circuit Breakers] -. protects .-> H
+    O[Audit + Metrics + Tracing] -. observes .-> C
+    O -. observes .-> H
+    O -. observes .-> K
 ```
+
+Producers are the order, payment, auth and campaign services plus the admin portal; some call the notification API directly, others publish domain events onto the bus. Ingestion persists to the notification database before anything asynchronous happens, the orchestrator writes one message per eligible channel onto that channel's queue, and each channel has its own worker pool and provider — in-app messages go to an inbox store rather than an external provider. Provider callbacks land on the webhook receiver, which updates the database and feeds a delivery-event queue for analytics and audit.
 
 The architecture has two important boundaries:
 
@@ -359,23 +207,7 @@ sequenceDiagram
     H->>N: Mark delivered
 ```
 
-Detailed flow:
-
-1. A producer sends a request or publishes a domain event.
-2. The ingestion layer authenticates and validates it.
-3. The system checks the idempotency key or event ID.
-4. A notification record is created.
-5. The orchestrator loads user preferences.
-6. It selects eligible channels.
-7. It resolves contact endpoints such as email address, phone number, and device tokens.
-8. It loads and renders channel templates.
-9. It applies quiet hours, scheduling, priority, and rate limits.
-10. It writes one message per selected channel.
-11. Each message is sent to its channel queue.
-12. A channel worker calls the provider.
-13. Provider acceptance is stored.
-14. Asynchronous callbacks update delivered, bounced, failed, or read states.
-15. Metrics and audit events are emitted.
+In detail: the ingestion layer authenticates and validates the request or event, checks the idempotency key or event ID, and creates a notification record. The orchestrator then loads user preferences, selects eligible channels, resolves contact endpoints (email address, phone number, device tokens), loads and renders channel templates, and applies quiet hours, scheduling, priority and rate limits before writing one message per selected channel onto that channel's queue. A worker calls the provider and stores provider acceptance; asynchronous callbacks later move the message to delivered, bounced, failed or read, and metrics and audit events are emitted throughout.
 
 ---
 
@@ -383,24 +215,7 @@ Detailed flow:
 
 ## 6.1 Notification API
 
-The API accepts direct notification requests.
-
-Typical callers:
-
-- Authentication service
-- Admin portal
-- Internal applications
-- Campaign service
-
-Responsibilities:
-
-- Authentication and authorization
-- Schema validation
-- Idempotency validation
-- Request-size limits
-- Tenant resolution
-- Persistence
-- Returning a notification ID quickly
+The API accepts direct notification requests from callers such as the authentication service, the admin portal, internal applications and the campaign service. It authenticates and authorizes the caller, validates the schema, checks the idempotency key, enforces request-size limits, resolves the tenant, persists the notification, and returns a notification ID quickly.
 
 The API should not wait for providers to send the message.
 
@@ -445,27 +260,11 @@ fallback:
   push_to_sms_after: 10m
 ```
 
-Benefits of event-driven integration:
-
-- Product services remain independent from notification logic.
-- More consumers can use the same domain event.
-- Temporary notification downtime does not block business transactions.
-- Events can be replayed.
+Event-driven integration keeps product services independent of notification logic, lets more than one consumer use the same domain event, stops temporary notification downtime from blocking business transactions, and allows events to be replayed.
 
 ## 6.3 Orchestrator
 
-The orchestrator converts notification intent into channel messages.
-
-Responsibilities:
-
-- Fetch preferences
-- Resolve recipients
-- Select channels
-- Apply rules
-- Resolve template version
-- Schedule delivery
-- Create per-channel messages
-- Publish jobs
+The orchestrator converts notification intent into channel messages: it fetches preferences, resolves recipients, selects channels, applies rules, resolves the template version, schedules delivery, creates one message per channel and publishes the jobs.
 
 The orchestrator should not contain provider-specific code.
 
@@ -560,77 +359,21 @@ push:
     invoice_id: "{{ invoice_id }}"
 ```
 
-Templates should support:
-
-- Versioning
-- Draft and published states
-- Localization
-- Preview and test sending
-- Required-variable validation
-- Channel-specific length limits
-- Safe escaping
-- Fallback locale
-- Audit history
+Templates should support versioning with draft and published states, localization with a fallback locale, preview and test sending, required-variable validation, channel-specific length limits, safe escaping, and audit history.
 
 Do not allow unrestricted template code execution. Use a safe templating language with limited helpers.
 
 ## 6.6 Scheduling Service
 
-The scheduler handles:
+The scheduler handles future delivery, quiet-hour deferral, recurring notifications, digest windows, campaign batches and retry scheduling.
 
-- Future delivery
-- Quiet-hour deferral
-- Recurring notifications
-- Digest windows
-- Campaign batches
-- Retry scheduling
-
-For moderate scale, store `scheduled_at` in a database and periodically claim due records.
-
-For large scale, use:
-
-- Delayed queues
-- Time buckets
-- A timing wheel
-- Partitioned scheduler tables
-- Managed schedulers for coarse-grained jobs
-
-Avoid scanning the entire notification table.
-
-Example bucket:
-
-```text
-schedule_bucket = floor(scheduled_at / 1 minute)
-partition_key   = tenant_id + schedule_bucket
-```
+For moderate scale, store `scheduled_at` in a database and periodically claim due records. For large scale, use delayed queues, time buckets, a timing wheel, partitioned scheduler tables, or a managed scheduler for coarse-grained jobs — anything that avoids scanning the entire notification table. A typical bucket is `schedule_bucket = floor(scheduled_at / 1 minute)` with `partition_key = tenant_id + schedule_bucket`.
 
 ## 6.7 Channel Queues
 
-Use a separate queue for each channel.
+Use a separate queue for each channel and priority, named like `notification.email.high`, `notification.email.bulk`, `notification.sms.critical` or `notification.push.normal`.
 
-```text
-notification.email.high
-notification.email.normal
-notification.email.bulk
-
-notification.sms.critical
-notification.sms.normal
-
-notification.push.high
-notification.push.normal
-notification.in_app.normal
-```
-
-Benefits:
-
-- Independent scaling
-- Independent retry policies
-- Provider rate-limit isolation
-- Priority separation
-- Failure isolation
-- Better monitoring
-
-A single shared queue makes it harder to prevent slow email jobs from blocking urgent SMS traffic.
+That split buys independent scaling, independent retry policies, provider rate-limit isolation, priority separation, failure isolation and clearer monitoring. A single shared queue makes it much harder to stop slow email jobs from blocking urgent SMS traffic.
 
 ## 6.8 Channel Workers
 
@@ -705,12 +448,7 @@ class ProviderResult:
     accepted_at: datetime
 ```
 
-Adapters translate:
-
-- Internal request format to provider format
-- Provider status to canonical status
-- Provider errors to retryable or permanent errors
-- Provider callback payloads to internal delivery events
+Adapters translate the internal request format into the provider's, provider statuses into canonical statuses, provider errors into retryable or permanent categories, and provider callback payloads into internal delivery events.
 
 Example canonical errors:
 
@@ -754,30 +492,11 @@ sequenceDiagram
     C->>DB: update message status
 ```
 
-Callbacks can arrive:
-
-- More than once
-- Out of order
-- After a long delay
-- Without a known message due to race conditions
-- After a message was already marked failed
-
-Status updates must therefore be idempotent and state-transition aware.
+Callbacks can arrive more than once, out of order, after a long delay, without a known message because of a race, or after the message was already marked failed. Status updates must therefore be idempotent and state-transition aware.
 
 ## 6.11 Notification Inbox
 
-For in-app notifications, store a user-visible record.
-
-Typical features:
-
-- List notifications
-- Unread count
-- Mark one as read
-- Mark all as read
-- Cursor pagination
-- Deep-link metadata
-- Expiration
-- Deletion or archival
+For in-app notifications, store a user-visible record supporting listing with cursor pagination, an unread count, mark-one-read and mark-all-read, deep-link metadata, expiration, and deletion or archival.
 
 Example:
 
@@ -922,24 +641,9 @@ WHERE status = 'SCHEDULED';
 
 ## Separate Content from Metadata
 
-Notification content can contain sensitive or large data.
+Notification content can contain sensitive or large data. Options are to store rendered content in an encrypted database column, put large content in object storage and keep a reference, store only the template ID and variables and render near dispatch time, or apply short retention to raw provider responses.
 
-Options:
-
-- Store rendered content in an encrypted database column.
-- Store large content in object storage and keep a reference.
-- Store only template ID and variables, then render near dispatch time.
-- Apply short retention to raw provider responses.
-
-A common design is:
-
-```text
-Metadata DB:
-notification ID, status, channel, timestamps, provider ID
-
-Encrypted content store:
-subject, body, personalization variables, provider payload
-```
+A common design keeps the metadata database holding notification ID, status, channel, timestamps and provider ID, with subject, body, personalization variables and provider payload in a separate encrypted content store.
 
 ---
 
@@ -972,11 +676,7 @@ Content-Type: application/json
 }
 ```
 
-Response:
-
-```http
-HTTP/1.1 202 Accepted
-```
+Response: `HTTP/1.1 202 Accepted`
 
 ```json
 {
@@ -1095,25 +795,7 @@ For example:
 
 ## Aggregate Notification Status
 
-A multi-channel notification can be:
-
-- `ACCEPTED`
-- `PROCESSING`
-- `DELIVERED`
-- `PARTIALLY_DELIVERED`
-- `FAILED`
-- `CANCELLED`
-- `EXPIRED`
-
-Example:
-
-```text
-Email: delivered
-SMS: failed
-Push: delivered
-
-Overall notification: partially_delivered
-```
+A multi-channel notification rolls up to `ACCEPTED`, `PROCESSING`, `DELIVERED`, `PARTIALLY_DELIVERED`, `FAILED`, `CANCELLED` or `EXPIRED`. Email delivered, SMS failed and push delivered gives an overall status of `partially_delivered`.
 
 ---
 
@@ -1121,28 +803,9 @@ Overall notification: partially_delivered
 
 ## 10.1 At-Least-Once Delivery
 
-Most practical queue-based notification systems provide **at-least-once processing**.
+Most practical queue-based notification systems provide **at-least-once processing**, which means a message may be processed more than once: a worker sends an SMS successfully, crashes before acknowledging the queue message, the queue redelivers the job, and another worker sends the same SMS again.
 
-This means a message may be processed more than once.
-
-Why?
-
-- A worker sends an SMS successfully.
-- The worker crashes before acknowledging the queue message.
-- The queue redelivers the job.
-- Another worker may send the same SMS again.
-
-Exactly-once delivery across your database, message broker, and external provider is generally not achievable as a single atomic transaction.
-
-The practical solution is:
-
-```text
-At-least-once delivery
-        +
-Idempotent processing
-        +
-Deduplication
-```
+Exactly-once delivery across your database, message broker, and external provider is generally not achievable as a single atomic transaction. The practical substitute is at-least-once delivery plus idempotent processing plus deduplication.
 
 ## 10.2 Idempotency
 
@@ -1150,19 +813,7 @@ Use idempotency at multiple levels.
 
 ### API-Level Idempotency
 
-The caller supplies a key.
-
-```text
-tenant_id + idempotency_key -> one notification
-```
-
-Example:
-
-```text
-order-shipped-ORD-9001-v1
-```
-
-A repeated request returns the existing notification instead of creating a new one.
+The caller supplies a key, and `tenant_id + idempotency_key` maps to exactly one notification — for example `order-shipped-ORD-9001-v1`. A repeated request returns the existing notification instead of creating a new one.
 
 ### Consumer-Level Idempotency
 
@@ -1187,22 +838,11 @@ If the provider does not support idempotency, store the provider response immedi
 
 ### Webhook-Level Idempotency
 
-Store a unique provider event ID.
-
-```text
-(provider, provider_event_id) must be unique
-```
+Store a unique provider event ID: `(provider, provider_event_id)` must be unique.
 
 ## 10.3 Transactional Outbox
 
-A common failure happens when a business service updates its database but fails to publish the notification event.
-
-```text
-1. Mark order as shipped in database       -> success
-2. Publish order.shipped event              -> failure
-
-Result: order is shipped, but notification is never created.
-```
+A common failure happens when a business service updates its database but fails to publish the notification event: marking the order shipped succeeds, publishing `order.shipped` fails, and the order is now shipped with no notification ever created.
 
 Use the **transactional outbox pattern**.
 
@@ -1272,29 +912,9 @@ Important notifications can have shorter retry intervals and a secondary provide
 
 ## 10.5 Dead-Letter Queues
 
-After retry exhaustion, move the job to a dead-letter queue.
+After retry exhaustion, move the job to a dead-letter queue, storing enough to diagnose it later: notification ID, message ID, channel, provider, failure category, last error, attempt count, a reference to the original payload, and the first and last attempt times.
 
-Store:
-
-- Notification ID
-- Message ID
-- Channel
-- Provider
-- Failure category
-- Last error
-- Attempt count
-- Original payload reference
-- First and last attempt time
-
-The DLQ supports:
-
-- Investigation
-- Reprocessing
-- Alerting
-- Provider comparison
-- Finding template or configuration defects
-
-Do not blindly replay every DLQ message. A permanent failure will fail again.
+The DLQ then supports investigation, selective reprocessing, alerting, provider comparison, and finding template or configuration defects. Do not blindly replay every DLQ message — a permanent failure will simply fail again.
 
 ## 10.6 Provider Failover
 
@@ -1307,16 +927,7 @@ flowchart LR
     R -->|Primary unavailable| P2[Provider B]
 ```
 
-Routing signals may include:
-
-- Provider health
-- Success rate
-- Latency
-- Country support
-- Tenant preference
-- Cost
-- Regulatory restrictions
-- Remaining quota
+Routing signals may include provider health, success rate, latency, country support, tenant preference, cost, regulatory restrictions and remaining quota.
 
 Avoid immediate failover for ambiguous timeouts unless duplicate delivery is acceptable. The primary provider may have processed the request even though your worker did not receive a response.
 
@@ -1334,22 +945,11 @@ Ambiguous timeout after send     -> reconcile or delay before failover
 
 Preferences should be category-specific rather than one global switch.
 
-```text
-Security alerts:
-    Email = enabled
-    SMS   = enabled
-    Push  = enabled
-
-Order updates:
-    Email = enabled
-    SMS   = disabled
-    Push  = enabled
-
-Marketing:
-    Email = disabled
-    SMS   = disabled
-    Push  = disabled
-```
+| Category | Email | SMS | Push |
+|---|---|---|---|
+| Security alerts | enabled | enabled | enabled |
+| Order updates | enabled | disabled | enabled |
+| Marketing | disabled | disabled | disabled |
 
 ## Preference Hierarchy
 
@@ -1367,18 +967,7 @@ flowchart TD
 
 ## Quiet Hours
 
-Quiet hours must use the user's timezone.
-
-Example:
-
-```text
-User timezone: Asia/Kolkata
-Quiet hours:   10:00 PM to 8:00 AM
-Event time:    11:15 PM
-
-Marketing notification -> schedule for 8:00 AM
-Security alert          -> send immediately
-```
+Quiet hours must use the user's timezone. With a user in `Asia/Kolkata` whose quiet hours run 10:00 PM to 8:00 AM, an event at 11:15 PM defers a marketing notification to 8:00 AM but sends a security alert immediately.
 
 ## Frequency Caps
 
@@ -1392,18 +981,7 @@ Use a fast counter store such as Redis for real-time enforcement, with durable h
 
 ## Unsubscribe Handling
 
-Unsubscribe should update a central suppression or preference system quickly.
-
-Sources include:
-
-- Email unsubscribe link
-- Provider complaint event
-- SMS opt-out keyword
-- User settings page
-- Admin action
-- Legal deletion request
-
-A suppression event should invalidate caches and prevent future sends.
+Unsubscribe should update a central suppression or preference system quickly. Sources include the email unsubscribe link, a provider complaint event, an SMS opt-out keyword, the user settings page, an admin action, and a legal deletion request. A suppression event should invalidate caches and prevent future sends.
 
 ---
 
@@ -1411,64 +989,20 @@ A suppression event should invalidate caches and prevent future sends.
 
 ## Render Early vs Render Late
 
-### Render at Ingestion Time
-
-Advantages:
-
-- Exact content is preserved.
-- Faster worker execution.
-- Easier audit.
-
-Disadvantages:
-
-- Scheduled content becomes stale.
-- User locale or template fixes are not reflected.
-- Large rendered content consumes storage.
-
-### Render at Dispatch Time
-
-Advantages:
-
-- Uses latest template and user information.
-- Supports dynamic send-time data.
-- Less stored rendered content.
-
-Disadvantages:
-
-- Template service becomes part of the dispatch path.
-- A template update can unexpectedly change scheduled messages.
-- Harder to reproduce exact historical content unless template versions are pinned.
+| | Render at ingestion time | Render at dispatch time |
+|---|---|---|
+| Advantages | Exact content is preserved; faster worker execution; easier audit | Uses the latest template and user information; supports dynamic send-time data; less stored rendered content |
+| Disadvantages | Scheduled content becomes stale; locale or template fixes are not reflected; large rendered content consumes storage | The template service joins the dispatch path; a template update can unexpectedly change scheduled messages; historical content is hard to reproduce unless versions are pinned |
 
 ### Recommended Approach
 
-Pin the template version at orchestration time and render near dispatch.
-
-```text
-Notification stores:
-    template_key
-    template_version
-    locale
-    variables
-
-Worker renders:
-    exact pinned version + stored variables
-```
+Pin the template version at orchestration time and render near dispatch. The notification stores `template_key`, `template_version`, `locale` and the variables; the worker renders that exact pinned version against the stored variables.
 
 For compliance-sensitive messages, store a final immutable copy of rendered content.
 
 ## Template Validation
 
-Validate before publishing:
-
-- Required variables are declared.
-- Variables used by the template exist.
-- SMS length is within expected segment limits.
-- Email has a text fallback.
-- URLs use approved domains.
-- HTML is sanitized.
-- Locale fallback exists.
-- Push payload stays under provider limits.
-- No prohibited sensitive data appears in title or lock-screen text.
+Before publishing, check that required variables are declared and that every variable the template uses exists, that SMS length is within expected segment limits and the push payload stays under provider limits, that email has a text fallback and a locale fallback exists, that URLs use approved domains and HTML is sanitized, and that no prohibited sensitive data appears in the title or lock-screen text.
 
 ## Localization
 
@@ -1505,19 +1039,7 @@ Convert user-local time to UTC when scheduling, while retaining timezone informa
 
 ## Digest Notifications
 
-A digest groups many low-priority events.
-
-Instead of:
-
-```text
-10 separate "new comment" emails
-```
-
-Send:
-
-```text
-"You received 10 new comments today"
-```
+A digest groups many low-priority events: instead of 10 separate "new comment" emails, send one "You received 10 new comments today".
 
 Digest flow:
 
@@ -1530,11 +1052,7 @@ flowchart LR
     T --> Q[[Channel Queue]]
 ```
 
-Group by:
-
-```text
-tenant_id + user_id + category + digest_window
-```
+Group by `tenant_id + user_id + category + digest_window`.
 
 ## Batch Campaigns
 
@@ -1565,30 +1083,11 @@ Campaign metadata should be separate from individual recipient delivery records.
 | Normal | Social notification, reminder | Standard queue |
 | Bulk | Newsletter, promotion | Rate-controlled, delay acceptable |
 
-Use physically separate queues or strong weighted scheduling.
-
-```text
-Reserved worker capacity:
-Critical: 20%
-High:     30%
-Normal:   30%
-Bulk:     20%
-```
+Use physically separate queues or strong weighted scheduling, with worker capacity reserved per class — for example critical 20%, high 30%, normal 30%, bulk 20%.
 
 ## Rate-Limit Dimensions
 
-Rate limits may apply by:
-
-- Provider account
-- Channel
-- Tenant
-- Sender identity
-- Destination country
-- Phone number
-- Email domain
-- Campaign
-- User
-- Template category
+Rate limits may apply by provider account, channel, tenant, sender identity, destination country, phone number, email domain, campaign, user or template category — usually several at once.
 
 A token-bucket algorithm works well.
 
@@ -1620,33 +1119,13 @@ Adding workers cannot solve a provider-side quota limit.
 
 ## Ordering
 
-Most notifications do not require global ordering.
-
-Some flows require ordering per entity:
-
-```text
-Order confirmed
-Order shipped
-Order delivered
-```
-
-Partition messages by a stable key such as `order_id`.
-
-```text
-partition_key = tenant_id + order_id
-```
+Most notifications do not require global ordering, but some flows require ordering per entity — order confirmed, then shipped, then delivered. Partition messages by a stable key such as `partition_key = tenant_id + order_id`.
 
 Strict ordering reduces parallelism. Use it only where the business requires it.
 
 ## Stale Event Protection
 
-Events may arrive out of order.
-
-```text
-order.delivered arrives before order.shipped
-```
-
-Include event version or entity sequence.
+Events may arrive out of order — `order.delivered` before `order.shipped`. Include an event version or entity sequence.
 
 ```json
 {
@@ -1660,19 +1139,7 @@ The notification policy can ignore an event if the current order version is alre
 
 ## Deduplication Windows
 
-Not all duplicates share the exact same event ID.
-
-A semantic deduplication key may be:
-
-```text
-tenant + user + category + entity + state + time_window
-```
-
-Example:
-
-```text
-shop_123:user_456:payment_failed:invoice_981:2026-08-03
-```
+Not all duplicates share the exact same event ID. A semantic deduplication key of `tenant + user + category + entity + state + time_window` catches the rest — for example `shop_123:user_456:payment_failed:invoice_981:2026-08-03`.
 
 Be careful not to suppress legitimate repeated notifications.
 
@@ -1726,98 +1193,27 @@ Avoid putting large HTML bodies or attachments directly in queues. Store large c
 
 ### Database Write Volume
 
-Each message may create:
-
-- One channel-message row
-- One or more attempt rows
-- Multiple delivery-event rows
-
-At 120 million messages per day, this can become several hundred million writes per day. Use:
-
-- Batched writes
-- Partitioned tables
-- Short retention for detailed attempt logs
-- Separate operational and analytical storage
-- Asynchronous event export
+Each message may create one channel-message row, one or more attempt rows, and multiple delivery-event rows. At 120 million messages per day, this can become several hundred million writes per day, so use batched writes, partitioned tables, short retention for detailed attempt logs, separate operational and analytical storage, and asynchronous event export.
 
 ## 16.2 Partitioning Strategy
 
 ### Queue Partitioning
 
-Useful keys:
-
-- Channel
-- Priority
-- Tenant
-- Geographic region
-- Recipient ID for ordering
-
-Avoid a single high-volume tenant creating a hot partition.
-
-A possible key:
-
-```text
-hash(tenant_id + recipient_id) % partition_count
-```
+Useful keys are channel, priority, tenant, geographic region, and recipient ID where ordering matters. Avoid letting a single high-volume tenant create a hot partition; `hash(tenant_id + recipient_id) % partition_count` spreads it.
 
 ### Database Partitioning
 
-Operational notification tables can be partitioned by:
-
-- Creation date
-- Tenant
-- Region
-- Hash of notification ID
-
-Time partitioning simplifies retention.
-
-```text
-notifications_2026_08
-delivery_events_2026_08
-```
-
-The inbox is commonly partitioned by user ID because reads are user-centric.
+Operational notification tables can be partitioned by creation date, tenant, region, or a hash of the notification ID. Time partitioning simplifies retention — `notifications_2026_08`, `delivery_events_2026_08` — and the inbox is commonly partitioned by user ID because reads are user-centric.
 
 ### Cache Partitioning
 
-Cache:
-
-- Template versions
-- Preferences
-- Provider routing policies
-- Tenant configuration
-
-Use short TTLs and event-driven invalidation for preference changes.
+Cache template versions, preferences, provider routing policies and tenant configuration, with short TTLs and event-driven invalidation for preference changes.
 
 ## 16.3 Handling Traffic Spikes
 
-Common spike sources:
+Spikes come from flash sales, breaking news, system outages, bulk campaigns, and large scheduled batches landing at the top of the hour.
 
-- Flash sales
-- Breaking news
-- System outages
-- Bulk campaigns
-- A large scheduled batch at the top of the hour
-
-Techniques:
-
-- Queue buffering
-- Admission control
-- Batch spreading
-- Randomized schedule jitter
-- Autoscaling workers
-- Priority isolation
-- Provider-aware rate limiting
-- Per-tenant quotas
-- Campaign throttling
-- Load shedding for non-critical traffic
-
-Schedule jitter example:
-
-```text
-Instead of scheduling 5 million messages at 09:00:00,
-spread them from 09:00:00 to 09:10:00.
-```
+Defend with queue buffering, admission control, batch spreading, randomized schedule jitter, autoscaling workers, priority isolation, provider-aware rate limiting, per-tenant quotas, campaign throttling, and load shedding for non-critical traffic. Jitter is the cheapest of these: instead of scheduling 5 million messages at 09:00:00, spread them from 09:00:00 to 09:10:00.
 
 ---
 
@@ -1838,25 +1234,11 @@ The ingestion API should continue accepting requests while durable queues absorb
 
 ## Scenario 2: Worker Crashes After Sending
 
-The queue redelivers the message.
-
-Protection:
-
-- Consumer idempotency
-- Provider idempotency key
-- Persist provider response immediately
-- Reconciliation for uncertain attempts
+The queue redelivers the message. Protect with consumer idempotency, a provider idempotency key, persisting the provider response immediately, and reconciliation for uncertain attempts.
 
 ## Scenario 3: Callback Arrives Before Send Result Is Stored
 
-This race can occur when a provider callback is extremely fast.
-
-Solutions:
-
-- Upsert using provider message ID.
-- Store unmatched callbacks temporarily.
-- Retry callback correlation.
-- Use an internal client reference echoed by the provider when supported.
+This race can occur when a provider callback is extremely fast. Upsert using the provider message ID, store unmatched callbacks temporarily, retry callback correlation, and use an internal client reference echoed by the provider where supported.
 
 ## Scenario 4: Callback Is Delivered Multiple Times
 
@@ -1864,42 +1246,19 @@ Use a unique provider event ID and idempotent transitions.
 
 ## Scenario 5: Events Arrive Out of Order
 
-Compare provider timestamp, event sequence, and allowed state transitions.
-
-Do not move:
-
-```text
-DELIVERED -> PROVIDER_ACCEPTED
-```
-
-because a delayed callback arrived.
+Compare provider timestamp, event sequence, and allowed state transitions. Never move `DELIVERED → PROVIDER_ACCEPTED` just because a delayed callback arrived.
 
 ## Scenario 6: Template Service Is Unavailable
 
-Options:
-
-- Use cached published templates.
-- Keep pinned template versions in local cache.
-- Delay non-critical notifications.
-- Use an emergency static template for critical flows.
+Use cached published templates, keep pinned template versions in a local cache, delay non-critical notifications, and fall back to an emergency static template for critical flows.
 
 ## Scenario 7: Preference Service Is Unavailable
 
-Possible policy:
-
-- Fail closed for promotional traffic.
-- Use a recently cached preference for transactional traffic.
-- Send legally mandatory messages according to explicit policy.
-- Record that cached preferences were used.
+A workable policy: fail closed for promotional traffic, use a recently cached preference for transactional traffic, send legally mandatory messages according to explicit policy, and record that cached preferences were used.
 
 ## Scenario 8: Queue Backlog Becomes Very Large
 
-- Alert on oldest-message age.
-- Scale workers within provider limits.
-- Pause bulk producers.
-- Drop expired low-value messages.
-- Increase batch size where safe.
-- Route critical traffic through isolated queues.
+Alert on oldest-message age, scale workers within provider limits, pause bulk producers, drop expired low-value messages, increase batch size where safe, and route critical traffic through isolated queues.
 
 ## Scenario 9: Invalid Device Token
 
@@ -1907,14 +1266,7 @@ Mark the endpoint inactive after a definitive invalid-token response. Do not kee
 
 ## Scenario 10: Database Is Unavailable
 
-The API should not return acceptance unless the notification has been durably recorded.
-
-Options:
-
-- Fail the request.
-- Write to a durable log first.
-- Use a highly available database.
-- Use a broker as the source of truth and materialize state later.
+The API should not return acceptance unless the notification has been durably recorded. Either fail the request, write to a durable log first, run a highly available database, or make the broker the source of truth and materialize state later.
 
 ---
 
@@ -1922,50 +1274,13 @@ Options:
 
 ## Key Metrics
 
-### Ingestion
-
-- Requests per second
-- Accepted and rejected requests
-- Idempotency conflicts
-- Validation failures
-- API latency
-
-### Queue
-
-- Queue depth
-- Oldest-message age
-- Consumer lag
-- Retry queue depth
-- Dead-letter queue count
-
-### Delivery
-
-- Provider acceptance rate
-- Delivery rate
-- Bounce rate
-- Failure rate
-- Retry rate
-- End-to-end latency
-- Time from event to dispatch
-- Time from dispatch to provider acceptance
-- Time from provider acceptance to delivery
-
-### Provider
-
-- Latency by provider
-- HTTP status distribution
-- Rate-limit responses
-- Cost per delivered message
-- Failover count
-- Circuit-breaker state
-
-### Product
-
-- Notifications per category
-- Unsubscribe rate
-- Push-token invalidation rate
-- Open/read/click events where appropriate
-- Digest compression ratio
+| Area | Metrics |
+|---|---|
+| Ingestion | Requests per second, accepted vs rejected, idempotency conflicts, validation failures, API latency |
+| Queue | Queue depth, oldest-message age, consumer lag, retry queue depth, dead-letter queue count |
+| Delivery | Provider acceptance rate, delivery rate, bounce rate, failure rate, retry rate, and latency split into event → dispatch, dispatch → provider acceptance, and acceptance → delivery |
+| Provider | Latency by provider, HTTP status distribution, rate-limit responses, cost per delivered message, failover count, circuit-breaker state |
+| Product | Notifications per category, unsubscribe rate, push-token invalidation rate, open/read/click events where appropriate, digest compression ratio |
 
 ## Service-Level Objectives
 
@@ -2000,16 +1315,7 @@ Include these identifiers in structured logs.
 
 ## Alerting
 
-Alert on symptoms that affect users:
-
-- Oldest critical queue message exceeds threshold
-- OTP delivery success drops
-- Provider 5xx rate rises
-- Provider callbacks stop
-- DLQ growth
-- Template-rendering failures
-- Suppression updates lag
-- Push invalid-token rate suddenly increases
+Alert on symptoms that affect users: the oldest critical queue message exceeding its threshold, OTP delivery success dropping, provider 5xx rates rising, provider callbacks stopping altogether, DLQ growth, template-rendering failures, lagging suppression updates, and a sudden rise in the push invalid-token rate.
 
 ---
 
@@ -2017,91 +1323,44 @@ Alert on symptoms that affect users:
 
 ## Authentication and Authorization
 
-- Authenticate producer services using service identity, OAuth, or mTLS.
-- Authorize tenants to use only their templates, sender identities, and recipients.
-- Restrict admin template publishing.
-- Use separate roles for operations and content management.
+Authenticate producer services using service identity, OAuth or mTLS, and authorize each tenant to use only its own templates, sender identities and recipients. Restrict admin template publishing and keep separate roles for operations and content management. See [Authentication and Authorization](../api-design/authn-authz-oauth-jwt.md).
 
 ## Provider Credentials
 
-Store API keys and signing keys in a secret manager.
-
-Do not:
-
-- Put credentials in source code.
-- Put credentials in queue payloads.
-- Log authorization headers.
-- Share one unrestricted key across environments.
-
-Use:
-
-- Key rotation
-- Least-privilege credentials
-- Separate production and non-production accounts
-- Restricted network egress where practical
+Store API keys and signing keys in a secret manager. Never put credentials in source code or queue payloads, never log authorization headers, and never share one unrestricted key across environments. Use key rotation, least-privilege credentials, separate production and non-production accounts, and restricted network egress where practical.
 
 ## Protect Contact Data
 
-Email addresses, phone numbers, and device tokens are sensitive.
-
-- Encrypt at rest.
-- Use TLS in transit.
-- Mask them in logs.
-- Apply access controls.
-- Keep only necessary data.
-- Support deletion and retention policies.
-- Avoid exposing full recipient details in operational dashboards.
+Email addresses, phone numbers and device tokens are sensitive: encrypt them at rest, use TLS in transit, mask them in logs, apply access controls, keep only what is necessary, support deletion and retention policies, and avoid exposing full recipient details in operational dashboards.
 
 ## Webhook Security
 
-- Verify provider signatures.
-- Use HTTPS.
-- Reject old timestamps where supported.
-- Deduplicate events.
-- Apply request-size limits.
-- Allowlist provider IPs only as an additional layer, not the only control.
-- Store secrets separately by environment.
-- Return a success response only after durable capture.
+Verify provider signatures over HTTPS, reject old timestamps where supported, deduplicate events, and apply request-size limits. Allowlist provider IPs only as an additional layer rather than the only control, store secrets separately per environment, and return a success response only after durable capture. See [Webhooks](../api-design/webhooks.md).
 
 ## Template Security
 
-- Escape variables according to context.
-- Sanitize HTML.
-- Prevent script execution.
-- Restrict links and images when needed.
-- Never place secrets, full payment details, or highly sensitive medical data in lock-screen push content.
-- Protect against template injection.
+Escape variables according to context, sanitize HTML, prevent script execution, restrict links and images where needed, and protect against template injection. Never place secrets, full payment details, or highly sensitive medical data in lock-screen push content.
 
 ## Abuse Prevention
 
-Prevent the notification service from becoming a spam relay.
-
-- Authenticate all callers.
-- Enforce tenant quotas.
-- Apply destination rate limits.
-- Require verified sender identities.
-- Audit administrative sends.
-- Detect unusual volume.
-- Restrict arbitrary raw-content sending.
+Prevent the notification service from becoming a spam relay: authenticate all callers, enforce tenant quotas, apply destination rate limits, require verified sender identities, audit administrative sends, detect unusual volume, and restrict arbitrary raw-content sending.
 
 ---
 
 # 20. Channel-Specific Considerations
 
+| Channel | What the adapter and policy layer must handle |
+|---|---|
+| Email | Sender domain authentication, bounces and blocks, spam complaints, unsubscribe handling, HTML plus plain-text versions, attachments, provider event webhooks, domain reputation, dedicated vs shared IPs, promotional/transactional separation |
+| SMS | Country-specific sender rules, character encoding, message segmentation, delivery receipts, opt-out keywords, carrier filtering, phone-number normalization, per-country pricing, throughput limits |
+| Mobile push | FCM and APNs credentials, device-token lifecycle and refresh, multiple devices per user, platform-specific payloads, time-to-live, collapse keys, notification vs data payloads, foreground vs background behavior, lock-screen privacy |
+| Web push | Browser subscriptions, VAPID keys, subscription expiration, browser permission, service workers, payload encryption, per-browser behavior |
+| In-app | Read/unread state, cursor pagination, unread count, data retention, deep links, cross-device synchronization, fan-out-on-write vs fan-out-on-read |
+| WhatsApp and chat | Approved templates, conversation windows, user consent, media support, provider-specific status callbacks, country and policy restrictions, rich interaction metadata |
+
+Keep these provider rules inside the provider adapter and policy layer, not inside product services. The subsections below cover the parts that change the design rather than just the adapter.
+
 ## Email
-
-Important concerns:
-
-- Sender domain authentication
-- Bounces and blocks
-- Spam complaints
-- Unsubscribe handling
-- HTML and plain-text versions
-- Attachments
-- Provider event webhooks
-- Domain reputation
-- Dedicated vs shared IP considerations
-- Promotional and transactional separation
 
 Canonical email events may include:
 
@@ -2122,172 +1381,35 @@ Open and click signals should not be treated as perfectly reliable user behavior
 
 ## SMS
 
-Important concerns:
-
-- Country-specific sender rules
-- Character encoding
-- Message segmentation
-- Delivery receipts
-- Opt-out keywords
-- Carrier filtering
-- Phone-number normalization
-- Per-country pricing
-- Throughput limits
-
-Normalize numbers to E.164 format.
-
-```text
-+919876543210
-```
-
-Do not retry an invalid number indefinitely.
+Normalize numbers to E.164 format (`+919876543210`), and do not retry an invalid number indefinitely.
 
 ## Mobile Push
 
-Important concerns:
-
-- FCM and APNs credentials
-- Device-token lifecycle
-- Multiple devices per user
-- Token refresh
-- Platform-specific payloads
-- Time-to-live
-- Collapse keys
-- Notification vs data payloads
-- Foreground vs background behavior
-- Lock-screen privacy
-
-A user may have:
-
-```text
-User 456
-    Android phone token A
-    Android tablet token B
-    iPhone token C
-```
-
-A push notification may fan out to all active devices or only the most recently used device, depending on product requirements.
+A single user routinely has several live tokens — an Android phone, an Android tablet, an iPhone. A push notification may fan out to all active devices or only the most recently used one, depending on product requirements.
 
 ### Collapsible vs Non-Collapsible
 
-Collapsible messages replace an older pending message of the same type.
-
-Useful for:
-
-- Latest score
-- Latest sync state
-- Updated unread count
-
-Non-collapsible messages preserve each message.
-
-Useful for:
-
-- Chat messages
-- Transaction alerts
-- Security events
-
-## Web Push
-
-Important concerns:
-
-- Browser subscriptions
-- VAPID keys
-- Subscription expiration
-- Browser permission
-- Service workers
-- Payload encryption
-- Per-browser behavior
+Collapsible messages replace an older pending message of the same type, which suits a latest score, latest sync state or updated unread count. Non-collapsible messages preserve every message, which is required for chat messages, transaction alerts and security events.
 
 ## In-App Notifications
 
-Important concerns:
-
-- Read/unread state
-- Cursor pagination
-- Unread count
-- Data retention
-- Deep links
-- Cross-device synchronization
-- Fan-out-on-write vs fan-out-on-read
-
-For normal user-specific notifications, fan-out-on-write is simple:
-
-```text
-Create one inbox record per user.
-```
-
-For a notification sent to millions of users, fan-out-on-read may reduce write amplification:
-
-```text
-Store one global announcement
-+
-store per-user read state only when needed
-```
-
-## WhatsApp and Chat Channels
-
-Important concerns:
-
-- Approved templates
-- Conversation windows
-- User consent
-- Media support
-- Provider-specific status callbacks
-- Country and policy restrictions
-- Rich interaction metadata
-
-Keep these provider rules inside the provider adapter and policy layer, not inside product services.
+For normal user-specific notifications, fan-out-on-write is simple: create one inbox record per user. For a notification sent to millions of users, fan-out-on-read reduces write amplification — store one global announcement and materialize per-user read state only when a user actually reads it.
 
 ---
 
 # 21. Multi-Tenant Design
 
-A shared notification platform may serve multiple products or customers.
-
-Tenant-specific configuration can include:
-
-- Sender email domain
-- SMS sender ID
-- Provider account
-- Templates
-- Branding
-- Rate limits
-- Allowed countries
-- Data residency
-- Retry policy
-- Retention policy
+A shared notification platform may serve multiple products or customers. Tenant-specific configuration typically covers the sender email domain, SMS sender ID, provider account, templates, branding, rate limits, allowed countries, data residency, retry policy and retention policy.
 
 ## Tenant Isolation
 
-Every core record should include `tenant_id`.
+Every core record should include `tenant_id`, and isolation has to be enforced at API authorization, database queries, cache keys, queue metadata, template lookup, provider routing, and logs and dashboards — missing any one of these is how tenant data leaks.
 
-Enforce isolation at:
-
-- API authorization
-- Database queries
-- Cache keys
-- Queue metadata
-- Template lookup
-- Provider routing
-- Logs and dashboards
-
-For strict isolation, high-volume or regulated tenants may receive:
-
-- Dedicated queues
-- Dedicated provider accounts
-- Dedicated encryption keys
-- Dedicated database partitions
-- Separate regional deployment
+For strict isolation, high-volume or regulated tenants may get dedicated queues, provider accounts, encryption keys, database partitions, or a separate regional deployment.
 
 ## Noisy-Neighbour Protection
 
-Apply:
-
-- Per-tenant quotas
-- Weighted fair queuing
-- Maximum concurrent sends
-- Campaign throttling
-- Separate priority capacity
+Apply per-tenant quotas, weighted fair queuing, a maximum number of concurrent sends, campaign throttling, and separate priority capacity.
 
 ---
 
@@ -2331,27 +1453,13 @@ flowchart TB
 
 ## Multi-Region Options
 
-### Active-Passive
+| | Active-passive | Active-active |
+|---|---|---|
+| Writes | One primary region handles writes; another stands ready for failover | Multiple regions accept traffic |
+| Upside | Simpler ordering and idempotency | Lower regional latency, better regional resilience |
+| Downside | Higher recovery time | Complex global deduplication, routing and data consistency |
 
-- One primary region handles writes.
-- Another region is ready for failover.
-- Simpler ordering and idempotency.
-- Higher recovery time than active-active.
-
-### Active-Active
-
-- Multiple regions accept traffic.
-- Lower regional latency.
-- Better regional resilience.
-- More complex global deduplication, routing, and data consistency.
-
-A practical approach is to route users or tenants to a home region.
-
-```text
-home_region = hash(tenant_id) or regulatory region
-```
-
-Use a globally unique notification ID and region-aware idempotency storage.
+A practical middle ground is to route users or tenants to a home region, with `home_region = hash(tenant_id)` or the regulatory region. Use a globally unique notification ID and region-aware idempotency storage.
 
 ---
 
@@ -2379,27 +1487,15 @@ These are examples, not mandatory selections.
 
 ## Kafka vs Traditional Queue
 
-### Kafka Is Useful When
+| Kafka fits when | SQS or RabbitMQ fits when |
+|---|---|
+| Event replay matters | The main model is background jobs |
+| Many consumer groups need the same event | Per-message retry and DLQ behavior is important |
+| Throughput is very high | Operational simplicity is valuable |
+| Partition ordering is useful | Consumers should compete for each job |
+| Events feed analytics and other systems | |
 
-- Event replay matters.
-- Many consumer groups need the same event.
-- Throughput is very high.
-- Partition ordering is useful.
-- Events feed analytics and other systems.
-
-### SQS or RabbitMQ Is Useful When
-
-- The main model is background jobs.
-- Per-message retry and DLQ behavior is important.
-- Operational simplicity is valuable.
-- Consumers should compete for each job.
-
-A common hybrid:
-
-```text
-Domain events -> Kafka/EventBridge
-Channel delivery jobs -> SQS/RabbitMQ
-```
+A common hybrid puts domain events on Kafka or EventBridge and channel delivery jobs on SQS or RabbitMQ.
 
 ---
 
@@ -2407,33 +1503,10 @@ Channel delivery jobs -> SQS/RabbitMQ
 
 ## One Service vs Separate Channel Services
 
-### Single Notification Service
-
-Advantages:
-
-- Easier initial development
-- Shared data and configuration
-- Simpler deployment
-
-Disadvantages:
-
-- Larger failure domain
-- Harder independent scaling
-- Provider code becomes crowded
-
-### Separate Channel Services
-
-Advantages:
-
-- Independent deployment and scaling
-- Better failure isolation
-- Channel-specific ownership
-
-Disadvantages:
-
-- More operational overhead
-- Distributed data consistency
-- More service communication
+| | Single notification service | Separate channel services |
+|---|---|---|
+| Advantages | Easier initial development, shared data and configuration, simpler deployment | Independent deployment and scaling, better failure isolation, channel-specific ownership |
+| Disadvantages | Larger failure domain, harder independent scaling, provider code becomes crowded | More operational overhead, distributed data consistency, more service communication |
 
 A good evolution is a modular monolith or shared orchestration service with independently scalable channel workers.
 
@@ -2461,40 +1534,17 @@ Support both when the platform serves varied use cases.
 
 ## Fan-Out Early vs Fan-Out Late
 
-### Early Fan-Out
-
-Create all recipient messages immediately.
-
-- Simple status tracking
-- High write amplification
-- Large campaigns create huge bursts
-
-### Late Fan-Out
-
-Store audience definition and expand gradually.
-
-- Better pacing
-- Lower initial burst
-- More complex progress tracking
-- Audience can change unless snapshot semantics are defined
+| Early fan-out — create all recipient messages immediately | Late fan-out — store the audience definition and expand gradually |
+|---|---|
+| Simple status tracking | Better pacing, lower initial burst |
+| High write amplification | More complex progress tracking |
+| Large campaigns create huge bursts | Audience can change unless snapshot semantics are defined |
 
 Use late fan-out for large campaigns and early fan-out for small transactional groups.
 
 ## Strong Consistency vs Eventual Consistency
 
-Strong consistency is useful for:
-
-- Preference changes before promotional sends
-- Idempotency
-- Cancellation claims
-- Mandatory suppression
-
-Eventual consistency is acceptable for:
-
-- Analytics
-- Dashboards
-- Non-critical aggregate counters
-- Delivery-event export
+Strong consistency is needed for preference changes ahead of promotional sends, idempotency, cancellation claims and mandatory suppression — each one causes a user-visible violation if it reads stale. Eventual consistency is fine for analytics, dashboards, non-critical aggregate counters and delivery-event export.
 
 ---
 
@@ -2565,15 +1615,7 @@ sequenceDiagram
 
 ## Deduplication Key
 
-```text
-tenant_id + order_id + "shipped" + order_version
-```
-
-Example:
-
-```text
-shop_123:ORD-9001:shipped:v7
-```
+`tenant_id + order_id + "shipped" + order_version`, for example `shop_123:ORD-9001:shipped:v7`.
 
 ## Status Result
 
@@ -2594,164 +1636,20 @@ shop_123:ORD-9001:shipped:v7
 
 # 26. Evolution from MVP to Large Scale
 
-## Stage 1: MVP
+| Stage | What you run | What you add |
+|---|---|---|
+| 1. MVP | One notification API, PostgreSQL, one queue, email and SMS workers, static templates, basic retry, provider callbacks | — |
+| 2. Growing product | The MVP, split by channel | Separate channel queues, user preferences, template versioning, push and in-app channels, Redis-based rate limiting, DLQs, structured metrics, transactional outbox |
+| 3. Large platform | A multi-tenant platform | Priority queues, campaign fan-out service, distributed scheduler, provider routing and failover, multi-tenant controls, partitioned databases, analytics pipeline, regional deployment, automated suppression, dedicated critical-notification capacity |
+| 4. Global platform | Several regions | Multi-region active-active or home-region routing, data-residency controls, regional provider selection, cross-region disaster recovery, global idempotency strategy, tenant-specific encryption keys, capacity forecasting and automated traffic shaping |
 
-Use:
+Stage 1 is suitable for a small product, and every later stage is driven by a specific pain: a slow campaign delaying OTPs pushes you to stage 2, a hot tenant or a provider outage to stage 3, and a data-residency or latency requirement to stage 4.
 
-- One notification API
-- PostgreSQL
-- One queue
-- Email and SMS workers
-- Static templates
-- Basic retry
-- Provider callbacks
-
-Suitable for a small product.
-
-## Stage 2: Growing Product
-
-Add:
-
-- Separate channel queues
-- User preferences
-- Template versioning
-- Push and in-app channels
-- Redis-based rate limiting
-- DLQs
-- Structured metrics
-- Transactional outbox
-
-## Stage 3: Large Platform
-
-Add:
-
-- Priority queues
-- Campaign fan-out service
-- Distributed scheduler
-- Provider routing and failover
-- Multi-tenant controls
-- Partitioned databases
-- Analytics pipeline
-- Regional deployment
-- Automated suppression
-- Dedicated critical-notification capacity
-
-## Stage 4: Global Platform
-
-Add:
-
-- Multi-region active-active or home-region routing
-- Data-residency controls
-- Regional provider selection
-- Cross-region disaster recovery
-- Global idempotency strategy
-- Tenant-specific encryption keys
-- Capacity forecasting and automated traffic shaping
+Whatever the stage, the design principle does not change: accept notification intent quickly, persist it durably, process it asynchronously, isolate channels from one another, make retries safe, and track final delivery through provider callbacks.
 
 ---
 
-# 27. Interview Discussion Summary
-
-A strong system-design explanation should move in this order:
-
-## 1. Clarify Requirements
-
-Ask about:
-
-- Supported channels
-- Transactional or promotional traffic
-- Scale
-- Latency expectations
-- Scheduling
-- Preferences
-- Delivery guarantees
-- Provider callbacks
-- Multi-region needs
-
-## 2. Establish the Core Model
-
-Explain:
-
-```text
-Notification -> Channel Message -> Delivery Attempt -> Delivery Event
-```
-
-## 3. Draw the Main Architecture
-
-Include:
-
-- Producers
-- Notification API or event bus
-- Orchestrator
-- Preference and template services
-- Per-channel queues
-- Workers
-- Providers
-- Callback service
-- Database
-
-## 4. Explain Reliability
-
-Focus on:
-
-- Durable asynchronous queues
-- At-least-once delivery
-- Idempotency
-- Transactional outbox
-- Retry classification
-- Exponential backoff
-- Dead-letter queues
-- Callback deduplication
-
-## 5. Explain Scaling
-
-Discuss:
-
-- Separate queues by channel and priority
-- Horizontal worker scaling
-- Provider rate limits
-- Partitioning
-- Queue buffering
-- Campaign pacing
-- Backpressure
-
-## 6. Explain Product Rules
-
-Discuss:
-
-- Preferences
-- Consent
-- Quiet hours
-- Frequency caps
-- Templates
-- Localization
-- Fallback channels
-
-## 7. Explain Operations
-
-Include:
-
-- Metrics
-- SLOs
-- Tracing IDs
-- Alerts
-- Security
-- Provider health and failover
-
-## Core Design Principle
-
-```text
-Accept notification intent quickly,
-persist it durably,
-process it asynchronously,
-isolate channels,
-make retries safe,
-and track delivery through provider callbacks.
-```
-
----
-
-# 28. Official References
+# 27. Official References
 
 The following official documentation is useful when implementing provider integrations:
 
@@ -2764,29 +1662,3 @@ The following official documentation is useful when implementing provider integr
 - [Twilio outbound message status callbacks](https://www.twilio.com/docs/messaging/guides/outbound-message-status-in-status-callbacks)
 - [Twilio messaging webhooks](https://www.twilio.com/docs/usage/webhooks/messaging-webhooks)
 - [Twilio SendGrid Event Webhook overview](https://sendgrid.com/en-us/blog/whats-webhook)
-
----
-
-## Final Architecture at a Glance
-
-```mermaid
-flowchart LR
-    A[Business Events / API Requests]
-    A --> B[Durable Ingestion]
-    B --> C[Orchestrator]
-    C --> D[Preferences]
-    C --> E[Templates]
-    C --> F[Scheduler]
-    C --> G[[Per-Channel Priority Queues]]
-    G --> H[Idempotent Workers]
-    H --> I[Provider Adapters]
-    I --> J[External Providers]
-    J --> K[Signed Webhooks]
-    K --> L[Delivery State and Analytics]
-
-    M[Retries + Backoff + DLQ] -. protects .-> G
-    N[Rate Limits + Circuit Breakers] -. protects .-> H
-    O[Audit + Metrics + Tracing] -. observes .-> C
-    O -. observes .-> H
-    O -. observes .-> K
-```

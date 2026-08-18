@@ -6,10 +6,31 @@ order: 2
 
 # Pydantic Models & Validation (v1 vs v2)
 
-> **Pydantic converts untrusted input into validated Python objects.**  
 > FastAPI uses Pydantic models to validate request data, generate OpenAPI schemas, create API documentation, and serialize response data.
 
-This guide focuses on **Pydantic v2**, which is the current production version and the correct default for modern FastAPI applications. Pydantic v1 is covered mainly to help you understand and migrate older codebases.
+## In short
+
+- A Pydantic model is a runtime-validated data contract built from ordinary type hints; FastAPI uses it for body parsing, validation, JSON Schema, docs, and serialization.
+- A field is optional only when it has a default: `str | None` is nullable but still **required**, while `str | None = None` is nullable and optional.
+- `Field(...)` carries declarative constraints (`gt`, `ge`, `lt`, `le`, `min_length`, `max_length`, `pattern`, `max_digits`, `decimal_places`) plus schema metadata — reach for it before writing a validator.
+- `@field_validator` validates one field and must return the value; `@model_validator(mode="after")` validates across fields and must return `self`.
+- `mode="before"` sees raw input and should be typed `Any`; `mode="after"` sees the converted value and is the default.
+- `model_config = ConfigDict(...)` replaced v1's inner `class Config`: `extra="forbid"`, `strict=True`, `frozen=True`, `from_attributes=True`.
+- Validation is lax by default, so `"5"` becomes `5`; a failure returns `422` with a `detail` list of `type`, `loc`, `msg` and `input` entries.
+
+```mermaid
+flowchart LR
+    A[HTTP JSON Request] --> B[FastAPI reads request body]
+    B --> C[Pydantic validates fields]
+    C -->|Invalid| D[422 validation response]
+    C -->|Valid| E[ProductCreate instance]
+    E --> F[Endpoint function]
+    F --> G[Response serialization]
+```
+
+**Interview answer:** FastAPI reads the request body and hands it to the Pydantic model declared as the parameter type, so the endpoint either receives a fully typed instance or the client receives a `422` listing every field that failed — raw untrusted data never reaches business logic. Pydantic v2 rewrote that validation core in Rust and renamed the API: `dict()` became `model_dump()`, `parse_obj()` became `model_validate()`, the inner `class Config` became `model_config = ConfigDict(...)`, and `@validator`/`@root_validator` became `@field_validator`/`@model_validator`.
+
+**Gotcha:** `nickname: str | None` does not make a field optional in v2. It is still required and merely accepts `null`, so omitting it fails validation until the declaration becomes `nickname: str | None = None`.
 
 ---
 
@@ -66,7 +87,6 @@ With Pydantic:
 ```python
 from pydantic import BaseModel, Field
 
-
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     price: float = Field(gt=0)
@@ -86,29 +106,17 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-
 class ProductCreate(BaseModel):
     name: str
     price: float
     in_stock: bool = True
-
 
 @app.post("/products")
 async def create_product(product: ProductCreate):
     return product
 ```
 
-When a client sends a request, FastAPI performs the following flow:
-
-```mermaid
-flowchart LR
-    A[HTTP JSON Request] --> B[FastAPI reads request body]
-    B --> C[Pydantic validates fields]
-    C -->|Invalid| D[422 validation response]
-    C -->|Valid| E[ProductCreate instance]
-    E --> F[Endpoint function]
-    F --> G[Response serialization]
-```
+When a client sends a request, FastAPI follows the flow shown at the top of this note: it reads the body, validates it against the declared model, and either returns `422` or calls the endpoint with a typed instance.
 
 Request:
 
@@ -141,7 +149,6 @@ A Pydantic model inherits from `BaseModel`.
 ```python
 from pydantic import BaseModel
 
-
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -171,13 +178,7 @@ print(type(user.age))
 
 ## Model fields
 
-Each field normally contains:
-
-```text
-field_name: type = default_value
-```
-
-Example:
+Each field normally takes the form `field_name: type = default_value`.
 
 ```python
 class UserCreate(BaseModel):
@@ -206,7 +207,6 @@ These are related, but they are not the same.
 ```python
 from pydantic import BaseModel
 
-
 class Example(BaseModel):
     name: str
     nickname: str | None
@@ -225,30 +225,15 @@ The most important rule is:
 
 > In Pydantic v2, `T | None` means nullable. It does not automatically mean the field may be omitted.
 
-Example:
-
 ```python
 class Profile(BaseModel):
     middle_name: str | None
-```
 
-This is valid:
+Profile(middle_name=None)   # valid
+Profile()                   # invalid: the field is still required
 
-```python
-Profile(middle_name=None)
-```
-
-This is invalid because the field is still required:
-
-```python
-Profile()
-```
-
-To make it both optional and nullable:
-
-```python
 class Profile(BaseModel):
-    middle_name: str | None = None
+    middle_name: str | None = None   # now optional and nullable
 ```
 
 ## Why this matters for PATCH models
@@ -272,7 +257,6 @@ Type hints describe the general data type. `Field` adds business constraints and
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
-
 
 class ProductCreate(BaseModel):
     name: str = Field(
@@ -299,26 +283,7 @@ class ProductCreate(BaseModel):
 | Lists | `min_length`, `max_length` |
 | Any field | `title`, `description`, `examples`, `deprecated` |
 
-Meaning:
-
-```text
-gt = greater than
-ge = greater than or equal
-lt = less than
-le = less than or equal
-```
-
-Example:
-
-```python
-age: int = Field(ge=18, le=100)
-```
-
-This means:
-
-```text
-18 <= age <= 100
-```
+The numeric names abbreviate the comparison: `gt` is greater than, `ge` greater than or equal, `lt` less than, `le` less than or equal. So `age: int = Field(ge=18, le=100)` means `18 <= age <= 100`.
 
 ## Reusable constrained types with `Annotated`
 
@@ -329,10 +294,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-
 PositiveQuantity = Annotated[int, Field(gt=0, le=10_000)]
 ProductName = Annotated[str, Field(min_length=2, max_length=100)]
-
 
 class OrderItem(BaseModel):
     product_name: ProductName
@@ -352,7 +315,6 @@ from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, EmailStr
-
 
 class UserProfile(BaseModel):
     id: UUID
@@ -402,18 +364,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-
 class SortOptions(BaseModel):
     order: Literal["asc", "desc"] = "asc"
 ```
 
 Only `"asc"` or `"desc"` is accepted.
 
-> `EmailStr` requires the optional `email-validator` dependency.
-
-```bash
-pip install "pydantic[email]"
-```
+> `EmailStr` requires the optional `email-validator` dependency: `pip install "pydantic[email]"`.
 
 ---
 
@@ -424,19 +381,16 @@ Real API payloads usually contain nested data.
 ```python
 from pydantic import BaseModel, Field
 
-
 class Address(BaseModel):
     line1: str
     city: str
     postal_code: str
     country: str = "India"
 
-
 class OrderItem(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     unit_price: float = Field(gt=0)
-
 
 class OrderCreate(BaseModel):
     customer_id: int
@@ -480,11 +434,7 @@ OrderCreate
     └── unit_price: float > 0
 ```
 
-If `items[0].quantity` is invalid, the error location points to the exact nested field.
-
-```text
-body -> items -> 0 -> quantity
-```
+If `items[0].quantity` is invalid, the error location points to the exact nested field: `body -> items -> 0 -> quantity`.
 
 ---
 
@@ -496,7 +446,6 @@ Pydantic v2 uses `@field_validator`.
 
 ```python
 from pydantic import BaseModel, field_validator
-
 
 class UserCreate(BaseModel):
     username: str
@@ -512,17 +461,7 @@ class UserCreate(BaseModel):
         return normalized
 ```
 
-Input:
-
-```python
-UserCreate(username="  Avadh_Dev  ")
-```
-
-Result:
-
-```python
-username="avadh_dev"
-```
+Here `UserCreate(username="  Avadh_Dev  ")` produces `username="avadh_dev"`.
 
 ## Important validator rule
 
@@ -569,7 +508,6 @@ from typing_extensions import Self
 
 from pydantic import BaseModel, model_validator
 
-
 class RegistrationRequest(BaseModel):
     password: str
     password_confirmation: str
@@ -590,7 +528,6 @@ from typing_extensions import Self
 
 from pydantic import BaseModel, model_validator
 
-
 class DateRange(BaseModel):
     start_date: date
     end_date: date
@@ -609,7 +546,6 @@ A field validator can read previously validated fields through `ValidationInfo`,
 
 ```python
 from pydantic import BaseModel, ValidationInfo, field_validator
-
 
 class RegistrationRequest(BaseModel):
     password: str
@@ -653,7 +589,6 @@ Runs after Pydantic has converted and validated the field type.
 ```python
 from pydantic import BaseModel, field_validator
 
-
 class Product(BaseModel):
     price: float
 
@@ -681,7 +616,6 @@ from typing import Any
 
 from pydantic import BaseModel, field_validator
 
-
 class TagsRequest(BaseModel):
     tags: list[str]
 
@@ -694,15 +628,7 @@ class TagsRequest(BaseModel):
         return value
 ```
 
-Both inputs work:
-
-```json
-{"tags": ["python", "fastapi"]}
-```
-
-```json
-{"tags": "python, fastapi"}
-```
+Both `{"tags": ["python", "fastapi"]}` and `{"tags": "python, fastapi"}` now validate.
 
 Use `Any` for before validators because raw input can be any object.
 
@@ -739,7 +665,6 @@ Pydantic v2 configures models through `model_config`.
 ```python
 from pydantic import BaseModel, ConfigDict
 
-
 class APIModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -770,7 +695,6 @@ class APIModel(BaseModel):
 ```python
 from pydantic import BaseModel, ConfigDict
 
-
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -797,13 +721,11 @@ This is useful for security-sensitive request models because unexpected client f
 ```python
 from pydantic import BaseModel, ConfigDict
 
-
 class APIModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
     )
-
 
 class UserCreate(APIModel):
     username: str
@@ -821,21 +743,10 @@ Pydantic normally attempts reasonable type conversion.
 ```python
 from pydantic import BaseModel
 
-
 class QuantityRequest(BaseModel):
     quantity: int
-```
 
-This succeeds in lax mode:
-
-```python
-QuantityRequest(quantity="5")
-```
-
-Result:
-
-```python
-quantity=5
+QuantityRequest(quantity="5")   # lax mode: quantity=5
 ```
 
 This behavior is convenient for HTTP data because query parameters and form values often arrive as strings.
@@ -844,7 +755,6 @@ This behavior is convenient for HTTP data because query parameters and form valu
 
 ```python
 from pydantic import BaseModel, Field
-
 
 class PaymentRequest(BaseModel):
     amount: float = Field(gt=0)
@@ -866,7 +776,6 @@ Now this is rejected:
 
 ```python
 from pydantic import BaseModel, ConfigDict
-
 
 class StrictPayload(BaseModel):
     model_config = ConfigDict(strict=True)
@@ -897,7 +806,6 @@ Python commonly uses `snake_case`, while some APIs use `camelCase`.
 ```python
 from pydantic import BaseModel, ConfigDict, Field
 
-
 class UserResponse(BaseModel):
     model_config = ConfigDict(
         validate_by_name=True,
@@ -908,29 +816,14 @@ class UserResponse(BaseModel):
     full_name: str = Field(alias="fullName")
 ```
 
-Both forms can be accepted:
+Both forms are then accepted, and `model_dump(by_alias=True)` serializes back to the alias names.
 
 ```python
 UserResponse(user_id=1, full_name="Avadh Bhalodiya")
-```
-
-```python
 UserResponse(userId=1, fullName="Avadh Bhalodiya")
-```
 
-Serialize using aliases:
-
-```python
 user.model_dump(by_alias=True)
-```
-
-Output:
-
-```json
-{
-  "userId": 1,
-  "fullName": "Avadh Bhalodiya"
-}
+# {"userId": 1, "fullName": "Avadh Bhalodiya"}
 ```
 
 ## Separate validation and serialization aliases
@@ -940,7 +833,6 @@ Pydantic v2 supports:
 ```python
 from pydantic import BaseModel, Field
 
-
 class Customer(BaseModel):
     name: str = Field(
         validation_alias="customer_name",
@@ -948,21 +840,7 @@ class Customer(BaseModel):
     )
 ```
 
-Input:
-
-```json
-{
-  "customer_name": "Avadh"
-}
-```
-
-Serialized output with `by_alias=True`:
-
-```json
-{
-  "customerName": "Avadh"
-}
-```
+That model accepts `{"customer_name": "Avadh"}` on input and emits `{"customerName": "Avadh"}` when dumped with `by_alias=True`.
 
 This is useful when integrating with different legacy input and output formats.
 
@@ -972,61 +850,19 @@ This is useful when integrating with different legacy input and output formats.
 
 Validation converts external data into a model. Serialization converts a model into a dictionary or JSON.
 
-## Dictionary output
+## Serialization options
 
-```python
-user.model_dump()
-```
+| Goal | Pydantic v2 | Pydantic v1 equivalent |
+|---|---|---|
+| Dictionary output | `user.model_dump()` | `user.dict()` |
+| JSON string output | `user.model_dump_json()` | `user.json()` |
+| Drop named fields | `user.model_dump(exclude={"password"})` | same argument |
+| Drop `None` values | `user.model_dump(exclude_none=True)` | same argument |
+| Drop values the caller never set | `user.model_dump(exclude_unset=True)` | same argument |
+| Drop values equal to their default | `user.model_dump(exclude_defaults=True)` | same argument |
+| Keep only named fields | `user.model_dump(include={"id", "username"})` | same argument |
 
-Pydantic v1 equivalent:
-
-```python
-user.dict()
-```
-
-## JSON output
-
-```python
-user.model_dump_json()
-```
-
-Pydantic v1 equivalent:
-
-```python
-user.json()
-```
-
-## Excluding fields
-
-```python
-user.model_dump(exclude={"password"})
-```
-
-## Excluding `None`
-
-```python
-user.model_dump(exclude_none=True)
-```
-
-## Excluding unset values
-
-```python
-user.model_dump(exclude_unset=True)
-```
-
-This is especially useful for PATCH requests.
-
-## Excluding default values
-
-```python
-user.model_dump(exclude_defaults=True)
-```
-
-## Including selected fields
-
-```python
-user.model_dump(include={"id", "username", "email"})
-```
+`exclude_unset=True` is the one that matters most in practice, because it is how a PATCH endpoint distinguishes "not supplied" from "supplied as the default".
 
 ## Custom field serialization
 
@@ -1034,7 +870,6 @@ user.model_dump(include={"id", "username", "email"})
 from datetime import datetime
 
 from pydantic import BaseModel, field_serializer
-
 
 class EventResponse(BaseModel):
     created_at: datetime
@@ -1056,90 +891,18 @@ These replace many older custom serialization patterns.
 
 # 15. Request Models and Response Models
 
-Do not automatically reuse the same model for create input, database representation, and public output.
+Do not reuse one model for create input, database representation, and public output. A `UserCreate` may carry a password; the model returned to the client must not declare it, and FastAPI drops every field the response model does not declare.
 
-A user-creation request may contain a password, but a response must not expose it.
-
-```python
-from pydantic import BaseModel, EmailStr
-
-
-class UserCreate(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
-
-
-class UserResponse(BaseModel):
-    id: int
-    username: str
-    email: EmailStr
-```
-
-FastAPI endpoint:
-
-```python
-from fastapi import FastAPI
-
-app = FastAPI()
-
-
-@app.post("/users", response_model=UserResponse)
-async def create_user(payload: UserCreate):
-    database_record = {
-        "id": 101,
-        "username": payload.username,
-        "email": payload.email,
-        "password": "hashed-value",
-        "internal_status": "active",
-    }
-
-    return database_record
-```
-
-FastAPI filters the response according to `UserResponse`.
-
-Returned JSON:
-
-```json
-{
-  "id": 101,
-  "username": "avadh",
-  "email": "avadh@example.com"
-}
-```
-
-The password and internal fields are excluded.
-
-```mermaid
-flowchart TD
-    A["UserCreate<br/>username, email, password"] --> B["Business logic / database"]
-    B --> C["UserResponse<br/>id, username, email"]
-```
-
-Response models provide:
-
-- Output validation
-- Output filtering
-- OpenAPI response schema
-- Protection against accidental field exposure
+That split, `response_model=` filtering, and the model-per-layer naming pattern are covered in full in [Response Models](response-models.md). The rest of this note stays on validation itself.
 
 ---
 
 # 16. ORM Objects and `from_attributes`
 
-Older Pydantic v1 code often uses:
-
-```python
-class Config:
-    orm_mode = True
-```
-
-Pydantic v2 uses:
+By default Pydantic expects dictionary-like input. Reading values from object attributes instead is opt-in, and this is one of the renamed settings between versions: v1 used an inner `class Config` with `orm_mode = True`, v2 uses `model_config = ConfigDict(from_attributes=True)`.
 
 ```python
 from pydantic import BaseModel, ConfigDict
-
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -1147,29 +910,17 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
-```
 
-Example ORM-like object:
-
-```python
 class UserORM:
     def __init__(self) -> None:
         self.id = 1
         self.username = "avadh"
         self.email = "avadh@example.com"
+
+response = UserResponse.model_validate(UserORM())
 ```
 
-Validate from attributes:
-
-```python
-orm_user = UserORM()
-
-response = UserResponse.model_validate(orm_user)
-```
-
-Without `from_attributes=True`, Pydantic normally expects dictionary-like input.
-
-FastAPI can use this model as a response model for SQLAlchemy objects or other domain objects that expose attributes.
+`model_validate` works on any object exposing the declared attributes, which is what lets a SQLAlchemy row become a response body. For how this behaves as an endpoint's `response_model` — including lazy-loaded relationships — see [Response Models](response-models.md).
 
 ---
 
@@ -1181,7 +932,6 @@ A PATCH endpoint should update only fields explicitly provided by the client.
 
 ```python
 from pydantic import BaseModel, Field
-
 
 class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2)
@@ -1197,47 +947,13 @@ Request:
 }
 ```
 
-Convert only supplied fields:
-
-```python
-changes = payload.model_dump(exclude_unset=True)
-```
-
-Result:
-
-```python
-{"price": 799.0}
-```
-
-Without `exclude_unset=True`, fields with defaults may appear and overwrite stored values.
+Converting with `changes = payload.model_dump(exclude_unset=True)` yields only `{"price": 799.0}`. Without `exclude_unset=True`, fields with defaults appear too and overwrite stored values.
 
 ## Distinguishing omitted fields from explicit `null`
 
-```json
-{}
-```
+A body of `{}` means the client did not provide the field at all, while `{"name": null}` means the client explicitly sent `null` — a meaningful difference when `null` should clear a stored value.
 
-means the client did not provide the field.
-
-```json
-{
-  "name": null
-}
-```
-
-means the client explicitly provided `null`.
-
-You can inspect fields supplied by the client:
-
-```python
-payload.model_fields_set
-```
-
-Example:
-
-```python
-{"name"}
-```
+Inspect what the client actually supplied with `payload.model_fields_set`, which for `{"name": null}` returns `{"name"}`.
 
 ## Typical PATCH flow
 
@@ -1271,7 +987,6 @@ Model:
 
 ```python
 from pydantic import BaseModel, Field
-
 
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2)
@@ -1316,22 +1031,7 @@ Simplified error response:
 | `input` | Invalid input value |
 | `ctx` | Optional context such as minimum value |
 
-Nested location example:
-
-```json
-{
-  "loc": ["body", "items", 0, "quantity"]
-}
-```
-
-Meaning:
-
-```text
-request body
-└── items
-    └── first item
-        └── quantity
-```
+A nested `loc` reads outermost-first, so `["body", "items", 0, "quantity"]` means the `quantity` field of the first entry in the `items` list of the request body.
 
 Pydantic collects multiple independent validation failures, allowing the client to correct several fields in one request.
 
@@ -1346,28 +1046,11 @@ Pydantic v2 provides `TypeAdapter` for validating arbitrary Python types.
 ```python
 from pydantic import TypeAdapter
 
-
 integer_list_adapter = TypeAdapter(list[int])
 
-result = integer_list_adapter.validate_python(["1", 2, 3])
-```
-
-Result:
-
-```python
-[1, 2, 3]
-```
-
-Validate JSON:
-
-```python
-result = integer_list_adapter.validate_json('["1", 2, 3]')
-```
-
-Generate JSON Schema:
-
-```python
-schema = integer_list_adapter.json_schema()
+integer_list_adapter.validate_python(["1", 2, 3])   # [1, 2, 3]
+integer_list_adapter.validate_json('["1", 2, 3]')   # [1, 2, 3]
+integer_list_adapter.json_schema()                  # JSON Schema for list[int]
 ```
 
 ## Practical use cases
@@ -1385,7 +1068,6 @@ Example:
 from typing import Annotated
 
 from pydantic import Field, TypeAdapter
-
 
 PositiveIds = list[Annotated[int, Field(gt=0)]]
 
@@ -1431,7 +1113,6 @@ Pydantic v2 is a major rewrite. Its validation engine is powered by `pydantic-co
 ```python
 from pydantic import BaseModel
 
-
 class User(BaseModel):
     id: int
     name: str
@@ -1446,7 +1127,6 @@ class User(BaseModel):
 
 ```python
 from pydantic import BaseModel, ConfigDict
-
 
 class User(BaseModel):
     model_config = ConfigDict(
@@ -1466,7 +1146,6 @@ class User(BaseModel):
 ```python
 from pydantic import BaseModel, validator
 
-
 class User(BaseModel):
     username: str
 
@@ -1480,7 +1159,6 @@ class User(BaseModel):
 ```python
 from pydantic import BaseModel, field_validator
 
-
 class User(BaseModel):
     username: str
 
@@ -1492,31 +1170,14 @@ class User(BaseModel):
 
 ## Required and nullable behavior
 
-This is a notable migration difference.
-
-### Pydantic v1
-
-Older v1 code often treated this as an optional field with an implicit `None` default:
+This is the migration difference most likely to break real code. The declaration is byte-identical in both versions, but v1 treated it as optional with an implicit `None` default, while v2 treats it as required and merely nullable.
 
 ```python
 class Profile(BaseModel):
-    nickname: str | None
-```
+    nickname: str | None          # v1: optional. v2: required, accepts None
 
-### Pydantic v2
-
-The same declaration is required but accepts `None`:
-
-```python
 class Profile(BaseModel):
-    nickname: str | None
-```
-
-To allow omission in v2:
-
-```python
-class Profile(BaseModel):
-    nickname: str | None = None
+    nickname: str | None = None   # v2: optional and nullable
 ```
 
 ## Current FastAPI compatibility
@@ -1525,11 +1186,7 @@ Modern FastAPI applications should use native Pydantic v2 models.
 
 FastAPI temporarily supported `pydantic.v1` models while projects migrated, but that temporary compatibility was removed in FastAPI `0.128.0`.
 
-The Pydantic v2 package still exposes a `pydantic.v1` namespace for non-FastAPI migration scenarios:
-
-```python
-from pydantic.v1 import BaseModel
-```
+The Pydantic v2 package still exposes a `pydantic.v1` namespace for non-FastAPI migration scenarios: `from pydantic.v1 import BaseModel`
 
 Do not use that namespace for models passed to current FastAPI endpoints.
 
@@ -1543,7 +1200,6 @@ Do not use that namespace for models passed to current FastAPI endpoints.
 
 ```python
 from pydantic import BaseModel, validator
-
 
 class Product(BaseModel):
     code: str
@@ -1563,7 +1219,6 @@ class Product(BaseModel):
 ```python
 from pydantic import BaseModel, field_validator
 
-
 class Product(BaseModel):
     code: str
 
@@ -1580,17 +1235,13 @@ class Product(BaseModel):
 
 ## Pre-validation
 
-### v1
-
 ```python
+# v1
 @validator("tags", pre=True)
 def parse_tags(cls, value):
     ...
-```
 
-### v2
-
-```python
+# v2
 @field_validator("tags", mode="before")
 @classmethod
 def parse_tags(cls, value):
@@ -1603,7 +1254,6 @@ def parse_tags(cls, value):
 
 ```python
 from pydantic import BaseModel, root_validator
-
 
 class DateRange(BaseModel):
     start: int
@@ -1623,7 +1273,6 @@ class DateRange(BaseModel):
 from typing_extensions import Self
 
 from pydantic import BaseModel, model_validator
-
 
 class DateRange(BaseModel):
     start: int
@@ -1655,9 +1304,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-
 PositiveScore = Annotated[int, Field(ge=0)]
-
 
 class Result(BaseModel):
     scores: list[PositiveScore]
@@ -1688,9 +1335,7 @@ from pydantic import (
 )
 from typing_extensions import Self
 
-
 app = FastAPI(title="Order API")
-
 
 ProductCode = Annotated[
     str,
@@ -1701,20 +1346,17 @@ ProductCode = Annotated[
     ),
 ]
 
-
 class APIModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
     )
 
-
 class Address(APIModel):
     line1: str = Field(min_length=3, max_length=150)
     city: str = Field(min_length=2, max_length=80)
     postal_code: str = Field(min_length=4, max_length=12)
     country: str = "India"
-
 
 class OrderItemCreate(APIModel):
     product_code: ProductCode
@@ -1729,7 +1371,6 @@ class OrderItemCreate(APIModel):
     @classmethod
     def normalize_product_code(cls, value: str) -> str:
         return value.upper()
-
 
 class OrderCreate(APIModel):
     customer_email: EmailStr
@@ -1752,7 +1393,6 @@ class OrderCreate(APIModel):
 
         return self
 
-
 class OrderResponse(BaseModel):
     id: UUID
     customer_email: EmailStr
@@ -1760,14 +1400,12 @@ class OrderResponse(BaseModel):
     total_amount: Decimal
     created_at: datetime
 
-
 class OrderFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     limit: int = Field(default=20, gt=0, le=100)
     offset: int = Field(default=0, ge=0)
     status: Literal["pending", "confirmed", "cancelled"] | None = None
-
 
 @app.post(
     "/orders",
@@ -1787,7 +1425,6 @@ async def create_order(payload: OrderCreate) -> OrderResponse:
         total_amount=total_amount,
         created_at=datetime.now(timezone.utc),
     )
-
 
 @app.get("/orders", response_model=list[OrderResponse])
 async def list_orders(
@@ -1831,7 +1468,6 @@ Validation rules should be tested independently from HTTP endpoints.
 import pytest
 from pydantic import ValidationError
 
-
 def test_product_code_is_normalized() -> None:
     item = OrderItemCreate(
         product_code="prd-100",
@@ -1841,7 +1477,6 @@ def test_product_code_is_normalized() -> None:
 
     assert item.product_code == "PRD-100"
     assert item.quantity == 2
-
 
 def test_quantity_must_be_positive() -> None:
     with pytest.raises(ValidationError) as exc_info:
@@ -1861,9 +1496,7 @@ Test FastAPI behavior separately:
 ```python
 from fastapi.testclient import TestClient
 
-
 client = TestClient(app)
-
 
 def test_create_order_returns_422_for_empty_items() -> None:
     response = client.post(
@@ -1933,15 +1566,11 @@ Pydantic should not become a hidden database or network-access layer.
 
 ## Prefer declarative constraints before custom validators
 
-Prefer:
-
 ```python
+# Prefer this
 quantity: int = Field(gt=0, le=100)
-```
 
-over:
-
-```python
+# Over this
 @field_validator("quantity")
 @classmethod
 def validate_quantity(cls, value: int) -> int:
@@ -1955,16 +1584,7 @@ def validate_quantity(cls, value: int) -> int:
 
 ## Use separate input and output models
 
-Typical naming:
-
-```text
-UserCreate
-UserUpdate
-UserResponse
-UserInternal
-```
-
-This prevents internal fields from leaking into API responses.
+Name one model per layer — `UserCreate`, `UserUpdate`, `UserResponse`, `UserInternal` — so internal fields cannot leak into API responses. See [Response Models](response-models.md).
 
 ## Use `extra="forbid"` selectively
 
@@ -2019,26 +1639,6 @@ OrderCreate
 ├── list[OrderItem]
 └── PaymentSelection
 ```
-
----
-
-# 25. Key Takeaways
-
-- Pydantic models are runtime-validated data contracts built from Python type hints.
-- FastAPI uses them for request parsing, validation, OpenAPI schemas, documentation, and response filtering.
-- A field is optional only when it has a default value.
-- `str | None` means nullable; `str | None = None` means nullable and optional.
-- Use `Field` for declarative constraints.
-- Use `@field_validator` for custom single-field rules.
-- Use `@model_validator` for cross-field rules.
-- Use `ConfigDict` instead of the old v1 `Config` class.
-- Use `model_dump`, `model_validate`, and `model_json_schema` in v2.
-- Use separate request and response models to protect sensitive data.
-- Use `from_attributes=True` when validating ORM or object attributes.
-- Use `exclude_unset=True` for partial updates.
-- Use `TypeAdapter` when validation is needed without a named model.
-- Treat Pydantic v1 syntax as legacy code that should be migrated.
-- Current FastAPI applications should use native Pydantic v2 models.
 
 ---
 

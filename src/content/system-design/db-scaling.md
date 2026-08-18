@@ -6,9 +6,34 @@ order: 2
 
 # Scaling the Database
 
-> **Category:** System Design  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Goal:** Understand how databases are scaled in real systems, which technique solves which bottleneck, and how to choose the next scaling step.
+> Understand how databases are scaled in real systems, which technique solves which bottleneck, and how to choose the next scaling step.
+
+## In short
+
+- Climb the ladder in order — measure, optimize queries and indexes, scale vertically, pool connections, cache repeated reads, add read replicas, partition, shard — and stop at the simplest step that meets the requirement.
+- A slow database is usually not an undersized one: missing indexes, N+1 queries, long transactions, and oversized application connection pools account for most of it.
+- Read replicas scale reads, never writes, and replication is asynchronous — decide per read path which must hit the primary and which may be a few seconds stale.
+- Replication for failover and replication for read scaling are different goals, and neither one is a backup: a destructive statement replicates too.
+- Partitioning splits one table inside one cluster and keeps transactions simple; sharding spreads data across independent nodes and moves routing into the application.
+- The shard key decides everything — high cardinality, even distribution, present in common requests, and chosen so one business transaction stays inside one shard.
+- Cross-shard joins, global aggregates, globally unique IDs, and distributed transactions are the real price of sharding; design them out rather than solving them per request.
+
+```mermaid
+flowchart TD
+    A[Measure the bottleneck] --> B[Optimize queries and indexes]
+    B --> C[Scale the database vertically]
+    C --> D[Add connection pooling]
+    D --> E[Cache repeated reads]
+    E --> F[Add read replicas]
+    F --> G[Partition very large tables]
+    G --> H[Separate services or workloads]
+    H --> I[Shard data across database nodes]
+    I --> J[Add multi-region topology]
+```
+
+**Interview answer:** Measure first — execution plans, P95/P99 latency, lock waits, connection counts — because most "we need a bigger database" problems turn out to be a missing index, an N+1 query, or an application pool sized larger than the server can accept. Then climb only as far as the bottleneck requires: index and query tuning, a larger instance, connection pooling, caching, and read replicas cover most growth stages, and partitioning makes an oversized table manageable without distributing it. Shard only once a single writer has genuinely reached its limit, because sharding buys write capacity by giving up cheap joins, easy global aggregates, and single-node transactions.
+
+**Gotcha:** Adding read replicas to a primary that is write-bound. Every write still executes on the primary and is then replayed on every replica, so replicas add read capacity and nothing else — and since a replica is also neither a backup nor automatic failover, treating it as either leaves the system exposed.
 
 ---
 
@@ -26,19 +51,7 @@ Growth may come from more users, more requests, larger datasets, heavier queries
 
 ## 1.1 Scaling is not only adding servers
 
-A slow database is not automatically an undersized database.
-
-The real cause may be:
-
-- Missing or ineffective indexes
-- Queries reading far more rows than required
-- Too many application connections
-- Lock contention
-- Long-running transactions
-- Repeated reads of the same data
-- One extremely hot table or tenant
-- Analytical queries running on the transactional database
-- Unevenly distributed shard keys
+A slow database is not automatically an undersized database. The real cause is more often missing or ineffective indexes, queries reading far more rows than required, too many application connections, lock contention, long-running transactions, repeated reads of the same data, one extremely hot table or tenant, analytical queries running on the transactional database, or unevenly distributed shard keys.
 
 Adding infrastructure before identifying the cause can make the system more expensive without solving the problem.
 
@@ -66,12 +79,7 @@ flowchart TD
 
 ### Throughput growth
 
-The system must process more reads and writes per second.
-
-```text
-Read traffic  → cache / replicas
-Write traffic → batching / partitioning / sharding
-```
+The system must process more reads and writes per second. Read traffic is absorbed by caching and replicas; write traffic by batching, partitioning, and sharding.
 
 ---
 
@@ -116,20 +124,7 @@ Averages alone are not enough. A system can have a good average latency while a 
 
 # 3. The Database Scaling Ladder
 
-A safe database evolution usually follows this order:
-
-```mermaid
-flowchart TD
-    A[Measure the bottleneck] --> B[Optimize queries and indexes]
-    B --> C[Scale the database vertically]
-    C --> D[Add connection pooling]
-    D --> E[Cache repeated reads]
-    E --> F[Add read replicas]
-    F --> G[Partition very large tables]
-    G --> H[Separate services or workloads]
-    H --> I[Shard data across database nodes]
-    I --> J[Add multi-region topology]
-```
+A safe database evolution usually follows the order shown at the top of this note: measure the bottleneck, optimize queries and indexes, scale the database vertically, add connection pooling, cache repeated reads, add read replicas, partition very large tables, separate services or workloads, shard data across database nodes, and only then add a multi-region topology.
 
 This order is not a strict rule, but it reflects an important principle:
 
@@ -178,14 +173,7 @@ INCLUDE (status, total_amount);
 
 ### Index trade-off
 
-Indexes improve reads but add cost to:
-
-- Inserts
-- Updates
-- Deletes
-- Storage
-- Vacuum and maintenance
-- Cache memory
+Indexes improve reads but add cost to inserts, updates, deletes, storage, vacuum and maintenance, and cache memory.
 
 Do not add an index for every column. Add indexes for real access patterns and verify their use through query plans and production statistics.
 
@@ -200,16 +188,7 @@ FROM orders
 WHERE customer_id = 501;
 ```
 
-Look for:
-
-- Sequential scans on large tables
-- Very high estimated or actual row counts
-- Large differences between estimated and actual rows
-- Disk-based sorts or hashes
-- Repeated nested-loop execution
-- Unnecessary joins
-- Rows removed by filters
-- High buffer reads
+Look for sequential scans on large tables, very high estimated or actual row counts, large differences between estimated and actual rows, disk-based sorts or hashes, repeated nested-loop execution, unnecessary joins, rows removed by filters, and high buffer reads.
 
 `EXPLAIN ANALYZE` executes the query. Be careful when using it with write statements or expensive production queries.
 
@@ -261,17 +240,7 @@ Framework equivalents include `select_related` and `prefetch_related` in Django 
 
 ## 4.3 Schema and data-access improvements
 
-Useful improvements include:
-
-- Use appropriate column types
-- Keep frequently accessed rows reasonably small
-- Store large files in object storage rather than database rows
-- Archive old records that are rarely accessed
-- Avoid unbounded list APIs
-- Use cursor pagination for large, frequently changing datasets
-- Keep transactions short
-- Update only changed columns
-- Avoid repeatedly calculating expensive aggregates on demand
+Use appropriate column types, keep frequently accessed rows reasonably small, and store large files in object storage rather than database rows. Archive rarely accessed records, avoid unbounded list APIs, and use cursor pagination for large, frequently changing datasets. On the write side, keep transactions short, update only changed columns, and avoid repeatedly calculating expensive aggregates on demand.
 
 ### Cursor pagination example
 
@@ -303,12 +272,7 @@ flowchart LR
     BATCHES --> TX[10 transactions]
 ```
 
-Batching reduces:
-
-- Network overhead
-- Transaction setup cost
-- Commit overhead
-- Repeated statement parsing
+Batching reduces network overhead, transaction setup cost, commit overhead, and repeated statement parsing.
 
 Large batches can hold locks for longer, so batch size should be tested instead of maximized blindly.
 
@@ -323,13 +287,7 @@ Before: 4 CPU, 16 GB RAM, standard disk
 After:  16 CPU, 64 GB RAM, provisioned high-IOPS disk
 ```
 
-It can improve:
-
-- Query execution capacity
-- Buffer-cache size
-- Sorting and hashing
-- Concurrent transactions
-- Storage throughput
+It can improve query execution capacity, buffer-cache size, sorting and hashing, concurrent transactions, and storage throughput.
 
 ## Advantages
 
@@ -387,11 +345,7 @@ flowchart LR
     P -->|Controlled server connections| DB[(Database)]
 ```
 
-Common layers are:
-
-1. Application-side pool  
-2. External pooler or managed proxy  
-3. Database server  
+Pooling normally exists at three layers: the application-side pool, an external pooler or managed proxy, and the database server itself.
 
 For PostgreSQL, PgBouncer supports session, transaction, and statement pooling. Transaction pooling releases the server connection after each transaction, but session-dependent features require special care.
 
@@ -419,15 +373,7 @@ A queue of short waits at the application pool is often safer than unlimited con
 
 Caching reduces repeated database reads by serving frequently requested data from a faster store such as Redis.
 
-Good candidates include:
-
-- Product details
-- Configuration
-- User profile summaries
-- Permissions that change infrequently
-- Computed dashboards
-- Search suggestions
-- Public catalog pages
+Good candidates include product details, configuration, user profile summaries, permissions that change infrequently, computed dashboards, search suggestions, and public catalog pages.
 
 Poor candidates include data that must always reflect the latest committed value unless a carefully designed consistency strategy exists.
 
@@ -467,13 +413,7 @@ def get_product(product_id: int) -> dict:
 
 ## 7.2 Cache invalidation
 
-A common write flow is:
-
-```text
-1. Update the database
-2. Commit successfully
-3. Delete or update the cache entry
-```
+The common write flow is to update the database, commit successfully, and only then delete or update the cache entry.
 
 ```python
 def update_product(product_id: int, payload: dict) -> dict:
@@ -496,19 +436,9 @@ flowchart TD
     MISS --> QUERIES[500 database queries for the same value]
 ```
 
-Protection options include:
+Protection options include a per-key distributed lock, request coalescing, stale-while-revalidate, TTL jitter, and refreshing hot keys before they expire.
 
-- Per-key distributed lock
-- Request coalescing
-- Stale-while-revalidate
-- TTL jitter
-- Refreshing hot keys before expiry
-
-Example TTL jitter:
-
-```python
-ttl_seconds = 300 + random.randint(0, 60)
-```
+Example TTL jitter: `ttl_seconds = 300 + random.randint(0, 60)`
 
 This prevents many related cache entries from expiring at exactly the same moment.
 
@@ -539,17 +469,7 @@ Eventually consistent read → replica
 Reports and exports → dedicated replica
 ```
 
-Read replicas are effective when the workload is read-heavy.
-
-Example:
-
-```text
-Traffic:
-90% reads
-10% writes
-```
-
-The read workload can be spread across multiple replicas while the primary handles writes.
+Read replicas are effective when the workload is read-heavy. With a `90% read / 10% write` mix, the read workload can be spread across multiple replicas while the primary continues to handle every write.
 
 ## 8.2 Replication lag and consistency
 
@@ -568,13 +488,7 @@ This is a read-after-write consistency problem.
 
 #### Read from primary after a write
 
-For a short period after a mutation, route that user's related reads to the primary.
-
-```text
-Write order → primary
-Read order immediately → primary
-Later catalog/history reads → replica
-```
+For a short period after a mutation, route that user's related reads to the primary: the write and the immediate read-back both go to the primary, while later catalog and history reads return to the replicas.
 
 #### Session stickiness
 
@@ -680,41 +594,15 @@ FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 
 ### Range partitioning
 
-Useful for time-series and historical data.
-
-```text
-January data → partition 1
-February data → partition 2
-March data → partition 3
-```
-
-Common examples:
-
-- Audit logs
-- Transactions
-- Events
-- Sensor readings
-- Billing records
+Each range of the key lands in its own partition — January data in one, February in the next — which suits time-series and historical data such as audit logs, transactions, events, sensor readings, and billing records.
 
 ### List partitioning
 
-Useful for a small known set of categories.
-
-```text
-India records → partition IN
-USA records   → partition US
-UK records    → partition UK
-```
+Useful for a small known set of categories, such as one partition per country (`IN`, `US`, `UK`).
 
 ### Hash partitioning
 
-Uses a hash of a key to distribute rows.
-
-```text
-hash(customer_id) % 4
-```
-
-This gives more even distribution but is less convenient for time-based archival.
+Uses a hash of a key to distribute rows, for example `hash(customer_id) % 4`. This gives more even distribution but is less convenient for time-based archival.
 
 ## 10.2 Partition pruning
 
@@ -729,13 +617,7 @@ WHERE created_at >= '2026-08-01'
   AND created_at < '2026-09-01';
 ```
 
-Conceptually:
-
-```text
-All partitions: 36
-Relevant partitions: 1
-Scanned partitions: 1
-```
+Conceptually, that query scans `1` of `36` partitions instead of all of them.
 
 Without a useful partition-key condition, the database may need to examine many partitions.
 
@@ -766,15 +648,7 @@ flowchart TD
     Router --> S4[(Shard 4)]
 ```
 
-Example by customer:
-
-```text
-Customer 1001 → shard 1
-Customer 1002 → shard 3
-Customer 1003 → shard 2
-```
-
-Each shard owns only part of the complete dataset.
+Routing by customer sends `customer 1001` to shard 1, `customer 1002` to shard 3, and `customer 1003` to shard 2. Each shard owns only part of the complete dataset.
 
 ## 11.1 How sharding works
 
@@ -799,15 +673,7 @@ flowchart TD
 
 The shard key is one of the most important database-scaling decisions.
 
-A strong shard key should:
-
-- Have high cardinality
-- Distribute load evenly
-- Be present in common requests
-- Keep related records together
-- Avoid a small number of hot values
-- Support future resharding
-- Minimize cross-shard queries
+A strong shard key has high cardinality, distributes load evenly, is present in common requests, keeps related records together, avoids a small number of hot values, supports future resharding, and minimizes cross-shard queries.
 
 ### Candidate comparison
 
@@ -822,32 +688,13 @@ A strong shard key should:
 
 ### Good multi-tenant approach
 
-For a SaaS product:
-
-```text
-Normal tenants → hash(tenant_id) across shared shards
-Very large tenant → dedicated shard
-```
-
-This hybrid model prevents one enterprise tenant from dominating a shared shard.
+For a SaaS product, route normal tenants by `hash(tenant_id)` across shared shards and give a very large tenant its own dedicated shard. This hybrid model prevents one enterprise tenant from dominating a shared shard.
 
 ## 11.3 Shard-routing approaches
 
 ### Algorithmic routing
 
-```text
-shard = hash(key) % number_of_shards
-```
-
-Advantages:
-
-- Fast
-- No directory lookup
-- Easy to understand
-
-Limitation:
-
-Changing the shard count can remap a large percentage of keys.
+The shard is computed directly: `shard = hash(key) % number_of_shards`. It is fast, needs no directory lookup, and is easy to reason about, but changing the shard count can remap a large percentage of keys.
 
 ### Consistent hashing
 
@@ -863,23 +710,9 @@ When a node is added, fewer keys need to move compared with simple modulo hashin
 
 ### Directory-based routing
 
-A lookup table stores the exact shard for each tenant or entity.
+A lookup table stores the exact shard for each tenant or entity (`tenant_101 → shard_2`, `tenant_102 → shard_7`, `tenant_103 → dedicated_shard_12`). This allows flexible tenant movement, dedicated shards, and easy exception handling.
 
-```text
-tenant_101 → shard_2
-tenant_102 → shard_7
-tenant_103 → dedicated_shard_12
-```
-
-Advantages:
-
-- Flexible tenant movement
-- Supports dedicated shards
-- Easy exception handling
-
-Trade-off:
-
-The routing directory becomes critical infrastructure and must be highly available and cached safely.
+The trade-off is that the routing directory becomes critical infrastructure and must be highly available and cached safely.
 
 ## 11.4 Cross-shard operations
 
@@ -922,38 +755,17 @@ For frequently needed totals, stream changes into a materialized aggregate rathe
 
 ### Global uniqueness
 
-A local auto-increment value is not globally unique across shards.
-
-Common alternatives:
-
-- UUID
-- ULID
-- Snowflake-style ID
-- ID containing shard bits
-- Central ID-generation service
+A local auto-increment value is not globally unique across shards. Common alternatives are a UUID, a ULID, a Snowflake-style ID, an ID that embeds shard bits, or a central ID-generation service.
 
 ### Distributed transaction
 
-A transaction across several shards may require:
-
-- Two-phase commit
-- Saga workflow
-- Outbox pattern
-- Idempotent operations
-- Compensating actions
+A transaction across several shards may require two-phase commit, a saga workflow, the outbox pattern, idempotent operations, and compensating actions.
 
 For most scalable service designs, keeping one business transaction within one shard is preferable.
 
 ## 11.5 Resharding
 
-Resharding changes the distribution or number of shards.
-
-Example:
-
-```text
-Before: 4 overloaded shards
-After:  8 smaller shards
-```
+Resharding changes the distribution or number of shards — for example splitting 4 overloaded shards into 8 smaller ones.
 
 A safe online migration commonly follows:
 
@@ -1001,19 +813,11 @@ This is sometimes called vertical partitioning or functional partitioning.
 
 ## Benefits
 
-- Workloads can scale independently
-- Service teams own their data model
-- Failures can be isolated
-- Different database technologies can be used where justified
+Workloads scale independently, service teams own their data model, failures can be isolated, and a different database technology can be used where it is genuinely justified.
 
 ## Trade-offs
 
-- Cross-service joins disappear
-- Workflows become distributed
-- Data duplication may be necessary
-- Event delivery must be reliable
-- Reporting needs a separate data pipeline
-- Consistency becomes a business decision
+Cross-service joins disappear and workflows become distributed. Data duplication may be necessary, event delivery must be reliable, reporting needs a separate data pipeline, and consistency turns into an explicit business decision rather than a database guarantee.
 
 Service boundaries should follow business ownership, not arbitrary table groups.
 
@@ -1025,14 +829,7 @@ Reads are easier to distribute because multiple nodes can serve copies of the sa
 
 ## 13.1 Reduce unnecessary writes
 
-Examples:
-
-- Do not update `updated_at` when no meaningful field changed
-- Avoid writing counters on every page view
-- Buffer telemetry before persistence
-- Use append-only events when appropriate
-- Avoid repeatedly updating one shared hot row
-- Store derived values only when their read benefit justifies write complexity
+Do not update `updated_at` when no meaningful field changed, avoid writing counters on every page view, buffer telemetry before persistence, use append-only events when appropriate, avoid repeatedly updating one shared hot row, and store derived values only when their read benefit justifies the write complexity.
 
 ### Hot counter problem
 
@@ -1044,13 +841,7 @@ SET view_count = view_count + 1
 WHERE id = 42;
 ```
 
-At very high traffic, one row becomes a contention point.
-
-Alternative:
-
-```text
-View events → message stream → batch aggregator → periodic database update
-```
+At very high traffic, one row becomes a contention point. The alternative is to route view events through a message stream into a batch aggregator that updates the database periodically.
 
 ## 13.2 Queue and batch writes
 
@@ -1063,21 +854,7 @@ flowchart LR
     W2 --> DB
 ```
 
-Benefits:
-
-- Absorbs traffic spikes
-- Controls database write concurrency
-- Enables batching
-- Isolates slow downstream work
-
-Requirements:
-
-- Idempotent consumers
-- Retry policy
-- Dead-letter handling
-- Durable messages
-- Monitoring of queue lag
-- Defined ordering guarantees
+A queue absorbs traffic spikes, controls database write concurrency, enables batching, and isolates slow downstream work. In exchange it requires idempotent consumers, a retry policy, dead-letter handling, durable messages, monitoring of queue lag, and defined ordering guarantees.
 
 A queue increases resilience, but it also introduces asynchronous visibility. The API must communicate whether the operation is completed or merely accepted.
 
@@ -1095,13 +872,7 @@ flowchart LR
     BI[Reports and dashboards] --> WH
 ```
 
-Keep large reporting queries away from the primary transactional path by using:
-
-- Read replica
-- Data warehouse
-- Columnar analytical database
-- Search index
-- Materialized reporting store
+Keep large reporting queries away from the primary transactional path by using a read replica, a data warehouse, a columnar analytical database, a search index, or a materialized reporting store.
 
 ---
 
@@ -1127,10 +898,7 @@ Store or materialize a read-optimized representation.
 
 ## CQRS
 
-Command Query Responsibility Segregation separates:
-
-- Command model for writes and business rules
-- Query model for fast reads
+Command Query Responsibility Segregation separates a command model, which owns writes and business rules, from a query model built for fast reads.
 
 ```mermaid
 flowchart LR
@@ -1164,13 +932,7 @@ Use these techniques for specific expensive read paths, not as a default replace
 
 # 15. Multi-Region Database Scaling
 
-Multi-region architecture is normally driven by one or more of these requirements:
-
-- Lower latency for global users
-- Regional disaster recovery
-- Data residency
-- Regional isolation
-- Global availability
+Multi-region architecture is normally driven by lower latency for global users, regional disaster recovery, data residency, regional isolation, or global availability.
 
 ## Single-writer, multi-region reads
 
@@ -1183,17 +945,7 @@ flowchart LR
     P --> RE
 ```
 
-Advantages:
-
-- Simpler write consistency
-- Easier conflict handling
-- Local reads
-
-Limitations:
-
-- Distant write latency
-- Replication lag
-- Failover coordination
+This keeps write consistency simple, avoids conflict handling entirely, and still gives every region local reads. The costs are distant write latency for users far from the writer, replication lag on the regional replicas, and cross-region failover coordination.
 
 ## Multi-writer topology
 
@@ -1204,31 +956,13 @@ flowchart LR
     UB[Region B users] --> B
 ```
 
-Advantages:
-
-- Local write latency
-- Better regional independence
-
-Challenges:
-
-- Write conflicts
-- Global uniqueness
-- Clock ordering
-- Split-brain protection
-- Cross-region transactions
-- More complex failure recovery
+This buys local write latency and better regional independence, at the cost of write conflicts, global uniqueness, clock ordering, split-brain protection, cross-region transactions, and much more complex failure recovery.
 
 Multi-writer architecture should be introduced only when the business requirement justifies conflict-resolution complexity.
 
 ## Region ownership
 
-A practical alternative is assigning each tenant or user a home region.
-
-```text
-Tenant A → Mumbai region
-Tenant B → Frankfurt region
-Tenant C → Virginia region
-```
+A practical alternative is assigning each tenant or user a home region — tenant A to Mumbai, tenant B to Frankfurt, tenant C to Virginia.
 
 Most writes remain local to the owner's region, while replicated global metadata supports routing.
 
@@ -1253,23 +987,7 @@ Choose based on access patterns and consistency needs.
 
 ### Access-pattern-first design
 
-For a distributed key-value system, the partition key determines both location and load distribution.
-
-Bad key:
-
-```text
-status = "active"
-```
-
-Millions of records and requests may target the same key range.
-
-Better key:
-
-```text
-customer_id
-```
-
-or a deliberately distributed composite key based on known queries.
+For a distributed key-value system, the partition key determines both location and load distribution. A key such as `status = "active"` is a bad choice because millions of records and requests target the same key range. A high-cardinality key such as `customer_id`, or a deliberately distributed composite key built from the known queries, spreads the load instead.
 
 The correct database is the one that provides the required correctness, access pattern, and operational model at acceptable cost.
 
@@ -1281,23 +999,14 @@ Scaling creates more copies, queues, caches, and services. Each one introduces a
 
 Think in terms of business invariants.
 
-## Strong-consistency candidates
-
-- Deducting account balance
-- Reserving limited inventory
-- Preventing duplicate payment capture
-- Enforcing uniqueness
-- Updating a ledger
-- Authorizing access
-
-## Eventual-consistency candidates
-
-- Product recommendation
-- Search index
-- Analytics dashboard
-- Like count
-- Activity feed
-- Email notification status
+| Needs strong consistency | Tolerates eventual consistency |
+|---|---|
+| Deducting an account balance | Product recommendation |
+| Reserving limited inventory | Search index |
+| Preventing duplicate payment capture | Analytics dashboard |
+| Enforcing uniqueness | Like count |
+| Updating a ledger | Activity feed |
+| Authorizing access | Email notification status |
 
 ## Example: placing an order
 
@@ -1332,20 +1041,7 @@ flowchart LR
     A --> DB[(Primary DB)]
 ```
 
-Suitable when:
-
-- Traffic is moderate
-- Dataset fits comfortably
-- Simple operations are valuable
-- Team size is small
-
-Focus on:
-
-- Correct schema
-- Indexes
-- Backups
-- Monitoring
-- Connection pooling
+Suitable when traffic is moderate, the dataset fits comfortably, simple operations are valuable, and the team is small. Focus on a correct schema, indexes, backups, monitoring, and connection pooling.
 
 ## Stage 2: Cache and read replica
 
@@ -1357,11 +1053,7 @@ flowchart LR
     P --> R[(Read replica)]
 ```
 
-Suitable when:
-
-- Repeated reads dominate
-- The primary is read-heavy
-- Some eventual consistency is acceptable
+Suitable when repeated reads dominate, the primary is read-heavy, and some eventual consistency is acceptable.
 
 ## Stage 3: Separate workloads
 
@@ -1374,11 +1066,7 @@ flowchart LR
     BI[Reporting] --> W
 ```
 
-Suitable when:
-
-- Reports affect API performance
-- Historical data is large
-- Different teams need independent workloads
+Suitable when reports affect API performance, historical data is large, and different teams need independent workloads.
 
 ## Stage 4: Service-owned data
 
@@ -1392,11 +1080,7 @@ flowchart LR
     C --> CDB[(Catalog DB)]
 ```
 
-Suitable when:
-
-- Business domains scale differently
-- Team ownership is clear
-- Distributed workflows are understood
+Suitable when business domains scale differently, team ownership is clear, and distributed workflows are understood.
 
 ## Stage 5: Sharded high-scale architecture
 
@@ -1417,12 +1101,7 @@ flowchart TD
     CDC --> A[(Analytics store)]
 ```
 
-Suitable when:
-
-- One writer cannot handle the write workload
-- Dataset exceeds one node's practical capacity
-- Tenant or entity boundaries provide a good shard key
-- The organization can operate distributed data safely
+Suitable when one writer cannot handle the write workload, the dataset exceeds one node's practical capacity, tenant or entity boundaries provide a good shard key, and the organization can operate distributed data safely.
 
 ---
 
@@ -1441,14 +1120,7 @@ Assume an e-commerce platform initially has:
 
 ## Phase 1: Optimize
 
-Actions:
-
-- Add indexes for product, customer, status, and time-based queries
-- Remove N+1 ORM queries
-- Add cursor pagination
-- Archive old audit events
-- Shorten order transactions
-- Use `EXPLAIN ANALYZE` for slow queries
+Add indexes for the product, customer, status, and time-based queries; remove N+1 ORM queries; add cursor pagination; archive old audit events; shorten order transactions; and run `EXPLAIN ANALYZE` on every slow query.
 
 Result:
 
@@ -1461,18 +1133,7 @@ The numbers above are illustrative; actual results depend on workload and schema
 
 ## Phase 2: Add caching
 
-Cache:
-
-- Product details
-- Category navigation
-- Shipping configuration
-- Public promotion rules
-
-Do not rely on stale cache for:
-
-- Final inventory reservation
-- Payment state
-- Order ownership
+Cache product details, category navigation, shipping configuration, and public promotion rules. Do not rely on a stale cache for final inventory reservation, payment state, or order ownership.
 
 ```mermaid
 flowchart TD
@@ -1494,40 +1155,17 @@ Admin export → dedicated replica
 
 ## Phase 4: Partition orders
 
-Partition by month:
-
-```text
-orders_2026_06
-orders_2026_07
-orders_2026_08
-```
-
-Benefits:
-
-- Faster date-bounded maintenance
-- Easier archival
-- Smaller indexes per partition
-- Better pruning for date-filtered queries
+Partition by month (`orders_2026_06`, `orders_2026_07`, `orders_2026_08`) for faster date-bounded maintenance, easier archival, smaller indexes per partition, and better pruning on date-filtered queries.
 
 ## Phase 5: Separate analytics
 
-Use CDC to move order events into an analytical store.
-
-```text
-Checkout queries → transactional database
-Revenue dashboard → analytical database
-```
+Use CDC to move order events into an analytical store, so checkout queries stay on the transactional database while the revenue dashboard reads the analytical one.
 
 ## Phase 6: Shard when the writer becomes the limit
 
 Shard orders by `customer_id` or `tenant_id`, depending on the business model.
 
-Keep together:
-
-- Customer
-- Customer orders
-- Customer addresses
-- Customer payment references
+Keep the customer, their orders, their addresses, and their payment references on the same shard.
 
 Move global reports to the analytical store to avoid cross-shard scans.
 
@@ -1571,31 +1209,11 @@ Connection utilization < 80%
 
 ## Preserve headroom
 
-Do not operate continuously at the database's maximum capacity. Leave room for:
-
-- Traffic spikes
-- Failover
-- Batch jobs
-- Vacuum and compaction
-- Index creation
-- Deployments
-- Rebalancing
-- Replica catch-up
+Do not operate continuously at the database's maximum capacity. Leave room for traffic spikes, failover, batch jobs, vacuum and compaction, index creation, deployments, rebalancing, and replica catch-up.
 
 ## Test using realistic data volume
 
-A query that is fast with 10,000 rows may behave differently with 500 million rows.
-
-Load tests should reproduce:
-
-- Real row counts
-- Real data distribution
-- Hot keys
-- Concurrent writes
-- Replica lag
-- Cache misses
-- Failover
-- Queue backlog
+A query that is fast with 10,000 rows may behave differently with 500 million rows. Load tests should reproduce real row counts and data distribution, hot keys, concurrent writes, replica lag, cache misses, failover, and queue backlog.
 
 ## Plan migrations as online workflows
 
@@ -1614,27 +1232,11 @@ Avoid a single massive transaction that locks a critical table.
 
 ## Protect against retry duplication
 
-Timeouts do not tell the client whether a database write committed.
-
-Use:
-
-- Idempotency keys
-- Unique constraints
-- Transactional outbox
-- Idempotent consumers
-- Safe retry policy
+Timeouts do not tell the client whether a database write committed, so protect the path with idempotency keys, unique constraints, a transactional outbox, idempotent consumers, and a safe retry policy.
 
 ## Test recovery, not only backup creation
 
-Periodically verify:
-
-- Restore time
-- Recovery-point objective
-- Recovery-time objective
-- Point-in-time recovery
-- Failover behavior
-- Application reconnection
-- Data integrity after recovery
+Periodically verify restore time, the recovery-point and recovery-time objectives, point-in-time recovery, failover behavior, application reconnection, and data integrity after recovery.
 
 ## Observe the complete request path
 
@@ -1652,22 +1254,7 @@ Database execution time may be low while requests wait for connections or locks.
 
 ---
 
-# 22. Key Takeaways
-
-1. **Measure before scaling.** A bigger database does not fix poor queries, lock contention, or unlimited connections.
-2. **Optimize the single node first.** Indexes, query plans, pagination, batching, and archival provide the highest value with the least complexity.
-3. **Scale reads before sharding writes.** Caches and replicas handle many real-world growth stages.
-4. **Treat consistency as a business requirement.** Decide which reads may be stale and which must use the primary.
-5. **Do not confuse partitioning with sharding.** Partitioning divides a table; sharding distributes data across database nodes.
-6. **Choose shard keys from access patterns.** Distribution, locality, and hotspot behavior matter more than convenience.
-7. **Keep transactions within one shard where possible.** Cross-shard correctness is expensive.
-8. **Separate OLTP and analytics.** Transactional APIs should not compete with large reporting scans.
-9. **High availability, backups, and scaling are different concerns.** A complete design addresses all three.
-10. **Introduce complexity gradually.** The best architecture is the simplest one that meets current scale and reliability goals.
-
----
-
-# 23. Official References
+# 22. Official References
 
 The following primary documentation was used to verify the current technical concepts:
 

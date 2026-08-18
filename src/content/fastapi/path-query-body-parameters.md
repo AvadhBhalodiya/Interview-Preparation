@@ -8,6 +8,31 @@ order: 1
 
 > FastAPI uses the endpoint path, Python type hints, and special helpers such as `Path`, `Query`, and `Body` to determine where request data comes from, validate it, convert it into Python objects, and document it automatically.
 
+## In short
+
+- FastAPI decides a parameter's source from its name and type, not from argument order: a name that matches `{name}` in the route path is always a path parameter, and this wins even over a `None` default or a nullable annotation — the value must still be present in the URL.
+- Without an explicit declaration, a Pydantic `BaseModel` parameter is read from the JSON body and any other simple scalar (`int`, `str`, `bool`, ...) is read from the query string.
+- `Path()`, `Query()`, and `Body()` (used with `Annotated`) attach validation — `ge`, `le`, `gt`, `lt`, `min_length`, `max_length`, `pattern` — and OpenAPI metadata such as `title`, `description`, and `alias` to any of the three sources.
+- A request has exactly one JSON body, but FastAPI can build it from several declared parameters merged by name; a bare scalar needs an explicit `Body()` to be read from that body, and `Body(embed=True)` nests a single model under its own key instead of at the top level.
+- A repeated query key (`?tag=a&tag=b`) must be declared as `list[str]` with `Query()`, and a group of related filters can be collapsed into one Pydantic model read with `Query()`.
+- For a `PATCH`, calling `model.model_dump(exclude_unset=True)` returns only the fields the client actually sent, so untouched fields are never overwritten.
+- Anything that fails validation returns HTTP `422` with a `detail` list whose `loc` field pinpoints the source — `["path", ...]`, `["query", ...]`, or `["body", ...]`.
+
+```mermaid
+flowchart TD
+    A[Endpoint function parameter] --> B{Does its name appear<br/>in the route path?}
+    B -- Yes --> C[Path parameter]
+    B -- No --> D{Is it explicitly declared<br/>with Query, Path, or Body?}
+    D -- Yes --> E[Use the explicit declaration]
+    D -- No --> F{Is it a Pydantic model?}
+    F -- Yes --> G[Request body]
+    F -- No --> H[Query parameter]
+```
+
+**Interview answer:** FastAPI first checks whether the parameter's name matches a `{placeholder}` in the route path — if so, it is always a path parameter. Otherwise it looks at the type: a Pydantic model is read from the JSON body and any other simple type is treated as a query parameter, unless the parameter is explicitly wrapped in `Path()`, `Query()`, or `Body()` to override that default.
+
+**Gotcha:** adding a plain scalar parameter next to a body model (`priority: int`) does not add it to the body — FastAPI reads it as a query parameter by default, silently splitting one logical payload across two sources; wrap it in `Annotated[int, Body()]` to keep it in the JSON body.
+
 ---
 
 # 1. The Big Picture
@@ -53,11 +78,9 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-
 class ProductUpdate(BaseModel):
     name: str
     price: float
-
 
 @app.put("/products/{product_id}")
 async def update_product(
@@ -85,26 +108,11 @@ The corresponding request is:
 ```http
 PUT /products/42?notify=true
 Content-Type: application/json
-```
 
-```json
 {
   "name": "Mechanical Keyboard",
   "price": 89.99
 }
-```
-
-## Parameter Detection Flow
-
-```mermaid
-flowchart TD
-    A[Endpoint function parameter] --> B{Does its name appear<br/>in the route path?}
-    B -- Yes --> C[Path parameter]
-    B -- No --> D{Is it explicitly declared<br/>with Query, Path, or Body?}
-    D -- Yes --> E[Use the explicit declaration]
-    D -- No --> F{Is it a Pydantic model?}
-    F -- Yes --> G[Request body]
-    F -- No --> H[Query parameter]
 ```
 
 ## Important Rule
@@ -137,63 +145,20 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
-
 @app.get("/products/{product_id}")
 async def get_product(product_id: int):
     return {"product_id": product_id}
 ```
 
-Request:
-
-```http
-GET /products/42
-```
-
-Response:
-
-```json
-{
-  "product_id": 42
-}
-```
-
-FastAPI converts the string value `"42"` from the URL into the Python integer `42`.
+A request such as `GET /products/42` returns `{"product_id": 42}` — FastAPI converts the string value `"42"` from the URL into the Python integer `42`.
 
 ## Automatic Type Validation
 
-This request is invalid:
-
-```http
-GET /products/keyboard
-```
-
-Because `product_id` must be an integer, FastAPI returns a validation error instead of calling the endpoint with incorrect data.
+The request `GET /products/keyboard` is invalid: because `product_id` must be an integer, FastAPI returns a validation error instead of calling the endpoint with incorrect data.
 
 ## Path Parameters Are Always Required
 
-The client cannot call this route without supplying `product_id`:
-
-```python
-@app.get("/products/{product_id}")
-async def get_product(product_id: int):
-    ...
-```
-
-This route does not match:
-
-```http
-GET /products/
-```
-
-Even a nullable annotation does not make a path parameter optional:
-
-```python
-@app.get("/products/{product_id}")
-async def get_product(product_id: int | None):
-    ...
-```
-
-The value must still exist in the URL because the route contains `{product_id}`.
+The client cannot call this route without supplying `product_id`, so `GET /products/` does not match it. Even a nullable annotation such as `product_id: int | None` does not make a path parameter optional — the value must still exist in the URL because the route contains `{product_id}`.
 
 ## Path Validation with `Path`
 
@@ -205,7 +170,6 @@ from typing import Annotated
 from fastapi import FastAPI, Path
 
 app = FastAPI()
-
 
 @app.get("/products/{product_id}")
 async def get_product(
@@ -221,25 +185,7 @@ async def get_product(
     return {"product_id": product_id}
 ```
 
-The rule `ge=1` means:
-
-```text
-product_id >= 1
-```
-
-Valid:
-
-```http
-GET /products/1
-GET /products/500
-```
-
-Invalid:
-
-```http
-GET /products/0
-GET /products/-10
-```
+The rule `ge=1` means `product_id >= 1`: `GET /products/1` and `GET /products/500` are valid, while `GET /products/0` and `GET /products/-10` are invalid.
 
 ## Common Numeric Constraints
 
@@ -271,32 +217,17 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
-
 class ProductStatus(str, Enum):
     active = "active"
     inactive = "inactive"
     archived = "archived"
-
 
 @app.get("/products/status/{status}")
 async def get_products_by_status(status: ProductStatus):
     return {"status": status}
 ```
 
-Valid requests:
-
-```http
-GET /products/status/active
-GET /products/status/archived
-```
-
-Invalid request:
-
-```http
-GET /products/status/deleted
-```
-
-This approach provides validation, editor support, and dropdown values in the generated API documentation.
+`GET /products/status/active` and `GET /products/status/archived` are valid; `GET /products/status/deleted` is invalid. This approach provides validation, editor support, and dropdown values in the generated API documentation.
 
 ## File Paths
 
@@ -308,19 +239,7 @@ async def read_file(file_path: str):
     return {"file_path": file_path}
 ```
 
-Request:
-
-```http
-GET /files/documents/2026/report.pdf
-```
-
-Result:
-
-```json
-{
-  "file_path": "documents/2026/report.pdf"
-}
-```
+For example, `GET /files/documents/2026/report.pdf` resolves to `file_path = "documents/2026/report.pdf"`.
 
 ---
 
@@ -350,7 +269,6 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
-
 @app.get("/products")
 async def list_products(skip: int = 0, limit: int = 20):
     return {
@@ -359,13 +277,7 @@ async def list_products(skip: int = 0, limit: int = 20):
     }
 ```
 
-Request:
-
-```http
-GET /products?skip=20&limit=10
-```
-
-FastAPI converts both values to integers.
+A request such as `GET /products?skip=20&limit=10` converts both values to integers.
 
 ## Optional Query Parameters
 
@@ -375,14 +287,7 @@ async def list_products(search: str | None = None):
     return {"search": search}
 ```
 
-Both requests are valid:
-
-```http
-GET /products
-GET /products?search=keyboard
-```
-
-When the client omits `search`, the function receives `None`.
+Both `GET /products` and `GET /products?search=keyboard` are valid; when the client omits `search`, the function receives `None`.
 
 ## Required Query Parameters
 
@@ -394,17 +299,7 @@ async def list_products(category: str):
     return {"category": category}
 ```
 
-Valid:
-
-```http
-GET /products?category=electronics
-```
-
-Invalid:
-
-```http
-GET /products
-```
+`GET /products?category=electronics` is valid; `GET /products` alone is invalid because `category` is required.
 
 ## Boolean Conversion
 
@@ -414,17 +309,7 @@ async def list_products(in_stock: bool = True):
     return {"in_stock": in_stock}
 ```
 
-FastAPI recognizes common Boolean representations:
-
-```text
-?in_stock=true
-?in_stock=True
-?in_stock=1
-?in_stock=yes
-?in_stock=on
-```
-
-These are converted into the Python value `True`.
+FastAPI recognizes common Boolean representations — `?in_stock=true`, `?in_stock=True`, `?in_stock=1`, `?in_stock=yes`, `?in_stock=on` — and converts all of them into the Python value `True`.
 
 ## Query Validation with `Query`
 
@@ -434,7 +319,6 @@ from typing import Annotated
 from fastapi import FastAPI, Query
 
 app = FastAPI()
-
 
 @app.get("/products")
 async def list_products(
@@ -454,18 +338,6 @@ async def list_products(
     }
 ```
 
-Rules:
-
-```text
-search:
-  minimum length = 2
-  maximum length = 50
-
-limit:
-  minimum value = 1
-  maximum value = 100
-```
-
 ## Pattern Validation
 
 ```python
@@ -479,23 +351,10 @@ async def list_products(
     return {"sort": sort}
 ```
 
-Valid:
-
-```http
-GET /products?sort=price
-```
-
-Invalid:
-
-```http
-GET /products?sort=random
-```
-
-For a fixed set of values, an enum or `Literal` is usually clearer than a regular expression.
+`GET /products?sort=price` is valid; `GET /products?sort=random` is invalid. For a fixed set of values, an enum or `Literal` is usually clearer than a regular expression.
 
 ```python
 from typing import Literal
-
 
 @app.get("/products")
 async def list_products(
@@ -506,13 +365,7 @@ async def list_products(
 
 ## Multiple Values for One Query Parameter
 
-A query key can appear multiple times:
-
-```http
-GET /products?tag=python&tag=fastapi&tag=backend
-```
-
-Declare it explicitly with `Query()`:
+A query key can appear multiple times, for example `GET /products?tag=python&tag=fastapi&tag=backend`. Declare it explicitly with `Query()`:
 
 ```python
 @app.get("/products")
@@ -522,17 +375,7 @@ async def list_products(
     return {"tags": tag}
 ```
 
-Response:
-
-```json
-{
-  "tags": [
-    "python",
-    "fastapi",
-    "backend"
-  ]
-}
-```
+which returns `{"tags": ["python", "fastapi", "backend"]}`.
 
 > A list query parameter should be explicitly declared with `Query()`. Otherwise, FastAPI can interpret a complex value as request-body data.
 
@@ -550,11 +393,7 @@ async def list_products(
     }
 ```
 
-Request:
-
-```http
-GET /products?offset=40&limit=20
-```
+For example, `GET /products?offset=40&limit=20`.
 
 ---
 
@@ -578,13 +417,11 @@ from pydantic import BaseModel, Field
 
 app = FastAPI()
 
-
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=500)
     price: float = Field(gt=0)
     stock: int = Field(default=0, ge=0)
-
 
 @app.post("/products")
 async def create_product(product: ProductCreate):
@@ -596,9 +433,7 @@ Request:
 ```http
 POST /products
 Content-Type: application/json
-```
 
-```json
 {
   "name": "Mechanical Keyboard",
   "description": "Wireless keyboard with tactile switches",
@@ -633,13 +468,7 @@ async def create_product(product: ProductCreate):
 
 ## Converting the Model to a Dictionary
 
-With Pydantic v2:
-
-```python
-product_data = product.model_dump()
-```
-
-Example:
+With Pydantic v2, call `product.model_dump()` to get a dictionary:
 
 ```python
 @app.post("/products")
@@ -655,7 +484,6 @@ async def create_product(product: ProductCreate):
 class Manufacturer(BaseModel):
     name: str
     country: str
-
 
 class ProductCreate(BaseModel):
     name: str
@@ -703,7 +531,6 @@ from typing import Annotated
 
 from fastapi import Body
 
-
 @app.post("/products")
 async def create_product(
     product: Annotated[
@@ -716,14 +543,7 @@ async def create_product(
 
 ## Embedding a Single Body Model
 
-By default, this declaration:
-
-```python
-async def create_product(product: ProductCreate):
-    ...
-```
-
-expects:
+By default, `async def create_product(product: ProductCreate): ...` expects:
 
 ```json
 {
@@ -769,12 +589,10 @@ from pydantic import BaseModel, Field
 
 app = FastAPI()
 
-
 class ProductUpdate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     price: float = Field(gt=0)
     stock: int = Field(ge=0)
-
 
 @app.put("/stores/{store_id}/products/{product_id}")
 async def update_product(
@@ -796,9 +614,7 @@ Request:
 ```http
 PUT /stores/5/products/42?notify=true
 Content-Type: application/json
-```
 
-```json
 {
   "name": "Mechanical Keyboard Pro",
   "price": 109.99,
@@ -830,55 +646,15 @@ These concepts are related but not identical.
 
 ## Required
 
-The client must provide the value.
-
-```python
-@app.get("/products")
-async def list_products(category: str):
-    ...
-```
-
-`category` is required because it has no default.
+The client must provide the value. In `async def list_products(category: str): ...`, `category` is required because it has no default.
 
 ## Optional
 
-The client may omit the value.
-
-```python
-@app.get("/products")
-async def list_products(category: str | None = None):
-    ...
-```
-
-The default `None` makes the parameter optional.
+The client may omit the value. In `async def list_products(category: str | None = None): ...`, the default `None` makes the parameter optional.
 
 ## Nullable
 
-The supplied value may be `null`.
-
-For request-body fields:
-
-```python
-class ProductUpdate(BaseModel):
-    description: str | None
-```
-
-This means `description` may be a string or `null`, but it is still required unless a default is provided.
-
-```json
-{
-  "description": null
-}
-```
-
-To make it both optional and nullable:
-
-```python
-class ProductUpdate(BaseModel):
-    description: str | None = None
-```
-
-The client may now omit `description` completely.
+The supplied value may be `null`. For a request-body field declared as `description: str | None`, the value may be a string or `null` (`{"description": null}`), but it is still required unless a default is provided. Writing `description: str | None = None` makes it both optional and nullable, so the client may omit it completely.
 
 ## Comparison
 
@@ -897,11 +673,7 @@ class Example(BaseModel):
 
 ## Important Query Parameter Detail
 
-```python
-q: str | None = None
-```
-
-The default `= None` makes `q` optional. The union annotation communicates that the Python value may be `None` and improves type checking.
+In `q: str | None = None`, the default `= None` makes `q` optional. The union annotation communicates that the Python value may be `None` and improves type checking.
 
 ---
 
@@ -909,21 +681,11 @@ The default `= None` makes `q` optional. The union annotation communicates that 
 
 FastAPI helpers support validation rules and OpenAPI metadata.
 
-## String Validation
+## Validation Examples
 
 ```python
-search: Annotated[
-    str,
-    Query(
-        min_length=2,
-        max_length=50,
-    ),
-]
-```
+search: Annotated[str, Query(min_length=2, max_length=50)]
 
-## Numeric Validation
-
-```python
 product_id: Annotated[int, Path(ge=1)]
 limit: Annotated[int, Query(ge=1, le=100)] = 20
 price: Annotated[float, Body(gt=0)]
@@ -956,15 +718,7 @@ product_id: Annotated[
 ]
 ```
 
-Useful metadata includes:
-
-- `title`
-- `description`
-- `examples`
-- `deprecated`
-- `alias`
-
-FastAPI includes this information in the OpenAPI schema and generated Swagger UI.
+Useful metadata includes `title`, `description`, `examples`, `deprecated`, and `alias`. FastAPI includes this information in the OpenAPI schema and generated Swagger UI.
 
 ---
 
@@ -980,16 +734,13 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-
 class Product(BaseModel):
     name: str
     price: float
 
-
 class AuditInfo(BaseModel):
     changed_by: str
     reason: str
-
 
 @app.put("/products/{product_id}")
 async def update_product(
@@ -1024,21 +775,7 @@ FastAPI expects one JSON object whose keys match the parameter names:
 
 ## Why `Body()` Is Needed for a Scalar
 
-Without `Body()`:
-
-```python
-priority: int
-```
-
-FastAPI normally interprets a simple scalar as a query parameter.
-
-With:
-
-```python
-priority: Annotated[int, Body()]
-```
-
-FastAPI reads it from the JSON body.
+Without `Body()`, a bare `priority: int` is normally interpreted as a query parameter. Declared as `priority: Annotated[int, Body()]` instead, FastAPI reads it from the JSON body.
 
 ---
 
@@ -1054,7 +791,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 app = FastAPI()
 
-
 class ProductFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1064,7 +800,6 @@ class ProductFilters(BaseModel):
     order_by: Literal["name", "price", "created_at"] = "created_at"
     tags: list[str] = Field(default_factory=list)
 
-
 @app.get("/products")
 async def list_products(
     filters: Annotated[ProductFilters, Query()],
@@ -1072,11 +807,7 @@ async def list_products(
     return filters
 ```
 
-Example request:
-
-```http
-GET /products?limit=10&offset=20&order_by=price&tags=keyboard&tags=wireless
-```
+For example, `GET /products?limit=10&offset=20&order_by=price&tags=keyboard&tags=wireless`.
 
 Benefits:
 
@@ -1087,11 +818,7 @@ Benefits:
 - Generates structured OpenAPI documentation
 - Can reject unknown filters with `extra="forbid"`
 
-With `extra="forbid"`, this request is rejected:
-
-```http
-GET /products?limit=10&unknown=value
-```
+With `extra="forbid"`, a request such as `GET /products?limit=10&unknown=value` is rejected.
 
 > Query parameter models require a sufficiently recent FastAPI version. Keep FastAPI and Pydantic dependencies current and tested together.
 
@@ -1101,15 +828,7 @@ GET /products?limit=10&unknown=value
 
 Python variable names and public API parameter names do not always follow the same convention.
 
-For example, an external API may use:
-
-```text
-item-query
-```
-
-But this is not a valid Python variable name.
-
-Use an alias:
+For example, an external API may use `item-query` as a query key, which is not a valid Python variable name. Use an alias:
 
 ```python
 @app.get("/products")
@@ -1122,17 +841,7 @@ async def list_products(
     return {"search": search}
 ```
 
-Request:
-
-```http
-GET /products?item-query=keyboard
-```
-
-Inside Python:
-
-```python
-search == "keyboard"
-```
+A request such as `GET /products?item-query=keyboard` is then read inside Python as `search == "keyboard"`.
 
 ## When Aliases Are Useful
 
@@ -1157,13 +866,7 @@ async def get_product(
     return {"product_id": product_id}
 ```
 
-Invalid request:
-
-```http
-GET /products/0
-```
-
-Simplified response structure:
+Requesting `GET /products/0` returns a simplified error body like this:
 
 ```json
 {
@@ -1205,7 +908,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 app = FastAPI(title="Product API")
 
-
 class ProductCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -1215,7 +917,6 @@ class ProductCreate(BaseModel):
     stock: int = Field(default=0, ge=0)
     tags: list[str] = Field(default_factory=list)
 
-
 class ProductUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=500)
@@ -1223,14 +924,12 @@ class ProductUpdate(BaseModel):
     stock: int | None = Field(default=None, ge=0)
     tags: list[str] | None = None
 
-
 @app.post("/products", status_code=status.HTTP_201_CREATED)
 async def create_product(product: ProductCreate):
     return {
         "id": 101,
         **product.model_dump(),
     }
-
 
 @app.get("/products/{product_id}")
 async def get_product(
@@ -1247,7 +946,6 @@ async def get_product(
         product["stock"] = 20
 
     return product
-
 
 @app.get("/products")
 async def list_products(
@@ -1273,7 +971,6 @@ async def list_products(
         "items": [],
     }
 
-
 @app.patch("/products/{product_id}")
 async def update_product(
     product_id: Annotated[int, Path(ge=1)],
@@ -1289,29 +986,7 @@ async def update_product(
 
 ## Why `exclude_unset=True` Matters for PATCH
 
-Suppose the client sends:
-
-```json
-{
-  "price": 99.99
-}
-```
-
-This code:
-
-```python
-product.model_dump(exclude_unset=True)
-```
-
-returns only:
-
-```python
-{
-  "price": 99.99
-}
-```
-
-It does not include fields that the client did not send. This is useful for partial database updates.
+Suppose the client sends `{"price": 99.99}`. Calling `product.model_dump(exclude_unset=True)` then returns only `{"price": 99.99}` — it does not include fields the client did not send, which is useful for partial database updates.
 
 ## Endpoint Design
 
@@ -1337,17 +1012,9 @@ PATCH  /products/{product_id}
 
 ## Run the Application
 
-Assuming the file is named `main.py`:
+Assuming the file is named `main.py`: `fastapi dev main.py`
 
-```bash
-fastapi dev main.py
-```
-
-A commonly used alternative is:
-
-```bash
-uvicorn main:app --reload
-```
+A commonly used alternative is: `uvicorn main:app --reload`
 
 ## Interactive Documentation
 
@@ -1423,11 +1090,7 @@ GET /orders/1001
 GET /projects/9/tasks/15
 ```
 
-Avoid placing the primary resource identifier only in a query parameter:
-
-```http
-GET /users?id=42
-```
+Avoid placing the primary resource identifier only in a query parameter: `GET /users?id=42`
 
 The path-based version communicates resource hierarchy more clearly.
 
@@ -1490,11 +1153,7 @@ Invalid data is rejected before it reaches service or database logic.
 
 ## Prefer `Annotated`
 
-Modern FastAPI documentation recommends the `Annotated` style:
-
-```python
-limit: Annotated[int, Query(ge=1, le=100)] = 20
-```
+Modern FastAPI documentation recommends the `Annotated` style: `limit: Annotated[int, Query(ge=1, le=100)] = 20`
 
 It separates:
 
@@ -1506,22 +1165,7 @@ It separates:
 
 ## Separate Input and Output Models
 
-Real applications often use different models:
-
-```python
-class ProductCreate(BaseModel):
-    name: str
-    price: float
-
-
-class ProductResponse(BaseModel):
-    id: int
-    name: str
-    price: float
-    created_at: datetime
-```
-
-This prevents database-only or sensitive fields from accidentally becoming accepted input.
+Real applications typically use a separate request model (`ProductCreate`) and response model (`ProductResponse`) so database-only or sensitive fields cannot accidentally become accepted input. See [Response Models](response-models.md) for the full request/response model split.
 
 ## Model PATCH Payloads Carefully
 
@@ -1533,11 +1177,7 @@ class ProductPatch(BaseModel):
     price: float | None = Field(default=None, gt=0)
 ```
 
-Then:
-
-```python
-changes = payload.model_dump(exclude_unset=True)
-```
+Then: `changes = payload.model_dump(exclude_unset=True)`
 
 ## Keep Pagination Bounded
 
@@ -1571,23 +1211,11 @@ These checks belong in service, authorization, and domain logic.
 
 Renaming a Python function argument can unintentionally change the public query parameter unless an alias is used.
 
-For a stable public contract:
+For a stable public contract: `search_text: Annotated[str | None, Query(alias="search")] = None`
 
-```python
-search_text: Annotated[str | None, Query(alias="search")] = None
-```
+Internal variable: `search_text`
 
-Internal variable:
-
-```text
-search_text
-```
-
-Public query key:
-
-```text
-search
-```
+Public query key: `search`
 
 ---
 
@@ -1601,66 +1229,6 @@ search
 | Simple scalar | Query |
 | Pydantic model | Body |
 | Explicit `Path()`/`Query()`/`Body()` | Explicit source |
-
-## Compact Example
-
-```python
-from typing import Annotated
-
-from fastapi import Body, FastAPI, Path, Query
-from pydantic import BaseModel, Field
-
-app = FastAPI()
-
-
-class ProductUpdate(BaseModel):
-    name: str = Field(min_length=2)
-    price: float = Field(gt=0)
-
-
-@app.put("/products/{product_id}")
-async def update_product(
-    product_id: Annotated[int, Path(ge=1)],
-    product: Annotated[ProductUpdate, Body()],
-    notify: Annotated[bool, Query()] = False,
-):
-    return {
-        "product_id": product_id,
-        "notify": notify,
-        "product": product,
-    }
-```
-
-## Decision Guide
-
-```mermaid
-flowchart TD
-    A{"Does the value identify a resource?"} -->|Yes| B[Path parameter]
-    A -->|No| C{"Does it filter, sort, search, paginate,<br/>or control the response?"}
-    C -->|Yes| D[Query parameter]
-    C -->|No| E{"Does it represent structured data<br/>being created or changed?"}
-    E -->|Yes| F[Request body]
-```
-
-## Final Mental Model
-
-```mermaid
-flowchart LR
-    A[HTTP Request] --> B[Path]
-    A --> C[Query String]
-    A --> D[JSON Body]
-
-    B --> E[Resource identity]
-    C --> F[Filtering and controls]
-    D --> G[Structured state]
-
-    E --> H[FastAPI validation]
-    F --> H
-    G --> H
-
-    H --> I[Typed Python values]
-    I --> J[Endpoint logic]
-```
 
 ---
 

@@ -6,10 +6,40 @@ order: 1
 
 # OWASP Top 10:2025 — Practical Security Guide for Developers
 
-> **Topic:** Security  
-> **Audience:** Developers with 3+ years of experience  
-> **Purpose:** Understand the most important web application security risks and apply practical safeguards during design, development, testing, deployment, and operations.  
+> Understand the most important web application security risks and apply practical safeguards during design, development, testing, deployment, and operations.
+>
 > **Version covered:** OWASP Top 10:2025 — the current released OWASP Top Ten version as of August 2026.
+
+## In short
+
+- The Top 10 is an awareness list of risk **categories**, not a standard you can be compliant with. It tells you where defects cluster; it never tells you that you are secure.
+- **A01 Broken Access Control remains number one**, and 2025 folds Server-Side Request Forgery into it. Authentication is not authorization: every request needs a server-side check of this action against this object.
+- The 2025 shape reflects how software is *delivered*, not only written — **A02 Security Misconfiguration** moved up, **A03 Software Supply Chain Failures** now spans dependencies, repositories, CI/CD, build tools, and artifacts, and **A10 Mishandling of Exceptional Conditions** is new.
+- **A05 Injection** is a separation problem: parameter binding, argument lists, and context-aware output encoding are structural fixes; input validation and a WAF are defence in depth, never the fix.
+- **A04 Cryptographic Failures** usually starts as a data-classification failure. Decide what is sensitive in transit, at rest, and in credential storage, then use proven primitives — never a fast hash for passwords.
+- **A06 Insecure Design** cannot be caught in code review, because the code correctly implements a control that was never specified. It needs threat modelling and security acceptance criteria.
+- **A09 Logging** and **A10 Exceptional Conditions** are the categories teams skip: if an attack is never recorded or alerted on, and failures fail open, every control above becomes invisible.
+
+```mermaid
+flowchart TD
+    U[Internet User] --> E[CDN / WAF / Rate Limiting]
+    E --> G[API Gateway / Load Balancer]
+    G --> A[Authentication]
+    A --> Z[Authorization]
+    Z --> V[Input Validation]
+    V --> S[Application Services]
+    S --> D[Database / Storage]
+
+    K[Secrets and Key Management] -. protects .-> S
+    L[Central Logging and Alerting] -. observes .-> E
+    L -. observes .-> G
+    L -. observes .-> S
+    L -. observes .-> D
+```
+
+**Interview answer:** The OWASP Top 10 is an awareness document listing the ten categories of web application risk that most often lead to real breaches — a starting point for design reviews, code review, and CI/CD gates rather than a standard you pass. A01 Broken Access Control has stayed at the top because it is the one class of defect a scanner cannot find: only the application knows who is supposed to own what. The other notable shift in 2025 is that the list now reflects delivery as much as code — misconfiguration moved up, supply-chain failures expanded to cover CI/CD and artifacts, and mishandling of exceptional conditions became a category of its own.
+
+**Gotcha:** Treating it as a checklist that can be completed. The categories are ranked by how often they appear across the industry, not by what threatens *your* application, and the one that usually does — A06 Insecure Design, a control nobody specified — is by definition the one the list cannot enumerate for you.
 
 ---
 
@@ -65,11 +95,7 @@ These terms are related but different:
 | **Impact** | Damage caused by exploitation | Data leak or fraudulent transaction |
 | **Risk** | Likelihood combined with impact | High probability of account data exposure |
 
-A simple way to reason about risk is:
-
-```text
-Risk ≈ Likelihood of exploitation × Business impact
-```
+A simple way to reason about risk is: `Risk ≈ Likelihood of exploitation × Business impact`
 
 ---
 
@@ -119,23 +145,32 @@ flowchart LR
 
 ## 3.1 Defense in Depth
 
-No single control is enough. A secure application uses multiple layers so that one failure does not immediately become a full compromise.
+No single control is enough. A secure application uses multiple layers so that one failure does not immediately become a full compromise. Drawn in full, including the supply-chain, integrity, and failure-handling controls that the later categories cover, the layering looks like this:
 
 ```mermaid
 flowchart TD
-    U[Internet User] --> E[CDN / WAF / Rate Limiting]
-    E --> G[API Gateway / Load Balancer]
-    G --> A[Authentication]
-    A --> Z[Authorization]
-    Z --> V[Input Validation]
-    V --> S[Application Services]
-    S --> D[Database / Storage]
+    USER[User or External System] --> EDGE[WAF, Rate Limit, TLS]
+    EDGE --> AUTHN[Authentication]
+    AUTHN --> AUTHZ[Authorization and Tenant Isolation]
+    AUTHZ --> VALID[Validation and Safe Parsing]
+    VALID --> LOGIC[Secure Business Logic]
+    LOGIC --> DATA[(Protected Data Stores)]
+    LOGIC --> EXT[Verified External Integrations]
 
-    K[Secrets and Key Management] -. protects .-> S
-    L[Central Logging and Alerting] -. observes .-> E
-    L -. observes .-> G
-    L -. observes .-> S
-    L -. observes .-> D
+    SECRETS[Secrets and Key Management] -.-> AUTHN
+    SECRETS -.-> LOGIC
+
+    SUPPLY[Trusted Dependencies and Secure CI/CD] -. builds .-> LOGIC
+    INTEGRITY[Artifact and Message Integrity] -. verifies .-> SUPPLY
+    INTEGRITY -. verifies .-> EXT
+
+    OBS[Central Logs, Monitoring, Alerts] -. observes .-> EDGE
+    OBS -. observes .-> AUTHN
+    OBS -. observes .-> AUTHZ
+    OBS -. observes .-> LOGIC
+    OBS -. observes .-> DATA
+
+    FAIL[Timeouts, Transactions, Idempotency, Fail-Closed Behavior] -. protects .-> LOGIC
 ```
 
 Important principle:
@@ -148,148 +183,32 @@ Important principle:
 
 ## 4.1 Simple Meaning
 
-Broken access control occurs when the application does not correctly enforce what an authenticated or unauthenticated user is allowed to read, create, update, delete, or execute.
+Broken access control occurs when the application does not correctly enforce what an authenticated or unauthenticated user is allowed to read, create, update, delete, or execute. Authentication answers *who is calling*; authorization answers *may this identity do this to this object*. A valid session or JWT proves only the first, which is why this category has been consistently ranked at or near the top of the list.
 
 It commonly results in:
 
-- Reading another user's records
-- Updating resources owned by another tenant
-- Calling admin-only APIs as a normal user
-- Bypassing restrictions by changing a URL or request body
-- Accessing internal URLs through Server-Side Request Forgery
-- Performing state-changing requests without suitable CSRF protection
+- Reading another user's records, or updating resources owned by another tenant.
+- Calling admin-only APIs as a normal user, because the frontend hid the button but the backend endpoint stayed callable. Frontend visibility is not a security control.
+- Bypassing restrictions by changing a URL, a request body, or an object identifier.
+- Accessing internal URLs through Server-Side Request Forgery.
+- Performing state-changing requests without suitable CSRF protection.
 
-## 4.2 Authentication vs Authorization
+> The object-level case — the attacker who increments an ID — is treated in depth in [OWASP API Top 10](owasp-api-top-10.md), which ranks the same defect first as API1 (BOLA) and covers the tenant-scoped query that fixes it, the nested-resource variant, the 404-versus-403 enumeration trade-off, and the cross-tenant authorization test matrix.
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant A as Authentication
-    participant API as API
-    participant AZ as Authorization Policy
-    participant DB as Database
-
-    U->>A: Login credentials
-    A-->>U: Session or access token
-    U->>API: GET /orders/9001
-    API->>AZ: Can this user read order 9001?
-    AZ->>DB: Check owner, tenant, role, policy
-    DB-->>AZ: Ownership and access data
-    AZ-->>API: Allow or deny
-    API-->>U: Resource or 403 Forbidden
-```
-
-## 4.3 Common Forms
-
-### Insecure Direct Object Reference
-
-An endpoint loads a resource by ID but does not verify ownership.
-
-```http
-GET /api/invoices/4711
-Authorization: Bearer <user-token>
-```
-
-An attacker changes `4711` to another predictable ID and receives another customer's invoice.
-
-### Missing Function-Level Authorization
-
-The frontend hides an admin button, but the backend endpoint remains callable:
-
-```http
-DELETE /api/admin/users/42
-```
-
-Frontend visibility is not a security control. Every request must be authorized on the server.
-
-### Tenant Isolation Failure
-
-In a multi-tenant application, the query filters by object ID but not tenant ID.
-
-```python
-# Insecure: object may belong to another tenant
-invoice = Invoice.objects.get(id=invoice_id)
-```
-
-```python
-# Better: scope every query to the authenticated tenant
-invoice = Invoice.objects.get(
-    id=invoice_id,
-    tenant_id=request.user.tenant_id,
-)
-```
-
-## 4.4 Secure API Example
-
-```python
-from fastapi import Depends, HTTPException, status
-
-
-def get_invoice(
-    invoice_id: str,
-    current_user: User = Depends(get_current_user),
-    repository: InvoiceRepository = Depends(get_invoice_repository),
-) -> InvoiceResponse:
-    invoice = repository.get_by_id(invoice_id)
-
-    if invoice is None:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    # Server-side object-level authorization
-    if invoice.tenant_id != current_user.tenant_id:
-        # Returning 404 can reduce resource-enumeration information.
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    if not current_user.can("invoice:read"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permission",
-        )
-
-    return InvoiceResponse.model_validate(invoice)
-```
-
-## 4.5 Prevention
+## 4.2 Prevention
 
 - Deny access by default.
 - Enforce authorization in backend code, not only in the UI.
 - Centralize authorization policies where practical.
-- Scope database queries by owner, organization, or tenant.
+- Scope database queries by owner, organization, or tenant, so authorization is part of the query rather than a check bolted on after the fetch.
+- Enforce multi-tenant isolation close to the data-access layer, not in each view.
 - Validate permissions for every HTTP method, not only `GET`.
 - Use least privilege for users, services, databases, storage, and cloud roles.
-- Protect state-changing browser requests against CSRF when using cookie-based authentication.
+- Protect state-changing browser requests against CSRF when using cookie-based authentication; see [SQL Injection, XSS and CSRF](sql-injection-xss-csrf.md).
 - Restrict CORS to trusted origins rather than using unrestricted settings.
 - For server-side URL fetching, use destination allowlists, network segmentation, URL validation, redirect controls, and metadata-service protections.
 - Add rate limits where automated enumeration or abuse is possible.
 - Test horizontal access, vertical access, and tenant boundaries.
-
-## 4.6 Practical Verification
-
-For each protected endpoint, test at least:
-
-```mermaid
-flowchart TD
-    A[Unauthenticated user] --> B[Authenticated user<br/>without permission]
-    B --> C[Authenticated user<br/>with permission]
-    C --> D[User from another tenant]
-    D --> E[Administrator or service account]
-```
-
-A useful authorization test matrix is:
-
-| Resource | Action | Anonymous | Standard User | Owner | Admin | Other Tenant |
-|---|---|---:|---:|---:|---:|---:|
-| Invoice | Read | Deny | Deny | Allow | Allow | Deny |
-| Invoice | Update | Deny | Deny | Allow | Allow | Deny |
-| User | Delete | Deny | Deny | Deny | Allow | Deny |
-
-## 4.7 What to Remember
-
-- Authentication does not automatically provide authorization.
-- Object ownership must be checked on every request.
-- Hiding UI controls does not protect backend endpoints.
-- Multi-tenant isolation should be enforced close to the data-access layer.
-- A valid JWT proves token claims; it does not prove the requested action is permitted.
 
 ---
 
@@ -479,11 +398,7 @@ sqlalchemy==2.x.y
 
 However, pinning alone is not enough. A pinned vulnerable package stays vulnerable until the team detects and updates it.
 
-Use both:
-
-```text
-Version control + vulnerability monitoring + controlled updates
-```
+Use both: `Version control + vulnerability monitoring + controlled updates`
 
 ## 6.5 Software Bill of Materials
 
@@ -722,36 +637,9 @@ flowchart LR
 
 The key problem is mixing **data** with **instructions**.
 
-## 8.3 SQL Injection
+> SQL injection and cross-site scripting are the two injection types you are most likely to be asked about, and both are covered in full — attack types, output contexts, allow-listed identifiers, and framework-specific secure examples — in [SQL Injection, XSS and CSRF](sql-injection-xss-csrf.md). This section keeps only what that note does not cover: operating-system command injection, and how the input-handling controls relate to one another.
 
-### Insecure
-
-```python
-query = f"SELECT * FROM users WHERE email = '{email}'"
-cursor.execute(query)
-```
-
-An attacker may submit input that changes the query structure.
-
-### Secure
-
-```python
-query = "SELECT * FROM users WHERE email = %s"
-cursor.execute(query, [email])
-```
-
-The database receives the SQL structure and input data separately.
-
-### ORM Example
-
-```python
-# Normal ORM filtering is parameterized
-user = User.objects.filter(email=email).first()
-```
-
-An ORM reduces risk but does not make every query safe. Raw SQL, dynamic field names, unsafe expressions, and string-built filters still require careful handling.
-
-## 8.4 Command Injection
+## 8.3 Command Injection
 
 ### Insecure
 
@@ -782,24 +670,7 @@ Additional safeguards:
 - Run converters with restricted permissions.
 - Apply resource and time limits.
 
-## 8.5 Cross-Site Scripting
-
-Cross-site scripting happens when attacker-controlled content is rendered as executable browser code.
-
-```html
-<!-- Risky when user_bio is inserted as raw HTML -->
-<div>{{ user_bio | safe }}</div>
-```
-
-Preferred controls:
-
-- Use template auto-escaping.
-- Apply context-aware output encoding.
-- Sanitize HTML only when rich HTML input is a real requirement.
-- Avoid unsafe DOM APIs such as direct `innerHTML` assignment.
-- Use Content Security Policy as defense in depth.
-
-## 8.6 Validation vs Sanitization vs Encoding
+## 8.4 Validation vs Sanitization vs Encoding
 
 | Control | Purpose | Example |
 |---|---|---|
@@ -811,44 +682,20 @@ Preferred controls:
 
 Validation alone does not replace parameterized queries or output encoding.
 
-## 8.7 Prevention
+## 8.5 Prevention
 
-- Use parameterized queries and safe ORM APIs.
-- Avoid dynamic query construction from user input.
-- Use allowlists for dynamic identifiers such as sort fields.
-- Avoid shell commands when a library API exists.
-- When commands are necessary, pass arguments as a list and disable shell parsing.
+- Use parameterized queries and safe ORM APIs; use allowlists for dynamic identifiers such as sort fields, which cannot be bound as parameters.
+- Avoid shell commands when a library API exists. When commands are necessary, pass arguments as a list and disable shell parsing.
 - Use template auto-escaping and context-aware output encoding.
-- Validate input structure, size, type, range, and allowed values.
+- Validate input structure, size, type, range, and allowed values — necessary, but not a universal injection fix on its own.
 - Use least-privilege database and operating-system accounts.
 - Add SAST, DAST, IAST, dependency scanning, and fuzz testing where appropriate.
 - Write tests using malicious payloads across query, body, header, cookie, and file inputs.
 
-## 8.8 Safe Dynamic Sorting Example
-
-```python
-ALLOWED_SORT_FIELDS = {
-    "created_at": Invoice.created_at,
-    "amount": Invoice.amount,
-    "status": Invoice.status,
-}
-
-sort_column = ALLOWED_SORT_FIELDS.get(requested_sort)
-if sort_column is None:
-    raise ValueError("Unsupported sort field")
-
-query = query.order_by(sort_column)
-```
-
-Do not pass user-provided column names directly into raw SQL.
-
-## 8.9 What to Remember
+## 8.6 What to Remember
 
 - Injection is fundamentally a separation problem between data and instructions.
-- Parameterization is the primary SQL-injection control.
-- Escaping must match the output context.
-- Input validation is important but not a universal injection fix.
-- ORMs and frameworks help only when their safe APIs are used correctly.
+- ORMs and frameworks help only when their safe APIs are used correctly; raw SQL, dynamic field names, and string-built filters remain your responsibility.
 
 ---
 
@@ -1043,11 +890,7 @@ For JWT validation, verify at least:
 
 ## 10.5 Login Rate Limiting
 
-Rate limiting should consider multiple dimensions:
-
-```text
-Source IP + Account + Device/Session + Time Window + Risk Signals
-```
+Rate limiting should consider multiple dimensions: `Source IP + Account + Device/Session + Time Window + Risk Signals`
 
 Only limiting by IP may affect users behind shared networks and may be bypassed through distributed attacks. Only limiting by account may allow denial-of-service through account lockouts. Use balanced throttling, progressive delays, risk detection, and alerts.
 
@@ -1122,7 +965,6 @@ A webhook endpoint should not trust a request merely because it reaches the corr
 import hashlib
 import hmac
 
-
 def verify_webhook(raw_body: bytes, supplied_signature: str, secret: bytes) -> bool:
     expected = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, supplied_signature)
@@ -1166,7 +1008,6 @@ A secure schema should explicitly allow user-editable fields:
 
 ```python
 from pydantic import BaseModel, EmailStr, ConfigDict
-
 
 class UserProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1220,11 +1061,7 @@ flowchart LR
 
 Logging and alerting failures occur when attacks cannot be detected or investigated because important events are missing, unclear, unprotected, unmonitored, or never escalated.
 
-Logging is not valuable merely because log files exist. The system must support:
-
-```text
-Record → Centralize → Protect → Correlate → Detect → Alert → Respond
-```
+Logging is not valuable merely because log files exist. The system must support: `Record → Centralize → Protect → Correlate → Detect → Alert → Respond`
 
 ## 12.2 Security Observability Flow
 
@@ -1409,7 +1246,6 @@ Without transaction handling, step two may fail after step one succeeds.
 ```python
 from django.db import transaction
 
-
 @transaction.atomic
 def transfer_funds(sender, receiver, amount):
     debit(sender, amount)
@@ -1442,7 +1278,6 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
-
 
 @app.exception_handler(Exception)
 async def unexpected_error_handler(request: Request, exc: Exception):
@@ -1722,7 +1557,18 @@ Continuously:
 
 # 17. Practical Pull Request Checklist
 
-Use this compact checklist during normal development.
+Use this compact checklist during normal development. Every line below is one of ten principles applied to a diff:
+
+1. **Deny by default.** Grant only explicitly required access.
+2. **Use least privilege.** Apply it to users, services, databases, CI/CD, and cloud roles.
+3. **Never trust client input.** The browser and mobile client are outside the trust boundary.
+4. **Separate data from instructions.** Use parameterized APIs and safe output handling.
+5. **Prefer secure defaults.** Make insecure states difficult to deploy.
+6. **Use proven security libraries.** Avoid custom authentication or cryptography.
+7. **Design for failure.** Timeouts, retries, rollback, idempotency, quotas, and reconciliation are security controls.
+8. **Verify integrity.** Do not trust artifacts, updates, webhooks, or serialized state without verification.
+9. **Log for response, not only debugging.** Record important events and connect them to actionable alerts.
+10. **Use defense in depth.** Assume individual controls may fail.
 
 ## Access and Identity
 
@@ -1782,64 +1628,7 @@ Use this compact checklist during normal development.
 
 ---
 
-# 18. Key Concepts to Remember
-
-## 18.1 Core Principles
-
-1. **Deny by default.** Grant only explicitly required access.
-2. **Use least privilege.** Apply it to users, services, databases, CI/CD, and cloud roles.
-3. **Never trust client input.** The browser and mobile client are outside the trust boundary.
-4. **Separate data from instructions.** Use parameterized APIs and safe output handling.
-5. **Prefer secure defaults.** Make insecure states difficult to deploy.
-6. **Use proven security libraries.** Avoid custom authentication or cryptography.
-7. **Design for failure.** Timeouts, retries, rollback, idempotency, quotas, and reconciliation are security controls.
-8. **Verify integrity.** Do not trust artifacts, updates, webhooks, or serialized state without verification.
-9. **Log for response, not only debugging.** Record important events and connect them to actionable alerts.
-10. **Use defense in depth.** Assume individual controls may fail.
-
-## 18.2 Compact Mental Model
-
-| Concern | Question to ask |
-|---|---|
-| Identity | Who is making the request? |
-| Authorization | Are they allowed to do this action on this resource? |
-| Validation | Is the input structurally and semantically acceptable? |
-| Integrity | Can this code or data be trusted? |
-| Confidentiality | Is sensitive data protected? |
-| Resilience | Does the system fail safely? |
-| Visibility | Can attacks be detected and investigated? |
-
-## 18.3 Final Architecture View
-
-```mermaid
-flowchart TD
-    USER[User or External System] --> EDGE[WAF, Rate Limit, TLS]
-    EDGE --> AUTHN[Authentication]
-    AUTHN --> AUTHZ[Authorization and Tenant Isolation]
-    AUTHZ --> VALID[Validation and Safe Parsing]
-    VALID --> LOGIC[Secure Business Logic]
-    LOGIC --> DATA[(Protected Data Stores)]
-    LOGIC --> EXT[Verified External Integrations]
-
-    SECRETS[Secrets and Key Management] -.-> AUTHN
-    SECRETS -.-> LOGIC
-
-    SUPPLY[Trusted Dependencies and Secure CI/CD] -. builds .-> LOGIC
-    INTEGRITY[Artifact and Message Integrity] -. verifies .-> SUPPLY
-    INTEGRITY -. verifies .-> EXT
-
-    OBS[Central Logs, Monitoring, Alerts] -. observes .-> EDGE
-    OBS -. observes .-> AUTHN
-    OBS -. observes .-> AUTHZ
-    OBS -. observes .-> LOGIC
-    OBS -. observes .-> DATA
-
-    FAIL[Timeouts, Transactions, Idempotency, Fail-Closed Behavior] -. protects .-> LOGIC
-```
-
----
-
-# 19. Official References
+# 18. Official References
 
 This guide is based primarily on the official OWASP Top 10:2025 documentation.
 

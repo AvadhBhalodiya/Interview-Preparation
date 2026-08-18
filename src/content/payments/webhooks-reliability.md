@@ -2,14 +2,44 @@
 title: "Payment Webhooks"
 group: "Integration"
 order: 4
+updated: "August 2026"
 ---
 
 # Payment Webhooks and Reliable Delivery
 
-> **Category:** Payments & Fintech  
-> **Level:** Intermediate developer (3+ years)  
-> **Last reviewed:** August 2026  
-> **Goal:** Understand how to receive, verify, process, retry, and reconcile payment webhooks without creating duplicate charges, duplicate fulfilment, or incorrect payment states.
+> Understand how to receive, verify, process, retry, and reconcile payment webhooks without creating duplicate charges, duplicate fulfilment, or incorrect payment states.
+
+## In short
+
+- A webhook is an **untrusted, repeatable, asynchronous message** — expect duplicate, late, out-of-order, and manually redelivered events.
+- The authenticated server-to-server webhook, not the browser redirect, should drive the final payment state.
+- Verify the signature against the **exact raw body** before parsing, then persist to a durable inbox or queue *before* returning `2xx`.
+- Deduplicate at two levels: the provider event ID in the inbox, and a business key such as `payment_id + action` for fulfilment, ledger posting, and wallet credit.
+- Never use "last webhook wins" — an explicit state machine of legal transitions stops an old event moving a payment backwards.
+- Retries need backoff, jitter, an attempt limit, and a DLQ with controlled replay; a poison event must not block every later event.
+- Webhooks are not the only safety net: reconciliation against the provider API and settlement reports repairs events that never arrived.
+
+```mermaid
+flowchart LR
+    PSP[Payment Provider] -->|HTTPS webhook| GW[API Gateway / Load Balancer]
+    GW --> WH[Webhook Receiver]
+    WH --> V[Verify signature and basic schema]
+    V --> IN[(Webhook Inbox Table)]
+    IN --> Q[Queue / Event Bus]
+    Q --> WK[Webhook Worker]
+    WK --> TX[Transactional Business Logic]
+    TX --> PAY[(Payments DB)]
+    TX --> LED[(Double-Entry Ledger)]
+    TX --> OUT[(Outbox Table)]
+    OUT --> N[Email / Fulfilment / Internal Events]
+    WK --> DLQ[Dead-Letter Queue]
+    PAY --> REC[Reconciliation Job]
+    REC --> PSPAPI[Provider API / Reports]
+```
+
+**Interview answer:** Treat the endpoint as receiving an at-least-once, untrusted message. The receiver reads the raw bytes, verifies the provider signature, inserts the event into an inbox table with a unique constraint on `(provider, account, event_id)`, and returns `2xx` as soon as that commit lands — nothing slow happens inside the request. A worker then applies the event asynchronously in one transaction: validate amount, currency, and tenant, apply a legal state transition, write the ledger posting under a unique external reference, and mark the event processed.
+
+**Gotcha:** Treating HTTP `200` as proof the business action completed. Delivery and processing are separate facts — if you do the fulfilment work inside the request and the provider's timeout fires first, it retries and you process the same event twice.
 
 ---
 
@@ -86,18 +116,7 @@ A production webhook handler must assume that an event can be:
 - Redelivered manually from the provider dashboard.
 - Valid but no longer relevant because your system already has a newer state.
 
-Therefore, a reliable webhook consumer should provide:
-
-```text
-Authentication
-    + Durable receipt
-    + Idempotent processing
-    + Transaction safety
-    + Retry handling
-    + Ordering protection
-    + Monitoring
-    + Reconciliation
-```
+A reliable webhook consumer therefore needs all of: authentication, durable receipt, idempotent processing, transaction safety, retry handling, ordering protection, monitoring, and reconciliation.
 
 ## Delivery is not processing
 
@@ -185,25 +204,7 @@ The same event causes fulfilment, wallet credit, commission posting, or email de
 
 # 4. Recommended Production Architecture
 
-A strong default architecture is:
-
-```mermaid
-flowchart LR
-    PSP[Payment Provider] -->|HTTPS webhook| GW[API Gateway / Load Balancer]
-    GW --> WH[Webhook Receiver]
-    WH --> V[Verify signature and basic schema]
-    V --> IN[(Webhook Inbox Table)]
-    IN --> Q[Queue / Event Bus]
-    Q --> WK[Webhook Worker]
-    WK --> TX[Transactional Business Logic]
-    TX --> PAY[(Payments DB)]
-    TX --> LED[(Double-Entry Ledger)]
-    TX --> OUT[(Outbox Table)]
-    OUT --> N[Email / Fulfilment / Internal Events]
-    WK --> DLQ[Dead-Letter Queue]
-    PAY --> REC[Reconciliation Job]
-    REC --> PSPAPI[Provider API / Reports]
-```
+The strong default is the receiver → inbox → queue → worker pipeline diagrammed at the top of this note, with a DLQ on the worker and a reconciliation job that checks the provider independently of delivery.
 
 ## Responsibilities of each component
 
@@ -289,75 +290,22 @@ stateDiagram-v2
 
 A public webhook URL can receive requests from anyone. Never trust an event only because it contains a familiar JSON structure.
 
-## 6.1 Verify the provider signature
+## 6.1 Signature verification, in brief
 
-Most payment providers sign the request using one of these approaches:
+> The provider signs the delivery, most often as an HMAC over the raw request
+> body. Verify the exact bytes before any JSON middleware re-serialises them,
+> compare digests in constant time, and reject signed timestamps that fall
+> outside a tolerance window.
+> Full detail: [Webhooks](../api-design/webhooks.md)
 
-- HMAC with a shared webhook secret.
-- Asymmetric signature with a public certificate or key.
-- A provider API endpoint that verifies the received signature.
+Three points matter specifically for payments:
 
-A generic HMAC pattern looks like this:
+- Prefer the official provider SDK. Providers add timestamps, versioned signatures, special encodings, or certificate-validation rules that a hand-written HMAC helper does not cover.
+- Stripe explicitly requires the unmodified raw request body for signature verification.[^stripe-signature]
+- Timestamp tolerance is not deduplication. A valid duplicate can still be redelivered inside the allowed window, so event-ID deduplication remains necessary.
+- IP allowlisting never replaces signature verification: provider infrastructure changes, proxies obscure source addresses, and a trusted network does not prove message integrity.
 
-```python
-import hashlib
-import hmac
-
-
-def verify_hmac_sha256(raw_body: bytes, received_signature: str, secret: str) -> bool:
-    expected = hmac.new(
-        key=secret.encode("utf-8"),
-        msg=raw_body,
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(expected, received_signature)
-```
-
-Always prefer the official provider SDK when it offers signature verification. Providers may include timestamps, versioned signatures, special encodings, or certificate validation rules that a basic helper does not cover.
-
-## 6.2 Use the raw request body
-
-Signature verification usually applies to the exact bytes sent by the provider.
-
-This can fail if middleware:
-
-- Parses JSON and serializes it again.
-- Changes whitespace.
-- Reorders fields.
-- Changes character encoding.
-- Converts numeric values.
-
-Correct sequence:
-
-```mermaid
-flowchart TD
-    RAW[Read raw bytes] --> VERIFY[Verify signature]
-    VERIFY --> PARSE[Parse JSON]
-```
-
-Incorrect sequence:
-
-```mermaid
-flowchart TD
-    PARSE[Parse JSON] --> RESERIAL[Re-serialize body]
-    RESERIAL --> VERIFY[Verify signature]
-```
-
-Stripe explicitly requires the unmodified raw request body for signature verification.[^stripe-signature]
-
-## 6.3 Protect against replay attacks
-
-Where the provider includes a signed timestamp:
-
-- Verify that the timestamp is inside an acceptable tolerance.
-- Deduplicate using the event ID.
-- Store when the event was first received.
-- Reject signatures outside the allowed window unless performing a controlled replay.
-
-Do not rely only on timestamp checking. A valid duplicate can still be redelivered within the allowed window, so event-ID deduplication remains necessary.
-
-## 6.4 Secret management
+## 6.2 Secret management
 
 Webhook secrets should be:
 
@@ -370,7 +318,7 @@ Webhook secrets should be:
 
 During rotation, keep both the old and new secret available temporarily because providers may retry an older event that was originally signed with the old secret. Razorpay specifically notes that retries of older requests may require the previous secret.[^razorpay-validation]
 
-## 6.5 Additional security controls
+## 6.3 Additional security controls
 
 Use these as defence in depth:
 
@@ -385,9 +333,7 @@ Use these as defence in depth:
 - Encrypted payload storage.
 - Redaction of cardholder and personal data in logs.
 
-IP allowlisting should not replace signature verification. Provider infrastructure can change, proxies can complicate source addresses, and trusted networks do not prove message integrity.
-
-## 6.6 Never trust payload fields for authorization
+## 6.4 Never trust payload fields for authorization
 
 A webhook saying `payment.succeeded` should not be allowed to update any arbitrary order ID supplied in metadata.
 
@@ -407,47 +353,23 @@ For high-value operations, fetch the latest payment object from the provider API
 
 Idempotency means that processing the same logical operation multiple times produces the same final result as processing it once.
 
+This section covers **inbound** events only. The outbound side — the client-supplied idempotency key, its storage schema, request fingerprinting, and concurrent-request handling — is covered in [Idempotency Keys](idempotency-keys.md) and [HTTP Idempotency](../api-design/idempotency-http-methods.md).
+
 Payment webhook handling requires **two levels of idempotency**.
 
 ## 7.1 Event-level deduplication
 
 Prevent the same provider event from being processed twice.
 
-A typical key is:
+A typical key is `(provider, merchant_account, event_id)` — for example `("stripe", "acct_live_001", "evt_123")`.
 
-```text
-(provider, merchant_account, event_id)
-```
-
-Example:
-
-```text
-("stripe", "acct_live_001", "evt_123")
-```
-
-The database must enforce uniqueness. A prior `SELECT` followed by an `INSERT` is not enough because two concurrent requests can both pass the `SELECT`.
-
-Use:
-
-```sql
-UNIQUE (provider, provider_account_id, provider_event_id)
-```
-
-Then insert with conflict handling.
+The database must enforce uniqueness with `UNIQUE (provider, provider_account_id, provider_event_id)`, then insert with conflict handling. A prior `SELECT` followed by an `INSERT` is not enough, because two concurrent requests can both pass the `SELECT`.
 
 ## 7.2 Business-level idempotency
 
 Different webhook events can represent the same business outcome.
 
-For example:
-
-```text
-payment_intent.succeeded
-charge.succeeded
-checkout_session.completed
-```
-
-Depending on the provider integration, multiple event types may refer to the same successful payment.
+Depending on the provider integration, `payment_intent.succeeded`, `charge.succeeded`, and `checkout_session.completed` may all refer to the same successful payment.
 
 Even if all event IDs are unique, your system must not:
 
@@ -457,13 +379,7 @@ Even if all event IDs are unique, your system must not:
 - Release inventory multiple times.
 - Send the same fulfilment command multiple times.
 
-A business-level key might be:
-
-```text
-payment_id + action
-```
-
-Examples:
+A business-level key might be `payment_id + action`, for example:
 
 ```text
 pay_789:mark_paid
@@ -507,32 +423,13 @@ WHERE id = :payment_id
 
 The number of affected rows tells you whether a transition occurred.
 
-For financial postings, use a unique business reference:
-
-```sql
-UNIQUE (ledger_transaction_type, external_reference)
-```
-
-Example:
-
-```text
-ledger_transaction_type = "payment_capture"
-external_reference       = "provider_payment:pay_789"
-```
+For financial postings, use a unique business reference — `UNIQUE (ledger_transaction_type, external_reference)`, for example `ledger_transaction_type = "payment_capture"` with `external_reference = "provider_payment:pay_789"`.
 
 ## 7.5 Idempotency does not mean “ignore every repeated notification”
 
 A duplicate delivery of the same event can be ignored after successful processing.
 
-However, a new event for the same payment may contain a valid state change. For example:
-
-```text
-payment.succeeded
-refund.succeeded
-dispute.created
-```
-
-Deduplicate by event ID, but evaluate every distinct event according to its business meaning.
+However, a new event for the same payment may carry a valid state change — `payment.succeeded`, then `refund.succeeded`, then `dispute.created` are three distinct facts. Deduplicate by event ID, but evaluate every distinct event according to its business meaning.
 
 ---
 
@@ -562,14 +459,7 @@ Providers impose response deadlines. If your handler is slow, the provider may a
 
 Adyen advises acknowledging with a successful response within 10 seconds and recommends processing after acceptance.[^adyen-handle] Razorpay documents a 5-second timeout scenario that can cause redelivery.[^razorpay-best-practices]
 
-A sensible internal target is much lower than the provider limit, for example:
-
-```text
-P95 acknowledgement latency < 500 ms
-P99 acknowledgement latency < 1 second
-```
-
-These are engineering targets, not universal provider requirements.
+A sensible internal target is much lower than the provider limit — for example P95 acknowledgement latency under 500 ms and P99 under 1 second. These are engineering targets, not universal provider requirements.
 
 ## 8.3 Response-code guidance
 
@@ -626,36 +516,9 @@ Do not automatically retry forever for:
 
 These require investigation or correction.
 
-## 9.2 Exponential backoff with jitter
+## 9.2 Backoff between attempts
 
-A common delay formula is:
-
-```text
-base_delay × 2^attempt + random_jitter
-```
-
-Example schedule:
-
-```text
-Attempt 1: 5 seconds
-Attempt 2: 15 seconds
-Attempt 3: 45 seconds
-Attempt 4: 2 minutes
-Attempt 5: 5 minutes
-Attempt 6: 15 minutes
-Attempt 7: 1 hour
-```
-
-Jitter prevents many failed events from retrying at exactly the same moment.
-
-```python
-import random
-
-
-def retry_delay(attempt: int, base: float = 2.0, cap: float = 3600.0) -> float:
-    exponential = min(cap, base * (2 ** attempt))
-    return random.uniform(0, exponential)
-```
+Space retries with capped exponential backoff plus random jitter, so a dependency outage does not turn every failed event into a synchronised retry storm. A typical webhook worker schedule runs from about 5 seconds out to an hour over seven attempts — full detail in [Retries and Dead-Letter Queues](../task-processing/retries-dead-letter-queues.md).
 
 ## 9.3 Dead-letter queue
 
@@ -709,27 +572,7 @@ A later-delivered event is not necessarily a newer event.
 
 ## 10.1 Avoid simple “last webhook wins” logic
 
-This is unsafe:
-
-```python
-payment.status = event["status"]
-```
-
-Suppose events are generated in this order:
-
-```text
-10:00:00 payment.processing
-10:00:02 payment.succeeded
-```
-
-But delivered in this order:
-
-```text
-10:00:03 payment.succeeded
-10:00:05 payment.processing
-```
-
-Blindly applying the second delivery would incorrectly move a successful payment back to processing.
+Assigning `payment.status = event["status"]` directly is unsafe. Suppose the provider generates `payment.processing` at 10:00:00 and `payment.succeeded` at 10:00:02, but delivers the success event at 10:00:03 and the processing event at 10:00:05. Blindly applying the second delivery would move a successful payment back to processing.
 
 ## 10.2 Use an explicit state machine
 
@@ -890,14 +733,7 @@ CREATE TABLE payments (
 
 Use integer minor units rather than floating-point amounts.
 
-Examples:
-
-```text
-₹499.00  → 49900 paise
-$19.95   → 1995 cents
-```
-
-Be aware that not every currency uses two decimal places. Use currency metadata instead of hard-coding `× 100` globally.
+For example `₹499.00` is stored as `49900` paise and `$19.95` as `1995` cents. Be aware that not every currency uses two decimal places. Use currency metadata instead of hard-coding `× 100` globally.
 
 ## 11.3 Business action table
 
@@ -954,12 +790,7 @@ COMMIT
 
 A separate publisher sends the outbox event to Kafka, SQS, RabbitMQ, SNS, or another service.
 
-This avoids the dual-write problem:
-
-```text
-Database commit succeeds
-Message publish fails
-```
+This avoids the dual-write problem where the database commit succeeds but the message publish fails.
 
 ---
 
@@ -985,14 +816,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-
 @dataclass(frozen=True)
 class WebhookEnvelope:
     event_id: str
     event_type: str
     created_at: datetime | None
     payload: dict[str, Any]
-
 
 def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(
@@ -1001,7 +830,6 @@ def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
-
 
 def parse_envelope(payload: dict[str, Any]) -> WebhookEnvelope:
     event_id = payload.get("id")
@@ -1024,7 +852,6 @@ def parse_envelope(payload: dict[str, Any]) -> WebhookEnvelope:
         created_at=created_at,
         payload=payload,
     )
-
 
 @router.post("/provider-a", status_code=status.HTTP_202_ACCEPTED)
 async def receive_provider_a_webhook(
@@ -1141,24 +968,7 @@ Do not return success before the inbox transaction commits.
 
 ### Queue publication can create another dual-write problem
 
-This sequence is unsafe:
-
-```text
-Insert inbox row
-Publish queue message
-Commit database
-```
-
-The queue message may be processed before the database commit.
-
-This sequence is also incomplete:
-
-```text
-Commit inbox row
-Publish queue message
-```
-
-The process may crash between commit and publish.
+Inserting the inbox row, publishing the queue message, then committing is unsafe: the queue message may be processed before the database commit. Committing the inbox row and then publishing is also incomplete: the process may crash between commit and publish.
 
 Reliable options include:
 
@@ -1182,12 +992,10 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
 RETRYABLE_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
 )
-
 
 async def claim_next_event(db: AsyncSession, worker_id: str) -> dict[str, Any] | None:
     result = await db.execute(
@@ -1216,7 +1024,6 @@ async def claim_next_event(db: AsyncSession, worker_id: str) -> dict[str, Any] |
     row = result.mappings().one_or_none()
     await db.commit()
     return dict(row) if row else None
-
 
 async def process_event(db: AsyncSession, event: dict[str, Any]) -> None:
     event_type = event["event_type"]
@@ -1414,11 +1221,7 @@ If zero rows are updated, another worker changed the payment. Reload and re-eval
 
 ## 14.4 Queue partitioning
 
-Use a partition or message-group key such as:
-
-```text
-provider_account_id + provider_payment_id
-```
+Use a partition or message-group key such as `provider_account_id + provider_payment_id`.
 
 This can preserve processing order for one payment while allowing unrelated payments to process concurrently.
 
@@ -1662,11 +1465,7 @@ Currency: INR
 Initial status: pending
 ```
 
-Your backend creates the provider payment with an API idempotency key such as:
-
-```text
-merchant_01:order:ord_1001:create_payment:v1
-```
+Your backend creates the provider payment with an API idempotency key such as `merchant_01:order:ord_1001:create_payment:v1` (see [Idempotency Keys](idempotency-keys.md)).
 
 API idempotency protects the outbound create-payment request. Webhook idempotency protects inbound event processing. These are related but separate mechanisms.
 
@@ -1724,23 +1523,11 @@ The inbox unique constraint detects the event. Your endpoint returns success wit
 
 ## 18.6 Related but distinct event
 
-The provider later sends:
-
-```text
-evt_7002: charge.succeeded
-```
-
-This is a new event ID, but it may describe the same payment success. Event-level deduplication accepts it as new. Business-level idempotency prevents a second ledger capture or fulfilment.
+The provider later sends `evt_7002: charge.succeeded`. This is a new event ID, but it may describe the same payment success. Event-level deduplication accepts it as new. Business-level idempotency prevents a second ledger capture or fulfilment.
 
 ## 18.7 Refund
 
-Later:
-
-```text
-evt_8001: refund.succeeded for 50000 paise
-```
-
-The worker:
+Later, `evt_8001: refund.succeeded` arrives for 50000 paise. The worker:
 
 - Confirms the refund belongs to `psp_pay_9001`.
 - Ensures cumulative refund does not exceed captured amount.
@@ -1815,31 +1602,7 @@ It does not erase the historical fact that the original payment succeeded.
 
 ---
 
-# 20. Key Takeaways
-
-1. **A webhook is an asynchronous notification, not a one-time function call.** Expect duplicates, delays, retries, and reordering.
-
-2. **Verify the signature using the exact raw request body.** Never trust JSON fields without authenticating the request.
-
-3. **Persist or durably queue before returning `2xx`.** Fast acknowledgement and durable acceptance are more important than completing all business work inside the HTTP request.
-
-4. **Use two levels of idempotency.** Deduplicate provider events and independently protect business actions such as fulfilment, ledger posting, wallet credit, and refund processing.
-
-5. **Use explicit state transitions.** Never let an old or out-of-order event move a payment backwards.
-
-6. **Keep financial updates transactional.** Payment state, ledger entries, processed-event status, and outbox messages should commit together where possible.
-
-7. **Retries need backoff, jitter, limits, and a DLQ.** A failed event must remain visible and replayable.
-
-8. **Ordering mechanisms are helpful but insufficient.** Database constraints and business state validation remain the final protection.
-
-9. **Monitoring is part of reliability.** Track signature failures, duplicate rates, backlog age, retry counts, DLQ depth, and reconciliation mismatches.
-
-10. **Webhooks are not the only safety net.** Financial systems also need reconciliation against provider APIs, balance reports, settlement files, and ledger records.
-
----
-
-# 21. References
+# 20. References
 
 The provider-specific details in this guide were checked against official documentation in August 2026.
 

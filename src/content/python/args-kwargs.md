@@ -1,12 +1,39 @@
 ---
 title: "*args and **kwargs"
-group: "Python Functions"
+group: "Functions & Scope"
 order: 1
 ---
 
 # Python `*args` and `**kwargs`
 
 > `*args` collects extra positional arguments into a tuple, while `**kwargs` collects extra keyword arguments into a dictionary. The same `*` and `**` symbols are also used to unpack values when calling a function.
+
+## In short
+
+- In a definition, `*args` packs extra positional arguments into a tuple and `**kwargs` packs extra keyword arguments into a dictionary; with nothing extra passed they are `()` and `{}`.
+- In a call the same symbols do the opposite: `*` expands an iterable into positional arguments and `**` expands a mapping with string keys into keyword arguments.
+- Parameter order is fixed: positional-only before `/`, positional-or-keyword, defaults, `*args`, keyword-only, `**kwargs` last — `def invalid(**kwargs, *args)` is a `SyntaxError`.
+- Anything named after `*args` or after a bare `*` is keyword-only; anything before `/` is positional-only.
+- `def wrapper(*args, **kwargs)` calling `target(*args, **kwargs)` is how decorators, `super().__init__()`, middleware, and adapters forward a signature they do not know.
+- Type each collected value, not the container: `*values: int`, `**labels: str`, `ParamSpec` for decorators, `TypedDict` with `Unpack` when the keyword names are known.
+- Keep the stable contract explicit and use `*args` or `**kwargs` only for genuinely variable input, forwarding, metadata, or extension points.
+
+```mermaid
+flowchart TD
+    subgraph LIST["List/Tuple unpacking"]
+        V["values = [10, 20, 30]"] --> STAR["*values"]
+        STAR --> FCALL["function(10, 20, 30)"]
+    end
+
+    subgraph DICT[Dictionary unpacking]
+        O["options = {'timeout': 10, 'debug': True}"] --> DSTAR["**options"]
+        DSTAR --> DCALL["function(timeout=10, debug=True)"]
+    end
+```
+
+**Interview answer:** `*args` collects any extra positional arguments into a tuple and `**kwargs` collects any extra keyword arguments into a dictionary, so one function can accept a variable number of values. At the call site the same `*` and `**` mean the opposite — they expand an iterable and a mapping back into separate arguments — which is why a wrapper can accept `*args, **kwargs` and forward them to a function whose signature it does not know. Python recognizes the `*` and `**`, not the names: `args` and `kwargs` are only conventions.
+
+**Gotcha:** Supplying the same parameter twice, once positionally and once through an unpacked dictionary, as in `greet("Avadh", **{"name": "Avadh"})`, binds `name` twice and raises `TypeError`.
 
 ---
 
@@ -19,11 +46,7 @@ def add(a, b):
     return a + b
 ```
 
-This works only when the caller provides exactly two required values:
-
-```python
-add(10, 20)
-```
+This works only when the caller provides exactly two required values, as in `add(10, 20)`.
 
 Sometimes a function needs to accept a flexible number of values.
 
@@ -35,46 +58,13 @@ Examples:
 - A class constructor may forward arguments to its parent class.
 - A reusable helper may support future options without changing every caller.
 
-Python provides:
-
-```python
-*args
-```
-
-for additional **positional arguments**, and:
-
-```python
-**kwargs
-```
-
-for additional **keyword arguments**.
+Python provides `*args` for additional **positional arguments** and `**kwargs` for additional **keyword arguments**.
 
 ---
 
 # 2. Arguments vs Parameters
 
-These terms are related but not identical.
-
-## Parameters
-
-Parameters are the names written in the function definition:
-
-```python
-def greet(name, message):
-    ...
-```
-
-Here, `name` and `message` are parameters.
-
-## Arguments
-
-Arguments are the actual values supplied during the function call:
-
-```python
-greet("Avadh", "Welcome")
-```
-
-Here, `"Avadh"` and `"Welcome"` are arguments.
+These terms are related but not identical. Parameters are the names written in the function definition; arguments are the actual values supplied during the function call.
 
 ```text
 Function definition                       Function call
@@ -93,9 +83,7 @@ def greet(name, message):                 greet("Avadh", "Welcome")
 def show_values(*args):
     print(args)
     print(type(args))
-```
 
-```python
 show_values(10, 20, 30)
 ```
 
@@ -129,22 +117,10 @@ def calculate_total(*args):
 
     return total
 
-
-print(calculate_total(10, 20, 30))
+print(calculate_total(10, 20, 30))   # 60
 ```
 
-Output:
-
-```text
-60
-```
-
-A shorter implementation can use `sum()`:
-
-```python
-def calculate_total(*args):
-    return sum(args)
-```
+A shorter implementation is `return sum(args)`.
 
 ## Required parameters before `*args`
 
@@ -154,7 +130,6 @@ Normal parameters may appear before `*args`:
 def create_message(prefix, *messages):
     return [f"{prefix}: {message}" for message in messages]
 
-
 result = create_message(
     "INFO",
     "Server started",
@@ -162,48 +137,15 @@ result = create_message(
 )
 ```
 
-The values are assigned as follows:
-
-```text
-prefix   = "INFO"
-messages = ("Server started", "Database connected")
-```
+Here `prefix` receives `"INFO"` and `messages` receives `("Server started", "Database connected")`.
 
 ## Zero extra positional arguments
 
-`*args` does not require the caller to pass extra values:
-
-```python
-def inspect_args(*args):
-    return args
-
-
-print(inspect_args())
-```
-
-Output:
-
-```text
-()
-```
-
-Python creates an empty tuple when no extra positional arguments are provided.
+`*args` does not require the caller to pass extra values: given `def inspect_args(*args): return args`, the call `inspect_args()` returns `()`. Python creates an empty tuple when no extra positional arguments are provided.
 
 > `args` is only a conventional name. Python recognizes the `*`, not the word `args`.
 
-This is valid, but less readable:
-
-```python
-def calculate(*numbers):
-    return sum(numbers)
-```
-
-Use meaningful names when they improve clarity:
-
-```python
-def publish_events(*events):
-    ...
-```
+Use meaningful names when they improve clarity, such as `def calculate(*numbers)` or `def publish_events(*events)`.
 
 ---
 
@@ -215,9 +157,7 @@ def publish_events(*events):
 def show_options(**kwargs):
     print(kwargs)
     print(type(kwargs))
-```
 
-```python
 show_options(timeout=30, retries=3, debug=True)
 ```
 
@@ -253,16 +193,9 @@ def connect(**kwargs):
     timeout = kwargs.get("timeout", 10)
 
     return f"Connecting to {host}:{port}, timeout={timeout}s"
-```
 
-```python
 print(connect(host="db.example.com", timeout=20))
-```
-
-Output:
-
-```text
-Connecting to db.example.com:5432, timeout=20s
+# Connecting to db.example.com:5432, timeout=20s
 ```
 
 ## Required parameters before `**kwargs`
@@ -273,9 +206,7 @@ def create_user(username, **profile):
         "username": username,
         "profile": profile,
     }
-```
 
-```python
 user = create_user(
     "avadh",
     email="avadh@example.com",
@@ -283,43 +214,15 @@ user = create_user(
 )
 ```
 
-The values are assigned as follows:
-
-```text
-username = "avadh"
-
-profile = {
-    "email": "avadh@example.com",
-    "active": True,
-}
-```
+Here `username` receives `"avadh"` and `profile` receives `{"email": "avadh@example.com", "active": True}`.
 
 ## Zero keyword arguments
 
-```python
-def inspect_kwargs(**kwargs):
-    return kwargs
-
-
-print(inspect_kwargs())
-```
-
-Output:
-
-```text
-{}
-```
-
-Python creates a new empty dictionary when no additional keyword arguments are provided.
+Given `def inspect_kwargs(**kwargs): return kwargs`, the call `inspect_kwargs()` returns `{}`. Python creates a new empty dictionary when no additional keyword arguments are provided.
 
 > `kwargs` is also only a naming convention. The `**` syntax gives it special meaning.
 
-A domain-specific name may be clearer:
-
-```python
-def build_query(**filters):
-    ...
-```
+A domain-specific name may be clearer, such as `def build_query(**filters)`.
 
 ---
 
@@ -331,9 +234,7 @@ A function can accept both variable positional and variable keyword arguments:
 def process_request(*args, **kwargs):
     print("Positional:", args)
     print("Keyword:", kwargs)
-```
 
-```python
 process_request(
     "create",
     101,
@@ -362,36 +263,7 @@ process_request("create", 101, urgent=True, source="api")
                                   }
 ```
 
-## With normal parameters
-
-```python
-def execute(command, *values, dry_run=False, **options):
-    print("command:", command)
-    print("values:", values)
-    print("dry_run:", dry_run)
-    print("options:", options)
-```
-
-```python
-execute(
-    "deploy",
-    "api",
-    "worker",
-    dry_run=True,
-    region="ap-south-1",
-)
-```
-
-Binding result:
-
-```text
-command = "deploy"
-values  = ("api", "worker")
-dry_run = True
-options = {"region": "ap-south-1"}
-```
-
-Notice that `dry_run` appears after `*values`. It is therefore keyword-only.
+Normal parameters may sit either side of the collectors, as in `def execute(command, *values, dry_run=False, **options)`. Notice that `dry_run` appears after `*values`, so it is keyword-only. Section 9 walks through how Python binds a call to a signature of that shape.
 
 ---
 
@@ -423,35 +295,16 @@ In a call, `*` and `**` expand collections into separate arguments.
 def add(a, b, c):
     return a + b + c
 
-
 numbers = [10, 20, 30]
 
-result = add(*numbers)
-print(result)
-```
-
-This call:
-
-```python
-add(*numbers)
-```
-
-is equivalent to:
-
-```python
-add(10, 20, 30)
+result = add(*numbers)   # same as add(10, 20, 30)
 ```
 
 ### Unpacking a dictionary with `**`
 
 ```python
 def create_account(username, email, active):
-    return {
-        "username": username,
-        "email": email,
-        "active": active,
-    }
-
+    return {"username": username, "email": email, "active": active}
 
 account_data = {
     "username": "avadh",
@@ -462,36 +315,7 @@ account_data = {
 account = create_account(**account_data)
 ```
 
-This call:
-
-```python
-create_account(**account_data)
-```
-
-is equivalent to:
-
-```python
-create_account(
-    username="avadh",
-    email="avadh@example.com",
-    active=True,
-)
-```
-
-## Unpacking diagram
-
-```mermaid
-flowchart TD
-    subgraph LIST["List/Tuple unpacking"]
-        V["values = [10, 20, 30]"] --> STAR["*values"]
-        STAR --> FCALL["function(10, 20, 30)"]
-    end
-
-    subgraph DICT[Dictionary unpacking]
-        O["options = {'timeout': 10, 'debug': True}"] --> DSTAR["**options"]
-        DSTAR --> DCALL["function(timeout=10, debug=True)"]
-    end
-```
+That call is equivalent to `create_account(username="avadh", email="avadh@example.com", active=True)`.
 
 ## Multiple unpackings
 
@@ -501,19 +325,13 @@ Modern Python allows multiple iterable and mapping unpackings in a call:
 def display(a, b, c, d, *, enabled, retries):
     print(a, b, c, d, enabled, retries)
 
-
 first = [1, 2]
 second = [3, 4]
 
 base_options = {"enabled": True}
 retry_options = {"retries": 3}
 
-display(
-    *first,
-    *second,
-    **base_options,
-    **retry_options,
-)
+display(*first, *second, **base_options, **retry_options)
 ```
 
 ---
@@ -549,33 +367,11 @@ def example(
 | 5 | Keyword-only parameters | After `*args` |
 | 6 | `**kwargs` | — |
 
-A commonly used form is:
-
-```python
-def function(required, optional=None, *args, flag=False, **kwargs):
-    ...
-```
+A commonly used form is `def function(required, optional=None, *args, flag=False, **kwargs):`.
 
 ## Why `*args` must appear before `**kwargs`
 
-`*args` collects remaining positional values.
-
-`**kwargs` collects remaining keyword values.
-
-Therefore, this is valid:
-
-```python
-def valid(*args, **kwargs):
-    ...
-```
-
-This is invalid syntax:
-
-```python
-# SyntaxError
-def invalid(**kwargs, *args):
-    ...
-```
+`*args` collects the remaining positional values and `**kwargs` collects the remaining keyword values, so `def valid(*args, **kwargs):` is correct while `def invalid(**kwargs, *args):` is a `SyntaxError`.
 
 ---
 
@@ -592,17 +388,7 @@ def divide(value, divisor, /):
     return value / divisor
 ```
 
-Valid:
-
-```python
-divide(10, 2)
-```
-
-Invalid:
-
-```python
-divide(value=10, divisor=2)
-```
+`divide(10, 2)` is valid; `divide(value=10, divisor=2)` raises `TypeError`.
 
 Positional-only parameters are useful when:
 
@@ -620,41 +406,9 @@ def fetch_data(url, *, timeout=10, verify_ssl=True):
     ...
 ```
 
-Valid:
+`fetch_data("https://api.example.com", timeout=30, verify_ssl=False)` is valid; `fetch_data("https://api.example.com", 30, False)` raises `TypeError`.
 
-```python
-fetch_data(
-    "https://api.example.com",
-    timeout=30,
-    verify_ssl=False,
-)
-```
-
-Invalid:
-
-```python
-fetch_data("https://api.example.com", 30, False)
-```
-
-Keyword-only parameters improve readability for flags and configuration values.
-
-Compare:
-
-```python
-send_email("user@example.com", True, False)
-```
-
-with:
-
-```python
-send_email(
-    "user@example.com",
-    track_delivery=True,
-    high_priority=False,
-)
-```
-
-The second call explains itself.
+Keyword-only parameters improve readability for flags and configuration values: `send_email("user@example.com", track_delivery=True, high_priority=False)` explains itself, while `send_email("user@example.com", True, False)` does not.
 
 ## `*args` also creates keyword-only parameters
 
@@ -663,9 +417,7 @@ Any named parameters after `*args` are keyword-only:
 ```python
 def export(*records, format="json", compress=False):
     ...
-```
 
-```python
 export(record_1, record_2, format="csv", compress=True)
 ```
 
@@ -706,11 +458,7 @@ def configure(
     **settings,
 ):
     return service, environment, features, debug, settings
-```
 
-Call:
-
-```python
 result = configure(
     "payment-api",
     "production",
@@ -735,17 +483,7 @@ flowchart LR
     A7["timeout=30"] --> SETTINGS
 ```
 
-Result:
-
-```python
-(
-    "payment-api",
-    "production",
-    ("metrics", "tracing"),
-    True,
-    {"workers": 4, "timeout": 30},
-)
-```
+The result is `("payment-api", "production", ("metrics", "tracing"), True, {"workers": 4, "timeout": 30})`.
 
 ## Binding rule summary
 
@@ -768,7 +506,6 @@ Python conceptually performs these steps:
 from datetime import datetime
 from typing import Any
 
-
 def log_event(event: str, *details: Any, **context: Any) -> None:
     timestamp = datetime.now().isoformat(timespec="seconds")
 
@@ -779,9 +516,7 @@ def log_event(event: str, *details: Any, **context: Any) -> None:
 
     for key, value in context.items():
         print(f"  {key}={value}")
-```
 
-```python
 log_event(
     "PAYMENT_FAILED",
     "Card declined",
@@ -791,56 +526,14 @@ log_event(
 )
 ```
 
-This pattern is useful when a function has:
-
-- A stable required part.
-- Optional positional details.
-- Optional named context.
+This pattern is useful when a function has a stable required part, optional positional details, and optional named context.
 
 ---
 
-## 10.2 Building database-style filters
+## 10.2 Configuration override pattern
 
 ```python
 from typing import Any
-
-
-def build_filters(**filters: Any) -> list[str]:
-    conditions = []
-
-    for field, value in filters.items():
-        conditions.append(f"{field} = {value!r}")
-
-    return conditions
-```
-
-```python
-conditions = build_filters(
-    status="active",
-    country="India",
-    verified=True,
-)
-```
-
-Result:
-
-```python
-[
-    "status = 'active'",
-    "country = 'India'",
-    "verified = True",
-]
-```
-
-In production code, use parameterized queries or an ORM rather than manually inserting values into SQL.
-
----
-
-## 10.3 Configuration override pattern
-
-```python
-from typing import Any
-
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "timeout": 10,
@@ -848,113 +541,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "verify_ssl": True,
 }
 
-
 def create_config(**overrides: Any) -> dict[str, Any]:
     return {
         **DEFAULT_CONFIG,
         **overrides,
     }
-```
 
-```python
 config = create_config(timeout=30, retries=5)
-```
-
-Result:
-
-```python
-{
-    "timeout": 30,
-    "retries": 5,
-    "verify_ssl": True,
-}
+# {"timeout": 30, "retries": 5, "verify_ssl": True}
 ```
 
 Later dictionary values override earlier values when dictionaries are merged in a dictionary display.
-
----
-
-## 10.4 Calling a service method with structured data
-
-```python
-from typing import Any
-
-
-def create_order(
-    customer_id: int,
-    product_ids: list[int],
-    *,
-    priority: bool = False,
-    **metadata: Any,
-) -> dict[str, Any]:
-    return {
-        "customer_id": customer_id,
-        "product_ids": product_ids,
-        "priority": priority,
-        "metadata": metadata,
-    }
-```
-
-```python
-order = create_order(
-    101,
-    [501, 502],
-    priority=True,
-    source="mobile",
-    campaign="summer-sale",
-)
-```
-
-Here:
-
-- Core business inputs are explicit.
-- A meaningful flag is keyword-only.
-- Open-ended metadata is collected separately.
-
----
-
-## 10.5 Adapter around a third-party client
-
-```python
-from typing import Any
-
-
-class ApiClient:
-    def request(
-        self,
-        method: str,
-        path: str,
-        **options: Any,
-    ) -> dict[str, Any]:
-        return {
-            "method": method,
-            "path": path,
-            "options": options,
-        }
-
-
-def fetch_user(
-    client: ApiClient,
-    user_id: int,
-    **request_options: Any,
-) -> dict[str, Any]:
-    return client.request(
-        "GET",
-        f"/users/{user_id}",
-        **request_options,
-    )
-```
-
-```python
-response = fetch_user(
-    ApiClient(),
-    101,
-    timeout=20,
-    headers={"X-Request-ID": "req-123"},
-)
-```
-
-This is argument forwarding: one function receives options and passes them to another function.
 
 ---
 
@@ -966,15 +563,12 @@ A forwarding function accepts arguments without needing to know their complete s
 def target(a, b, *, enabled=False):
     return a, b, enabled
 
-
 def wrapper(*args, **kwargs):
     print("Before target")
     result = target(*args, **kwargs)
     print("After target")
     return result
-```
 
-```python
 wrapper(10, 20, enabled=True)
 ```
 
@@ -986,41 +580,9 @@ flowchart TD
     WRAP -->|"target(*args, **kwargs)"| TARGET["target(10, 20, enabled=True)"]
 ```
 
-This pattern appears frequently in:
+This pattern appears frequently in decorators, middleware, framework hooks, proxy objects, adapter layers, inheritance, and test helpers.
 
-- Decorators
-- Middleware
-- Framework hooks
-- Proxy objects
-- Adapter layers
-- Inheritance
-- Test helpers
-
-## Prefer explicit parameters for stable business APIs
-
-This is flexible:
-
-```python
-def create_payment(**kwargs):
-    ...
-```
-
-But the caller cannot easily discover which values are required.
-
-This is clearer:
-
-```python
-def create_payment(
-    amount: float,
-    currency: str,
-    *,
-    customer_id: int,
-    description: str | None = None,
-):
-    ...
-```
-
-Use `**kwargs` mainly for genuinely open-ended options, metadata, compatibility layers, or forwarding.
+`def create_payment(**kwargs)` is flexible, but the caller cannot discover which values are required; `def create_payment(amount: float, currency: str, *, customer_id: int, description: str | None = None)` is clearer. Use `**kwargs` mainly for genuinely open-ended options, metadata, compatibility layers, or forwarding.
 
 ---
 
@@ -1031,7 +593,6 @@ Decorators commonly use `*args` and `**kwargs` because the wrapped function may 
 ```python
 from functools import wraps
 from typing import Any, Callable
-
 
 def audit(func: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(func)
@@ -1054,29 +615,13 @@ def calculate_price(
 ) -> float:
     subtotal = amount + (amount * tax_rate)
     return subtotal - discount
-```
 
-```python
-price = calculate_price(
-    100,
-    0.18,
-    discount=10,
-)
+price = calculate_price(100, 0.18, discount=10)
 ```
 
 ## Why `functools.wraps` matters
 
-Without `@wraps(func)`, metadata such as the original function name and documentation may be hidden by the wrapper.
-
-```python
-print(calculate_price.__name__)
-```
-
-With `@wraps(func)`, the result is:
-
-```text
-calculate_price
-```
+Without `@wraps(func)`, metadata such as the original function name and documentation is hidden by the wrapper. With it, `calculate_price.__name__` still prints `calculate_price` rather than `wrapper`.
 
 ## Stronger typing with `ParamSpec`
 
@@ -1089,10 +634,8 @@ from collections.abc import Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
 
-
 P = ParamSpec("P")
 R = TypeVar("R")
-
 
 def audit(func: Callable[P, R]) -> Callable[P, R]:
     @wraps(func)
@@ -1114,12 +657,10 @@ def audit(func: Callable[P, R]) -> Callable[P, R]:
 ```python
 from typing import Any
 
-
 class BaseService:
     def __init__(self, name: str, *, enabled: bool = True) -> None:
         self.name = name
         self.enabled = enabled
-
 
 class CachedService(BaseService):
     def __init__(
@@ -1130,9 +671,7 @@ class CachedService(BaseService):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.cache_ttl = cache_ttl
-```
 
-```python
 service = CachedService(
     "product-service",
     enabled=True,
@@ -1160,49 +699,19 @@ For public classes with stable constructors, explicit parameters usually provide
 
 # 14. Type Hints
 
-## Homogeneous `*args`
+## The annotation applies to each value
 
-This function accepts any number of integers:
+The annotation on a collector describes one collected value, not the container:
 
 ```python
 def total(*values: int) -> int:
     return sum(values)
-```
 
-The annotation applies to each individual positional value, not to the tuple as a whole.
-
-Inside the function, type checkers understand approximately:
-
-```python
-values: tuple[int, ...]
-```
-
-## Homogeneous `**kwargs`
-
-```python
 def create_labels(**labels: str) -> dict[str, str]:
     return labels
 ```
 
-Each keyword value must be a string.
-
-Inside the function, type checkers understand approximately:
-
-```python
-labels: dict[str, str]
-```
-
-## Mixed values with `Any`
-
-```python
-from typing import Any
-
-
-def collect_metadata(**metadata: Any) -> dict[str, Any]:
-    return metadata
-```
-
-Use `Any` only when values are intentionally unrestricted.
+`total` accepts any number of integers and `create_labels` requires every keyword value to be a string. Inside the functions, type checkers understand approximately `values: tuple[int, ...]` and `labels: dict[str, str]`. Use `**metadata: Any` only when values are intentionally unrestricted.
 
 ## Structured keyword arguments with `TypedDict` and `Unpack`
 
@@ -1211,12 +720,10 @@ When the accepted keyword names are known, a typed structure is more precise:
 ```python
 from typing import NotRequired, TypedDict, Unpack
 
-
 class RequestOptions(TypedDict):
     timeout: NotRequired[int]
     retries: NotRequired[int]
     verify_ssl: NotRequired[bool]
-
 
 def request(
     url: str,
@@ -1241,72 +748,15 @@ This pattern provides the runtime flexibility of `**kwargs` with stronger editor
 
 # 15. Important Runtime Behaviors
 
-## 15.1 Duplicate argument values raise `TypeError`
+Three call-time rules cover most errors:
 
-```python
-def greet(name):
-    return f"Hello, {name}"
+- A parameter that receives a value twice raises `TypeError`. For `def greet(name)` and `data = {"name": "Avadh"}`, the call `greet("Avadh", **data)` binds `name` once positionally and once through `**data`. The same conflict occurs when two dictionary unpackings in one call supply the same keyword.
+- `*` requires an iterable during a call: `print(*[1, 2, 3])` works, `print(*10)` fails because an integer cannot be expanded into separate positional arguments.
+- `**` requires a mapping with string keys during a call: for `def display(name)`, `display(**{"name": "Avadh"})` works and `display(**{1: "Avadh"})` fails, because keyword names must be strings.
 
+Keyword arguments collected into `**kwargs` also preserve the order in which they were provided, so `inspect_order(first=1, second=2, third=3)` on `def inspect_order(**kwargs): return list(kwargs)` returns `['first', 'second', 'third']`. Do not use keyword order to represent essential business meaning when explicit data structures would be clearer.
 
-data = {"name": "Avadh"}
-
-greet("Avadh", **data)
-```
-
-The parameter `name` receives a value twice:
-
-- Once positionally
-- Once through `**data`
-
-Python raises `TypeError`.
-
-A similar conflict occurs with multiple dictionary unpackings in a function call when the same keyword is supplied more than once.
-
----
-
-## 15.2 `*` requires an iterable during a call
-
-Valid:
-
-```python
-values = [1, 2, 3]
-print(*values)
-```
-
-Invalid:
-
-```python
-value = 10
-print(*value)
-```
-
-An integer is not iterable, so it cannot be expanded into separate positional arguments.
-
----
-
-## 15.3 `**` requires a mapping with string keys during a call
-
-Valid:
-
-```python
-def display(name):
-    print(name)
-
-
-display(**{"name": "Avadh"})
-```
-
-Invalid:
-
-```python
-display(**{1: "Avadh"})
-```
-
-Keyword names must be strings.
-
----
-
-## 15.4 `args` and `kwargs` containers are newly created
+## 15.1 `args` and `kwargs` containers are newly created
 
 For each function call:
 
@@ -1319,58 +769,25 @@ However, the objects inside them are still references to the original objects.
 def update_first(*args):
     args[0].append("updated")
 
-
 items = ["original"]
 
 update_first(items)
 
-print(items)
-```
-
-Output:
-
-```text
-['original', 'updated']
+print(items)   # ['original', 'updated']
 ```
 
 The `args` tuple cannot be structurally modified, but a mutable object referenced inside it can still be modified.
 
 ---
 
-## 15.5 Keyword order is preserved
+## 15.2 `kwargs.get()` and `kwargs.pop()` have different purposes
 
-Keyword arguments collected into `**kwargs` preserve the order in which they were provided:
-
-```python
-def inspect_order(**kwargs):
-    return list(kwargs)
-
-
-print(inspect_order(first=1, second=2, third=3))
-```
-
-Output:
-
-```text
-['first', 'second', 'third']
-```
-
-Do not use keyword order to represent essential business meaning when explicit data structures would be clearer.
-
----
-
-## 15.6 `kwargs.get()` and `kwargs.pop()` have different purposes
-
-Use `get()` when you want to read an optional value without removing it:
+Use `get()` when you want to read an optional value without removing it, and `pop()` when the current layer consumes an option and should not forward it:
 
 ```python
-timeout = kwargs.get("timeout", 10)
-```
+timeout = kwargs.get("timeout", 10)    # stays in kwargs
 
-Use `pop()` when the current layer consumes an option and should not forward it:
-
-```python
-timeout = kwargs.pop("timeout", 10)
+timeout = kwargs.pop("timeout", 10)    # removed before forwarding
 result = another_function(**kwargs)
 ```
 
@@ -1380,7 +797,7 @@ This is common in wrappers and inheritance.
 
 # 16. Best Practices
 
-## 16.1 Keep required business inputs explicit
+## 16.1 Keep the contract explicit
 
 Prefer:
 
@@ -1395,46 +812,18 @@ def create_invoice(
     ...
 ```
 
-over:
+over `def create_invoice(**kwargs)`: the explicit version communicates the contract. Make flags keyword-only for the same reason — `def delete_user(user_id: int, *, hard_delete: bool = False)` forces the call to read `delete_user(101, hard_delete=True)` instead of `delete_user(101, True)`.
 
-```python
-def create_invoice(**kwargs):
-    ...
-```
+A fixed signature is also easier to read, test, document, autocomplete, refactor, validate, and type-check. Use `*args` and `**kwargs` when the function genuinely needs extensibility or forwarding.
 
-The explicit version clearly communicates the contract.
-
-## 16.2 Use keyword-only parameters for flags
-
-Prefer:
-
-```python
-def delete_user(user_id: int, *, hard_delete: bool = False):
-    ...
-```
-
-Call:
-
-```python
-delete_user(101, hard_delete=True)
-```
-
-This is clearer than:
-
-```python
-delete_user(101, True)
-```
-
-## 16.3 Validate open-ended keyword options
+## 16.2 Validate open-ended options and forward deliberately
 
 When only a limited set of keys is supported, validate them:
 
 ```python
 from typing import Any
 
-
 ALLOWED_OPTIONS = {"timeout", "retries", "verify_ssl"}
-
 
 def request(url: str, **options: Any) -> None:
     unknown = options.keys() - ALLOWED_OPTIONS
@@ -1446,27 +835,9 @@ def request(url: str, **options: Any) -> None:
     print(url, options)
 ```
 
-Without validation, a typo can be silently collected:
+Without validation, a typo such as `request("https://api.example.com", timout=30)` is silently collected.
 
-```python
-request(
-    "https://api.example.com",
-    timout=30,  # Typo: timeout
-)
-```
-
-## 16.4 Avoid forwarding everything automatically
-
-Forward only options that the downstream function should receive.
-
-Less controlled:
-
-```python
-def wrapper(**kwargs):
-    return target(**kwargs)
-```
-
-More controlled:
+Forward only options that the downstream function should receive. `def wrapper(**kwargs): return target(**kwargs)` passes everything through blindly; consuming what this layer owns first is more controlled:
 
 ```python
 def wrapper(**kwargs):
@@ -1476,13 +847,12 @@ def wrapper(**kwargs):
     return target(timeout=timeout, **kwargs)
 ```
 
-## 16.5 Document accepted keyword options
+## 16.3 Document accepted keyword options
 
 When `**kwargs` is part of a public API, explain supported keys in the docstring:
 
 ```python
 from typing import Any
-
 
 def export_records(*records: dict[str, Any], **options: Any) -> bytes:
     """Export records.
@@ -1495,38 +865,7 @@ def export_records(*records: dict[str, Any], **options: Any) -> bytes:
     ...
 ```
 
-## 16.6 Use meaningful collector names when appropriate
-
-These are often clearer than generic names:
-
-```python
-def search(*terms, **filters):
-    ...
-```
-
-```python
-def publish(*events, **metadata):
-    ...
-```
-
-```python
-def configure(*plugins, **settings):
-    ...
-```
-
-## 16.7 Do not use flexibility without a reason
-
-A fixed signature is usually easier to:
-
-- Read
-- Test
-- Document
-- Autocomplete
-- Refactor
-- Validate
-- Type-check
-
-Use `*args` and `**kwargs` when the function genuinely needs extensibility or forwarding.
+Domain-specific collector names are often clearer than the generic ones: `def search(*terms, **filters)`, `def publish(*events, **metadata)`, `def configure(*plugins, **settings)`.
 
 ---
 
@@ -1551,11 +890,7 @@ Use `*args` and `**kwargs` when the function genuinely needs extensibility or fo
 | Function call | Unpack an iterable | Unpack a mapping |
 | Collection display | Unpack iterable items | Unpack mapping entries into a dictionary |
 
----
-
-# 18. Mental Model and Summary
-
-Use this simple mental model:
+## Packing and unpacking at a glance
 
 ```text
 FUNCTION DEFINITION: collect
@@ -1565,7 +900,6 @@ def function(*args, **kwargs):
              │       └── collect keywords into a dictionary
              └────────── collect positions into a tuple
 
-
 FUNCTION CALL: expand
 
 function(*values, **options)
@@ -1573,43 +907,6 @@ function(*values, **options)
           │          └── expand mapping into keyword arguments
           └───────────── expand iterable into positional arguments
 ```
-
-## Final recap
-
-```python
-def example(required, *args, option=False, **kwargs):
-    ...
-```
-
-- `required` receives the first required argument.
-- `args` receives remaining positional arguments as a tuple.
-- `option` is keyword-only because it follows `*args`.
-- `kwargs` receives remaining keyword arguments as a dictionary.
-
-Call:
-
-```python
-example(
-    "main",
-    10,
-    20,
-    option=True,
-    source="api",
-)
-```
-
-Binding:
-
-```text
-required = "main"
-args     = (10, 20)
-option   = True
-kwargs   = {"source": "api"}
-```
-
-The most important design principle is:
-
-> Use explicit parameters for the stable contract of a function, and use `*args` or `**kwargs` only for genuinely variable inputs, forwarding, metadata, or extension points.
 
 ---
 

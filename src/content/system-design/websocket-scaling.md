@@ -2,38 +2,48 @@
 title: "Scaling WebSockets"
 group: "Classic Designs"
 order: 13
+updated: "August 3, 2026"
 ---
 
 # Scaling WebSockets
 
-> **Category:** System Design  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Goal:** Understand how to design, scale, deploy, and operate a production WebSocket system  
-> **Last reviewed:** August 3, 2026
+> Understand how to design, scale, deploy, and operate a production WebSocket system
+
+## In short
+
+- A connection is long-lived state held in one process, so a node's ceiling is memory, file descriptors and outbound buffers — not requests per second, and CPU alone is an incomplete scaling signal.
+- Every client is pinned to the node that accepted it, so an event produced anywhere else needs a broker or a connection registry to reach that node.
+- Cross-node routing comes in three shapes: broadcast to every node and filter locally, look up user → node and target it, or partition rooms and topics across nodes.
+- Presence is heartbeats plus TTL leases, so it is eventually consistent — useful for the UI, never the truth an irreversible business operation depends on.
+- Treat disconnection as normal: heartbeat inside the proxy idle timeout, reconnect with exponential backoff and jitter, resume from the last processed sequence.
+- Bound every outbound queue and choose a drop policy per event class — coalesce replaceable updates, persist important ones — or one slow client grows memory until the node dies.
+- Scale-in must drain and scale-out is slow, because existing connections never move: a new node only receives new connections, so capacity is provisioned ahead of demand.
+
+```mermaid
+flowchart TB
+    Clients[WebSocket Clients] --> LB[Load Balancer / Gateway]
+    LB --> W1[WebSocket Node 1]
+    LB --> W2[WebSocket Node 2]
+    LB --> W3[WebSocket Node 3]
+    W1 <--> Broker[(Pub/Sub or Message Broker)]
+    W2 <--> Broker
+    W3 <--> Broker
+    W1 <--> State[(Shared State / Presence Store)]
+    W2 <--> State
+    W3 <--> State
+    Services[Application Services] --> Broker
+    Services --> DB[(Primary Database)]
+```
+
+**Interview answer:** The hard part is not the protocol, it is that a connection is long-lived state owned by exactly one node, so an event produced anywhere else must be routed to that specific node. Put the nodes behind a least-connections load balancer, keep only ephemeral socket and room membership in node memory, and do cross-node delivery through a broker — broadcast-and-filter while the cluster is small, then a user-to-node registry or partitioned topics as it grows. Everything durable — message history, replay, presence leases with TTLs — lives outside the nodes, so a crash or a deployment is just a reconnect and resume for the client.
+
+**Gotcha:** Sizing and autoscaling the tier like an HTTP service. A mostly idle WebSocket tier can sit at its memory and file-descriptor limit with CPU near zero, and because established connections never migrate, a node added after the pressure arrives absorbs only new connections while the loaded nodes stay loaded.
 
 ---
 
 # 1. What WebSockets Solve
 
-Traditional HTTP is mainly request-response based:
-
-```text
-Client ──request──> Server
-Client <─response── Server
-```
-
-The server normally sends data only after the client requests it. This works well for normal APIs, but it is inefficient for applications that need continuous real-time updates.
-
-Examples include:
-
-- Chat and messaging
-- Live notifications
-- Trading price updates
-- Multiplayer games
-- Collaborative document editing
-- Delivery or vehicle tracking
-- Live dashboards
-- Customer-support agent consoles
+Traditional HTTP is mainly request-response based: the client sends a request and the server returns a response, so the server normally sends data only after the client asks for it. This works well for normal APIs, but it is inefficient for applications that need continuous real-time updates — chat and messaging, live notifications, trading price updates, multiplayer games, collaborative document editing, delivery or vehicle tracking, live dashboards, and customer-support agent consoles.
 
 A WebSocket creates a long-lived, full-duplex connection:
 
@@ -131,18 +141,7 @@ A WebSocket connection is:
 
 Normal HTTP servers can be almost completely stateless. Any request can usually be handled by any healthy server.
 
-WebSocket servers hold active network connections in memory:
-
-```text
-Server A
-├── Connection: user-101
-├── Connection: user-205
-└── Connection: user-311
-
-Server B
-├── Connection: user-410
-└── Connection: user-512
-```
+WebSocket servers hold active network connections in memory: Server A may hold the connections for `user-101`, `user-205` and `user-311` while Server B holds `user-410` and `user-512`.
 
 If an event for `user-512` arrives at Server A, Server A cannot directly write to that user's socket because the connection exists on Server B.
 
@@ -180,17 +179,7 @@ Example requirements for a chat or notification system:
 
 ## 4.2 Non-functional requirements
 
-- Maximum concurrent connections
-- Peak new connections per second
-- Average messages per second
-- Peak messages per second
-- Average message size
-- Broadcast fan-out size
-- Delivery guarantee
-- Ordering requirement
-- Maximum acceptable end-to-end latency
-- Availability target
-- Regions and data-residency constraints
+Pin down the numbers before drawing anything: maximum concurrent connections, peak new connections per second, average and peak messages per second, average message size, and broadcast fan-out size. Then pin down the qualities that constrain the design — the delivery guarantee, the ordering requirement, the maximum acceptable end-to-end latency, the availability target, and any regional or data-residency constraints.
 
 ## 4.3 Core estimation formulas
 
@@ -265,18 +254,7 @@ Do not assume a universal memory value. Measure your runtime, framework, TLS ter
 
 ## 4.4 Capacity dimensions that matter
 
-A WebSocket server can hit a limit in any of these dimensions:
-
-- File descriptors
-- Memory per connection
-- CPU for serialization, encryption, compression, and application logic
-- Network bandwidth
-- Event-loop delay or worker-thread saturation
-- Outbound socket-buffer growth
-- Broker subscription or fan-out throughput
-- New handshakes per second
-
-CPU utilization alone is therefore an incomplete scaling signal.
+A WebSocket server can hit its limit in any one of several dimensions: file descriptors, memory per connection, CPU for serialization, encryption, compression and application logic, network bandwidth, event-loop delay or worker-thread saturation, outbound socket-buffer growth, broker subscription or fan-out throughput, and new handshakes per second. CPU utilization alone is therefore an incomplete scaling signal.
 
 ---
 
@@ -293,13 +271,7 @@ flowchart LR
     WS --> DB[(Database)]
 ```
 
-The server may maintain an in-memory map:
-
-```text
-user_id -> set of active sockets
-```
-
-Example:
+The server may maintain an in-memory map of `user_id -> set of active sockets`:
 
 ```python
 connections = {
@@ -330,88 +302,19 @@ This design is acceptable for a prototype or small internal application, but not
 
 # 6. Horizontally Scaled Architecture
 
-The normal production design uses multiple WebSocket nodes behind a load balancer.
+The normal production design uses multiple WebSocket nodes behind a load balancer, as drawn in the architecture diagram at the top of this note: clients reach a shared entry point, each node keeps only its own sockets, and a broker plus a shared state store connect the nodes to each other and to the application services.
 
-```mermaid
-flowchart TB
-    Clients[WebSocket Clients]
-    LB[Load Balancer / Gateway]
-
-    subgraph Realtime Tier
-        W1[WebSocket Node 1]
-        W2[WebSocket Node 2]
-        W3[WebSocket Node 3]
-    end
-
-    Broker[(Pub/Sub or Message Broker)]
-    State[(Shared State / Presence Store)]
-    Services[Application Services]
-    DB[(Primary Database)]
-
-    Clients --> LB
-    LB --> W1
-    LB --> W2
-    LB --> W3
-
-    W1 <--> Broker
-    W2 <--> Broker
-    W3 <--> Broker
-
-    W1 <--> State
-    W2 <--> State
-    W3 <--> State
-
-    Services --> Broker
-    Services --> DB
-```
-
-Each node owns only its local sockets:
-
-```text
-Node 1: user-10, user-11, user-20
-Node 2: user-13, user-21
-Node 3: user-15, user-30, user-35
-```
-
-A shared messaging layer allows events to reach the correct node.
+Each node owns only its local sockets — `Node 1: user-10, user-11, user-20`, `Node 2: user-13, user-21`, `Node 3: user-15, user-30, user-35` — so a shared messaging layer is what allows an event to reach the correct node.
 
 ## 6.1 Responsibilities of each component
 
-### Load balancer
-
-- Accepts public connections
-- Terminates TLS, depending on the architecture
-- Forwards the WebSocket upgrade
-- Distributes new connections
-- Stops routing new connections to draining or unhealthy nodes
-
-### WebSocket node
-
-- Authenticates a connection
-- Maintains local socket objects
-- Tracks local subscriptions
-- Validates inbound messages
-- Delivers outbound messages
-- Sends heartbeats
-- Applies per-connection backpressure
-
-### Message broker
-
-- Distributes events between application services and WebSocket nodes
-- Enables cross-node broadcasts
-- May provide durability, replay, and consumer groups depending on technology
-
-### Shared state store
-
-- Stores presence or routing metadata when required
-- Stores short-lived connection leases
-- Supports rate limiting or subscription metadata
-
-### Durable database
-
-- Stores business data
-- Stores message history when the use case requires it
-- Must not be replaced by the in-memory WebSocket connection map
+| Component | Responsibilities |
+|---|---|
+| Load balancer | Accepts public connections, terminates TLS depending on the architecture, forwards the WebSocket upgrade, distributes new connections, and stops routing new connections to draining or unhealthy nodes. |
+| WebSocket node | Authenticates the connection, maintains local socket objects and subscriptions, validates inbound messages, delivers outbound messages, sends heartbeats, and applies per-connection backpressure. |
+| Message broker | Distributes events between application services and WebSocket nodes, enables cross-node broadcasts, and may provide durability, replay, and consumer groups depending on the technology. |
+| Shared state store | Stores presence and routing metadata, short-lived connection leases, and rate-limiting or subscription metadata. |
+| Durable database | Stores business data and message history when the use case requires it, and must never be replaced by the in-memory WebSocket connection map. |
 
 ---
 
@@ -445,16 +348,7 @@ With only one persistent WebSocket transport, repeated polling requests do not e
 
 ### Round robin
 
-Each new connection goes to the next server.
-
-```text
-Connection 1 -> Node A
-Connection 2 -> Node B
-Connection 3 -> Node C
-Connection 4 -> Node A
-```
-
-This is simple but may become unbalanced because WebSocket connections have different lifetimes and traffic levels.
+Each new connection goes to the next server in turn. This is simple but may become unbalanced because WebSocket connections have different lifetimes and traffic levels.
 
 ### Least connections
 
@@ -483,16 +377,7 @@ Limitations:
 
 ## 7.4 Load balancer requirements
 
-The chosen load balancer must correctly support:
-
-- HTTP upgrade headers
-- Long-lived connections
-- Configurable idle timeout
-- Health checks
-- Connection draining
-- Sufficient concurrent connections
-- TLS and certificate management
-- Observability for upgrade failures and connection counts
+The chosen load balancer must correctly support HTTP upgrade headers, long-lived connections, a configurable idle timeout, health checks, connection draining, enough concurrent connections, TLS and certificate management, and observability for upgrade failures and connection counts.
 
 The proxy timeout should be longer than the expected heartbeat interval. Otherwise, a healthy but temporarily quiet connection can be closed by infrastructure.
 
@@ -519,13 +404,7 @@ connection_id -> socket and metadata
 room_id -> local connection IDs
 ```
 
-Example:
-
-```text
-user-42 -> [conn-a, conn-b]
-conn-a  -> {socket, device=mobile, rooms=[orders, support]}
-room-orders -> [conn-a, conn-f, conn-g]
-```
+For example, `user-42 -> [conn-a, conn-b]`, `conn-a -> {socket, device=mobile, rooms=[orders, support]}`, and `room-orders -> [conn-a, conn-f, conn-g]`.
 
 Local routing must not require a database lookup for every outgoing message.
 
@@ -538,34 +417,13 @@ user:{user_id}:connections
     -> [{connection_id, node_id, expires_at}]
 ```
 
-Example:
-
-```text
-user:42:connections
-    -> conn-a on node-1
-    -> conn-b on node-3
-```
+For example, `user:42:connections` may hold `conn-a` on node-1 and `conn-b` on node-3.
 
 The records should use leases or TTLs because nodes can crash without executing cleanup code.
 
 ## 8.3 Presence is usually eventually consistent
 
-A user can disappear because:
-
-- The client closes cleanly.
-- The mobile app loses network access.
-- A laptop sleeps.
-- A node crashes.
-- A NAT mapping expires.
-- A proxy closes an idle connection.
-
-A robust presence design combines:
-
-1. Local connection state
-2. Heartbeat timestamps
-3. Short-lived leases or TTLs
-4. Cleanup on normal disconnect
-5. Expiry after abnormal disconnect
+A user can disappear because the client closed cleanly, the mobile app lost network access, a laptop slept, a node crashed, a NAT mapping expired, or a proxy closed an idle connection — and only the first of those produces a clean signal. A robust presence design therefore combines local connection state, heartbeat timestamps, short-lived leases or TTLs, cleanup on normal disconnect, and expiry after abnormal disconnect.
 
 ```mermaid
 sequenceDiagram
@@ -628,21 +486,11 @@ Every WebSocket node subscribes to the same event channel. Each node receives th
 - Broker and node work grows with cluster size.
 - Inefficient when most events target one user.
 
-Approximate internal work:
-
-```text
-published_events × number_of_websocket_nodes
-```
+Approximate internal work is `published_events × number_of_websocket_nodes`.
 
 ## 9.2 Node-targeted routing model
 
-The sender or router looks up which nodes own the target user's connections and publishes only to those node channels.
-
-```text
-1. Lookup user-99 -> node-3
-2. Publish event to websocket-node:3
-3. Node 3 sends to local connections
-```
+The sender or router looks up which nodes own the target user's connections and publishes only to those node channels: resolve `user-99 -> node-3`, publish the event to `websocket-node:3`, and Node 3 delivers it to its local connections.
 
 ### Advantages
 
@@ -657,15 +505,7 @@ The sender or router looks up which nodes own the target user's connections and 
 
 ## 9.3 Topic-partitioned routing model
 
-Rooms, tenants, symbols, games, or geographic cells are assigned to partitions.
-
-```text
-tenant-1 events -> partition 4
-room-abc events -> partition 12
-stock-NSE-TCS events -> partition 21
-```
-
-WebSocket nodes subscribe only to partitions needed by their local clients.
+Rooms, tenants, symbols, games, or geographic cells are assigned to partitions — `tenant-1 -> partition 4`, `room-abc -> partition 12`, `stock-NSE-TCS -> partition 21` — and WebSocket nodes subscribe only to the partitions needed by their local clients.
 
 This reduces unnecessary fan-out but requires subscription coordination.
 
@@ -754,13 +594,7 @@ Every node receives more messages and filters locally.
 
 ### Partitioned topics
 
-Map many rooms to a fixed number of partitions:
-
-```text
-partition = hash(room_id) mod partition_count
-```
-
-This is easier to operate at large scale, but hot rooms can create hot partitions.
+Map many rooms to a fixed number of partitions with `partition = hash(room_id) mod partition_count`. This is easier to operate at large scale, but hot rooms can create hot partitions.
 
 ### Node-specific topics
 
@@ -772,15 +606,7 @@ This reduces waste but requires room-to-node membership tracking.
 
 A room with one million subscribers is not equivalent to one million independent one-to-one events.
 
-For very large broadcasts:
-
-- Encode the payload once and reuse the encoded bytes.
-- Avoid repeatedly querying user data for each receiver.
-- Batch socket writes where the runtime supports it.
-- Partition recipients across many nodes.
-- Use bounded queues.
-- Consider dropping or coalescing replaceable updates.
-- Protect the system from one hot topic consuming all capacity.
+For very large broadcasts, encode the payload once and reuse the encoded bytes, avoid re-querying user data for each receiver, batch socket writes where the runtime supports it, partition recipients across many nodes, keep queues bounded, and consider dropping or coalescing replaceable updates so that one hot topic cannot consume all capacity.
 
 A stock-price update may replace the previous price update. A financial transaction confirmation must not be silently replaced.
 
@@ -794,14 +620,7 @@ WebSocket transport does not automatically guarantee application-level delivery 
 
 ### Best effort
 
-The server sends the event once. If the client is disconnected, the event is lost.
-
-Suitable for:
-
-- Typing indicators
-- Cursor positions
-- Live counters
-- Frequently refreshed telemetry
+The server sends the event once. If the client is disconnected, the event is lost. Suitable for typing indicators, cursor positions, live counters, and frequently refreshed telemetry.
 
 ### At-most-once
 
@@ -811,15 +630,7 @@ Redis Pub/Sub is commonly used in this style: active subscribers receive message
 
 ### At-least-once
 
-Events may be retried until acknowledged, so duplicates are possible.
-
-The consumer must be idempotent.
-
-Suitable for:
-
-- Important notifications
-- Workflow updates
-- Message delivery systems
+Events may be retried until acknowledged, so duplicates are possible and the consumer must be idempotent. Suitable for important notifications, workflow updates, and message delivery systems.
 
 ### Exactly-once effect
 
@@ -849,13 +660,7 @@ The server or durable message service can retry when an acknowledgement is not r
 
 ## 11.3 Reconnection and replay
 
-The client can remember the last processed sequence number:
-
-```text
-last_processed_sequence = 8421
-```
-
-After reconnecting:
+The client can remember the last processed sequence number, for example `last_processed_sequence = 8421`, and send it after reconnecting:
 
 ```json
 {
@@ -865,42 +670,15 @@ After reconnecting:
 }
 ```
 
-The server reads durable events after sequence `8421` and sends them again.
-
-This requires event storage such as:
-
-- Database message table
-- Redis Streams
-- Kafka
-- Cloud-managed durable queue or stream
+The server reads durable events after sequence `8421` and sends them again. This requires event storage: a database message table, Redis Streams, Kafka, or a cloud-managed durable queue or stream.
 
 ## 11.4 Ordering
 
 TCP preserves byte order on one connection. Distributed ordering is a different problem.
 
-Events may be produced by different services, partitions, or regions:
+Events may be produced by different services, partitions, or regions, so there may be no meaningful global order at all.
 
-```text
-Event A produced at Service 1
-Event B produced at Service 2
-```
-
-There may be no meaningful global order.
-
-Use the narrowest ordering scope needed:
-
-- Per connection
-- Per user
-- Per conversation
-- Per order
-- Per room
-- Per aggregate ID
-
-A partition key can preserve ordering for that scope:
-
-```text
-partition_key = conversation_id
-```
+Use the narrowest ordering scope the business needs — per connection, per user, per conversation, per order, per room, or per aggregate ID — and preserve it with a partition key such as `partition_key = conversation_id`.
 
 ## 11.5 Deduplication
 
@@ -935,24 +713,11 @@ Without protection, memory grows until the node becomes unstable.
 
 ## 12.1 Why clients become slow
 
-- Poor mobile network
-- Backgrounded browser tab
-- Device under heavy CPU load
-- Large payloads
-- Server-side fan-out spike
-- Network congestion
-- Client code not reading quickly enough
+A client falls behind for reasons the server does not control: a poor mobile network, a backgrounded browser tab, a device under heavy CPU load, large payloads, a server-side fan-out spike, network congestion, or client code that simply is not reading quickly enough.
 
 ## 12.2 Bounded outbound queues
 
-Every connection should have a maximum queue size by count or bytes.
-
-```text
-max_pending_messages = 500
-max_pending_bytes = 2 MB
-```
-
-When a limit is reached, select a policy based on event importance.
+Every connection should have a maximum queue size by count or bytes, for example `max_pending_messages = 500` and `max_pending_bytes = 2 MB`. When a limit is reached, select a policy based on event importance.
 
 ## 12.3 Backpressure policies
 
@@ -970,12 +735,7 @@ Useful for live location, metrics, cursor position, or price snapshots.
 
 ### Coalesce
 
-Keep only the latest event for a key:
-
-```text
-location:driver-42 -> latest location only
-stock:TCS -> latest price only
-```
+Keep only the latest event for a key — `location:driver-42` keeps the newest location, `stock:TCS` the newest price.
 
 ### Disconnect slow client
 
@@ -1012,21 +772,9 @@ Long-lived connections can become half-open: one side believes the connection ex
 
 ## 13.1 Heartbeat purpose
 
-Heartbeats help:
+Heartbeats detect dead clients, keep NAT and proxy mappings active, refresh presence leases, measure round-trip latency, and trigger reconnection sooner.
 
-- Detect dead clients
-- Keep NAT and proxy mappings active
-- Refresh presence leases
-- Measure round-trip latency
-- Trigger reconnection sooner
-
-WebSocket defines Ping and Pong control frames, but some browser-level APIs expose only application messages. Many systems therefore implement an application heartbeat.
-
-Example:
-
-```json
-{ "type": "heartbeat", "timestamp": 1785738000 }
-```
+WebSocket defines Ping and Pong control frames, but some browser-level APIs expose only application messages. Many systems therefore implement an application heartbeat such as `{ "type": "heartbeat", "timestamp": 1785738000 }`.
 
 ## 13.2 Timeout relationship
 
@@ -1049,17 +797,7 @@ The exact values should reflect mobile networks, expected latency, infrastructur
 
 ## 13.3 Client reconnection
 
-Clients should reconnect with exponential backoff and jitter:
-
-```text
-1s, 2s, 4s, 8s, 16s, ... up to a maximum
-```
-
-With jitter:
-
-```text
-actual_delay = random(0, min(cap, base × 2^attempt))
-```
+Clients should reconnect with exponential backoff — `1s, 2s, 4s, 8s, 16s, ...` up to a maximum — and apply jitter with `actual_delay = random(0, min(cap, base × 2^attempt))`.
 
 Jitter prevents thousands of clients from reconnecting at the same moment.
 
@@ -1098,18 +836,7 @@ HTTP services often scale on CPU or request rate. WebSocket services require add
 
 ## 14.1 Useful scaling metrics
 
-- Active connections per node
-- New connections per second
-- Handshake failure rate
-- Messages received per second
-- Messages sent per second
-- Network bytes sent per second
-- Pending outbound bytes
-- Event-loop lag
-- CPU and memory
-- Broker-consumer lag
-- Serialization latency
-- P95/P99 message-delivery latency
+Scale on connection pressure and delivery pressure, not on CPU alone: active connections per node, new connections per second, handshake failure rate, messages received and sent per second, network bytes sent per second, pending outbound bytes, event-loop lag, CPU and memory, broker-consumer lag, serialization latency, and P95/P99 message-delivery latency.
 
 ## 14.2 Connection-based scaling
 
@@ -1127,40 +854,17 @@ Example:
 = 17.5 -> 18 nodes
 ```
 
-Add headroom for failures and traffic spikes:
-
-```text
-18 nodes × 1.3 headroom = 23.4 -> 24 nodes
-```
+Add headroom for failures and traffic spikes: `18 nodes × 1.3 headroom = 23.4 -> 24 nodes`
 
 The target must come from load testing, not from a generic benchmark.
 
 ## 14.3 Why scaling out is slow
 
-Adding a new node does not automatically move existing connections. It receives only new connections unless clients reconnect or the system deliberately rebalances them.
-
-```text
-Before scale-out:
-Node A: 50k
-Node B: 50k
-
-Add Node C:
-Node A: 50k
-Node B: 50k
-Node C: 0
-```
-
-New connections gradually fill Node C. Therefore, WebSocket capacity must be provisioned earlier than short-lived HTTP capacity.
+Adding a new node does not automatically move existing connections. It receives only new connections unless clients reconnect or the system deliberately rebalances them. If Node A and Node B each hold 50k connections, adding Node C leaves the split at 50k / 50k / 0, and only new connections gradually fill Node C. WebSocket capacity must therefore be provisioned earlier than short-lived HTTP capacity.
 
 ## 14.4 Predictive and scheduled scaling
 
-Use scheduled scaling when traffic follows a known pattern:
-
-- Market open
-- Live sports event
-- Product launch
-- Daily business peak
-- Online class start
+Use scheduled scaling when traffic follows a known pattern: market open, a live sports event, a product launch, the daily business peak, or an online class start.
 
 ## 14.5 Scale-in requires draining
 
@@ -1217,14 +921,7 @@ On `SIGTERM`:
 
 ## 15.3 Kubernetes considerations
 
-Use:
-
-- A readiness probe that fails when draining begins
-- A sufficient `terminationGracePeriodSeconds`
-- A `preStop` hook only when it adds value
-- A rolling-update strategy with enough surge capacity
-- A PodDisruptionBudget for planned disruptions
-- Load balancer deregistration delay aligned with application drain behavior
+Use a readiness probe that fails as soon as draining begins, a sufficient `terminationGracePeriodSeconds`, a `preStop` hook only where it adds value, a rolling-update strategy with enough surge capacity, a PodDisruptionBudget for planned disruptions, and a load balancer deregistration delay aligned with the application's drain behavior.
 
 Kubernetes removes terminating endpoints from normal service traffic, but an application still needs to finish or deliberately close existing long-lived connections within the grace period.
 
@@ -1291,26 +988,11 @@ Possible fallback:
 
 A node or load balancer failure may cause hundreds of thousands of clients to reconnect.
 
-Protection measures:
-
-- Exponential backoff with jitter
-- Connection-rate limiting
-- Admission control
-- Pre-provisioned spare capacity
-- Fast authentication cache
-- Avoid expensive database work during every handshake
-- Separate handshake capacity from message-processing capacity where needed
+Protect the cluster with exponential backoff and jitter on the client, connection-rate limiting and admission control at the edge, pre-provisioned spare capacity, and a fast authentication cache. Avoid expensive database work on every handshake, and separate handshake capacity from message-processing capacity where the difference matters.
 
 ## 16.6 Poison event or oversized broadcast
 
-Validate limits at multiple layers:
-
-- Maximum incoming frame size
-- Maximum decoded event size
-- Maximum recipients per operation
-- Maximum room subscription count
-- Maximum per-user send rate
-- Maximum broker payload size
+Validate limits at multiple layers: maximum incoming frame size, maximum decoded event size, maximum recipients per operation, maximum room subscription count, maximum per-user send rate, and maximum broker payload size.
 
 ---
 
@@ -1354,13 +1036,7 @@ flowchart TB
 
 ## 17.1 Regional affinity
 
-Route clients to a nearby or home region based on:
-
-- Network latency
-- User account region
-- Tenant data residency
-- Current capacity
-- Compliance requirements
+Route clients to a nearby or home region based on network latency, the user's account region, tenant data residency, current capacity, and compliance requirements.
 
 Once connected, the client stays on that regional connection until disconnect.
 
@@ -1411,13 +1087,7 @@ Avoid long-lived secrets in URLs because URLs may appear in logs, browser histor
 
 ## 18.3 Authorization is continuous
 
-Authentication proves identity. Authorization decides whether the connection may:
-
-- Join a room
-- Publish to a topic
-- Read an order
-- Send a message to another user
-- Perform an administrative action
+Authentication proves identity. Authorization decides, on every operation, whether the connection may join a room, publish to a topic, read an order, send a message to another user, or perform an administrative action.
 
 Do not trust a client-provided room or tenant ID without server-side authorization.
 
@@ -1440,16 +1110,7 @@ For browser clients, validate the `Origin` header to reduce cross-site WebSocket
 
 ## 18.6 Rate limits
 
-Apply limits for:
-
-- Connection attempts per IP and account
-- Concurrent connections per user
-- Messages per second
-- Bytes per second
-- Room joins per minute
-- Subscription count
-- Authentication failures
-- Expensive commands
+Apply limits to connection attempts per IP and per account, concurrent connections per user, messages per second, bytes per second, room joins per minute, subscription count, authentication failures, and expensive commands.
 
 ## 18.7 Payload safety
 
@@ -1468,45 +1129,12 @@ A WebSocket system can appear healthy at the HTTP layer while real-time delivery
 
 ## 19.1 Core metrics
 
-### Connection metrics
-
-- Current active connections
-- Connections by node, region, tenant, and client version
-- Connection-open rate
-- Clean and abnormal close rate
-- Connection duration distribution
-- Authentication failure rate
-- Upgrade failure rate
-
-### Message metrics
-
-- Inbound and outbound messages per second
-- Bytes per second
-- Delivery latency
-- Messages dropped by reason
-- Queue depth per connection
-- Acknowledgement latency
-- Replay count
-- Duplicate count
-
-### Runtime metrics
-
-- CPU and memory
-- File-descriptor usage
-- Event-loop lag
-- Garbage-collection pause time
-- Thread-pool saturation
-- Socket write latency
-- Network errors
-
-### Broker metrics
-
-- Publish rate
-- Consumer lag
-- Subscription count
-- Redelivery count
-- Partition skew
-- Broker connection failures
+| Layer | Metrics to record |
+|---|---|
+| Connections | Current active connections; connections by node, region, tenant, and client version; connection-open rate; clean and abnormal close rate; connection duration distribution; authentication failure rate; upgrade failure rate |
+| Messages | Inbound and outbound messages per second; bytes per second; delivery latency; messages dropped by reason; queue depth per connection; acknowledgement latency; replay count; duplicate count |
+| Runtime | CPU and memory; file-descriptor usage; event-loop lag; garbage-collection pause time; thread-pool saturation; socket write latency; network errors |
+| Broker | Publish rate; consumer lag; subscription count; redelivery count; partition skew; broker connection failures |
 
 ## 19.2 Useful SLOs
 
@@ -1519,12 +1147,7 @@ Examples:
 Abnormal disconnect rate remains below an agreed threshold.
 ```
 
-The SLO must define what “delivered” means:
-
-- Written to the server socket buffer
-- Received by the client
-- Acknowledged by the client
-- Processed and persisted by the client
+The SLO must define what “delivered” means: written to the server socket buffer, received by the client, acknowledged by the client, or processed and persisted by the client. Those are four different guarantees.
 
 ## 19.3 Distributed tracing
 
@@ -1553,31 +1176,9 @@ A useful event envelope includes:
 
 ## 19.4 Load testing
 
-Test more than concurrent idle connections.
+Test more than concurrent idle connections. Include a gradual connection ramp, the peak handshake rate, realistic heartbeat traffic, one-to-one messages, medium-room and very large hot-room broadcasts, slow clients, a broker restart, a node crash, a rolling deployment, regional latency, and a reconnect storm.
 
-Include:
-
-- Gradual connection ramp
-- Peak handshake rate
-- Realistic heartbeat traffic
-- One-to-one messages
-- Medium-room broadcasts
-- Very large hot-room broadcasts
-- Slow clients
-- Broker restart
-- Node crash
-- Rolling deployment
-- Regional latency
-- Reconnect storm
-
-Measure at least:
-
-- Maximum stable connections per node
-- P95/P99 delivery latency
-- Memory per connection
-- CPU per message rate
-- Maximum safe outbound queue
-- Recovery time after failure
+Measure at least the maximum stable connections per node, P95/P99 delivery latency, memory per connection, CPU per message rate, the maximum safe outbound queue, and recovery time after failure.
 
 ---
 
@@ -1628,7 +1229,6 @@ The configured proxy timeout must exceed the application's quiet period or heart
 ```python
 from collections import defaultdict
 from typing import Any
-
 
 class ConnectionHub:
     def __init__(self) -> None:
@@ -1916,13 +1516,7 @@ flowchart TD
 - User is viewing a screen
 - Rapid live telemetry
 
-Flow:
-
-```text
-Publisher -> fast Pub/Sub -> gateway -> connected clients
-```
-
-These events can be dropped or coalesced under pressure.
+These flow `Publisher -> fast Pub/Sub -> gateway -> connected clients`, and can be dropped or coalesced under pressure.
 
 ## 22.3 Connection handling
 
@@ -1959,75 +1553,21 @@ Use spare capacity and scheduled scale-out before known traffic peaks.
 - Slow client: coalesce, drop replaceable events, or disconnect
 - Deployment: readiness off, drain, retryable close, jittered reconnect
 
----
+## 22.6 The mental model behind the design
 
-# 23. Interview-Focused Summary
+Every component above exists because of one division of labor, and that separation is the foundation of a scalable WebSocket system:
 
-A strong system-design explanation should progress in this order:
-
-## 23.1 Start with the core difficulty
-
-A WebSocket connection is long-lived and belongs to one server process. When there are multiple servers, the system needs a way to route an event to the node that owns the target connection.
-
-## 23.2 Present the main architecture
-
-```mermaid
-flowchart TD
-    CLIENTS[Clients] --> LB[Load Balancer]
-    LB --> WS[WebSocket Gateway Nodes]
-    WS --> BROKER[["Shared Pub/Sub or Message Broker"]]
-    BROKER --> PRESENCE[("Shared Presence / Routing Store")]
-    PRESENCE --> STORE[Durable Business Services and Databases]
-```
-
-## 23.3 Explain node state correctly
-
-- Live sockets and local room membership stay in node memory.
-- Durable business data stays in databases.
-- Presence and routing records use TTLs because nodes may crash.
-- Clients must be able to reconnect and rebuild state.
-
-## 23.4 Address cross-node delivery
-
-Use one of:
-
-- Broadcast to every node and filter locally
-- User-to-node targeted routing
-- Partitioned topics
-- Dedicated realtime router
-
-Explain why the selected choice matches the expected scale.
-
-## 23.5 Discuss reliability explicitly
-
-- Ephemeral updates can use fast at-most-once Pub/Sub.
-- Important updates need durable storage, event IDs, acknowledgement, replay, and idempotency.
-- TCP ordering does not create global distributed ordering.
-
-## 23.6 Cover operational behavior
-
-- Heartbeats detect dead connections.
-- Proxy idle timeouts must exceed heartbeat timing.
-- Clients reconnect with exponential backoff and jitter.
-- Autoscaling uses connection count, event-loop lag, queue size, network, and CPU.
-- Scale-in and deployments require connection draining.
-- Backpressure requires bounded queues and event-specific drop policies.
-
-## 23.7 Final mental model
-
-```text
-WebSocket node = temporary owner of live connections
-Broker/router   = cross-node event movement
-Presence store  = short-lived connection metadata
-Database/log    = durable source of truth
-Client          = reconnects, resumes, and deduplicates
-```
-
-That separation is the foundation of a scalable WebSocket system.
+| Component | Role |
+|---|---|
+| WebSocket node | Temporary owner of live connections |
+| Broker or router | Cross-node event movement |
+| Presence store | Short-lived connection metadata |
+| Database or event log | Durable source of truth |
+| Client | Reconnects, resumes, and deduplicates |
 
 ---
 
-# 24. References
+# 23. References
 
 Official and primary references reviewed for this guide:
 

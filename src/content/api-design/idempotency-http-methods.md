@@ -2,14 +2,49 @@
 title: "Idempotency (HTTP)"
 group: "REST Fundamentals"
 order: 2
+updated: "July 2026"
 ---
 
 # Idempotency: Which HTTP Methods Are Idempotent?
 
-> **Topic:** API Design & REST  
-> **Level:** Intermediate developer (3+ years)  
-> **Last reviewed:** July 2026  
+> Which HTTP methods can be safely retried, why PUT and DELETE are idempotent while POST is not, and how an Idempotency-Key makes an unsafe operation retry-safe.
+>
 > **Primary standards:** RFC 9110, RFC 5789, RFC 10008, IANA HTTP Method Registry
+
+## In short
+
+- An operation is idempotent when N identical requests leave the same **intended final server state** as one request.
+- `GET`, `HEAD`, `OPTIONS`, `TRACE`, and `QUERY` are safe and idempotent; `PUT` and `DELETE` are idempotent but not safe; `POST`, `PATCH`, and `CONNECT` are neither.
+- Idempotency is a guarantee about the *method*; a single endpoint can still be implemented to behave idempotently, or an idempotent method implemented badly (a duplicate welcome email on every `PUT`).
+- Make `POST` and `PATCH` retry-safe with a client-supplied `Idempotency-Key`, a unique business identifier, or a client-generated ID used with `PUT`.
+- Scope the key by tenant plus endpoint, store a request fingerprint and the original response, and reserve the key atomically with a database unique constraint rather than check-then-insert.
+- Reject the same key sent with a different payload; for a duplicate still in flight, wait, return `409`, or return `202` with a status URL.
+- Idempotency is not atomicity, not consistency, not exactly-once delivery, and not concurrency control.
+
+```mermaid
+flowchart TD
+    subgraph IDEM[Idempotent]
+        subgraph SAFE[Safe and idempotent]
+            G[GET]
+            H[HEAD]
+            O[OPTIONS]
+            T[TRACE]
+            Q[QUERY]
+        end
+        P[PUT]
+        D[DELETE]
+    end
+
+    subgraph NON[Non-idempotent by specification]
+        PO[POST]
+        PA[PATCH]
+        CO[CONNECT]
+    end
+```
+
+**Interview answer:** `GET`, `HEAD`, `OPTIONS`, `TRACE`, and `QUERY` are safe and therefore idempotent, and `PUT` and `DELETE` are idempotent because each request names a complete target state — this representation, or absent — so repeating it asks for nothing new. `POST` is not idempotent because it asks the server to perform resource-specific processing, usually creating a new subordinate resource, so a second identical `POST` produces a second order or a second payment. A specific `POST` endpoint can still be made retry-safe by reserving an `Idempotency-Key` atomically and replaying the stored response.
+
+**Gotcha:** Idempotency is about the intended final state, not the response — a repeated `DELETE` returning `404` is still idempotent, while a `PUT` that re-sends a welcome email on every call is not.
 
 ---
 
@@ -24,11 +59,7 @@ One identical request      -> Final state X
 Ten identical requests     -> Final state X
 ```
 
-A mathematical way to remember it is:
-
-```text
-f(f(x)) = f(x)
-```
+A mathematical way to remember it is `f(f(x)) = f(x)`.
 
 The second execution does not produce an additional intended state change beyond the first execution.
 
@@ -169,26 +200,7 @@ These methods are not safe because they request state changes, but they are idem
 
 ## 3.3 Relationship
 
-```mermaid
-flowchart TD
-    subgraph IDEM[Idempotent]
-        subgraph SAFE[Safe and idempotent]
-            G[GET]
-            H[HEAD]
-            O[OPTIONS]
-            T[TRACE]
-            Q[QUERY]
-        end
-        P[PUT]
-        D[DELETE]
-    end
-
-    subgraph NON[Non-idempotent by specification]
-        PO[POST]
-        PA[PATCH]
-        CO[CONNECT]
-    end
-```
+The classification diagram in "In short" above shows the nesting: the safe methods sit inside the idempotent set, `PUT` and `DELETE` are idempotent without being safe, and `POST`, `PATCH`, and `CONNECT` sit outside both.
 
 A useful rule is:
 
@@ -235,11 +247,7 @@ As of June 2026, the standardized `QUERY` method is also explicitly **safe and i
 
 ## 5.1 GET — Idempotent and Safe
 
-`GET` retrieves a representation of a resource.
-
-```http
-GET /users/42
-```
+`GET` retrieves a representation of a resource, for example `GET /users/42`.
 
 Repeating the request does not ask the server to modify the user.
 
@@ -260,23 +268,13 @@ sequenceDiagram
 
 Idempotency does **not** mean every response must be identical.
 
-For example:
-
-```http
-GET /stock-prices/ABC
-```
-
-The response may change because the underlying stock price changed between requests. The request is still idempotent because the client only requested retrieval; it did not request an additional state change.
+For example, with `GET /stock-prices/ABC` the response may change because the underlying stock price changed between requests. The request is still idempotent because the client only requested retrieval; it did not request an additional state change.
 
 Similarly, response headers such as `Date`, rate-limit counters, request IDs, and cache metadata may differ.
 
 ### Correct Resource Design
 
-Use:
-
-```http
-GET /orders/123
-```
+Use: `GET /orders/123`
 
 Avoid unsafe actions through `GET`:
 
@@ -291,13 +289,7 @@ Search engines, browsers, link preview tools, and caches may automatically issue
 
 ## 5.2 HEAD — Idempotent and Safe
 
-`HEAD` has semantics similar to `GET`, but the response does not include response content.
-
-```http
-HEAD /documents/report.pdf
-```
-
-Possible response:
+`HEAD` has semantics similar to `GET`, but the response does not include response content, so `HEAD /documents/report.pdf` may answer:
 
 ```http
 HTTP/1.1 200 OK
@@ -358,19 +350,13 @@ It changes server state by creating or replacing a resource.
 
 Conceptually, `PUT` means:
 
-```text
-Make the resource at this URI match this representation.
-```
+> Make the resource at this URI match this representation.
 
 For partial updates, `PATCH` is usually more semantically appropriate.
 
 ### Create at a Client-Known URI
 
-`PUT` can also be used for creation when the client knows the final resource URI:
-
-```http
-PUT /user-settings/user-42
-```
+`PUT` can also be used for creation when the client knows the final resource URI: `PUT /user-settings/user-42`
 
 The first request may create the resource. Repeated identical requests replace it with the same state.
 
@@ -378,11 +364,7 @@ The first request may create the resource. Repeated identical requests replace i
 
 ## 5.4 DELETE — Idempotent but Not Safe
 
-`DELETE` requests removal of a resource.
-
-```http
-DELETE /users/42
-```
+`DELETE` requests removal of a resource, for example `DELETE /users/42`.
 
 Possible responses:
 
@@ -401,9 +383,7 @@ sequenceDiagram
 
 The status codes can differ, but the intended final state is the same:
 
-```text
-User 42 does not exist.
-```
+> User 42 does not exist.
 
 Therefore, `DELETE` is idempotent.
 
@@ -428,13 +408,7 @@ Deleting a user may trigger cleanup jobs, emails, audit logs, or events. These s
 
 ## 5.5 OPTIONS — Idempotent and Safe
 
-`OPTIONS` asks for communication options supported by a resource or server.
-
-```http
-OPTIONS /users/42
-```
-
-Possible response:
+`OPTIONS` asks for communication options supported by a resource or server, so `OPTIONS /users/42` may answer:
 
 ```http
 HTTP/1.1 204 No Content
@@ -456,11 +430,7 @@ It is safe and idempotent because it requests capability information rather than
 
 ## 5.6 TRACE — Idempotent and Safe by Semantics
 
-`TRACE` performs a diagnostic loop-back of the request message.
-
-```http
-TRACE /diagnostics
-```
+`TRACE` performs a diagnostic loop-back of the request message, as in `TRACE /diagnostics`.
 
 It is defined as safe and idempotent, but many production servers disable it because it can expose request information and increase security risk.
 
@@ -670,19 +640,9 @@ PATCH  -> Not idempotent by specification
 
 An API can implement a normally non-idempotent method in an idempotent way.
 
-Example:
+Example: `POST /users/42/activate`
 
-```http
-POST /users/42/activate
-```
-
-If activation means setting:
-
-```text
-status = active
-```
-
-then repeated requests may have the same final effect.
+If activation means setting `status = active`, then repeated requests may have the same final effect.
 
 However, clients and generic infrastructure cannot assume every `POST` endpoint behaves this way unless the API explicitly documents and enforces it.
 
@@ -758,21 +718,13 @@ POST /payments
 }
 ```
 
-Add a database uniqueness rule:
-
-```sql
-UNIQUE (merchant_id, merchant_reference)
-```
+Add a database uniqueness rule: `UNIQUE (merchant_id, merchant_reference)`
 
 This approach is especially useful when the same logical identifier must remain unique beyond a short idempotency-key retention period.
 
 ## 7.3 Client-Generated Resource ID with PUT
 
-Instead of asking the server to generate the resource identifier:
-
-```http
-POST /orders
-```
+Instead of asking the server to generate the resource identifier: `POST /orders`
 
 The client can generate an ID and use `PUT`:
 
@@ -804,11 +756,7 @@ PUT /orders/123/status
 }
 ```
 
-Over:
-
-```http
-POST /orders/123/cancel-attempts
-```
+Over: `POST /orders/123/cancel-attempts`
 
 For financial operations, “set balance to X” is usually not an acceptable replacement for transaction-based accounting. Use a unique transaction or ledger-entry identifier instead.
 
@@ -1018,11 +966,7 @@ A database uniqueness constraint is usually more reliable than a simple “check
 
 Do not make a key globally reusable across unrelated customers unless that is intentional.
 
-Typical scope:
-
-```text
-tenant_id + idempotency_key
-```
+Typical scope: `tenant_id + idempotency_key`
 
 or:
 
@@ -1036,65 +980,11 @@ This prevents one user from colliding with another user's key.
 
 # 11. Idempotency and Optimistic Concurrency
 
-Idempotency and concurrency control solve different problems.
+Idempotency and optimistic concurrency answer different questions. Idempotency asks whether this logical request already ran, and makes a *retry of the same request* safe. Optimistic concurrency asks whether the caller is updating the resource version it originally read, and stops a *stale write* from a different logical request.
 
-```text
-Idempotency:
-Did this logical request already run?
+A `PUT` can therefore be perfectly idempotent and still cause a lost update: two clients read version 7, both replace the whole resource, and the second silently overwrites the first. Reliable update APIs usually need both mechanisms.
 
-Optimistic concurrency:
-Am I updating the resource version I originally read?
-```
-
-## 11.1 Lost Update Problem
-
-Two clients read the same user:
-
-```json
-{
-  "name": "Aarav",
-  "status": "active",
-  "version": 7
-}
-```
-
-Client A updates the name. Client B updates the status using stale data. A full `PUT` from Client B could overwrite Client A's update.
-
-The `PUT` request can still be idempotent while producing a lost update.
-
-## 11.2 ETag and If-Match
-
-The server returns:
-
-```http
-ETag: "user-42-v7"
-```
-
-The client updates conditionally:
-
-```http
-PUT /users/42
-If-Match: "user-42-v7"
-Content-Type: application/json
-
-{
-  "name": "Aarav Sharma",
-  "status": "active"
-}
-```
-
-If the resource has already changed, the server can return:
-
-```http
-HTTP/1.1 412 Precondition Failed
-```
-
-### Key Point
-
-- `PUT` idempotency makes repeating the same intended replacement safe.
-- `If-Match` prevents overwriting a newer version unexpectedly.
-
-Reliable update APIs often need both concepts.
+For the `ETag` / `If-Match` / `412 Precondition Failed` mechanics, see [REST & HTTP Methods](rest-http-methods-status-codes.md).
 
 ---
 
@@ -1145,11 +1035,7 @@ flowchart TD
 
 Add random jitter so thousands of clients do not retry at exactly the same time.
 
-A simplified formula is:
-
-```text
-delay = min(max_delay, base_delay * 2^attempt) + random_jitter
-```
+A simplified formula is: `delay = min(max_delay, base_delay * 2^attempt) + random_jitter`
 
 ## 12.4 Honor Retry-After
 
@@ -1189,11 +1075,7 @@ Content-Type: application/json
 }
 ```
 
-Repeated requests result in the same target representation.
-
-```text
-Naturally idempotent: Yes
-```
+Repeated requests result in the same target representation, so this endpoint is naturally idempotent.
 
 ---
 
@@ -1310,11 +1192,7 @@ flowchart TD
     I -->|Unique conflict| S[Already processed, return success]
 ```
 
-Database rule:
-
-```sql
-UNIQUE (provider_name, event_id)
-```
+Database rule: `UNIQUE (provider_name, event_id)`
 
 Returning a successful response for an already processed event prevents unnecessary repeated deliveries while preserving exactly-once business effect.
 
@@ -1412,14 +1290,7 @@ This reveals whether reconciliation, provider idempotency, or operation-status l
 
 ## 15.1 Same Effect Does Not Mean Same Response
 
-A repeated `DELETE` can return:
-
-```text
-204 No Content
-404 Not Found
-```
-
-The responses differ, but the intended final server state is unchanged.
+A repeated `DELETE` can return `204 No Content` or `404 Not Found`. The responses differ, but the intended final server state is unchanged.
 
 ## 15.2 Idempotency Does Not Mean No Side Effects
 
@@ -1473,6 +1344,23 @@ Idempotency protects against duplicate logical requests. `ETag`, version numbers
 
 # 16. Best-Practice Checklist
 
+Four things combine to make duplicate handling reliable:
+
+```mermaid
+flowchart TD
+    subgraph SCOPE["For payments, orders, bookings, inventory adjustments, webhooks, and jobs"]
+        M[HTTP method semantics]
+        K[Idempotency key or unique operation ID]
+        AC[Atomic database constraint]
+        RR[Retry and reconciliation strategy]
+    end
+
+    M --> OUT[Reliable duplicate-safe processing]
+    K --> OUT
+    AC --> OUT
+    RR --> OUT
+```
+
 ## 16.1 API Contract
 
 - Document whether an operation is retry-safe.
@@ -1512,58 +1400,7 @@ Idempotency protects against duplicate logical requests. `ETag`, version numbers
 
 ---
 
-# 17. Quick Revision Summary
-
-## 17.1 Definition
-
-```text
-Idempotency means that multiple identical requests have the same intended
-final effect on the server as one request.
-```
-
-## 17.2 Method Classification
-
-```text
-Safe and idempotent:
-GET, HEAD, OPTIONS, TRACE, QUERY
-
-Idempotent but not safe:
-PUT, DELETE
-
-Not idempotent by specification:
-POST, PATCH, CONNECT
-```
-
-## 17.3 Easy Memory Rule
-
-```text
-Reads are generally safe and idempotent.
-PUT replaces a target state, so it is idempotent.
-DELETE reaches the state “resource absent,” so it is idempotent.
-POST and PATCH can describe repeatable actions, so they are not guaranteed
-idempotent unless the API adds protection.
-```
-
-## 17.4 Practical Production Rule
-
-```mermaid
-flowchart TD
-    subgraph SCOPE["For payments, orders, bookings, inventory adjustments, webhooks, and jobs"]
-        M[HTTP method semantics]
-        K[Idempotency key or unique operation ID]
-        AC[Atomic database constraint]
-        RR[Retry and reconciliation strategy]
-    end
-
-    M --> OUT[Reliable duplicate-safe processing]
-    K --> OUT
-    AC --> OUT
-    RR --> OUT
-```
-
----
-
-# 18. References
+# 17. References
 
 1. **RFC 9110 — HTTP Semantics**  
    https://www.rfc-editor.org/rfc/rfc9110.html

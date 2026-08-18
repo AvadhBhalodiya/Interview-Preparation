@@ -6,8 +6,32 @@ order: 4
 
 # Django QuerySets & Lazy Evaluation
 
-> A **QuerySet** represents a database query and its potential results.  
+> A **QuerySet** represents a database query and its potential results.
+>
 > It is **lazy**, which means Django usually does not execute the SQL query when the QuerySet is created. The database is accessed only when the results are actually needed.
+
+## In short
+
+- A QuerySet is a description of a query: creating one builds the SQL but does not touch the database — the query runs only when the QuerySet is *evaluated*.
+- `filter()`, `exclude()`, `order_by()`, `select_related()` and friends each return a **new** QuerySet and issue no query, so a query can be assembled across functions and layers before it ever runs.
+- Evaluation triggers: iterating, `list()`, `len()`, `bool()` (including `if qs:`), `repr()` / `print()`, slicing **with a step**, and pickling.
+- The first evaluation fills that QuerySet's **result cache**: iterating the *same* QuerySet twice runs one query, while re-creating `Model.objects.filter(...)` twice runs two.
+- Slicing without a step (`qs[:10]`, `qs[20:30]`) stays lazy and adds `LIMIT` / `OFFSET`; a single index (`qs[0]`) runs its own limited query and does not fill the parent QuerySet's cache.
+- When the rows themselves are not needed, use `exists()` and `count()` instead of `if qs:` and `len(qs)` — they let the database answer without building model objects.
+- An evaluated QuerySet never refreshes itself; call `.all()` on it or build a new QuerySet for current data, and use `iterator()` to skip the cache on large one-pass jobs.
+
+```mermaid
+flowchart TD
+    A[Python QuerySet definition] --> B[Django builds an internal query]
+    B --> C["More filters/orderings can be added"]
+    C --> D[No database query yet]
+    D --> E[QuerySet is evaluated]
+    E --> F[SQL runs and rows are converted into Python objects]
+```
+
+**Interview answer:** Lazy means a QuerySet only records what to ask the database: `Article.objects.filter(...)` builds SQL, and every chained `filter()`, `exclude()` or `order_by()` returns a new QuerySet without sending anything. The SQL is sent at the moment something needs the actual rows — iteration, `list()`, `len()`, `bool()`, `repr()`, slicing with a step, or pickling — and the results are then cached on that QuerySet instance, so iterating it again costs nothing while a freshly built QuerySet queries again. Methods such as `exists()`, `count()`, `get()` and `first()` execute their own SQL immediately, and they are what to reach for when the full result set is not needed.
+
+**Gotcha:** `if queryset:` and `len(queryset)` look free but they evaluate the whole QuerySet and construct every model object; use `exists()` and `count()` when the rows are not needed. The mirror mistake is calling `exists()` and then immediately iterating the same QuerySet — that is two queries where one plain evaluation plus the cached iteration would have been one.
 
 ---
 
@@ -31,17 +55,6 @@ WHERE is_published = TRUE;
 
 The SQL runs only when the application needs the actual rows.
 
-## Simple Flow
-
-```mermaid
-flowchart TD
-    A[Python QuerySet definition] --> B[Django builds an internal query]
-    B --> C["More filters/orderings can be added"]
-    C --> D[No database query yet]
-    D --> E[QuerySet is evaluated]
-    E --> F[SQL runs and rows are converted into Python objects]
-```
-
 This behavior is called **lazy evaluation**.
 
 ---
@@ -54,13 +67,11 @@ The examples in this guide use the following models:
 from django.conf import settings
 from django.db import models
 
-
 class Category(models.Model):
     name = models.CharField(max_length=100)
 
     def __str__(self) -> str:
         return self.name
-
 
 class Article(models.Model):
     title = models.CharField(max_length=200)
@@ -296,11 +307,7 @@ total = len(articles)
 
 This evaluates the QuerySet and loads its rows.
 
-When only the number of records is required, prefer:
-
-```python
-total = Article.objects.filter(is_published=True).count()
-```
+When only the number of records is required, prefer: `total = Article.objects.filter(is_published=True).count()`
 
 This normally generates a database-level `COUNT(*)`.
 
@@ -352,11 +359,7 @@ print(articles)
 
 Printing asks Python for the QuerySet representation, so it can trigger evaluation.
 
-For inspecting SQL without retrieving rows, use:
-
-```python
-print(articles.query)
-```
+For inspecting SQL without retrieving rows, use: `print(articles.query)`
 
 ---
 
@@ -368,11 +371,7 @@ articles = Article.objects.all()[0:100:2]
 
 Because a step is used, Django evaluates the query and returns a list.
 
-Normal slicing without a step usually remains lazy:
-
-```python
-articles = Article.objects.all()[:100]
-```
+Normal slicing without a step usually remains lazy: `articles = Article.objects.all()[:100]`
 
 ---
 
@@ -520,17 +519,9 @@ Article.objects.create(
 list(articles)  # Reuses the old cached result
 ```
 
-To retrieve current data, create a new QuerySet:
+To retrieve current data, create a new QuerySet: `articles = Article.objects.filter(is_published=True)`
 
-```python
-articles = Article.objects.filter(is_published=True)
-```
-
-You can also call `all()` on an already evaluated QuerySet to obtain a copy that can retrieve updated results:
-
-```python
-fresh_articles = articles.all()
-```
+You can also call `all()` on an already evaluated QuerySet to obtain a copy that can retrieve updated results: `fresh_articles = articles.all()`
 
 ## Important Distinction
 
@@ -586,27 +577,15 @@ first_article = Article.objects.order_by("-published_at")[0]
 
 This executes a limited query and returns one model instance.
 
-A safer expressive alternative is:
-
-```python
-first_article = Article.objects.order_by("-published_at").first()
-```
+A safer expressive alternative is: `first_article = Article.objects.order_by("-published_at").first()`
 
 `first()` returns `None` when no record exists.
 
 ## Negative Indexing
 
-Django QuerySets do not support negative indexing:
+Django QuerySets do not support negative indexing: `Article.objects.all()[-1]`
 
-```python
-Article.objects.all()[-1]
-```
-
-Use explicit ordering and `first()` instead:
-
-```python
-oldest_article = Article.objects.order_by("published_at").first()
-```
+Use explicit ordering and `first()` instead: `oldest_article = Article.objects.order_by("published_at").first()`
 
 ## Filtering After Slicing
 
@@ -635,11 +614,7 @@ articles = (
 
 ## 10.1 `all()`
 
-Returns a QuerySet containing all rows:
-
-```python
-articles = Article.objects.all()
-```
+Returns a QuerySet containing all rows: `articles = Article.objects.all()`
 
 ---
 
@@ -667,21 +642,13 @@ WHERE is_published = TRUE
 
 ## 10.3 `exclude()`
 
-Returns objects that do not match the conditions:
-
-```python
-articles = Article.objects.exclude(view_count=0)
-```
+Returns objects that do not match the conditions: `articles = Article.objects.exclude(view_count=0)`
 
 ---
 
 ## 10.4 `get()`
 
-Returns exactly one model instance:
-
-```python
-article = Article.objects.get(pk=article_id)
-```
+Returns exactly one model instance: `article = Article.objects.get(pk=article_id)`
 
 Possible outcomes:
 
@@ -715,11 +682,7 @@ articles = Article.objects.order_by("-view_count", "title")
 - `view_count`: ascending
 - `-view_count`: descending
 
-To remove model-level default ordering:
-
-```python
-articles = Article.objects.order_by()
-```
+To remove model-level default ordering: `articles = Article.objects.order_by()`
 
 Ordering has a database cost, so remove it when it is unnecessary.
 
@@ -755,11 +718,7 @@ Use `values()` when model methods and complete model instances are not needed.
 
 ## 10.8 `values_list()`
 
-Returns tuples:
-
-```python
-titles = Article.objects.values_list("title", flat=True)
-```
+Returns tuples: `titles = Article.objects.values_list("title", flat=True)`
 
 Example result:
 
@@ -788,11 +747,7 @@ Be careful when combining `distinct()` with ordering across related models becau
 
 ## 10.10 `none()`
 
-Returns an empty QuerySet:
-
-```python
-articles = Article.objects.none()
-```
+Returns an empty QuerySet: `articles = Article.objects.none()`
 
 This is useful when a function must always return a QuerySet:
 
@@ -816,19 +771,11 @@ The difference is important.
 articles = Article.objects.filter(id=1)
 ```
 
-Type:
-
-```python
-QuerySet[Article]
-```
+Type: `QuerySet[Article]`
 
 It can contain zero, one, or many records.
 
-You can continue chaining:
-
-```python
-articles = articles.filter(is_published=True)
-```
+You can continue chaining: `articles = articles.filter(is_published=True)`
 
 ## Model Instance
 
@@ -836,19 +783,11 @@ articles = articles.filter(is_published=True)
 article = Article.objects.get(id=1)
 ```
 
-Type:
-
-```python
-Article
-```
+Type: `Article`
 
 It represents one database row.
 
-You access fields directly:
-
-```python
-print(article.title)
-```
+You access fields directly: `print(article.title)`
 
 ## Comparison
 
@@ -914,17 +853,9 @@ count = len(
 
 ## 12.3 Membership
 
-To check whether an object belongs to a QuerySet:
+To check whether an object belongs to a QuerySet: `is_present = published_articles.contains(article)`
 
-```python
-is_present = published_articles.contains(article)
-```
-
-This is usually more efficient than:
-
-```python
-is_present = article in published_articles
-```
+This is usually more efficient than: `is_present = article in published_articles`
 
 ## Do Not Automatically Use Separate Queries
 
@@ -1013,11 +944,7 @@ Use `only()` only after profiling and confirming that large unused fields are cr
 
 ## 13.3 `defer()`
 
-Explicitly delays selected fields:
-
-```python
-articles = Article.objects.defer("content")
-```
+Explicitly delays selected fields: `articles = Article.objects.defer("content")`
 
 This can be helpful when `content` is a large text field and the page only needs article titles.
 
@@ -1039,71 +966,14 @@ flowchart TD
 
 # 14. Related Object Loading
 
-Lazy evaluation does not automatically prevent N+1 queries.
+Lazy evaluation does not by itself prevent N+1 queries. Accessing a related object inside a loop issues one extra query per row — the N+1 problem. Two tools fix it:
 
-## N+1 Example
+- `select_related()` — SQL `JOIN`, one query, for forward `ForeignKey` and `OneToOneField`.
+- `prefetch_related()` — a second query joined in Python, for `ManyToManyField` and reverse foreign keys.
 
-```python
-articles = Article.objects.filter(is_published=True)
+Both return lazy QuerySets, so the extra work still happens only when the final QuerySet is evaluated.
 
-for article in articles:
-    print(article.author.username)
-```
-
-Possible query behavior:
-
-```text
-1 query: Load all articles
-N queries: Load the author for each article
---------------------------------------------
-Total: 1 + N queries
-```
-
-## Use `select_related()`
-
-For `ForeignKey` and `OneToOneField` relationships:
-
-```python
-articles = (
-    Article.objects
-    .filter(is_published=True)
-    .select_related("author", "category")
-)
-```
-
-Django performs SQL joins and loads the related objects in the main query.
-
-```mermaid
-flowchart LR
-    A["Article + Author + Category"] --> B[One joined SQL query]
-```
-
-## Use `prefetch_related()`
-
-For reverse foreign keys and many-to-many relationships:
-
-```python
-categories = Category.objects.prefetch_related("articles")
-```
-
-Django normally runs separate queries and joins the results in Python.
-
-```mermaid
-flowchart TD
-    A["Query 1: Load categories"] --> C[Django connects them in memory]
-    B["Query 2: Load related articles"] --> C
-```
-
-## Relationship Guide
-
-| Relationship | Typical Tool |
-|---|---|
-| `ForeignKey` | `select_related()` |
-| `OneToOneField` | `select_related()` |
-| Reverse `ForeignKey` | `prefetch_related()` |
-| `ManyToManyField` | `prefetch_related()` |
-
-Both methods return lazy QuerySets. The queries execute when the final QuerySet is evaluated.
+Full treatment, including the `Prefetch` object and how to measure query counts: [N+1 Queries: select_related vs prefetch_related](n-plus-1-select-related-prefetch-related.md).
 
 ---
 
@@ -1297,7 +1167,6 @@ Because QuerySets are lazy, they can be passed between functions before evaluati
 ```python
 from django.db.models import QuerySet
 
-
 def published_articles() -> QuerySet[Article]:
     return (
         Article.objects
@@ -1341,11 +1210,7 @@ Evaluation may happen inside:
 - Data conversion
 - Validation code
 
-For example:
-
-```python
-logger.debug("Articles: %r", articles)
-```
+For example: `logger.debug("Articles: %r", articles)`
 
 The `%r` representation can evaluate the QuerySet.
 
@@ -1359,7 +1224,6 @@ Repeated query logic can be placed in a custom `QuerySet`.
 from django.db import models
 from django.utils import timezone
 
-
 class ArticleQuerySet(models.QuerySet):
     def published(self):
         return self.filter(is_published=True)
@@ -1371,7 +1235,6 @@ class ArticleQuerySet(models.QuerySet):
         return self.filter(
             published_at__lte=timezone.now(),
         ).order_by("-published_at")
-
 
 class Article(models.Model):
     # Fields omitted for brevity
@@ -1558,26 +1421,7 @@ Also inspect actual query counts and response time. Do not use `only()`, `defer(
 
 ---
 
-# 21. Mental Model
-
-Think of a QuerySet as a **database query recipe**, not as the prepared meal.
-
-```text
-QuerySet creation
-    = Write the recipe
-
-filter(), exclude(), order_by()
-    = Add or modify recipe instructions
-
-Evaluation
-    = Ask the database to cook the result
-
-Result cache
-    = Keep the prepared result for reuse
-
-New QuerySet
-    = Create another recipe
-```
+# 21. Quick Reference
 
 ## Complete Lifecycle
 
@@ -1590,10 +1434,6 @@ flowchart TD
     E --> F["6. Django creates model objects or values"]
     F --> G["7. Standard QuerySet stores result cache<br/>unless iterator() or special behavior"]
 ```
-
----
-
-# 22. Quick Reference
 
 ## Query Construction — Normally Lazy
 
@@ -1677,7 +1517,7 @@ queryset.delete(...)
 
 ---
 
-# 23. Official References
+# 22. Official References
 
 This guide is aligned with the Django 6.0 documentation available on July 25, 2026.
 

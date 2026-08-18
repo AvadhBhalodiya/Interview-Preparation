@@ -8,6 +8,32 @@ order: 1
 
 > A serializer is the boundary between your API and Python objects. It converts model instances into response-ready data, validates incoming request data, and converts valid input into objects that your application can use.
 
+## In short
+
+- A serializer works in both directions: `ProductSerializer(product).data` renders an object to primitives, while `ProductSerializer(data=request.data)` plus `is_valid()` and `save()` validates input and writes it back.
+- `Serializer` declares every field and `create()`/`update()` by hand — use it for operations like login or a report. `ModelSerializer` generates fields, model validators, and both methods from `Meta.model` and `Meta.fields` — use it for CRUD.
+- `.save()` calls `create()` when no instance was passed and `update()` when one was. Extra keyword arguments — `serializer.save(created_by=request.user)` — are merged into `validated_data`, which is how server-controlled fields stay out of the request body.
+- Validation runs in a fixed order: field conversion, then `validators=[...]`, then `validate_<field_name>()`, then `Meta.validators`, then `validate()`. Whatever `validate_<field_name>()` returns replaces the input, so validation also normalizes.
+- `read_only=True` is output-only and `write_only=True` is input-only; `source` points a field at a different attribute; `SerializerMethodField` computes read-only output.
+- Nested serializers are **read-only** until you implement the write behaviour yourself, because DRF cannot guess whether a missing child means delete, ignore, or create.
+- Serializers never optimize queries. `select_related()`, `prefetch_related()`, and `annotate()` belong on the queryset that feeds the serializer.
+
+```mermaid
+flowchart TD
+    A[Request JSON] --> B[Parser]
+    B --> C[Serializer validation]
+    C --> D[validated_data]
+    D --> E["Application/model operation"]
+    E --> F["Model/object"]
+    F --> G[Serializer representation]
+    G --> H[Renderer]
+    H --> I[Response JSON]
+```
+
+**Interview answer:** A serializer is the translation and validation layer between HTTP data and Python objects. Outbound, it turns a model instance into JSON-compatible primitives; inbound, it takes `request.data`, runs field conversion and the validation chain, exposes the result as `validated_data`, and turns that into an object through `create()` or `update()`. `ModelSerializer` is the same machinery with the field list, model validators, and default `create()`/`update()` derived from the model, so you reach for the plain `Serializer` when the payload is not a model — a login, a search filter, a payment instruction.
+
+**Gotcha:** Expecting the serializer to make its own queries efficient. A `category = CategorySerializer()` or `source="category.name"` field is one extra query per row, so serializing 100 products issues 101 queries. DRF never infers `select_related()` from the serializer — the queryset in the view has to declare it.
+
 ---
 
 # 1. Why Serializers Exist
@@ -44,30 +70,22 @@ A serializer also works in the opposite direction. It accepts request data, vali
 ```mermaid
 flowchart TD
     subgraph OUTBOUND[Outgoing response]
-        A[Django model instance] --> B[Serializer]
-        B --> C[Primitive Python data]
-        C --> D[JSON renderer]
-        D --> E[HTTP response]
+        OA[Django model instance] --> OB[Serializer]
+        OB --> OC[Primitive Python data]
+        OC --> OD[JSON renderer]
+        OD --> OE[HTTP response]
     end
-```
-
-```mermaid
-flowchart TD
     subgraph INBOUND[Incoming request]
-        A[JSON request body] --> B[Parser]
-        B --> C[Primitive Python data]
-        C --> D[Serializer<br/>validation + conversion]
-        D --> E[validated_data]
-        E --> F["create() / update()"]
-        F --> G[Django model instance]
+        IA[JSON request body] --> IB[Parser]
+        IB --> IC[Primitive Python data]
+        IC --> ID[Serializer<br/>validation + conversion]
+        ID --> IE[validated_data]
+        IE --> IF["create() / update()"]
+        IF --> IG[Django model instance]
     end
 ```
 
-A useful mental model is:
-
-```text
-Serializer = Data transformation + Validation + Object creation/update
-```
+A useful mental model is **serializer = data transformation + validation + object creation/update**.
 
 ---
 
@@ -117,7 +135,6 @@ DRF mainly provides two serializer styles.
 
 ```python
 from rest_framework import serializers
-
 
 class ProductSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
@@ -188,13 +205,11 @@ Consider a small product API.
 from django.conf import settings
 from django.db import models
 
-
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True)
 
     def __str__(self) -> str:
         return self.name
-
 
 class Product(models.Model):
     category = models.ForeignKey(
@@ -225,7 +240,6 @@ class Product(models.Model):
 from rest_framework import serializers
 
 from .models import Product
-
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -362,99 +376,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
 Field options control API behavior.
 
-## 6.1 `required`
-
-The field must be supplied in input.
-
-```python
-name = serializers.CharField(required=True)
-```
-
-`required=True` normally means the key must exist. It does not mean blank text is accepted.
-
-## 6.2 `allow_null`
-
-Accepts `None`, represented as `null` in JSON.
-
-```python
-middle_name = serializers.CharField(
-    allow_null=True,
-    required=False,
-)
-```
-
-## 6.3 `allow_blank`
-
-Accepts an empty string.
-
-```python
-description = serializers.CharField(
-    allow_blank=True,
-    required=False,
-)
-```
-
-`allow_null` and `allow_blank` represent different values:
-
-```json
-{
-  "value_1": null,
-  "value_2": ""
-}
-```
-
-## 6.4 `default`
-
-Supplies a value when the field is absent.
-
-```python
-is_active = serializers.BooleanField(default=True)
-```
-
-A default is generally not applied during a partial update because omitted fields in `partial=True` mean “leave the current value unchanged.”
-
-## 6.5 `read_only`
-
-The field appears in output but is ignored as writable input.
-
-```python
-id = serializers.IntegerField(read_only=True)
-```
-
-## 6.6 `write_only`
-
-The field is accepted in input but does not appear in output.
-
-```python
-password = serializers.CharField(write_only=True)
-```
-
-## 6.7 `validators`
-
-Adds reusable validation functions.
-
-```python
-def validate_even(value):
-    if value % 2 != 0:
-        raise serializers.ValidationError("Value must be even.")
-
-
-quantity = serializers.IntegerField(validators=[validate_even])
-```
-
-## 6.8 `source`
-
-Maps the API field to another attribute or nested attribute.
-
-```python
-category_name = serializers.CharField(
-    source="category.name",
-    read_only=True,
-)
-```
-
-## 6.9 Common option summary
-
 | Option | Meaning |
 |---|---|
 | `required=True` | Input key must normally be present |
@@ -466,37 +387,43 @@ category_name = serializers.CharField(
 | `source="..."` | Read/write through another attribute |
 | `validators=[...]` | Run reusable validators |
 
+```python
+def validate_even(value):
+    if value % 2 != 0:
+        raise serializers.ValidationError("Value must be even.")
+
+class ExampleSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(required=True)
+    middle_name = serializers.CharField(allow_null=True, required=False)
+    description = serializers.CharField(allow_blank=True, required=False)
+    is_active = serializers.BooleanField(default=True)
+    password = serializers.CharField(write_only=True)
+    quantity = serializers.IntegerField(validators=[validate_even])
+    category_name = serializers.CharField(source="category.name", read_only=True)
+```
+
+## 6.1 Options that are easy to confuse
+
+- `required=True` means the key must exist. It does not mean blank text is rejected — that is `allow_blank`.
+- `allow_null=True` accepts JSON `null`; `allow_blank=True` accepts `""`. They are different values and are configured independently.
+- `default` is generally **not** applied during a partial update, because an omitted field under `partial=True` means “leave the current value unchanged.”
+
 ---
 
 # 7. Serialization and Deserialization
 
 ## 7.1 Serialization
 
-Serialization converts an existing object into primitive data.
+Serialization converts an existing object into primitive data. `serializer.instance` holds the original object and `serializer.data` holds the primitive representation.
 
 ```python
 product = Product.objects.get(pk=1)
 serializer = ProductSerializer(product)
-
 print(serializer.data)
-```
 
-Important properties:
-
-```python
-serializer.instance
-# Existing Product object
-
-serializer.data
-# Serialized primitive representation
-```
-
-For a queryset:
-
-```python
-products = Product.objects.all()
-serializer = ProductSerializer(products, many=True)
-
+# A queryset needs many=True
+serializer = ProductSerializer(Product.objects.all(), many=True)
 print(serializer.data)
 ```
 
@@ -655,18 +582,11 @@ It normally appears under `non_field_errors`.
 ```python
 from rest_framework import serializers
 
-
 def validate_positive_stock(value):
     if value < 0:
-        raise serializers.ValidationError(
-            "Stock cannot be negative."
-        )
-```
+        raise serializers.ValidationError("Stock cannot be negative.")
 
-```python
-stock = serializers.IntegerField(
-    validators=[validate_positive_stock],
-)
+stock = serializers.IntegerField(validators=[validate_positive_stock])
 ```
 
 ## 8.5 Class-level validators
@@ -675,7 +595,6 @@ stock = serializers.IntegerField(
 
 ```python
 from rest_framework.validators import UniqueTogetherValidator
-
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -803,48 +722,27 @@ class ProductSerializer(serializers.ModelSerializer):
         return Product.objects.create(**validated_data)
 ```
 
-In a view, request-specific data can be passed safely:
-
-```python
-serializer.save(created_by=request.user)
-```
+In a view, request-specific data can be passed safely: `serializer.save(created_by=request.user)`
 
 The extra keyword argument is merged into `validated_data` before `create()` is called.
 
 ## 9.4 Custom `update()`
 
+Override `update()` to control exactly which columns are written — `update_fields` narrows the `UPDATE` statement.
+
 ```python
 class ProductSerializer(serializers.ModelSerializer):
+    EDITABLE = ["name", "price", "stock", "is_active"]
+
     class Meta:
         model = Product
         fields = ["name", "price", "stock", "is_active"]
 
     def update(self, instance, validated_data):
-        instance.name = validated_data.get(
-            "name",
-            instance.name,
-        )
-        instance.price = validated_data.get(
-            "price",
-            instance.price,
-        )
-        instance.stock = validated_data.get(
-            "stock",
-            instance.stock,
-        )
-        instance.is_active = validated_data.get(
-            "is_active",
-            instance.is_active,
-        )
+        for field in self.EDITABLE:
+            setattr(instance, field, validated_data.get(field, getattr(instance, field)))
 
-        instance.save(
-            update_fields=[
-                "name",
-                "price",
-                "stock",
-                "is_active",
-            ]
-        )
+        instance.save(update_fields=self.EDITABLE)
         return instance
 ```
 
@@ -938,7 +836,15 @@ The password is not included in the response.
 
 # 11. Working with Relationships
 
-Assume `Product.category` is a `ForeignKey`.
+Assume `Product.category` is a `ForeignKey`. DRF offers five representations, each trading readability against write support:
+
+| Representation | Trade-off |
+| --- | --- |
+| Primary key | Compact and easy to write |
+| String | Readable but read-only |
+| Slug | Readable identifier |
+| Hyperlink | Resource-oriented representation |
+| Nested object | Rich output, more complex writes |
 
 ## 11.1 Primary-key representation
 
@@ -1035,7 +941,6 @@ class CategorySummarySerializer(serializers.ModelSerializer):
         model = Category
         fields = ["id", "name"]
 
-
 class ProductSerializer(serializers.ModelSerializer):
     category = CategorySummarySerializer(read_only=True)
 
@@ -1120,7 +1025,6 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = ["id", "name"]
 
-
 class ProductSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
 
@@ -1150,7 +1054,6 @@ class ProductSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = ["id", "name", "price"]
-
 
 class CategoryDetailSerializer(serializers.ModelSerializer):
     products = ProductSummarySerializer(
@@ -1192,12 +1095,10 @@ Serializer:
 ```python
 from django.db import transaction
 
-
 class ProductInputSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = ["name", "sku", "price"]
-
 
 class CategoryCreateSerializer(serializers.ModelSerializer):
     products = ProductInputSerializer(many=True)
@@ -1271,14 +1172,7 @@ Output:
 }
 ```
 
-The naming convention is:
-
-```text
-field name:       is_in_stock
-method name:      get_is_in_stock(self, obj)
-```
-
-A custom method name is also possible:
+The naming convention is `get_<field_name>(self, obj)`, so the field `is_in_stock` looks for `get_is_in_stock()`. A custom method name is also possible:
 
 ```python
 is_in_stock = serializers.SerializerMethodField(
@@ -1305,53 +1199,20 @@ Do not use it to execute a new query for every serialized object. That can creat
 
 `source` tells a serializer field where its value comes from.
 
-## 14.1 Rename an attribute
+## 14.1 Rename, traverse, or call
 
 ```python
+# Renames product.name to "product_name" in the API.
 product_name = serializers.CharField(source="name")
+
+# Traverses a relation: outputs {"category_name": "Keyboards"}.
+category_name = serializers.CharField(source="category.name", read_only=True)
+
+# Calls a zero-argument property or method on the object.
+display_name = serializers.CharField(source="get_display_name", read_only=True)
 ```
 
-API output:
-
-```json
-{
-  "product_name": "Mechanical Keyboard"
-}
-```
-
-Model attribute:
-
-```python
-product.name
-```
-
-## 14.2 Access a related attribute
-
-```python
-category_name = serializers.CharField(
-    source="category.name",
-    read_only=True,
-)
-```
-
-Output:
-
-```json
-{
-  "category_name": "Keyboards"
-}
-```
-
-## 14.3 Call a zero-argument property or method
-
-```python
-display_name = serializers.CharField(
-    source="get_display_name",
-    read_only=True,
-)
-```
-
-## 14.4 Use the entire object with `source="*"`
+## 14.2 Use the entire object with `source="*"`
 
 ```python
 class StockStatusField(serializers.Field):
@@ -1360,7 +1221,6 @@ class StockStatusField(serializers.Field):
             "quantity": product.stock,
             "available": product.stock > 0,
         }
-
 
 class ProductSerializer(serializers.ModelSerializer):
     stock_status = StockStatusField(
@@ -1450,38 +1310,14 @@ Do not hide major domain workflows inside serializer context. Core business oper
 
 # 16. Partial Updates
 
-A full update normally expects all required fields.
+A full update normally expects all required fields; a partial update validates only the fields that were supplied and leaves the rest at their existing values.
 
 ```python
-serializer = ProductSerializer(
-    product,
-    data=request.data,
-)
-```
+# PUT — complete replacement representation
+serializer = ProductSerializer(product, data=request.data)
 
-A partial update validates only the supplied fields.
-
-```python
-serializer = ProductSerializer(
-    product,
-    data=request.data,
-    partial=True,
-)
-```
-
-Example PATCH request:
-
-```json
-{
-  "stock": 30
-}
-```
-
-The remaining fields keep their existing values.
-
-```text
-PUT   → Usually complete replacement/update representation
-PATCH → Partial modification
+# PATCH — partial modification; a body of {"stock": 30} touches only stock
+serializer = ProductSerializer(product, data=request.data, partial=True)
 ```
 
 A DRF `ModelViewSet` uses `partial=True` for its `partial_update()` action.
@@ -1585,12 +1421,7 @@ serializer.is_valid(raise_exception=True)
 products = serializer.save()
 ```
 
-Internally, DRF wraps the child serializer in a `ListSerializer`.
-
-```text
-ListSerializer
-    └── child: ProductSerializer
-```
+Internally, DRF wraps the child serializer in a `ListSerializer` whose `child` is the `ProductSerializer`.
 
 The default list behavior supports multiple-object creation by calling the child serializer's `create()` for each item. Efficient bulk creation requires custom behavior.
 
@@ -1611,7 +1442,6 @@ class ProductListSerializer(serializers.ListSerializer):
         ]
 
         return Product.objects.bulk_create(products)
-
 
 class ProductBulkSerializer(serializers.ModelSerializer):
     class Meta:
@@ -1672,19 +1502,7 @@ A bulk update contract should clearly define identity and behavior before implem
 
 Create a custom field when built-in fields cannot express the required API representation.
 
-A custom field commonly implements:
-
-```python
-to_representation(value)
-```
-
-for output and:
-
-```python
-to_internal_value(data)
-```
-
-for input.
+A custom field commonly implements `to_representation(value)` for output and `to_internal_value(data)` for input.
 
 ## 19.1 Example: money in cents
 
@@ -1694,7 +1512,6 @@ Suppose the model stores a decimal amount, but the API accepts and returns an in
 from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
-
 
 class CentsField(serializers.Field):
     default_error_messages = {
@@ -1734,30 +1551,11 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "price_in_cents"]
 ```
 
-Input:
-
-```json
-{
-  "name": "Mechanical Keyboard",
-  "price_in_cents": 8999
-}
-```
-
-Internal value:
-
-```python
-Decimal("89.99")
-```
+An input of `{"name": "Mechanical Keyboard", "price_in_cents": 8999}` therefore arrives in `validated_data` as `Decimal("89.99")`.
 
 ## 19.2 Use `self.fail()`
 
-`self.fail()` raises a validation error using `default_error_messages`.
-
-```python
-self.fail("negative")
-```
-
-This is cleaner and easier to translate than scattering error strings throughout the field.
+`self.fail("negative")` raises a validation error using the matching key from `default_error_messages`. This is cleaner and easier to translate than scattering error strings throughout the field.
 
 ---
 
@@ -1850,31 +1648,17 @@ Possible behavior:
 N queries → fetch category for each product
 ```
 
-Use `select_related()` for single-valued relationships such as `ForeignKey` and `OneToOneField`:
-
 ```python
-products = Product.objects.select_related(
-    "category",
-    "created_by",
-)
-```
+# select_related() for single-valued relations: ForeignKey, OneToOneField
+products = Product.objects.select_related("category", "created_by")
 
-Use `prefetch_related()` for collection relationships such as `ManyToManyField` and reverse `ForeignKey`:
-
-```python
-categories = Category.objects.prefetch_related(
-    "products",
-)
+# prefetch_related() for collections: ManyToManyField, reverse ForeignKey
+categories = Category.objects.prefetch_related("products")
 ```
 
 ## 21.1 Performance responsibility
 
-```text
-Serializer defines the data shape.
-View/query layer loads the data efficiently.
-```
-
-A useful pattern is to keep queryset optimization near the view:
+The serializer defines the data *shape*; the view and query layer load that data *efficiently*. Keep queryset optimization near the view:
 
 ```python
 class ProductViewSet(ModelViewSet):
@@ -1906,18 +1690,13 @@ Better approaches include:
 - Use a database expression.
 - Pass already-computed information to the serializer.
 
-Example:
+Example — annotate once in the queryset, then read the annotation as a plain field:
 
 ```python
 from django.db.models import Count
 
+queryset = Product.objects.annotate(review_count=Count("reviews"))
 
-queryset = Product.objects.annotate(
-    review_count=Count("reviews"),
-)
-```
-
-```python
 class ProductSerializer(serializers.ModelSerializer):
     review_count = serializers.IntegerField(read_only=True)
 
@@ -1939,7 +1718,6 @@ from rest_framework.views import APIView
 
 from .models import Product
 from .serializers import ProductSerializer
-
 
 class ProductListCreateAPIView(APIView):
     def get(self, request):
@@ -1979,55 +1757,36 @@ class ProductListCreateAPIView(APIView):
         )
 ```
 
-## 22.2 Generic view example
+## 22.2 Generic view and ViewSet examples
+
+Both reduce the whole of §22.1 to a queryset and a hook. The bodies are identical; only the base class differs.
 
 ```python
 from rest_framework.generics import ListCreateAPIView
-
+from rest_framework.viewsets import ModelViewSet
 
 class ProductListCreateAPIView(ListCreateAPIView):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        return (
-            Product.objects
-            .select_related("category", "created_by")
-            .all()
-        )
+        return Product.objects.select_related("category", "created_by").all()
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
-```
-
-Generic views already:
-
-- Instantiate the serializer
-- Pass serializer context
-- Validate request data
-- Return standard responses
-- Call lifecycle hooks such as `perform_create()`
-
-## 22.3 ViewSet example
-
-```python
-from rest_framework.viewsets import ModelViewSet
-
 
 class ProductViewSet(ModelViewSet):
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        return (
-            Product.objects
-            .select_related("category", "created_by")
-            .all()
-        )
+        return Product.objects.select_related("category", "created_by").all()
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 ```
 
-## 22.4 Different serializers by action
+Generic views and ViewSets already instantiate the serializer, pass its context, validate request data, return standard responses, and call lifecycle hooks such as `perform_create()`.
+
+## 22.3 Different serializers by action
 
 A list endpoint may need compact output, while detail and write operations may need different fields.
 
@@ -2051,102 +1810,58 @@ This keeps each API contract focused.
 
 # 23. Testing Serializers
 
-Serializer tests are fast and directly verify the API contract.
-
-## 23.1 Test valid input
+Serializer tests are fast and directly verify the API contract. They need no HTTP client — instantiate the serializer directly and assert on `is_valid()`, `errors`, `validated_data`, `data`, or the saved object.
 
 ```python
 import pytest
 
-
-@pytest.mark.django_db
-def test_product_serializer_accepts_valid_data(category):
-    payload = {
+def payload(category, **overrides):
+    return {
         "category": category.id,
         "name": "Mechanical Keyboard",
         "sku": "PRD-1001",
         "price": "89.99",
         "stock": 25,
-    }
+    } | overrides
 
-    serializer = ProductSerializer(data=payload)
-
-    assert serializer.is_valid(), serializer.errors
-    assert serializer.validated_data["name"] == (
-        "Mechanical Keyboard"
-    )
-```
-
-## 23.2 Test invalid input
-
-```python
 @pytest.mark.django_db
-def test_product_serializer_rejects_negative_price(category):
-    payload = {
-        "category": category.id,
-        "name": "Mechanical Keyboard",
-        "sku": "PRD-1001",
-        "price": "-1.00",
-        "stock": 25,
-    }
+def test_accepts_valid_data(category):
+    serializer = ProductSerializer(data=payload(category))
+    assert serializer.is_valid(), serializer.errors
+    assert serializer.validated_data["name"] == "Mechanical Keyboard"
 
-    serializer = ProductSerializer(data=payload)
-
+@pytest.mark.django_db
+def test_rejects_negative_price(category):
+    serializer = ProductSerializer(data=payload(category, price="-1.00"))
     assert serializer.is_valid() is False
     assert "price" in serializer.errors
-```
 
-## 23.3 Test object creation
-
-```python
 @pytest.mark.django_db
-def test_product_serializer_creates_product(category, user):
-    payload = {
-        "category": category.id,
-        "name": "Mechanical Keyboard",
-        "sku": "PRD-1001",
-        "price": "89.99",
-        "stock": 25,
-    }
-
-    serializer = ProductSerializer(data=payload)
+def test_creates_product(category, user):
+    serializer = ProductSerializer(data=payload(category))
     serializer.is_valid(raise_exception=True)
 
     product = serializer.save(created_by=user)
 
     assert product.pk is not None
-    assert product.created_by == user
+    assert product.created_by == user          # server-controlled, not from the payload
     assert product.price == Decimal("89.99")
-```
 
-## 23.4 Test output representation
-
-```python
 @pytest.mark.django_db
-def test_product_serializer_output(product):
+def test_output_representation(product):
     serializer = ProductSerializer(product)
-
     assert serializer.data["id"] == product.id
-    assert serializer.data["name"] == product.name
     assert "created_at" in serializer.data
-```
 
-## 23.5 Test partial update
-
-```python
 @pytest.mark.django_db
-def test_product_serializer_partial_update(product):
-    serializer = ProductSerializer(
-        product,
-        data={"stock": 50},
-        partial=True,
-    )
+def test_partial_update(product):
+    serializer = ProductSerializer(product, data={"stock": 50}, partial=True)
     serializer.is_valid(raise_exception=True)
 
     updated_product = serializer.save()
 
     assert updated_product.stock == 50
-    assert updated_product.name == product.name
+    assert updated_product.name == product.name   # untouched field survives
 ```
 
 Tests should verify:
@@ -2168,22 +1883,10 @@ Tests should verify:
 
 ## 24.1 Explicitly list fields
 
-Prefer:
-
 ```python
 class Meta:
-    fields = [
-        "id",
-        "name",
-        "price",
-    ]
-```
-
-Avoid exposing every future model field automatically:
-
-```python
-class Meta:
-    fields = "__all__"
+    fields = ["id", "name", "price"]   # explicit contract
+    # fields = "__all__"               # avoid: exposes every future model field
 ```
 
 An explicit API contract reduces accidental data exposure when a model changes.
@@ -2211,56 +1914,26 @@ The serializer can validate the request and pass validated values to the service
 
 ## 24.3 Separate read and write serializers when useful
 
-Read operations often need nested, descriptive data. Write operations usually work better with IDs and a smaller input contract.
-
-```python
-ProductReadSerializer
-ProductWriteSerializer
-```
-
-This can be clearer than forcing one serializer to handle every use case.
+Read operations often need nested, descriptive data. Write operations usually work better with IDs and a smaller input contract, so a `ProductReadSerializer` / `ProductWriteSerializer` pair can be clearer than forcing one serializer to handle every use case.
 
 ## 24.4 Treat read-only fields as server-controlled
 
-Set audit and ownership values from trusted request context:
-
-```python
-serializer.save(created_by=request.user)
-```
+Set audit and ownership values from trusted request context: `serializer.save(created_by=request.user)`
 
 Do not accept them directly from the client.
 
 ## 24.5 Optimize the queryset, not the serializer
 
-Use:
-
-```python
-select_related()
-prefetch_related()
-annotate()
-```
-
-in the queryset that feeds the serializer.
+Use `select_related()`, `prefetch_related()`, and `annotate()` in the queryset that feeds the serializer.
 
 ## 24.6 Keep validation messages actionable
 
-Prefer:
-
-```text
-"The end time must be later than the start time."
-```
-
-over:
-
-```text
-"Invalid data."
-```
+Prefer “The end time must be later than the start time.” over “Invalid data.”
 
 ## 24.7 Use transactions for multi-object writes
 
 ```python
 from django.db import transaction
-
 
 @transaction.atomic
 def create(self, validated_data):
@@ -2288,101 +1961,7 @@ Do not expose a field merely because it exists on the model. Design the response
 
 ---
 
-# 25. Interview-Focused Summary
-
-## 25.1 Core definition
-
-A DRF serializer converts complex objects into primitive data for responses and converts validated input data back into Python values or model instances.
-
-## 25.2 The most important lifecycle
-
-```mermaid
-flowchart TD
-    A["Serializer(data=request.data)"] --> B{"is_valid()"}
-    B --> C[errors]
-    B --> D[validated_data]
-    D --> E["save()"]
-    E --> F["create()"]
-    E --> G["update()"]
-```
-
-## 25.3 Key distinctions
-
-```text
-Serializer
-- Explicit fields
-- Explicit create/update
-- Suitable for non-model operations
-
-ModelSerializer
-- Generates fields from a model
-- Generates model-aware validators
-- Provides default create/update
-- Suitable for common CRUD APIs
-```
-
-## 25.4 Validation levels
-
-```mermaid
-flowchart TD
-    A[Field configuration] --> B[Reusable field validators]
-    B --> C["validate_[field]()"]
-    C --> D[Meta.validators]
-    D --> E["validate()"]
-```
-
-## 25.5 Relationship choices
-
-| Representation | Trade-off |
-| --- | --- |
-| Primary key | Compact and easy to write |
-| String | Readable but read-only |
-| Slug | Readable identifier |
-| Hyperlink | Resource-oriented representation |
-| Nested object | Rich output, more complex writes |
-
-## 25.6 Performance rule
-
-```text
-Serializer chooses the shape.
-Queryset chooses the efficiency.
-```
-
-DRF does not automatically add `select_related()` or `prefetch_related()` based on serializer fields.
-
-## 25.7 Practical decision guide
-
-```mermaid
-flowchart TD
-    A{Does the payload closely<br/>represent one model?} -->|Yes| B[Start with ModelSerializer]
-    A -->|No| C[Start with Serializer]
-    D{Does read output differ<br/>greatly from write input?} -->|Yes| E["Consider separate read/write serializers"]
-    D -->|No| F[One serializer may be sufficient]
-    G{Does the serializer access<br/>related objects?} -->|Yes| H[Optimize the queryset]
-    G -->|No| I[Normal queryset may be sufficient]
-    J{Does saving involve<br/>a complex workflow?} -->|Yes| K["Consider a service/domain layer"]
-    J -->|No| L["create()/update() may be enough"]
-```
-
-## 25.8 Final mental model
-
-```mermaid
-flowchart TD
-    A[Request JSON] --> B[Parser]
-    B --> C[Serializer validation]
-    C --> D[validated_data]
-    D --> E["Application/model operation"]
-    E --> F["Model/object"]
-    F --> G[Serializer representation]
-    G --> H[Renderer]
-    H --> I[Response JSON]
-```
-
-A well-designed serializer creates a clear and safe boundary between external API data and internal application objects.
-
----
-
-# 26. Official References
+# 25. Official References
 
 This guide is aligned with Django REST Framework 3.17.x behavior and the official DRF documentation available in July 2026.
 

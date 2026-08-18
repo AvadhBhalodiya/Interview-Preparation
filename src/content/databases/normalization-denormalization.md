@@ -8,6 +8,35 @@ order: 7
 
 > A practical, interview-focused guide for developers working with relational databases and SQL.
 
+## In short
+
+- **Normalization** stores each business fact in exactly one place so insert, update, and delete anomalies cannot arise; **denormalization** deliberately re-introduces copies or precomputed values to make a proven read path faster or simpler.
+- **1NF** — one value per column per row and no repeating groups: store repeated business facts as rows, not as `product_1`, `product_2`, `product_3` columns.
+- **2NF** — 1NF plus no partial dependency: every non-key column must depend on the *whole* composite key, so `product_name` moves out of `order_items` into `products`.
+- **3NF** — 2NF plus no transitive dependency: a non-key column must not depend on another non-key column, so customer name and email move out of `orders` into `customers`; BCNF tightens this so every determinant is a superkey.
+- 3NF is the usual practical target for a transactional (OLTP) schema; denormalized shapes — summary tables, materialized views, star schemas, caches, search indexes, CQRS read models — sit on top of it to serve read and analytics workloads.
+- A duplicated value is not always redundancy: `products.current_price` and `order_items.unit_price` are different business facts, so a transaction snapshot is legitimate design rather than a normalization error.
+- Joins are not automatically the problem — read the execution plan and fix indexes, selectivity, and N+1 queries before reshaping the schema.
+
+```mermaid
+flowchart LR
+    A[Business data] --> B{Primary workload}
+    B -->|Frequent writes and transactions| C[Normalized model]
+    B -->|Heavy reads and reporting| D[Denormalized model]
+
+    C --> E[Less duplication]
+    C --> F[Stronger consistency]
+    C --> G[More joins]
+
+    D --> H[Faster targeted reads]
+    D --> I[Simpler reports]
+    D --> J[More synchronization work]
+```
+
+**Interview answer:** 1NF means every column holds a single value for a row, with repeating groups stored as rows instead of numbered columns. 2NF adds that no non-key column may depend on only part of a composite key, so `product_name` belongs in `products` rather than in `order_items` keyed by `(order_id, product_id)`. 3NF adds that no non-key column may depend on another non-key column, so customer name and email belong in `customers` rather than in `orders` — and 3NF is where most transactional schemas should land.
+
+**Gotcha:** Denormalizing before you have a measured read problem, and then having no documented source of truth, accepted staleness, sync mechanism, or rebuild and reconciliation path for the duplicated data — which turns a controlled projection into accidental duplication that quietly drifts.
+
 ---
 
 # 1. Overview
@@ -46,9 +75,7 @@ Its main goals are:
 - Make data ownership clear
 - Improve long-term maintainability
 
-```text
-Store each business fact in one logical place.
-```
+> Store each business fact in one logical place.
 
 For example, a customer's email belongs in the `customers` table rather than being copied into every order row.
 
@@ -64,28 +91,9 @@ Its main goals are:
 - Simplify reporting queries
 - Support high-volume read workloads
 
-```text
-Duplicate or precompute selected data when the performance benefit justifies the consistency cost.
-```
+> Duplicate or precompute selected data when the performance benefit justifies the consistency cost.
 
 For example, an analytics table may store `customer_name`, `product_category`, and `daily_revenue` together so that a dashboard does not need several joins and aggregations on every request.
-
-## 2.3 Simple Comparison
-
-```mermaid
-flowchart LR
-    A[Business data] --> B{Primary workload}
-    B -->|Frequent writes and transactions| C[Normalized model]
-    B -->|Heavy reads and reporting| D[Denormalized model]
-
-    C --> E[Less duplication]
-    C --> F[Stronger consistency]
-    C --> G[More joins]
-
-    D --> H[Faster targeted reads]
-    D --> I[Simpler reports]
-    D --> J[More synchronization work]
-```
 
 ---
 
@@ -216,13 +224,7 @@ The combination `(order_id, line_no)` uniquely identifies an order line.
 
 ## 5.4 Functional Dependency
 
-A functional dependency is written as:
-
-```text
-X -> Y
-```
-
-It means that a value of `X` determines exactly one value of `Y`.
+A functional dependency is written as `X -> Y`. It means that a value of `X` determines exactly one value of `Y`.
 
 Examples:
 
@@ -236,15 +238,7 @@ Functional dependencies help identify which columns belong together.
 
 ## 5.5 Determinant
 
-The left side of a functional dependency is called the **determinant**.
-
-In:
-
-```text
-product_id -> product_name
-```
-
-`product_id` is the determinant.
+The left side of a functional dependency is called the **determinant**. In `product_id -> product_name`, `product_id` is the determinant.
 
 A strong normalized design ensures that important determinants are represented by candidate keys or are separated into appropriate tables.
 
@@ -423,11 +417,7 @@ order_id    -> customer_id, ordered_at
 customer_id -> customer_name, customer_email
 ```
 
-Therefore:
-
-```text
-order_id -> customer_id -> customer_name, customer_email
-```
+Therefore: `order_id -> customer_id -> customer_name, customer_email`
 
 Customer details are transitively dependent on `order_id`. They belong in the `customers` table.
 
@@ -467,11 +457,7 @@ The snapshot value can be valid denormalization when historical accuracy require
 
 BCNF is stricter than 3NF.
 
-A relation is in BCNF when:
-
-```text
-For every non-trivial dependency X -> Y, X must be a superkey.
-```
+A relation is in BCNF when, for every non-trivial dependency `X -> Y`, `X` is a superkey.
 
 In simpler language:
 
@@ -487,13 +473,7 @@ Assume these business rules:
 - Each subject is taught by one instructor
 - An instructor teaches only one subject
 
-A table containing:
-
-```text
-(student_id, subject, instructor)
-```
-
-may have dependencies such as:
+A table containing `(student_id, subject, instructor)` may have dependencies such as:
 
 ```text
 (student_id, subject) -> instructor
@@ -698,14 +678,7 @@ CREATE TABLE order_items (
 
 ## 7.6 Why `unit_price` Belongs in `order_items`
 
-At first glance, storing both:
-
-```text
-products.current_price
-order_items.unit_price
-```
-
-may look redundant.
+At first glance, storing both `products.current_price` and `order_items.unit_price` may look redundant.
 
 They represent different facts:
 
@@ -775,13 +748,7 @@ Denormalization introduces additional responsibilities:
 - Backfill and rebuild procedures
 - More operational monitoring
 
-The central trade-off is:
-
-```text
-Faster or simpler reads
-            vs
-More expensive consistency management
-```
+The central trade-off is faster or simpler reads versus more expensive consistency management.
 
 ## 8.3 Controlled vs Accidental Duplication
 
@@ -935,11 +902,7 @@ CREATE UNIQUE INDEX product_sales_summary_product_id_idx
     ON product_sales_summary (product_id);
 ```
 
-Refresh when appropriate:
-
-```sql
-REFRESH MATERIALIZED VIEW product_sales_summary;
-```
+Refresh when appropriate: `REFRESH MATERIALIZED VIEW product_sales_summary;`
 
 Materialized views are useful when:
 
@@ -1284,14 +1247,7 @@ When the same logical fact exists in multiple places, decide which copy is autho
 
 ## 13.1 Single Source of Truth
 
-Example:
-
-```text
-Authoritative value: customers.full_name
-Read projection: customer_order_summary.customer_name
-```
-
-Only the authoritative value should normally be edited directly.
+For example, `customers.full_name` is the authoritative value and `customer_order_summary.customer_name` is a read projection of it. Only the authoritative value should normally be edited directly.
 
 ## 13.2 Same-Transaction Updates
 
@@ -1568,31 +1524,7 @@ The key rule is that ownership must remain clear. A copied customer name in the 
 
 ---
 
-# 17. Key Takeaways
-
-1. **Normalization protects correctness.** It reduces duplication and prevents update, insert, and delete anomalies.
-
-2. **1NF removes repeating groups.** Store repeating business facts as rows, not numbered columns.
-
-3. **2NF removes partial dependencies.** A non-key attribute must depend on the whole composite key.
-
-4. **3NF removes transitive dependencies.** Non-key facts should not depend on other non-key facts.
-
-5. **Denormalization is intentional optimization.** It trades simpler or faster reads for additional consistency and operational work.
-
-6. **Joins are not automatically a problem.** First measure query plans and add suitable indexes.
-
-7. **A duplicated value may represent a different fact.** `current_price` and `price_at_purchase` are not interchangeable.
-
-8. **Keep a clear source of truth.** Denormalized copies should usually be projections, snapshots, summaries, or caches.
-
-9. **Use different models for different workloads.** A normalized OLTP schema and a denormalized analytical schema can coexist.
-
-10. **Choose based on evidence.** Start with correctness, measure real workloads, and denormalize only where the benefit justifies the complexity.
-
----
-
-# 18. References
+# 17. References
 
 The concepts and implementation notes in this guide align with current official database and architecture documentation available in July 2026:
 

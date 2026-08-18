@@ -8,18 +8,34 @@ order: 8
 
 > Dunder methods are special methods that connect custom Python classes to Python's built-in syntax and functions. They let an object initialize itself, display meaningful text, support debugging, and define value-based equality.
 
+## In short
+
+- `__init__` initializes an instance that `__new__` has already created, so it is an initializer rather than a constructor, and it must return `None`.
+- `__str__` returns readable text for people, and `str()`, `print()`, and plain f-strings use it.
+- `__repr__` returns unambiguous, information-rich text for developers, and `repr()`, `!r`, debuggers, and containers displaying their items use it.
+- When a class defines `__repr__` but no `__str__`, Python falls back to `__repr__`, which is why implementing `__repr__` first is a sensible default.
+- `__eq__` defines what `==` means by value; accept `other: object` and return `NotImplemented` for unsupported operand types so Python can try the reflected comparison.
+- Defining `__eq__` without `__hash__` makes instances unhashable, and the contract is `x == y ⇒ hash(x) == hash(y)`.
+- `==` asks whether values are equal and is controlled by `__eq__`; `is` asks whether two references point at the same object and cannot be overloaded.
+
+```mermaid
+flowchart LR
+    A[Python syntax or built-in] --> B{Operation}
+    B -->|Product name, price| C[Product.__init__]
+    B -->|print or str| D[Product.__str__]
+    B -->|repr, debugger, container| E[Product.__repr__]
+    B -->|left == right| F[Product.__eq__]
+```
+
+**Interview answer:** `__str__` is the readable representation meant for people, used by `str()`, `print()`, and normal f-strings, while `__repr__` is the unambiguous, information-rich representation meant for developers, used by `repr()`, `!r`, debuggers, and containers such as lists when they display their items. A `__repr__` should ideally resemble the constructor call that would recreate an equivalent object. If a class defines only `__repr__`, Python uses it for `str()` as well, so `__repr__` is the one to write first.
+
+**Gotcha:** Defining `__eq__` without also defining `__hash__` makes instances unhashable — `hash(product)` then raises `TypeError: unhashable type: 'Product'`, and the object can no longer be a dictionary key or a set member. Add a `__hash__` built from the same fields whenever the object still has to live in a hashed collection, and only when those fields will not change while it is in one.
+
 ---
 
 # 1. What Are Dunder Methods?
 
-**Dunder** means **double underscore**. A dunder method has two leading and two trailing underscores:
-
-```python
-__init__
-__str__
-__repr__
-__eq__
-```
+**Dunder** means **double underscore**. A dunder method has two leading and two trailing underscores: `__init__`, `__str__`, `__repr__`, `__eq__`.
 
 They are also called:
 
@@ -27,17 +43,7 @@ They are also called:
 - **Magic methods**
 - **Data model methods**
 
-Dunder methods allow your classes to participate naturally in Python operations.
-
-```python
-product = Product("Keyboard", 80.0)
-
-print(product)                  # Calls product.__str__()
-repr(product)                   # Calls product.__repr__()
-product == another_product      # Calls product.__eq__(another_product)
-```
-
-You normally use the public syntax—such as `print(product)` or `product1 == product2`—instead of calling dunder methods directly.
+Dunder methods allow your classes to participate naturally in Python operations. You normally use the public syntax—such as `print(product)` or `product1 == product2`—instead of calling dunder methods directly.
 
 ## Why They Matter
 
@@ -49,36 +55,16 @@ class Product:
 
 product = Product()
 print(product)
+# Possible output: <__main__.Product object at 0x1045A1F10>
 ```
 
-Possible output:
-
-```text
-<__main__.Product object at 0x1045A1F10>
-```
-
-This output identifies the object's type and runtime identity, but it does not explain the object's business data.
-
-With dunder methods, the same object can become expressive:
-
-```text
-Keyboard — $80.00
-```
+This output identifies the object's type and runtime identity, but it does not explain the object's business data. With dunder methods, the same object can become expressive: `Keyboard — $80.00`.
 
 ---
 
 # 2. How Python Calls Them
 
 Dunder methods are hooks used by Python's object model.
-
-```mermaid
-flowchart LR
-    A[Python syntax or built-in] --> B{Operation}
-    B -->|Product name, price| C[Product.__init__]
-    B -->|print or str| D[Product.__str__]
-    B -->|repr, debugger, container| E[Product.__repr__]
-    B -->|left == right| F[Product.__eq__]
-```
 
 ## Method Mapping
 
@@ -107,13 +93,8 @@ class Product:
     def __init__(self, name: str, price: float) -> None:
         self.name = name
         self.price = price
-```
 
-Usage:
-
-```python
 product = Product("Keyboard", 80.0)
-
 print(product.name)   # Keyboard
 print(product.price)  # 80.0
 ```
@@ -143,27 +124,17 @@ __init__ → configures the already-created instance
 
 Therefore, `__init__` is technically an **initializer**, although developers often casually call it a constructor.
 
-## `self` Refers to the Current Instance
+`self` refers to the current instance, and Python passes it for you:
 
 ```python
 class User:
     def __init__(self, username: str) -> None:
         self.username = username
+
+user = User("avadh")   # Effectively initializes the object via User.__init__(user, "avadh")
 ```
 
-When Python executes:
-
-```python
-user = User("avadh")
-```
-
-It effectively initializes the new object using:
-
-```python
-User.__init__(user, "avadh")
-```
-
-You should let Python perform this call through `User("avadh")`.
+You should let Python perform this call through `User("avadh")` rather than calling `__init__` yourself.
 
 ## Initialize Instance Attributes
 
@@ -174,9 +145,7 @@ class BankAccount:
     def __init__(self, account_number: str, balance: float = 0.0) -> None:
         self.account_number = account_number
         self.balance = balance
-```
 
-```python
 first = BankAccount("ACC-101", 500.0)
 second = BankAccount("ACC-102")
 
@@ -203,51 +172,28 @@ class Product:
 
         self.name = cleaned_name
         self.price = float(price)
-```
 
-Now an invalid object cannot be created:
-
-```python
 Product("", 50)       # ValueError
 Product("Mouse", -10) # ValueError
 ```
 
-## `__init__` Must Return `None`
+Now an invalid object cannot be created.
 
-Do not return another value from `__init__`.
+## Return `None`, and Avoid Mutable Defaults
 
-```python
-class User:
-    def __init__(self, name: str) -> None:
-        self.name = name
-        return self  # Incorrect
-```
-
-Python raises:
-
-```text
-TypeError: __init__() should return None, not 'User'
-```
-
-A normal `__init__` either:
+Do not return another value from `__init__`. Writing `return self` at the end of `__init__` raises `TypeError: __init__() should return None, not 'User'`. A normal `__init__` either:
 
 - Reaches the end without an explicit `return`
 - Uses `return` by itself for an early exit
 - Raises an exception when initialization cannot continue
 
-## Mutable Default Values
-
-Avoid sharing one mutable default across multiple instances.
+Also avoid sharing one mutable default across multiple instances. The `None` sentinel gives every object its own list:
 
 ```python
 class Team:
     def __init__(self, members: list[str] | None = None) -> None:
         self.members = [] if members is None else list(members)
-```
 
-The `None` sentinel gives every object its own list.
-
-```python
 backend = Team()
 frontend = Team()
 
@@ -298,42 +244,13 @@ class Product:
 
     def __str__(self) -> str:
         return f"{self.name} — ${self.price:.2f}"
-```
 
-```python
 product = Product("Keyboard", 80.0)
-
-print(str(product))
-print(product)
+print(str(product))  # Keyboard — $80.00
+print(product)       # Keyboard — $80.00
 ```
 
-Output:
-
-```text
-Keyboard — $80.00
-Keyboard — $80.00
-```
-
-## Common Call Sites
-
-```python
-str(product)
-print(product)
-f"Selected item: {product}"
-"{}".format(product)
-```
-
-All these normally use the object's informal string representation.
-
-## `__str__` Must Return a String
-
-```python
-class Product:
-    def __str__(self) -> str:
-        return 100  # Incorrect
-```
-
-Calling `str(Product())` raises a `TypeError` because a string representation must be a `str` object.
+The calls `str(product)`, `print(product)`, `f"Selected item: {product}"`, and `"{}".format(product)` all normally use the object's informal string representation. The method must return a string: a body such as `return 100  # Incorrect` makes `str(product)` raise a `TypeError`, because a string representation must be a `str` object.
 
 ## Design a Useful `__str__`
 
@@ -358,17 +275,9 @@ class Order:
             f"Order {self.order_number}: "
             f"{self.status} — ${self.total:.2f}"
         )
-```
 
-```python
 order = Order("ORD-1042", "PAID", 249.50)
-print(order)
-```
-
-Output:
-
-```text
-Order ORD-1042: PAID — $249.50
+print(order)  # Order ORD-1042: PAID — $249.50
 ```
 
 ## Fallback Behavior
@@ -382,11 +291,8 @@ class Product:
 
     def __repr__(self) -> str:
         return f"Product(name={self.name!r})"
-```
 
-```python
 product = Product("Keyboard")
-
 print(str(product))   # Product(name='Keyboard')
 print(product)        # Product(name='Keyboard')
 ```
@@ -409,18 +315,9 @@ class Product:
 
     def __repr__(self) -> str:
         return f"Product(name={self.name!r}, price={self.price!r})"
-```
 
-```python
 product = Product("Keyboard", 80.0)
-
-print(repr(product))
-```
-
-Output:
-
-```text
-Product(name='Keyboard', price=80.0)
+print(repr(product))  # Product(name='Keyboard', price=80.0)
 ```
 
 ## Why Use `!r`?
@@ -442,24 +339,11 @@ Pro
 'Keyboard\nPro'
 ```
 
-For `__repr__`, `!r` preserves quotes and escape sequences, making the output less ambiguous.
-
-```python
-def __repr__(self) -> str:
-    return f"Product(name={self.name!r}, price={self.price!r})"
-```
+For `__repr__`, `!r` preserves quotes and escape sequences, making the output less ambiguous, which is why the `Product.__repr__` above formats every field with `!r`.
 
 ## Representation Convention
 
-When practical, `__repr__` should resemble valid Python code that could recreate an equivalent object.
-
-```python
-product = Product("Keyboard", 80.0)
-repr(product)
-# "Product(name='Keyboard', price=80.0)"
-```
-
-This is a convention, not a requirement that every representation must be executable.
+When practical, `__repr__` should resemble valid Python code that could recreate an equivalent object, the way `repr(product)` above returns `Product(name='Keyboard', price=80.0)`. This is a convention, not a requirement that every representation must be executable.
 
 For objects that cannot be conveniently reconstructed, provide an informative angle-bracket representation:
 
@@ -485,12 +369,7 @@ products = [
 ]
 
 print(products)
-```
-
-Output:
-
-```text
-[Product(name='Keyboard', price=80.0), Product(name='Mouse', price=30.0)]
+# [Product(name='Keyboard', price=80.0), Product(name='Mouse', price=30.0)]
 ```
 
 Although `print(products)` displays a list, the list represents each element using its `repr()`.
@@ -553,22 +432,13 @@ class Product:
             f"Product(sku={self.sku!r}, "
             f"name={self.name!r}, price={self.price!r})"
         )
-```
 
-```python
 product = Product("KB-101", "Keyboard", 80.0)
 
-print(product)
-# Keyboard — $80.00
-
-print(repr(product))
-# Product(sku='KB-101', name='Keyboard', price=80.0)
-
-print(f"{product}")
-# Keyboard — $80.00
-
-print(f"{product!r}")
-# Product(sku='KB-101', name='Keyboard', price=80.0)
+print(product)          # Keyboard — $80.00
+print(f"{product}")     # Keyboard — $80.00
+print(repr(product))    # Product(sku='KB-101', name='Keyboard', price=80.0)
+print(f"{product!r}")   # Product(sku='KB-101', name='Keyboard', price=80.0)
 ```
 
 ## Simple Mental Model
@@ -614,9 +484,7 @@ class Product:
             return NotImplemented
 
         return self.sku == other.sku
-```
 
-```python
 first = Product("KB-101", "Keyboard")
 second = Product("KB-101", "Mechanical Keyboard")
 third = Product("MS-202", "Mouse")
@@ -657,24 +525,14 @@ class Money:
             self.amount == other.amount
             and self.currency == other.currency
         )
-```
 
-```python
 print(Money(100, "usd") == Money(100, "USD"))  # True
 print(Money(100, "USD") == Money(100, "EUR"))  # False
 ```
 
 ## Why Return `NotImplemented`?
 
-When the other operand has an unsupported type, return `NotImplemented` rather than immediately returning `False`.
-
-```python
-def __eq__(self, other: object) -> bool:
-    if not isinstance(other, Product):
-        return NotImplemented
-
-    return self.sku == other.sku
-```
+When the other operand has an unsupported type, return `NotImplemented` rather than immediately returning `False`, exactly as the `Product.__eq__` and `Money.__eq__` methods above do.
 
 `NotImplemented` tells Python:
 
@@ -697,14 +555,7 @@ flowchart TD
 
 ## Type Hint for `other`
 
-Use `object` for the `other` parameter:
-
-```python
-def __eq__(self, other: object) -> bool:
-    ...
-```
-
-The expression `product == 10` is legal Python. Your method must therefore be prepared to receive any object, even if it supports comparison only with `Product`.
+Use `object` for the `other` parameter, as in `def __eq__(self, other: object) -> bool:`. The expression `product == 10` is legal Python. Your method must therefore be prepared to receive any object, even if it supports comparison only with `Product`.
 
 ## Exact Type vs `isinstance`
 
@@ -792,11 +643,7 @@ Equality affects whether an object can safely be used in hashed collections such
 
 ## The Hash Contract
 
-When two objects compare equal, they must have the same hash:
-
-```text
-x == y  ⇒  hash(x) == hash(y)
-```
+When two objects compare equal, they must have the same hash: `x == y  ⇒  hash(x) == hash(y)`
 
 The reverse is not required. Different objects may occasionally have the same hash due to collisions.
 
@@ -813,17 +660,9 @@ class Product:
         if not isinstance(other, Product):
             return NotImplemented
         return self.sku == other.sku
-```
 
-```python
 product = Product("KB-101")
-hash(product)
-```
-
-Result:
-
-```text
-TypeError: unhashable type: 'Product'
+hash(product)   # TypeError: unhashable type: 'Product'
 ```
 
 This protects hashed collections from objects whose equality-related state may change.
@@ -847,17 +686,15 @@ class Coordinate:
 
     def __hash__(self) -> int:
         return hash((self.latitude, self.longitude))
-```
 
-```python
 first = Coordinate(23.0225, 72.5714)
 second = Coordinate(23.0225, 72.5714)
 
-print(first == second)        # True
+print(first == second)              # True
 print(hash(first) == hash(second))  # True
 
 locations = {first, second}
-print(len(locations))         # 1
+print(len(locations))               # 1
 ```
 
 Only implement a value-based `__hash__` when the fields used for hashing will not change while the object is being used in a hashed collection. Treat the `Coordinate` fields above as immutable after initialization; a frozen dataclass provides stronger enforcement.
@@ -872,7 +709,6 @@ The following `Product` class combines all four methods.
 
 ```python
 from __future__ import annotations
-
 
 class Product:
     def __init__(
@@ -923,57 +759,21 @@ class Product:
 ## Usage
 
 ```python
-first = Product(
-    sku=" kb-101 ",
-    name="Mechanical Keyboard",
-    price=80,
-)
+first = Product(sku=" kb-101 ", name="Mechanical Keyboard", price=80)
+second = Product(sku="KB-101", name="Keyboard - New Packaging", price=85)
+third = Product(sku="MS-202", name="Wireless Mouse", price=30)
 
-second = Product(
-    sku="KB-101",
-    name="Keyboard - New Packaging",
-    price=85,
-)
+# Initialization normalized and converted the input
+print(first.sku)          # KB-101
+print(first.price)        # 80.0
 
-third = Product(
-    sku="MS-202",
-    name="Wireless Mouse",
-    price=30,
-)
-```
+# Human-readable and developer-readable output
+print(first)              # Mechanical Keyboard (KB-101) — $80.00, active
+print(repr(first))        # Product(sku='KB-101', name='Mechanical Keyboard', price=80.0, active=True)
 
-### Initialization Result
-
-```python
-print(first.sku)    # KB-101
-print(first.price)  # 80.0
-```
-
-### Human-Readable Output
-
-```python
-print(first)
-```
-
-```text
-Mechanical Keyboard (KB-101) — $80.00, active
-```
-
-### Developer-Readable Output
-
-```python
-print(repr(first))
-```
-
-```text
-Product(sku='KB-101', name='Mechanical Keyboard', price=80.0, active=True)
-```
-
-### Equality
-
-```python
-print(first == second)  # True: same normalized SKU
-print(first == third)   # False: different SKU
+# Equality
+print(first == second)    # True: same normalized SKU
+print(first == third)     # False: different SKU
 print(first == "KB-101")  # False after Python's comparison fallback
 ```
 
@@ -1007,19 +807,12 @@ class Product:
         self.sku = sku
         self.name = name
 
-
 class DigitalProduct(Product):
     def __init__(self, sku: str, name: str, download_url: str) -> None:
         super().__init__(sku, name)
         self.download_url = download_url
-```
 
-```python
-course = DigitalProduct(
-    "PY-301",
-    "Advanced Python",
-    "https://example.com/download/PY-301",
-)
+course = DigitalProduct("PY-301", "Advanced Python", "https://example.com/download/PY-301")
 ```
 
 ## Reuse Base Representation Carefully
@@ -1033,7 +826,6 @@ class Product:
     def __str__(self) -> str:
         return f"{self.name} ({self.sku})"
 
-
 class DigitalProduct(Product):
     def __init__(self, sku: str, name: str, file_format: str) -> None:
         super().__init__(sku, name)
@@ -1041,17 +833,9 @@ class DigitalProduct(Product):
 
     def __str__(self) -> str:
         return f"{super().__str__()} [{self.file_format}]"
-```
 
-```python
 ebook = DigitalProduct("BK-501", "Python Guide", "PDF")
-print(ebook)
-```
-
-Output:
-
-```text
-Python Guide (BK-501) [PDF]
+print(ebook)  # Python Guide (BK-501) [PDF]
 ```
 
 ## Representation That Supports Subclasses
@@ -1077,27 +861,16 @@ Python's `@dataclass` can automatically generate `__init__`, `__repr__`, and `__
 ```python
 from dataclasses import dataclass
 
-
 @dataclass
 class Product:
     sku: str
     name: str
     price: float
-```
 
-Python generates behavior similar to:
-
-```python
 product = Product("KB-101", "Keyboard", 80.0)
 
-print(repr(product))
-# Product(sku='KB-101', name='Keyboard', price=80.0)
-
-print(
-    product
-    == Product("KB-101", "Keyboard", 80.0)
-)
-# True
+print(repr(product))  # Product(sku='KB-101', name='Keyboard', price=80.0)
+print(product == Product("KB-101", "Keyboard", 80.0))  # True
 ```
 
 By default, dataclass equality compares the class and all fields in declaration order. It behaves as though the instance were compared using a tuple of its fields, while requiring both operands to have the identical class.
@@ -1106,7 +879,6 @@ By default, dataclass equality compares the class and all fields in declaration 
 
 ```python
 from dataclasses import dataclass
-
 
 @dataclass
 class Product:
@@ -1123,18 +895,15 @@ class Product:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True)
 class Coordinate:
     latitude: float
     longitude: float
-```
 
-```python
 first = Coordinate(23.0225, 72.5714)
 second = Coordinate(23.0225, 72.5714)
 
-print(first == second)  # True
+print(first == second)              # True
 print(hash(first) == hash(second))  # True
 ```
 
@@ -1151,7 +920,6 @@ Dunder methods are part of your class's public behavior, so test their observabl
 ```python
 import pytest
 
-
 def test_product_initialization_normalizes_values() -> None:
     product = Product(" kb-101 ", " Keyboard ", 80)
 
@@ -1159,17 +927,14 @@ def test_product_initialization_normalizes_values() -> None:
     assert product.name == "Keyboard"
     assert product.price == 80.0
 
-
 def test_product_rejects_negative_price() -> None:
     with pytest.raises(ValueError, match="Price cannot be negative"):
         Product("KB-101", "Keyboard", -1)
-
 
 def test_product_str_is_human_readable() -> None:
     product = Product("KB-101", "Keyboard", 80)
 
     assert str(product) == "Keyboard (KB-101) — $80.00, active"
-
 
 def test_product_repr_contains_debugging_state() -> None:
     product = Product("KB-101", "Keyboard", 80)
@@ -1179,13 +944,11 @@ def test_product_repr_contains_debugging_state() -> None:
         "price=80.0, active=True)"
     )
 
-
 def test_products_with_same_sku_are_equal() -> None:
     first = Product("KB-101", "Keyboard", 80)
     second = Product("KB-101", "Keyboard V2", 90)
 
     assert first == second
-
 
 def test_product_comparison_with_unrelated_type() -> None:
     product = Product("KB-101", "Keyboard", 80)
@@ -1247,82 +1010,6 @@ The first style verifies the same public syntax used by application code.
 - Preserve reflexivity, symmetry, transitivity, and consistency.
 - Consider the `__hash__` contract before making objects hashable.
 - Avoid equality rules based on unstable or frequently changing fields.
-
----
-
-# 15. Quick Revision
-
-## One-Line Definitions
-
-| Method | Meaning |
-|---|---|
-| `__init__` | Initializes the state of an already-created object |
-| `__str__` | Returns a friendly representation for people |
-| `__repr__` | Returns a detailed representation for developers |
-| `__eq__` | Defines value equality for the `==` operator |
-
-## Call Flow Summary
-
-```mermaid
-flowchart TD
-    CN["ClassName(arguments)"] --> NEW["__new__ creates the instance"]
-    NEW --> INIT["__init__ initializes its state"]
-
-    PRN["print(object) or str(object)"] --> STR["__str__"]
-    STR --> FALLBACK["Falls back to __repr__ when __str__ is absent"]
-
-    RPR["repr(object) or an f-string with !r"] --> REPR["__repr__"]
-
-    EQ["left == right"] --> CALL["left.__eq__(right)"]
-    CALL --> BOOL[True or False]
-    CALL --> NI["NotImplemented, so Python tries the comparison fallback"]
-```
-
-## Compact Example
-
-```python
-class User:
-    def __init__(self, user_id: int, name: str) -> None:
-        self.user_id = user_id
-        self.name = name
-
-    def __str__(self) -> str:
-        return self.name
-
-    def __repr__(self) -> str:
-        return f"User(user_id={self.user_id!r}, name={self.name!r})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, User):
-            return NotImplemented
-        return self.user_id == other.user_id
-```
-
-```python
-first = User(101, "Asha")
-second = User(101, "Asha Patel")
-
-print(first)          # Asha
-print(repr(first))    # User(user_id=101, name='Asha')
-print(first == second)  # True
-print(first is second)  # False
-```
-
-## Final Mental Model
-
-```mermaid
-mindmap
-  root((Python object))
-    Creation
-      __new__ creates
-      __init__ initializes
-    Display
-      __str__ for people
-      __repr__ for developers
-    Comparison
-      __eq__ defines value equality
-      is checks object identity
-```
 
 ---
 

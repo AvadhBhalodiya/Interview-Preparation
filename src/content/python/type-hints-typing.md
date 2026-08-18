@@ -8,22 +8,36 @@ order: 16
 
 > Type hints describe the expected types of variables, function parameters, return values, and objects. They help developers and static type checkers find mistakes before the code runs, but Python does not enforce them automatically at runtime.
 
+## In short
+
+- Type hints annotate variables, parameters, return values, and attributes; Python does not validate them at runtime.
+- Static checkers such as Mypy, Pyright, and IDE language servers read the annotations and report mismatches before the code runs.
+- Python is gradually typed: annotated and unannotated code coexist, so hints can be added module by module.
+- Prefer modern syntax such as `list[str]`, `dict[str, int]`, and `X | None` over `typing.List`, `typing.Dict`, and `Optional[X]`.
+- Use `TypedDict` for structured dictionaries, `Protocol` for behavior-based dependencies, and generics to preserve the input-output type relationship.
+- Narrow a broad type with `isinstance()` or an equality check before calling type-specific methods; `assert_never()` proves the handling is exhaustive.
+- `cast()`, `Final`, and `TypedDict` are static-only, so untrusted input still needs explicit runtime validation.
+
+```mermaid
+flowchart LR
+    A[Python source code] --> B[Type annotations]
+    A --> C[Python runtime]
+    B --> D[Static type checker]
+    D --> E{Types compatible?}
+    E -->|Yes| F[Type check passes]
+    E -->|No| G[Diagnostic before deployment]
+    C --> H[Program execution]
+```
+
+**Interview answer:** No, they are not enforced at runtime. `double("hello")` still executes even when `double` is declared `(value: int) -> int`, because Python does not reject a call only because of an annotation. The hints exist for static type checkers and IDEs, which report the mismatch before deployment, so anything that must be rejected while the program runs needs a separate mechanism such as an explicit `isinstance()` check or a validation library.
+
+**Gotcha:** Assuming a default of `None` widens the annotation. `def find_user(user_id: int = None)` is wrong — the annotation must describe every value that is valid for the parameter, so it has to be `int | None = None`.
+
 ---
 
 # 1. What Type Hints Are
 
-Python is a **dynamically typed language**. A variable can refer to values of different types during execution.
-
-```python
-value = 10
-value = "ten"
-```
-
-Type hints let us describe what type a value is **expected** to have.
-
-```python
-value: int = 10
-```
+Python is a **dynamically typed language**. A variable can refer to values of different types during execution: `value = 10` followed by `value = "ten"` is legal. Type hints let us describe what type a value is **expected** to have, as in `value: int = 10`.
 
 A function can describe the types of its parameters and return value:
 
@@ -45,7 +59,6 @@ Type hints are not automatic runtime validation.
 ```python
 def double(value: int) -> int:
     return value * 2
-
 
 double("hello")  # Python still executes this at runtime.
 ```
@@ -79,21 +92,7 @@ Editors can provide:
 
 ## 2.3 Clearer Function Contracts
 
-Without type hints:
-
-```python
-def find_order(order_id):
-    ...
-```
-
-With type hints:
-
-```python
-def find_order(order_id: int) -> "Order | None":
-    ...
-```
-
-The second version communicates that:
+Without type hints the signature is `def find_order(order_id):`. With them it becomes `def find_order(order_id: int) -> "Order | None":`, which communicates that:
 
 - The input is an integer.
 - The result is either an `Order` or `None`.
@@ -117,31 +116,7 @@ Type hints are mainly consumed by tools such as:
 - IDE language servers
 - Linters and code-quality tools
 
-```mermaid
-flowchart LR
-    A[Python source code] --> B[Type annotations]
-    A --> C[Python runtime]
-    B --> D[Static type checker]
-    D --> E{Types compatible?}
-    E -->|Yes| F[Type check passes]
-    E -->|No| G[Diagnostic before deployment]
-    C --> H[Program execution]
-```
-
-The runtime and type-checking paths are related but separate.
-
-```python
-def send_email(address: str) -> None:
-    print(f"Sending to {address}")
-```
-
-A type checker can reject:
-
-```python
-send_email(123)
-```
-
-Python itself may still call the function unless the application performs explicit runtime validation.
+The runtime and type-checking paths are related but separate. Given `def send_email(address: str) -> None`, a type checker can reject the call `send_email(123)`, but Python itself may still call the function unless the application performs explicit runtime validation.
 
 ## Gradual Typing
 
@@ -150,7 +125,6 @@ Python uses **gradual typing**. You can add type hints gradually instead of typi
 ```python
 def legacy_function(data):
     return data
-
 
 def typed_function(name: str) -> str:
     return name.upper()
@@ -162,51 +136,29 @@ Typed and untyped code can coexist.
 
 # 4. Basic Type Hint Syntax
 
-## 4.1 Variables
+The same `name: type` form annotates variables, parameters, return values, and instance attributes. Use `None` as the return type when a function does not return a meaningful value. On a parameter with a default, the annotation still describes the type; the assignment only provides the default value.
 
 ```python
+# Variables
 name: str = "Aarav"
 age: int = 30
 price: float = 99.50
 is_active: bool = True
 payload: bytes = b"data"
-```
 
-## 4.2 Function Parameters
-
-```python
-def greet(name: str) -> str:
-    return f"Hello, {name}"
-```
-
-## 4.3 Return Type
-
-```python
+# Parameters and return type
 def add(left: int, right: int) -> int:
     return left + right
-```
 
-## 4.4 Functions Returning Nothing
-
-Use `None` when a function does not return a meaningful value.
-
-```python
+# No meaningful return value
 def log_message(message: str) -> None:
     print(message)
-```
 
-## 4.5 Default Values
-
-The annotation describes the type; the assignment provides the default value.
-
-```python
+# Default value
 def connect(host: str, port: int = 5432) -> None:
     print(host, port)
-```
 
-## 4.6 Instance Attributes
-
-```python
+# Instance attributes
 class User:
     def __init__(self, user_id: int, name: str) -> None:
         self.user_id: int = user_id
@@ -214,66 +166,35 @@ class User:
         self.is_active: bool = True
 ```
 
-In many cases, type checkers can infer the attribute type from the assigned constructor parameter:
-
-```python
-class User:
-    def __init__(self, user_id: int, name: str) -> None:
-        self.user_id = user_id
-        self.name = name
-```
-
-Explicit attribute annotations are useful when inference is unclear or when attributes are declared outside `__init__`.
+In many cases, type checkers can infer the attribute type from the assigned constructor parameter, so a plain `self.user_id = user_id` is enough. Explicit attribute annotations are useful when inference is unclear or when attributes are declared outside `__init__`.
 
 ---
 
 # 5. Typing Collections
 
-Modern Python allows built-in collection classes to be parameterized directly.
-
-## 5.1 Lists
+Modern Python allows built-in collection classes to be parameterized directly. A fixed-length tuple describes the type at each position; a variable-length tuple uses `...`.
 
 ```python
 user_ids: list[int] = [101, 102, 103]
 names: list[str] = ["Aarav", "Diya"]
-```
 
-## 5.2 Dictionaries
-
-```python
 scores: dict[str, int] = {
     "Aarav": 95,
     "Diya": 91,
 }
-```
 
-## 5.3 Sets
-
-```python
 permissions: set[str] = {"read", "write"}
+
+coordinate: tuple[float, float] = (23.02, 72.57)  # Fixed length
+values: tuple[int, ...] = (1, 2, 3, 4)            # Variable length
 ```
 
-## 5.4 Tuples
-
-A fixed-length tuple describes the type at each position:
-
-```python
-coordinate: tuple[float, float] = (23.02, 72.57)
-```
-
-A variable-length tuple uses `...`:
-
-```python
-values: tuple[int, ...] = (1, 2, 3, 4)
-```
-
-## 5.5 Prefer Abstract Input Types
+## Prefer Abstract Input Types
 
 A function that only reads values usually does not need a concrete `list`.
 
 ```python
 from collections.abc import Sequence
-
 
 def first_name(names: Sequence[str]) -> str:
     return names[0]
@@ -285,7 +206,6 @@ For key-value input:
 
 ```python
 from collections.abc import Mapping
-
 
 def get_timeout(config: Mapping[str, int]) -> int:
     return config.get("timeout", 30)
@@ -332,31 +252,15 @@ def find_email(user_id: int) -> str | None:
     ...
 ```
 
-The older equivalent is:
-
-```python
-from typing import Optional
-
-
-def find_email(user_id: int) -> Optional[str]:
-    ...
-```
-
-For modern Python, `str | None` is normally clearer.
+The older equivalent is `Optional[str]`, imported with `from typing import Optional`. For modern Python, `str | None` is normally clearer.
 
 ## 6.3 A Default of `None` Does Not Replace the Annotation
 
-Incorrect:
-
 ```python
-def find_user(user_id: int = None) -> "User":
+def find_user(user_id: int = None) -> "User":         # Incorrect
     ...
-```
 
-Better:
-
-```python
-def find_user(user_id: int | None = None) -> "User":
+def find_user(user_id: int | None = None) -> "User":  # Better
     ...
 ```
 
@@ -370,12 +274,7 @@ These three choices communicate very different contracts.
 
 ## 7.1 Precise Type
 
-```python
-def uppercase(value: str) -> str:
-    return value.upper()
-```
-
-This is the safest and most informative option.
+A precise annotation such as `def uppercase(value: str) -> str` is the safest and most informative option.
 
 ## 7.2 `object`
 
@@ -399,7 +298,6 @@ def describe(value: object) -> str:
 
 ```python
 from typing import Any
-
 
 def process(value: Any) -> Any:
     return value.some_unknown_method()
@@ -457,9 +355,7 @@ def display_name(name: str | None) -> str:
 ```python
 from typing import Literal
 
-
 Status = Literal["pending", "approved", "rejected"]
-
 
 def status_message(status: Status) -> str:
     if status == "approved":
@@ -475,7 +371,6 @@ def status_message(status: Status) -> str:
 
 ```python
 from typing import assert_never
-
 
 def status_message(status: Status) -> str:
     match status:
@@ -500,7 +395,6 @@ Use `Callable` to describe a function passed as a value.
 ```python
 from collections.abc import Callable
 
-
 def apply_operation(
     left: int,
     right: int,
@@ -515,34 +409,21 @@ Usage:
 def add(left: int, right: int) -> int:
     return left + right
 
-
 result = apply_operation(10, 20, add)
 ```
 
-`Callable[[int, int], int]` means:
+`Callable[[int, int], int]` means: `Two integer parameters -> integer result`
 
-```text
-Two integer parameters -> integer result
-```
-
-## Callback with No Parameters
-
-```python
-from collections.abc import Callable
-
-
-def execute(callback: Callable[[], None]) -> None:
-    callback()
-```
-
-## Callable with Unspecified Parameters
+## Other Callable Shapes
 
 ```python
 from collections.abc import Callable
 from typing import Any
 
+def execute(callback: Callable[[], None]) -> None:  # No parameters, no return value
+    callback()
 
-handler: Callable[..., Any]
+handler: Callable[..., Any]  # Unspecified parameters
 ```
 
 Use `Callable[..., ReturnType]` only when the parameter signature is genuinely unknown or intentionally unrestricted.
@@ -553,11 +434,10 @@ Use `Callable[..., ReturnType]` only when the parameter signature is genuinely u
 
 ## 10.1 Type Aliases
 
-A type alias gives a readable name to a complex type.
-
-### Python 3.12+
+A type alias gives a readable name to a complex type. It is then used like any other annotation: `def get_user(user_id: UserId) -> dict[str, JsonValue]`.
 
 ```python
+# Python 3.12+
 type UserId = int
 type Headers = dict[str, str]
 type JsonValue = (
@@ -569,20 +449,9 @@ type JsonValue = (
     | list["JsonValue"]
     | dict[str, "JsonValue"]
 )
-```
 
-Usage:
-
-```python
-def get_user(user_id: UserId) -> dict[str, JsonValue]:
-    ...
-```
-
-### Python 3.11 and Earlier
-
-```python
+# Python 3.11 and earlier
 from typing import TypeAlias
-
 
 UserId: TypeAlias = int
 Headers: TypeAlias = dict[str, str]
@@ -604,14 +473,11 @@ order_id: int = user_id  # Valid
 ```python
 from typing import NewType
 
-
 UserId = NewType("UserId", int)
 OrderId = NewType("OrderId", int)
 
-
 def load_user(user_id: UserId) -> None:
     ...
-
 
 load_user(UserId(10))   # Valid
 load_user(OrderId(10))  # Type-checking error
@@ -646,7 +512,6 @@ user: dict[str, object] = {
 ```python
 from typing import TypedDict
 
-
 class UserPayload(TypedDict):
     id: int
     name: str
@@ -658,7 +523,6 @@ Usage:
 ```python
 def create_user(payload: UserPayload) -> int:
     return payload["id"]
-
 
 user: UserPayload = {
     "id": 101,
@@ -679,7 +543,6 @@ A type checker can identify:
 ```python
 from typing import NotRequired, TypedDict
 
-
 class UserPayload(TypedDict):
     id: int
     name: str
@@ -695,7 +558,6 @@ On supported Python versions, `ReadOnly` can communicate that a key should not b
 ```python
 from typing import ReadOnly, TypedDict
 
-
 class UserRecord(TypedDict):
     id: ReadOnly[int]
     name: str
@@ -703,13 +565,7 @@ class UserRecord(TypedDict):
 
 ## 11.3 `TypedDict` Is Not Runtime Validation
 
-```python
-class UserPayload(TypedDict):
-    id: int
-    name: str
-```
-
-This does not create a normal runtime model and does not automatically validate incoming API data. Use a runtime validation library or explicit validation when processing untrusted input.
+A `TypedDict` class does not create a normal runtime model and does not automatically validate incoming API data. Use a runtime validation library or explicit validation when processing untrusted input.
 
 ## Common Use Cases
 
@@ -731,25 +587,13 @@ Use a dataclass, Pydantic model, or normal class when runtime behavior, validati
 ```python
 from typing import Literal
 
-
 LogLevel = Literal["debug", "info", "warning", "error"]
-
 
 def configure_logging(level: LogLevel) -> None:
     ...
 ```
 
-The following call is valid:
-
-```python
-configure_logging("info")
-```
-
-A checker rejects unsupported values:
-
-```python
-configure_logging("verbose")
-```
+The call `configure_logging("info")` is valid; a checker rejects unsupported values such as `configure_logging("verbose")`.
 
 Use an `Enum` instead when the values need behavior, stronger runtime identity, or broader domain modeling.
 
@@ -760,18 +604,11 @@ Use an `Enum` instead when the values need behavior, stronger runtime identity, 
 ```python
 from typing import Final
 
-
 MAX_RETRIES: Final[int] = 3
 API_VERSION: Final = "v1"
 ```
 
-A type checker reports:
-
-```python
-MAX_RETRIES = 5
-```
-
-`Final` is not the same as a runtime constant. Python can still mutate or reassign the value unless additional runtime controls exist.
+A type checker reports a later `MAX_RETRIES = 5` as an error. `Final` is not the same as a runtime constant. Python can still mutate or reassign the value unless additional runtime controls exist.
 
 ## 12.3 `ClassVar`
 
@@ -779,7 +616,6 @@ MAX_RETRIES = 5
 
 ```python
 from typing import ClassVar
-
 
 class User:
     table_name: ClassVar[str] = "users"
@@ -807,18 +643,22 @@ When a caller passes `list[str]`, the checker still sees the result as `int | st
 
 A generic function preserves the exact element type.
 
-## 13.2 Generic Function: Python 3.12+
+## 13.2 Generic Functions
 
 ```python
-def first[T](values: list[T]) -> T:
+def first[T](values: list[T]) -> T:   # Python 3.12+
     return values[0]
-```
 
-Usage:
-
-```python
 number = first([10, 20, 30])       # Inferred as int
 name = first(["Aarav", "Diya"])    # Inferred as str
+
+# Compatible syntax for older versions
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def first(values: list[T]) -> T:
+    return values[0]
 ```
 
 The relationship is:
@@ -829,20 +669,7 @@ flowchart LR
     B --> C[value of the same T]
 ```
 
-## 13.3 Generic Function: Compatible Syntax
-
-```python
-from typing import TypeVar
-
-
-T = TypeVar("T")
-
-
-def first(values: list[T]) -> T:
-    return values[0]
-```
-
-## 13.4 Generic Class: Python 3.12+
+## 13.3 Generic Classes (Python 3.12+)
 
 ```python
 class Box[T]:
@@ -851,11 +678,7 @@ class Box[T]:
 
     def get(self) -> T:
         return self._value
-```
 
-Usage:
-
-```python
 int_box = Box(10)
 value = int_box.get()  # int
 
@@ -863,11 +686,10 @@ str_box = Box("hello")
 text = str_box.get()   # str
 ```
 
-## 13.5 Generic Repository Example
+## 13.4 Generic Repository Example
 
 ```python
 from collections.abc import Iterable
-
 
 class Repository[T]:
     def __init__(self) -> None:
@@ -883,12 +705,7 @@ class Repository[T]:
         return self._items.values()
 ```
 
-The repository can be reused while preserving the model type:
-
-```python
-user_repository: Repository[User]
-order_repository: Repository[Order]
-```
+The repository can be reused while preserving the model type, as in `Repository[User]` and `Repository[Order]`.
 
 ---
 
@@ -896,29 +713,18 @@ order_repository: Repository[Order]
 
 ## 14.1 Bounded Type Parameters
 
-A bound means the type parameter must be a subtype of a specific type.
-
-### Python 3.12+
+A bound means the type parameter must be a subtype of a specific type. The function below accepts values that support `len()` and returns the same input type.
 
 ```python
 from collections.abc import Sized
 
-
-def longest[T: Sized](left: T, right: T) -> T:
+def longest[T: Sized](left: T, right: T) -> T:   # Python 3.12+
     return left if len(left) >= len(right) else right
-```
 
-The function accepts values that support `len()` and returns the same input type.
-
-### Compatible Syntax
-
-```python
-from collections.abc import Sized
+# Compatible syntax for older versions
 from typing import TypeVar
 
-
 T = TypeVar("T", bound=Sized)
-
 
 def longest(left: T, right: T) -> T:
     return left if len(left) >= len(right) else right
@@ -950,7 +756,6 @@ Assume:
 class Animal:
     pass
 
-
 class Dog(Animal):
     pass
 ```
@@ -972,7 +777,6 @@ Read-only abstractions such as `Sequence` can safely be more flexible:
 
 ```python
 from collections.abc import Sequence
-
 
 def print_animals(animals: Sequence[Animal]) -> None:
     for animal in animals:
@@ -1002,7 +806,6 @@ This is similar to:
 ```python
 from typing import Protocol
 
-
 class Closable(Protocol):
     def close(self) -> None:
         ...
@@ -1015,22 +818,17 @@ class FileResource:
     def close(self) -> None:
         print("File closed")
 
-
 class DatabaseConnection:
     def close(self) -> None:
         print("Connection closed")
 ```
 
-The function depends on behavior rather than concrete classes:
+The function depends on behavior rather than concrete classes, and both classes are valid arguments:
 
 ```python
 def safely_close(resource: Closable) -> None:
     resource.close()
-```
 
-Both classes are valid:
-
-```python
 safely_close(FileResource())
 safely_close(DatabaseConnection())
 ```
@@ -1042,11 +840,9 @@ Neither class needs to inherit from `Closable`.
 ```python
 from typing import Protocol
 
-
 class PaymentGateway(Protocol):
     def charge(self, customer_id: str, amount: float) -> str:
         ...
-
 
 class CheckoutService:
     def __init__(self, gateway: PaymentGateway) -> None:
@@ -1062,7 +858,6 @@ Implementations:
 class StripeGateway:
     def charge(self, customer_id: str, amount: float) -> str:
         return "stripe-transaction-id"
-
 
 class FakeGateway:
     def charge(self, customer_id: str, amount: float) -> str:
@@ -1117,7 +912,6 @@ Use a protocol when consumers care about behavior, not the implementation hierar
 ```python
 from typing import Self
 
-
 class QueryBuilder:
     def where(self, condition: str) -> Self:
         print(condition)
@@ -1128,11 +922,7 @@ class QueryBuilder:
         return self
 ```
 
-Usage:
-
-```python
-query = QueryBuilder().where("active = true").limit(10)
-```
+A chained call such as `QueryBuilder().where("active = true").limit(10)` then stays correctly typed.
 
 `Self` is especially useful for:
 
@@ -1157,7 +947,6 @@ Calling `UserQueryBuilder().where(...)` is typed as `UserQueryBuilder`, not only
 ```python
 from typing import Self
 
-
 class User:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -1176,16 +965,13 @@ class User:
 ```python
 from typing import overload
 
-
 @overload
 def parse(value: str) -> str:
     ...
 
-
 @overload
 def parse(value: bytes) -> bytes:
     ...
-
 
 def parse(value: str | bytes) -> str | bytes:
     return value.strip()
@@ -1195,12 +981,7 @@ The overload declarations are for the type checker. The final implementation is 
 
 ## Why a Union Alone Is Less Precise
 
-```python
-def parse(value: str | bytes) -> str | bytes:
-    return value.strip()
-```
-
-With only this signature, passing `str` produces a result typed as `str | bytes`.
+With only the plain signature `def parse(value: str | bytes) -> str | bytes`, passing `str` produces a result typed as `str | bytes`.
 
 Overloads preserve the relationship:
 
@@ -1231,7 +1012,6 @@ A normal `TypeVar` can preserve a return type, but it cannot fully preserve a ca
 from collections.abc import Callable
 from functools import wraps
 
-
 def log_calls[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -1247,15 +1027,11 @@ Usage:
 @log_calls
 def calculate_total(price: float, quantity: int) -> float:
     return price * quantity
-```
 
-The decorated function keeps the original signature:
-
-```python
 calculate_total(10.5, 2)
 ```
 
-A type checker still knows that the parameters are `float` and `int`, and the return type is `float`.
+The decorated function keeps the original signature: a type checker still knows that the parameters are `float` and `int`, and the return type is `float`.
 
 ## Compatible Syntax
 
@@ -1264,10 +1040,8 @@ from collections.abc import Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
 
-
 P = ParamSpec("P")
 R = TypeVar("R")
-
 
 def log_calls(func: Callable[P, R]) -> Callable[P, R]:
     @wraps(func)
@@ -1300,10 +1074,8 @@ Use `TypeIs` when the narrowed type is compatible with the input type.
 ```python
 from typing import TypeIs
 
-
 def is_string(value: object) -> TypeIs[str]:
     return isinstance(value, str)
-
 
 def normalize(value: object) -> str:
     if is_string(value):
@@ -1321,10 +1093,8 @@ When `is_string(value)` is true, the checker narrows `value` to `str`. When fals
 ```python
 from typing import TypeGuard
 
-
 def is_string_list(values: list[object]) -> TypeGuard[list[str]]:
     return all(isinstance(value, str) for value in values)
-
 
 def join_values(values: list[object]) -> str:
     if is_string_list(values):
@@ -1356,21 +1126,16 @@ Annotate an `async def` function with the type produced when it is awaited.
 ```python
 async def fetch_user(user_id: int) -> dict[str, object]:
     ...
-```
 
-Calling it returns a coroutine object, but:
-
-```python
 user = await fetch_user(101)
 ```
 
-`user` is typed as `dict[str, object]`.
+Calling `fetch_user()` returns a coroutine object, but `user` is typed as `dict[str, object]`.
 
 ## 20.2 Awaitable Inputs
 
 ```python
 from collections.abc import Awaitable
-
 
 async def resolve(value: Awaitable[str]) -> str:
     return await value
@@ -1380,7 +1145,6 @@ async def resolve(value: Awaitable[str]) -> str:
 
 ```python
 from collections.abc import Iterator
-
 
 def count_up_to(limit: int) -> Iterator[int]:
     for number in range(1, limit + 1):
@@ -1392,7 +1156,6 @@ def count_up_to(limit: int) -> Iterator[int]:
 ```python
 from collections.abc import Generator
 
-
 def accumulator() -> Generator[int, int, str]:
     total = 0
 
@@ -1401,11 +1164,7 @@ def accumulator() -> Generator[int, int, str]:
         total += received
 ```
 
-The generic arguments represent:
-
-```text
-Generator[YieldType, SendType, ReturnType]
-```
+The generic arguments represent: `Generator[YieldType, SendType, ReturnType]`
 
 For most simple generators, `Iterator[T]` is easier to read.
 
@@ -1413,7 +1172,6 @@ For most simple generators, `Iterator[T]` is easier to read.
 
 ```python
 from collections.abc import AsyncIterator
-
 
 async def stream_events() -> AsyncIterator[str]:
     for event in ["created", "updated", "deleted"]:
@@ -1425,7 +1183,6 @@ async def stream_events() -> AsyncIterator[str]:
 ```python
 from contextlib import AbstractContextManager
 
-
 def open_transaction() -> AbstractContextManager["Transaction"]:
     ...
 ```
@@ -1435,7 +1192,6 @@ Usually, a concrete context manager class can type its own methods directly:
 ```python
 from types import TracebackType
 from typing import Self
-
 
 class Transaction:
     def __enter__(self) -> Self:
@@ -1467,16 +1223,11 @@ class Transaction:
 ```python
 from typing import cast
 
-
 raw_value: object = "hello"
 text = cast(str, raw_value)
 ```
 
-Important:
-
-```text
-cast() does not validate or convert the value at runtime.
-```
+Important: `cast() does not validate or convert the value at runtime.`
 
 This is unsafe:
 
@@ -1495,10 +1246,8 @@ Use `cast()` only when the programmer has information the checker cannot infer.
 ```python
 from typing import TYPE_CHECKING
 
-
 if TYPE_CHECKING:
     from app.services.billing import BillingService
-
 
 def process(service: "BillingService") -> None:
     ...
@@ -1519,7 +1268,6 @@ Do not use it to hide runtime dependencies that the function actually needs.
 ```python
 from typing import assert_type
 
-
 user_id = 101
 assert_type(user_id, int)
 ```
@@ -1530,7 +1278,6 @@ It is mainly useful in tests for typed libraries and complex inference.
 
 ```python
 from typing import reveal_type
-
 
 value = {"id": 101}
 reveal_type(value)
@@ -1545,9 +1292,7 @@ Use `assert_never()` to check exhaustive handling of unions or literals.
 ```python
 from typing import Literal, assert_never
 
-
 Event = Literal["created", "updated"]
-
 
 def handle_event(event: Event) -> None:
     match event:
@@ -1566,11 +1311,9 @@ def handle_event(event: Event) -> None:
 ```python
 from typing import override
 
-
 class BaseService:
     def execute(self) -> None:
         ...
-
 
 class UserService(BaseService):
     @override
@@ -1594,17 +1337,8 @@ Type annotations may be available through runtime metadata, but evaluation rules
 def greet(name: str) -> str:
     return f"Hello, {name}"
 
-
 print(greet.__annotations__)
-```
-
-Conceptual output:
-
-```python
-{
-    "name": str,
-    "return": str,
-}
+# Conceptual output: {"name": str, "return": str}
 ```
 
 ## 22.2 Prefer Official Annotation Helpers
@@ -1621,7 +1355,6 @@ Example:
 
 ```python
 from typing import get_type_hints
-
 
 hints = get_type_hints(greet)
 print(hints["name"])
@@ -1655,9 +1388,7 @@ The following example combines common typing features in a small service archite
 from dataclasses import dataclass
 from typing import NewType
 
-
 UserId = NewType("UserId", int)
-
 
 @dataclass(frozen=True)
 class User:
@@ -1671,7 +1402,6 @@ class User:
 ```python
 from typing import NotRequired, TypedDict
 
-
 class CreateUserPayload(TypedDict):
     name: str
     email: str
@@ -1682,7 +1412,6 @@ class CreateUserPayload(TypedDict):
 
 ```python
 from typing import Protocol
-
 
 class UserRepository(Protocol):
     def save(self, user: User) -> None:
@@ -1837,20 +1566,13 @@ This approach is usually more sustainable than attempting to make a large legacy
 
 ## 25.1 Use Modern Built-In Generics
 
-Prefer:
-
 ```python
-names: list[str]
+names: list[str]           # Prefer built-in generics
 headers: dict[str, str]
-```
 
-Instead of older aliases:
-
-```python
 from typing import Dict, List
 
-
-names: List[str]
+names: List[str]           # Instead of the older aliases
 headers: Dict[str, str]
 ```
 
@@ -1858,26 +1580,15 @@ For interfaces such as `Iterable`, `Sequence`, `Mapping`, and `Callable`, prefer
 
 ## 25.2 Use `X | None` for Optional Values
 
-```python
-def find_user(user_id: int) -> User | None:
-    ...
-```
-
-This is clearer than hiding absence behind an empty object or magic value.
+A signature such as `def find_user(user_id: int) -> User | None` is clearer than hiding absence behind an empty object or magic value.
 
 ## 25.3 Avoid Unnecessary `Any`
 
-Weak:
-
 ```python
-def process(data: Any) -> Any:
+def process(data: Any) -> Any:                               # Weak
     ...
-```
 
-Better:
-
-```python
-def process(data: Mapping[str, object]) -> ProcessedResult:
+def process(data: Mapping[str, object]) -> ProcessedResult:  # Better
     ...
 ```
 
@@ -1885,7 +1596,6 @@ def process(data: Mapping[str, object]) -> ProcessedResult:
 
 ```python
 from collections.abc import Sequence
-
 
 def calculate_average(values: Sequence[float]) -> float:
     return sum(values) / len(values)
@@ -1895,21 +1605,16 @@ The function accepts more valid inputs and communicates that it does not need to
 
 ## 25.5 Keep Annotations Readable
 
-Hard to read:
-
 ```python
+# Hard to read
 def process(
     data: dict[str, list[tuple[int, str | None]]],
 ) -> dict[str, list[tuple[int, str | None]]]:
     ...
-```
 
-Better:
-
-```python
+# Better
 type Record = tuple[int, str | None]
 type RecordGroups = dict[str, list[Record]]
-
 
 def process(data: RecordGroups) -> RecordGroups:
     ...
@@ -2038,30 +1743,6 @@ flowchart TD
     A --> O{Exact allowed values?}
     O -->|Yes| P[Literal or Enum]
 ```
-
----
-
-# 28. Summary
-
-Type hints add a static layer of information to Python without removing its dynamic runtime behavior.
-
-The most important concepts are:
-
-- Annotate function inputs and outputs.
-- Use modern collection syntax such as `list[str]`.
-- Represent absence explicitly with `X | None`.
-- Prefer precise types over `Any`.
-- Use type narrowing before calling type-specific methods.
-- Use aliases to simplify complex annotations.
-- Use `TypedDict` for structured dictionaries.
-- Use generics to preserve relationships between types.
-- Use `Protocol` to define behavior-based dependencies.
-- Use `Self` for methods that return the current class type.
-- Use `ParamSpec` for decorators that preserve callable signatures.
-- Run a static type checker in local development and CI.
-- Treat runtime validation as a separate responsibility.
-
-A well-typed Python codebase is easier to understand, refactor, test, and maintain—especially as the project and development team grow.
 
 ---
 

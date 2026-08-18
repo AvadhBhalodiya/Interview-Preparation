@@ -6,9 +6,36 @@ order: 1
 
 # Idempotency Keys in Payments
 
-> **Category:** Payments & Fintech  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Goal:** Understand how payment systems safely handle retries without charging, refunding, or transferring money twice.
+> Understand how payment systems safely handle retries without charging, refunding, or transferring money twice.
+
+## In short
+
+- An idempotency key identifies **one logical money-moving operation**; every retry of that operation reuses the same key, and a new payment, capture, refund, or payout needs a new key.
+- The server stores the key with a request fingerprint and the final response, so a replay returns the original result instead of moving money again.
+- Concurrency is handled by a **database unique constraint** scoped to `(tenant, operation, key)` — a "check, then insert" lets two servers both charge.
+- The same key sent with a different payload is a conflict to reject, never a response to replay.
+- Propagate a **stable provider idempotency key** downstream: an idempotent public API does not stop the provider from charging twice on retry.
+- Idempotency does not replace payment state machines, webhook deduplication, or reconciliation — each solves a different problem.
+- Queues and webhooks are at-least-once, so the realistic goal is an **exactly-once financial effect**, not exactly-once delivery.
+
+```mermaid
+flowchart TD
+    A[Receive payment request] --> B[Read Idempotency-Key]
+    B --> C{Key already exists?}
+    C -- No --> D[Atomically reserve key]
+    D --> E[Process payment]
+    E --> F[Store final status and response]
+    F --> G[Return response]
+
+    C -- Yes --> H{Stored state}
+    H -- Succeeded or final failure --> I[Return stored response]
+    H -- Processing --> J[Return 409 or 202]
+    H -- Retryable failure --> K[Retry according to policy]
+```
+
+**Interview answer:** An idempotency key is a client-generated value attached to a money-moving request. The server atomically reserves the key using a unique constraint, performs the operation exactly once, then stores the resulting status and response body against that key, so any retry carrying the same key replays the stored result rather than charging again. The same key is propagated to the payment provider, so the retry cannot create a second charge downstream either.
+
+**Gotcha:** Reading the key before inserting it. "Look up the key, and create it if missing" is a race — two instances can both see nothing and both charge the customer. The insert itself has to be the concurrency guard.
 
 ---
 
@@ -44,51 +71,7 @@ It is especially important for operations such as:
 
 ---
 
-# 2. What an Idempotency Key Is
-
-An **idempotency key** is a unique value attached to a mutating API request. The server stores the key with the result of the first processed request.
-
-When the same request is retried with the same key, the server returns the stored result instead of repeating the financial operation.
-
-```http
-POST /api/v1/payments
-Idempotency-Key: 7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-Content-Type: application/json
-
-{
-  "order_id": "ORD-2026-10042",
-  "amount": 100000,
-  "currency": "INR"
-}
-```
-
-Here, `100000` represents ₹1,000 in paise.
-
-## 2.1 Core rule
-
-```text
-Same logical operation + same idempotency key
-              =
-Same financial effect
-```
-
-The response may be replayed, but the money-moving side effect must not be repeated.
-
-## 2.2 Idempotency is not ordinary caching
-
-Both mechanisms can return stored responses, but their purpose is different.
-
-| Aspect | Idempotency | Caching |
-|---|---|---|
-| Primary goal | Prevent duplicate side effects | Improve read performance |
-| Common operations | POST payment, refund, payout | GET product, account, report |
-| Key represents | A logical operation | A resource or query |
-| Correctness impact | Financial integrity | Performance and freshness |
-| Typical storage | Durable DB or strongly consistent store | Cache such as Redis or CDN |
-
----
-
-# 3. The Duplicate Payment Problem
+# 2. The Duplicate Payment Problem
 
 Duplicate requests are not limited to users double-clicking a button. They can appear at several layers.
 
@@ -116,390 +99,45 @@ A disabled frontend button improves user experience, but it does not provide bac
 
 ---
 
-# 4. How Idempotency Works
+# 3. Idempotency Mechanics — the Short Version
 
-A basic server-side flow is:
+> Idempotency keys let a client safely retry a request without creating a second
+> charge. The key is stored with a request fingerprint and the saved response, so
+> a replay returns the original result. A unique constraint scoped to
+> `(tenant, operation, key)` makes the reservation atomic, and the same key
+> arriving with a different fingerprint is rejected rather than replayed.
+> Full detail: [HTTP Idempotency](../api-design/idempotency-http-methods.md)
 
-```mermaid
-flowchart TD
-    A[Receive payment request] --> B[Read Idempotency-Key]
-    B --> C{Key already exists?}
-    C -- No --> D[Atomically reserve key]
-    D --> E[Process payment]
-    E --> F[Store final status and response]
-    F --> G[Return response]
+The parts that are specific to money movement are worth spelling out.
 
-    C -- Yes --> H{Stored state}
-    H -- Succeeded or final failure --> I[Return stored response]
-    H -- Processing --> J[Return 409 or 202]
-    H -- Retryable failure --> K[Retry according to policy]
-```
+## 3.1 Key scope and retention
 
-The important word is **atomically**. A simple “check and then insert” is unsafe because two servers can both check before either inserts.
+Scope a key by `merchant/account + operation type + idempotency key`, so an unrelated merchant or a different API operation cannot collide on the same string.
 
-## 4.1 Conceptual algorithm
+A key identifies one business command, not the lifetime of a payment: create, capture, refund, and a second refund each need their own key.
 
-```text
-1. Receive request and idempotency key.
-2. Validate key format and scope.
-3. Calculate a fingerprint of the request.
-4. Attempt to insert an idempotency record with a unique constraint.
-5. If inserted, this request owns the operation.
-6. If the key already exists:
-   a. Reject it if the fingerprint differs.
-   b. Replay the stored response if completed.
-   c. Report that processing is still in progress if unfinished.
-7. The owner performs the payment operation.
-8. Store the final response and payment reference.
-9. Return that response for all later retries.
-```
+Retain records for longer than the realistic retry window — 24 to 48 hours for a simple checkout API, several days for mobile or asynchronous workflows, and longer for payouts, bank transfers, or operations that can stay pending. Never delete a key while a client or worker may still retry the operation.
 
----
+## 3.2 Add business-level uniqueness too
 
-# 5. Idempotency Key Lifecycle
-
-## 5.1 Key generation
-
-Use a high-entropy unique identifier such as UUID v4:
-
-```python
-from uuid import uuid4
-
-idempotency_key = str(uuid4())
-```
-
-Example:
-
-```text
-7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-```
-
-The client should create the key once for a logical operation and reuse it for every retry of that operation.
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API
-
-    Client->>Client: Generate key K1
-    Client->>API: Create payment with K1
-    API--xClient: Response lost
-    Client->>API: Retry same payment with K1
-    API-->>Client: Return original result
-
-    Client->>Client: Start a different payment with K2
-    Client->>API: Create payment with K2
-```
-
-## 5.2 Key scope
-
-A key should normally be scoped by more than its raw string value.
-
-A strong uniqueness boundary is:
-
-```text
-merchant/account + operation type + idempotency key
-```
-
-For example:
-
-```text
-merchant_42:create_payment:7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-```
-
-This prevents an unrelated merchant or API operation from accidentally colliding with the same key.
-
-## 5.3 New operation, new key
-
-Use different keys for separate operations, even when they concern the same payment.
-
-```text
-Create payment  -> key A
-Capture payment -> key B
-Refund payment  -> key C
-Second refund   -> key D
-```
-
-A key identifies one business command, not the full lifetime of a payment.
-
-## 5.4 Retention and expiration
-
-Idempotency records should be retained longer than the maximum realistic retry window.
-
-Possible policies:
-
-- 24–48 hours for a simple checkout API
-- Several days for mobile or asynchronous workflows
-- Longer for payouts, bank transfers, or operations that can remain pending
-
-The retention period is a business and reliability decision. Never delete a key while clients or workers may still retry the operation.
-
----
-
-# 6. API Contract Design
-
-A common request header is:
-
-```http
-Idempotency-Key: <unique-value>
-```
-
-## 6.1 Recommended API contract
-
-```http
-POST /api/v1/payments
-Authorization: Bearer <token>
-Idempotency-Key: 7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-Content-Type: application/json
-```
-
-The API documentation should define:
-
-- Which endpoints require or support the header
-- Maximum key length and accepted characters
-- How long keys are retained
-- The scope of a key
-- Behaviour when the same key uses a different payload
-- Behaviour while the original request is still processing
-- Which responses are stored and replayed
-- Which errors can be retried
-
-## 6.2 Useful response headers
-
-```http
-Idempotency-Key: 7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-Idempotency-Replayed: true
-```
-
-`Idempotency-Replayed` is not a universal standard, but it is useful in internal APIs for debugging and observability.
-
-## 6.3 Appropriate HTTP responses
-
-| Situation | Possible response | Meaning |
-|---|---:|---|
-| First request succeeds | `200` or `201` | Operation completed |
-| Duplicate completed request | Original status | Stored result replayed |
-| Same key, different payload | `409 Conflict` or `422 Unprocessable Content` | Key misuse |
-| Original request still processing | `409 Conflict`, `202 Accepted`, or documented retry response | Do not start another operation |
-| Missing required key | `400 Bad Request` | API contract violation |
-| Invalid key format | `400 Bad Request` | Key rejected before processing |
-
-The exact status is less important than consistent, documented behaviour.
-
----
-
-# 7. Database Design
-
-For payment systems, a relational database is often a good source of truth because it provides unique constraints, transactions, and durable records.
-
-## 7.1 PostgreSQL table
-
-```sql
-CREATE TYPE idempotency_status AS ENUM (
-    'PROCESSING',
-    'SUCCEEDED',
-    'FAILED_FINAL',
-    'FAILED_RETRYABLE'
-);
-
-CREATE TABLE idempotency_records (
-    id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL,
-    operation VARCHAR(80) NOT NULL,
-    idempotency_key VARCHAR(255) NOT NULL,
-    request_fingerprint CHAR(64) NOT NULL,
-    status idempotency_status NOT NULL,
-    response_status INTEGER,
-    response_body JSONB,
-    resource_type VARCHAR(80),
-    resource_id UUID,
-    provider_reference VARCHAR(255),
-    error_code VARCHAR(100),
-    locked_until TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL,
-
-    CONSTRAINT uq_idempotency_scope
-        UNIQUE (tenant_id, operation, idempotency_key)
-);
-
-CREATE INDEX idx_idempotency_expiration
-    ON idempotency_records (expires_at);
-```
-
-## 7.2 Why each important field exists
-
-| Field | Purpose |
-|---|---|
-| `tenant_id` | Prevents cross-merchant collisions |
-| `operation` | Separates create, capture, refund, and payout commands |
-| `idempotency_key` | Identifies retries of the same logical operation |
-| `request_fingerprint` | Detects the same key being used with different data |
-| `status` | Tracks whether the request is running or complete |
-| `response_status` | Replays the original HTTP status |
-| `response_body` | Replays the original response body |
-| `resource_id` | Links the key to the created payment or refund |
-| `provider_reference` | Supports provider lookup and reconciliation |
-| `locked_until` | Helps recover abandoned processing records |
-| `expires_at` | Supports controlled cleanup |
-
-## 7.3 Add business-level uniqueness too
-
-Idempotency keys should not be the only protection.
-
-For example, when one order may have only one active payment attempt of a specific type:
+Idempotency keys should not be the only protection. Where an order may have only one active payment attempt of a given type, enforce it in the schema as well:
 
 ```sql
 CREATE UNIQUE INDEX uq_payment_order_attempt
     ON payments (merchant_id, order_id, attempt_number);
 ```
 
-This provides defence in depth if a client accidentally creates a new idempotency key for the same operation.
+This is defence in depth if a client accidentally mints a new idempotency key for an operation it already performed.
+
+## 3.3 Fingerprint the business command
+
+Include the fields that define the financial effect: merchant or tenant identifier, operation type, order or payment identifier, amount in minor units, currency, destination account where relevant, and any capture or refund reference. Exclude unstable transport metadata such as request timestamps, trace IDs, and authentication tokens.
+
+A fingerprint allows payload comparison without retaining the whole request body, which limits storage and privacy exposure. Never place card PAN, CVV, bank credentials, email addresses, phone numbers, or other personal data inside the key or the fingerprint input.
 
 ---
 
-# 8. Handling Concurrent Requests
-
-The most dangerous case is two requests with the same key arriving almost simultaneously.
-
-## 8.1 Unsafe approach
-
-```python
-record = find_by_key(key)
-
-if record is None:
-    create_record(key)
-    charge_customer()
-```
-
-Two server instances can both observe that no record exists and both charge the customer.
-
-## 8.2 Safe reservation with a unique constraint
-
-```sql
-INSERT INTO idempotency_records (
-    id,
-    tenant_id,
-    operation,
-    idempotency_key,
-    request_fingerprint,
-    status,
-    expires_at
-)
-VALUES (
-    gen_random_uuid(),
-    :tenant_id,
-    :operation,
-    :key,
-    :fingerprint,
-    'PROCESSING',
-    NOW() + INTERVAL '48 hours'
-)
-ON CONFLICT DO NOTHING;
-```
-
-Only one request can insert the scoped key. All other requests must read the existing row.
-
-## 8.3 Behaviour when processing is in progress
-
-You have several design choices:
-
-### Return `409 Conflict`
-
-```json
-{
-  "code": "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-  "message": "A request with this idempotency key is already processing."
-}
-```
-
-The client retries later using the same key.
-
-### Return `202 Accepted`
-
-Return a status endpoint:
-
-```json
-{
-  "status": "PROCESSING",
-  "operation_id": "idem_01K1...",
-  "status_url": "/api/v1/operations/idem_01K1..."
-}
-```
-
-This is useful for long-running bank transfers or payouts.
-
-### Briefly wait for completion
-
-A duplicate request may poll the record for a small bounded duration. This can improve user experience but consumes server resources and must have a strict timeout.
-
----
-
-# 9. Request Fingerprinting
-
-The same idempotency key must not represent two different operations.
-
-Example of incorrect reuse:
-
-```text
-Key K1 + amount ₹1,000
-Key K1 + amount ₹10,000
-```
-
-The second request must be rejected, not replayed as if it were valid.
-
-## 9.1 Create a stable fingerprint
-
-```python
-import hashlib
-import json
-from typing import Any
-
-
-def create_fingerprint(payload: dict[str, Any]) -> str:
-    canonical_payload = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
-```
-
-Sorting keys ensures these payloads produce the same fingerprint:
-
-```json
-{"amount":100000,"currency":"INR"}
-```
-
-```json
-{"currency":"INR","amount":100000}
-```
-
-## 9.2 Fingerprint the business command
-
-Include fields that define the financial effect:
-
-- Merchant or tenant identifier
-- Operation type
-- Order or payment identifier
-- Amount in minor units
-- Currency
-- Destination account where relevant
-- Capture or refund reference
-
-Exclude unstable transport metadata such as request timestamps, trace IDs, and authentication tokens.
-
-## 9.3 Do not store unnecessary sensitive data
-
-A fingerprint allows payload comparison without retaining the entire request body. This reduces storage and privacy exposure.
-
-Never place card PAN, CVV, bank credentials, email addresses, phone numbers, or other personal data inside the idempotency key.
-
----
-
-# 10. Calling a Payment Provider Safely
+# 4. Calling a Payment Provider Safely
 
 Your public API may be idempotent while your provider call is not. You must preserve idempotency across the complete payment chain.
 
@@ -525,19 +163,13 @@ sequenceDiagram
     MerchantAPI-->>Client: Payment succeeded
 ```
 
-## 10.1 Propagate a stable downstream key
+## 4.1 Propagate a stable downstream key
 
-A downstream key can be derived from the internal operation identity:
-
-```python
-provider_key = f"payment-create:{payment_attempt_id}"
-```
-
-It must remain identical across every retry of the same provider operation.
+A downstream key can be derived from the internal operation identity, for example `provider_key = f"payment-create:{payment_attempt_id}"`. It must remain identical across every retry of the same provider operation.
 
 Do not generate a fresh provider key inside each retry loop.
 
-## 10.2 Do not keep a database transaction open during a network call
+## 4.2 Do not keep a database transaction open during a network call
 
 Holding a database transaction and row lock while waiting for a payment provider can cause:
 
@@ -556,7 +188,7 @@ A safer pattern is:
 
 This creates a recovery gap, but provider idempotency, webhooks, and reconciliation close that gap safely.
 
-## 10.3 The difficult failure window
+## 4.3 The difficult failure window
 
 A provider may charge successfully, but your process may crash before saving the provider response.
 
@@ -571,11 +203,11 @@ Never assume that “no local success record” means “the customer was not ch
 
 ---
 
-# 11. Retries and Error Handling
+# 5. Retries and Error Handling
 
 Idempotency makes retries safer, but it does not mean every error should be retried.
 
-## 11.1 Retry classification
+## 5.1 Retry classification
 
 | Failure | Retry? | Key behaviour |
 |---|---|---|
@@ -589,28 +221,11 @@ Idempotency makes retries safer, but it does not mean every error should be retr
 | Same key with different payload | No | Reject as conflict |
 | Authentication or authorization error | No until credentials or permissions change | Do not loop |
 
-## 11.2 Exponential backoff with jitter
+## 5.2 Backoff between retries
 
-```text
-Attempt 1: immediate
-Attempt 2: about 1 second
-Attempt 3: about 2 seconds
-Attempt 4: about 4 seconds
-Attempt 5: about 8 seconds
-```
+Space retries with capped exponential backoff plus random jitter, so a provider outage does not turn into a synchronised retry storm — full detail in [Retries and Dead-Letter Queues](../task-processing/retries-dead-letter-queues.md).
 
-Add random jitter so many workers do not retry at exactly the same time.
-
-```python
-import random
-
-
-def retry_delay(attempt: int, cap_seconds: float = 30.0) -> float:
-    base = min(2 ** attempt, cap_seconds)
-    return random.uniform(0, base)
-```
-
-## 11.3 Store terminal and retryable outcomes deliberately
+## 5.3 Store terminal and retryable outcomes deliberately
 
 Your internal policy may distinguish:
 
@@ -623,7 +238,7 @@ Provider behaviour differs. For example, Stripe documents that it stores and rep
 
 ---
 
-# 12. Idempotency and Payment State Machines
+# 6. Idempotency and Payment State Machines
 
 Idempotency prevents duplicate commands. A payment state machine controls valid transitions.
 
@@ -658,13 +273,13 @@ Example:
 
 ---
 
-# 13. Webhooks and Event Deduplication
+# 7. Webhooks and Event Deduplication
 
 Payment providers commonly deliver webhooks with **at-least-once delivery**. This means the same event may arrive multiple times.
 
 Webhook deduplication should use the provider's event identifier, not the original client idempotency key.
 
-## 13.1 Event inbox table
+## 7.1 Event inbox table
 
 ```sql
 CREATE TABLE processed_webhook_events (
@@ -678,7 +293,7 @@ CREATE TABLE processed_webhook_events (
 );
 ```
 
-## 13.2 Processing flow
+## 7.2 Processing flow
 
 ```mermaid
 flowchart TD
@@ -693,18 +308,16 @@ flowchart TD
 
 The event insert and the local state update should normally occur in the same database transaction.
 
-## 13.3 Idempotency and webhooks complement each other
+## 7.3 Idempotency and webhooks complement each other
 
-```text
-API idempotency protects outgoing commands.
-Webhook deduplication protects incoming events.
-```
+> API idempotency protects outgoing commands.  
+> Webhook deduplication protects incoming events.
 
 A production payment integration generally needs both.
 
 ---
 
-# 14. Multi-Service Payment Flows
+# 8. Multi-Service Payment Flows
 
 In a microservice architecture, stopping duplicates at the API gateway is not sufficient. A message may still be delivered twice downstream.
 
@@ -728,7 +341,7 @@ Each boundary should have a stable identity:
 - Webhook: provider event ID
 - Ledger posting: unique posting reference
 
-## 14.1 Outbox pattern
+## 8.1 Outbox pattern
 
 Suppose the payment is saved successfully, but publishing `PaymentSucceeded` fails. The system must not lose the event or publish inconsistent events.
 
@@ -743,20 +356,18 @@ Commit
 
 A separate publisher sends outbox events. Consumers deduplicate using the event ID.
 
-## 14.2 Exactly-once effect, not magical exactly-once delivery
+## 8.2 Exactly-once effect, not magical exactly-once delivery
 
 Networks and queues often provide at-least-once delivery. Reliable systems accept that duplicates can occur and make handlers idempotent.
 
 The practical objective is:
 
-```text
-Messages may be delivered more than once,
-but the financial effect happens once.
-```
+> Messages may be delivered more than once,  
+> but the financial effect happens once.
 
 ---
 
-# 15. Provider Behaviour
+# 9. Provider Behaviour
 
 Provider-specific rules must be verified before implementation.
 
@@ -770,18 +381,17 @@ Important: provider rules can change and can differ between API versions and end
 
 ---
 
-# 16. Practical FastAPI and PostgreSQL Example
+# 10. Practical FastAPI and PostgreSQL Example
 
 The following example shows the structure of an implementation. Production code should additionally include authentication, authorization, provider-specific error mapping, metrics, tracing, and reconciliation.
 
-## 16.1 Request and response models
+## 10.1 Request and response models
 
 ```python
 from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
-
 
 class CreatePaymentRequest(BaseModel):
     order_id: str = Field(min_length=1, max_length=100)
@@ -793,7 +403,6 @@ class CreatePaymentRequest(BaseModel):
     def normalize_currency(cls, value: str) -> str:
         return value.upper()
 
-
 class PaymentResponse(BaseModel):
     payment_id: UUID
     order_id: str
@@ -803,13 +412,12 @@ class PaymentResponse(BaseModel):
     provider_reference: str | None = None
 ```
 
-## 16.2 Fingerprint helper
+## 10.2 Fingerprint helper
 
 ```python
 import hashlib
 import json
 from typing import Any
-
 
 def fingerprint_command(
     *,
@@ -831,7 +439,7 @@ def fingerprint_command(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-## 16.3 Service flow
+## 10.3 Service flow
 
 ```python
 from dataclasses import dataclass
@@ -839,13 +447,11 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-
 class IdempotencyState(StrEnum):
     PROCESSING = "PROCESSING"
     SUCCEEDED = "SUCCEEDED"
     FAILED_FINAL = "FAILED_FINAL"
     FAILED_RETRYABLE = "FAILED_RETRYABLE"
-
 
 @dataclass(frozen=True)
 class StoredResponse:
@@ -853,14 +459,11 @@ class StoredResponse:
     body: dict[str, Any]
     replayed: bool
 
-
 class IdempotencyConflictError(Exception):
     pass
 
-
 class OperationInProgressError(Exception):
     pass
-
 
 async def create_payment_idempotently(
     *,
@@ -977,7 +580,7 @@ async def create_payment_idempotently(
     return StoredResponse(status_code=201, body=body, replayed=False)
 ```
 
-## 16.4 FastAPI endpoint
+## 10.4 FastAPI endpoint
 
 ```python
 from typing import Annotated
@@ -987,7 +590,6 @@ from fastapi import APIRouter, Header, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/payments", tags=["payments"])
-
 
 @router.post("", response_model=PaymentResponse)
 async def create_payment(
@@ -1036,11 +638,10 @@ async def create_payment(
     )
 ```
 
-## 16.5 Atomic reservation repository idea
+## 10.5 Atomic reservation repository idea
 
 ```python
 from sqlalchemy.dialects.postgresql import insert
-
 
 async def reserve(self, *, record_id, tenant_id, operation, key, request_fingerprint):
     statement = (
@@ -1083,25 +684,19 @@ The unique database constraint is the correctness mechanism. Application-level c
 
 ---
 
-# 17. Testing Strategy
+# 11. Testing Strategy
 
 Idempotency tests should validate both API responses and financial side effects.
 
-## 17.1 Essential scenarios
+## 11.1 Essential scenarios
 
 ### Same request repeated sequentially
 
-```text
-Request 1 with K1 -> provider called once -> 201
-Request 2 with K1 -> provider not called -> same 201 response
-```
+The first request with `K1` calls the provider once and returns `201`; the second with `K1` must not call the provider and must return the same `201` response.
 
 ### Same key with different amount
 
-```text
-Request 1: K1, ₹1,000 -> 201
-Request 2: K1, ₹2,000 -> 409
-```
+`K1` with ₹1,000 returns `201`; the same `K1` with ₹2,000 returns `409`.
 
 ### Concurrent duplicate requests
 
@@ -1134,11 +729,10 @@ Send the same provider event ID multiple times and verify that the state transit
 
 Verify the documented behaviour after retention expiry. This must align with the client retry policy and business risk.
 
-## 17.2 Example concurrency test outline
+## 11.2 Example concurrency test outline
 
 ```python
 import asyncio
-
 
 async def test_concurrent_requests_charge_once(api_client, provider_mock):
     key = "7ee53e58-fc90-4e2e-a8f8-c8a49d11660a"
@@ -1170,11 +764,11 @@ async def test_concurrent_requests_charge_once(api_client, provider_mock):
 
 ---
 
-# 18. Observability and Operations
+# 12. Observability and Operations
 
 Idempotency should be visible in logs, metrics, and traces.
 
-## 18.1 Structured log fields
+## 12.1 Structured log fields
 
 ```json
 {
@@ -1190,7 +784,7 @@ Idempotency should be visible in logs, metrics, and traces.
 
 Hash or partially redact the key in logs when full values are unnecessary.
 
-## 18.2 Useful metrics
+## 12.2 Useful metrics
 
 - Total idempotent requests
 - Replay count and replay rate
@@ -1203,7 +797,7 @@ Hash or partially redact the key in logs when full values are unnecessary.
 - Reconciliation corrections
 - Idempotency datastore latency and error rate
 
-## 18.3 Alert conditions
+## 12.3 Alert conditions
 
 Investigate when:
 
@@ -1214,7 +808,7 @@ Investigate when:
 - Duplicate ledger postings or duplicate provider references are detected.
 - Idempotency storage becomes unavailable.
 
-## 18.4 Reconciliation worker
+## 12.4 Reconciliation worker
 
 A periodic worker can inspect old `PROCESSING` records:
 
@@ -1228,9 +822,9 @@ A periodic worker can inspect old `PROCESSING` records:
 
 ---
 
-# 19. Security Considerations
+# 13. Security Considerations
 
-## 19.1 Treat keys as untrusted input
+## 13.1 Treat keys as untrusted input
 
 Validate:
 
@@ -1242,29 +836,17 @@ Validate:
 
 A practical format is a UUID or a restricted printable string.
 
-## 19.2 Do not use sensitive information
+## 13.2 Do not use sensitive information
 
-Bad keys:
+Keys such as `customer-email@example.com-1000`, `4111111111111111-payment`, or `customer-phone-order-123` leak personal and card data into logs, URLs, and error reports. Use an opaque high-entropy value such as `7ee53e58-fc90-4e2e-a8f8-c8a49d11660a`.
 
-```text
-customer-email@example.com-1000
-4111111111111111-payment
-customer-phone-order-123
-```
-
-Better:
-
-```text
-7ee53e58-fc90-4e2e-a8f8-c8a49d11660a
-```
-
-## 19.3 Authorization still applies to replays
+## 13.3 Authorization still applies to replays
 
 Possession of an idempotency key must not grant access to another user's payment result.
 
 Before replaying a stored response, verify that the authenticated caller belongs to the same tenant, merchant, account, or resource scope.
 
-## 19.4 Avoid cross-tenant response leakage
+## 13.4 Avoid cross-tenant response leakage
 
 Never use a global key lookup such as:
 
@@ -1282,7 +864,7 @@ WHERE tenant_id = :tenant_id
   AND idempotency_key = :key;
 ```
 
-## 19.5 Protect stored responses
+## 13.5 Protect stored responses
 
 Stored response bodies can contain transaction data. Apply:
 
@@ -1295,7 +877,7 @@ Stored response bodies can contain transaction data. Apply:
 
 ---
 
-# 20. Production Checklist
+# 14. Production Checklist
 
 ## API
 
@@ -1339,22 +921,7 @@ Stored response bodies can contain transaction data. Apply:
 
 ---
 
-# 21. Key Takeaways
-
-1. An idempotency key identifies one logical money-moving operation.
-2. Every retry of that operation must reuse the same key.
-3. A new payment, capture, refund, or payout requires a new key.
-4. A database unique constraint is required to handle concurrency safely.
-5. Store a request fingerprint so the same key cannot be reused with different data.
-6. Propagate a stable idempotency key to the payment provider.
-7. Idempotency does not replace payment state machines, transactions, webhooks, or reconciliation.
-8. Queue messages and webhooks may be delivered more than once, so consumers must also be idempotent.
-9. The realistic goal is an **exactly-once financial effect**, even when delivery is at least once.
-10. Provider retention, replay, concurrency, and error rules differ; always follow the current endpoint documentation.
-
----
-
-# 22. References
+# 15. References
 
 Official documentation checked for this guide:
 

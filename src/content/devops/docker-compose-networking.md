@@ -2,14 +2,43 @@
 title: "Compose & Networking"
 group: "Docker"
 order: 2
+updated: "30 July 2026 against the current Docker Compose Specification and official Docker/AWS documentation"
 ---
 
 # Docker Volumes, Networking & Compose
 
-> **Category:** AWS, Docker & DevOps  
-> **Level:** Intermediate developer (3+ years)  
-> **Purpose:** Practical understanding for development, deployment, debugging, and technical interviews  
-> **Last verified:** 30 July 2026 against the current Docker Compose Specification and official Docker/AWS documentation
+> Practical understanding for development, deployment, debugging, and technical interviews
+
+## In short
+
+- **Container writable layer** is deleted with the container — anything written there (for example a database's data files) disappears the moment the container is removed and replaced, which is why persistent state belongs in a volume, not the container itself.
+- **Named volume** (Docker-managed, survives container removal, the default for databases) vs **bind mount** (maps an existing host path, best for source code and config) vs **`tmpfs`** (host memory only, gone the moment the container stops) — three different owners for the same problem.
+- A **user-defined bridge network** gives containers DNS resolution by service name (`db`, `redis`) through Docker's embedded DNS; the **default `bridge` network** does not provide this and should not be relied on for service discovery.
+- **`localhost` inside a container means that container itself**, not the host and not a sibling container — a dependency must always be addressed by its Compose service name (`db:5432`), never `localhost`.
+- `ports:` **publishes** a port to the host (`HOST:CONTAINER`); `expose:` only documents/opens it to other containers on the same network without publishing it; a Dockerfile `EXPOSE` is just image metadata — none of the three alone guarantees reachability.
+- `depends_on` with **`condition: service_healthy`** waits for a dependency's health check, not merely its start — startup order alone never proves a database is ready to accept connections, so the app should still retry its own connection.
+- **Docker Compose** declares services, networks, and volumes (plus configs/secrets) together in one YAML file, and `docker compose up` builds, starts, and wires all of it in a single step.
+
+```mermaid
+flowchart LR
+    U[Client] -->|HTTP :8080| N[Nginx Container]
+    N -->|api:8000| A[FastAPI Container]
+    A -->|db:5432| P[(PostgreSQL Container)]
+    A -->|redis:6379| R[(Redis Container)]
+    P --- V[(Named Volume)]
+
+    subgraph Docker Compose Project
+        N
+        A
+        P
+        R
+        V
+    end
+```
+
+**Interview answer:** Persist state in named volumes rather than the container's writable layer, since that layer is destroyed with the container. Put the services on a user-defined bridge network so they can reach each other by service name through Docker's embedded DNS instead of hardcoded IPs, and only publish (`ports:`) the ports that actually need to be reachable from outside — everything else stays on `expose` or unpublished. Compose ties the services, networks, and volumes together in one YAML file, so the whole stack starts, networking included, with a single `docker compose up`.
+
+**Gotcha:** `docker compose down` removes containers and networks but leaves named volumes on disk — it's `docker compose down --volumes` that deletes them, and reaching for that flag out of habit (a script, a shell alias, a CI cleanup step) is how a database ends up wiped.
 
 ---
 
@@ -28,23 +57,6 @@ These containers need three things:
 1. **Volumes** to keep important data after containers are recreated.
 2. **Networks** to let containers communicate securely.
 3. **Docker Compose** to define and operate the complete multi-container application.
-
-```mermaid
-flowchart LR
-    U[Client] -->|HTTP :8080| N[Nginx Container]
-    N -->|api:8000| A[FastAPI Container]
-    A -->|db:5432| P[(PostgreSQL Container)]
-    A -->|redis:6379| R[(Redis Container)]
-    P --- V[(Named Volume)]
-
-    subgraph Docker Compose Project
-        N
-        A
-        P
-        R
-        V
-    end
-```
 
 The important mental model is:
 
@@ -68,19 +80,7 @@ flowchart TB
     W --> L3 --> L2 --> L1
 ```
 
-Files written inside the container normally go into this writable layer.
-
-```bash
-docker run --name demo alpine sh -c 'echo "hello" > /data.txt && sleep 300'
-```
-
-The file exists while that container exists. If the container is deleted, its writable layer is also deleted.
-
-```bash
-docker rm -f demo
-```
-
-A new container created from the same image does not receive `/data.txt`.
+Files written inside the container normally go into this writable layer — for example, `docker run --name demo alpine sh -c 'echo "hello" > /data.txt && sleep 300'` writes `/data.txt` inside that container. The file exists only while that container exists: removing it with `docker rm -f demo` deletes its writable layer along with it, and a new container created from the same image does not receive `/data.txt`.
 
 ### Why this matters
 
@@ -92,24 +92,14 @@ Containers should therefore be treated as **replaceable compute units**, while i
 
 ## 2.2 Storage Options
 
-Docker provides three main ways to mount data into a container.
+Docker provides three main ways to mount data into a container, plus the default of writing straight into the container's writable layer when no mount is used at all.
 
 | Storage type | Managed by | Typical use | Persists after container removal |
 |---|---|---|---:|
 | Named or anonymous volume | Docker | Databases, queues, application state | Yes |
 | Bind mount | Developer/host OS | Source code, local configuration | Yes |
 | `tmpfs` mount | Host memory | Temporary sensitive or high-speed data | No |
-
-### Storage decision guide
-
-```mermaid
-flowchart TD
-    A{What kind of data?}
-    A -->|Database or persistent app data| B[Named Volume]
-    A -->|Host source code or config| C[Bind Mount]
-    A -->|Temporary in-memory data| D[tmpfs Mount]
-    A -->|No persistence required| E[Container Writable Layer]
-```
+| Container writable layer (no mount) | Docker (implicit) | No persistence required | No |
 
 ---
 
@@ -225,92 +215,30 @@ It is not persistent.
 
 ## 3.2 Volume Commands
 
-### Create a volume
-
 ```bash
-docker volume create app_data
-```
-
-### List volumes
-
-```bash
-docker volume ls
-```
-
-### Inspect a volume
-
-```bash
-docker volume inspect app_data
-```
-
-The output includes the driver, labels, mount point and options.
-
-### Remove a volume
-
-```bash
-docker volume rm app_data
-```
-
-Docker normally prevents removal while a container is using the volume.
-
-### Remove unused volumes
-
-```bash
-docker volume prune
-```
-
-Review the affected resources carefully before confirming this command.
-
-### Inspect a container's mounts
-
-```bash
-docker inspect postgres --format '{{json .Mounts}}'
-```
-
-For readable JSON when `jq` is installed:
-
-```bash
-docker inspect postgres --format '{{json .Mounts}}' | jq
+docker volume create app_data                              # create
+docker volume ls                                            # list
+docker volume inspect app_data                              # inspect: driver, labels, mount point, options
+docker volume rm app_data                                   # remove (fails while a container is using it)
+docker volume prune                                         # remove unused volumes — review before confirming
+docker inspect postgres --format '{{json .Mounts}}'         # inspect a container's mounts
+docker inspect postgres --format '{{json .Mounts}}' | jq    # same, pretty-printed when jq is installed
 ```
 
 ---
 
 ## 3.3 Mount Syntax
 
-Docker supports `--mount` and `-v`/`--volume`.
-
-### Explicit `--mount` syntax
+Docker supports `--mount` and `-v`/`--volume` as equivalent ways to attach the same mount. `--mount` is more verbose but easier to read in automation because each field is named.
 
 ```bash
-docker run --rm \
-  --mount type=volume,source=app_data,target=/app/data \
-  my-app:latest
-```
+# named volume: explicit form, then the compact equivalent
+docker run --rm --mount type=volume,source=app_data,target=/app/data my-app:latest
+docker run --rm -v app_data:/app/data my-app:latest
 
-### Compact `-v` syntax
-
-```bash
-docker run --rm \
-  -v app_data:/app/data \
-  my-app:latest
-```
-
-`--mount` is more verbose but easier to read in automation because each field is named.
-
-### Bind-mount example
-
-```bash
-docker run --rm \
-  --mount type=bind,source="$(pwd)/config",target=/app/config,readonly \
-  my-app:latest
-```
-
-Equivalent compact form:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/config:/app/config:ro" \
-  my-app:latest
+# read-only bind mount: explicit form, then the compact equivalent
+docker run --rm --mount type=bind,source="$(pwd)/config",target=/app/config,readonly my-app:latest
+docker run --rm -v "$(pwd)/config:/app/config:ro" my-app:latest
 ```
 
 ---
@@ -343,19 +271,17 @@ A read-only mount reduces accidental changes and limits what a compromised proce
 
 A named volume is not automatically a complete backup strategy. Backups should be versioned, tested and stored outside the Docker host.
 
-### Generic archive backup
+### Generic archive backup and restore
 
 ```bash
+# backup: mount the volume read-only, mount a host backup dir, tar it out
 docker run --rm \
   -v postgres_data:/source:ro \
   -v "$(pwd)/backups:/backup" \
   alpine \
   tar -czf /backup/postgres_data.tar.gz -C /source .
-```
 
-### Generic archive restore
-
-```bash
+# restore: mount the volume read-write, wipe it, untar the archive back in
 docker run --rm \
   -v postgres_data:/target \
   -v "$(pwd)/backups:/backup:ro" \
@@ -377,16 +303,11 @@ Database-aware backups understand consistency, transactions and logical database
 
 A process inside a container runs with a user ID and group ID. The mounted files must be accessible to that identity.
 
-Check the runtime user:
+Check the runtime user and the mounted directory's ownership:
 
 ```bash
-docker exec my-container id
-```
-
-Check directory ownership:
-
-```bash
-docker exec my-container ls -ld /app/data
+docker exec my-container id                 # runtime uid/gid
+docker exec my-container ls -ld /app/data   # ownership of the mounted directory
 ```
 
 A common production pattern is to run the application as a non-root user and ensure the mounted directory is owned by that user's UID/GID.
@@ -431,15 +352,9 @@ For normal Compose applications running on one machine, user-defined **bridge ne
 
 ## 4.2 Bridge Networking
 
-Docker creates a default network named `bridge`, but user-defined bridge networks provide better service discovery and isolation.
+Docker creates a default network named `bridge`, but user-defined bridge networks provide better service discovery and isolation: `docker network create app_network`.
 
-### Create a custom bridge network
-
-```bash
-docker network create app_network
-```
-
-### Start containers on that network
+Start containers on it by name:
 
 ```bash
 docker run -d \
@@ -453,16 +368,14 @@ docker run --rm \
   redis-cli -h redis ping
 ```
 
-The second container reaches Redis by the container name `redis`.
-
-### Network management commands
+The second container reaches Redis by the container name `redis`. Manage networks with:
 
 ```bash
-docker network ls
-docker network inspect app_network
-docker network connect app_network existing_container
-docker network disconnect app_network existing_container
-docker network rm app_network
+docker network ls                                          # list
+docker network inspect app_network                         # config, connected containers, IPAM
+docker network connect app_network existing_container      # attach a running container
+docker network disconnect app_network existing_container   # detach a running container
+docker network rm app_network                              # remove
 ```
 
 ---
@@ -503,21 +416,7 @@ flowchart LR
 
 ### The `localhost` rule
 
-Inside a container, `localhost` means **that same container**.
-
-If the API container uses:
-
-```text
-postgresql://app:secret@localhost:5432/appdb
-```
-
-it searches for PostgreSQL inside the API container, not inside the `db` container.
-
-Use the Compose service name:
-
-```text
-postgresql://app:secret@db:5432/appdb
-```
+Inside a container, `localhost` means **that same container**. An API container using `postgresql://app:secret@localhost:5432/appdb` searches for PostgreSQL inside itself, not inside the `db` container — use the Compose service name instead: `postgresql://app:secret@db:5432/appdb`.
 
 ---
 
@@ -534,14 +433,7 @@ services:
       - "8000:8000"
 ```
 
-Meaning:
-
-```text
-HOST_PORT:CONTAINER_PORT
-8000     :8000
-```
-
-Traffic sent to the Docker host on port `8000` is forwarded to port `8000` in the container.
+`HOST_PORT:CONTAINER_PORT` — traffic sent to the Docker host on port `8000` is forwarded to port `8000` in the container. Bind only to localhost with `ports: ["127.0.0.1:8000:8000"]` to keep it off every other host interface.
 
 ```mermaid
 flowchart LR
@@ -549,35 +441,9 @@ flowchart LR
     H -->|NAT/forwarding| A[API Container Port 8000]
 ```
 
-### Bind only to localhost
+### `expose` vs `EXPOSE`
 
-```yaml
-ports:
-  - "127.0.0.1:8000:8000"
-```
-
-This prevents the port from listening on every host interface.
-
-### `expose` in Compose
-
-```yaml
-services:
-  api:
-    expose:
-      - "8000"
-```
-
-`expose` documents and makes the container port available to linked Compose services, but it does not publish the port to the host.
-
-Containers on the same network can usually communicate using the target container port even without `expose`.
-
-### `EXPOSE` in a Dockerfile
-
-```dockerfile
-EXPOSE 8000
-```
-
-`EXPOSE` is image metadata documenting the intended listening port. It does not publish the port by itself.
+`expose: ["8000"]` in Compose documents and makes the container port available to linked Compose services, without publishing it to the host — containers on the same network can usually reach the target container port even without `expose`. A Dockerfile `EXPOSE 8000` is only image metadata documenting the intended listening port; neither form publishes the port by itself.
 
 ### Practical difference
 
@@ -592,25 +458,9 @@ EXPOSE 8000
 
 ## 4.5 Connecting to the Host
 
-A container sometimes needs to call a service running directly on the developer's host.
+A container sometimes needs to call a service running directly on the developer's host. On Docker Desktop, use `host.docker.internal` — for example, `http://host.docker.internal:9000`.
 
-On Docker Desktop, use:
-
-```text
-host.docker.internal
-```
-
-Example:
-
-```text
-http://host.docker.internal:9000
-```
-
-On Linux Engine, this mapping can be added explicitly when required:
-
-```bash
-docker run --add-host=host.docker.internal:host-gateway my-app
-```
+On Linux Engine, this mapping can be added explicitly when required: `docker run --add-host=host.docker.internal:host-gateway my-app`.
 
 Compose form:
 
@@ -678,21 +528,7 @@ An internal network is isolated from external connectivity at the Docker network
 
 # 5. Docker Compose
 
-Docker Compose defines and runs a multi-container application from a YAML model.
-
-The modern command is:
-
-```bash
-docker compose
-```
-
-The older standalone command is:
-
-```bash
-docker-compose
-```
-
-The standalone form is legacy. Modern Compose uses the **Compose Specification**. A top-level `version:` field is no longer required and is considered obsolete by current Compose implementations.
+Docker Compose defines and runs a multi-container application from a YAML model. The modern command is `docker compose`; the older standalone `docker-compose` command is legacy. Modern Compose uses the **Compose Specification**. A top-level `version:` field is no longer required and is considered obsolete by current Compose implementations.
 
 ---
 
@@ -721,21 +557,7 @@ flowchart TB
     S --> NGINX[nginx]
 ```
 
-Compose uses the directory name as the default project name. Project resources commonly receive names such as:
-
-```text
-myproject_api_1
-myproject_backend
-myproject_postgres_data
-```
-
-Actual naming depends on Compose and any explicit `name` or project options.
-
-Set a project name explicitly:
-
-```bash
-docker compose -p billing-api up -d
-```
+Compose uses the directory name as the default project name, and project resources commonly receive names like `myproject_api_1`, `myproject_backend`, and `myproject_postgres_data` — actual naming depends on Compose and any explicit `name` or project options. Set a project name explicitly with `docker compose -p billing-api up -d`.
 
 ---
 
@@ -768,21 +590,10 @@ volumes:
   postgres_data:
 ```
 
-### `services`
-
-Each service defines how one application component should run.
-
-### `networks`
-
-Top-level networks define reusable network resources for services.
-
-### `volumes`
-
-Top-level volumes define persistent named volumes.
-
-### `name`
-
-The optional top-level `name` sets the Compose project name.
+- **`services`** — each service defines how one application component should run.
+- **`networks`** — top-level networks define reusable network resources for services.
+- **`volumes`** — top-level volumes define persistent named volumes.
+- **`name`** — the optional top-level field that sets the Compose project name.
 
 ---
 
@@ -822,25 +633,11 @@ services:
 
 ### `build` versus `image`
 
-```yaml
-build: .
-```
+`build: .` builds an image from local source, while `image: example/api:1.0.0` uses a named image. A service can include both: Compose can build the image and tag it with the specified name.
 
-Builds an image from local source.
+### `command` and `entrypoint`
 
-```yaml
-image: example/api:1.0.0
-```
-
-Uses a named image. A service can include both: Compose can build the image and tag it with the specified name.
-
-### `command`
-
-Overrides the image's default command.
-
-### `entrypoint`
-
-Overrides the image's entrypoint. Use it only when the image's normal startup design needs to be replaced.
+`command` overrides the image's default command. `entrypoint` overrides the image's entrypoint — use it only when the image's normal startup design needs to be replaced.
 
 ### `restart`
 
@@ -1015,17 +812,7 @@ services:
       - "8081:8080"
 ```
 
-Run the normal stack:
-
-```bash
-docker compose up -d
-```
-
-Run with debug tools:
-
-```bash
-docker compose --profile debug up -d
-```
+Run the normal stack with `docker compose up -d`, or include debug tools with `docker compose --profile debug up -d`.
 
 ### Multiple Compose files
 
@@ -1049,19 +836,7 @@ services:
       - ./app:/app/app
 ```
 
-Run them together:
-
-```bash
-docker compose -f compose.yaml -f compose.dev.yaml up --build
-```
-
-Later files extend or override earlier files according to Compose merge rules.
-
-Inspect the final merged configuration:
-
-```bash
-docker compose -f compose.yaml -f compose.dev.yaml config
-```
+Run them together with `docker compose -f compose.yaml -f compose.dev.yaml up --build` — later files extend or override earlier files according to Compose merge rules. Inspect the final merged configuration with `docker compose -f compose.yaml -f compose.dev.yaml config`.
 
 ### Compose Watch
 
@@ -1080,13 +855,7 @@ services:
           path: ./pyproject.toml
 ```
 
-Run:
-
-```bash
-docker compose up --watch
-```
-
-This can provide a cleaner cross-platform development workflow than broad bind mounts, depending on the application and Docker Desktop environment.
+Run with `docker compose up --watch`. This can provide a cleaner cross-platform development workflow than broad bind mounts, depending on the application and Docker Desktop environment.
 
 ---
 
@@ -1126,11 +895,9 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "healthy"}
-
 
 @app.get("/")
 def root() -> dict[str, str]:
@@ -1211,13 +978,7 @@ POSTGRES_USER=app
 POSTGRES_PASSWORD=replace-for-local-development
 ```
 
-Copy it locally:
-
-```bash
-cp .env.example .env
-```
-
-Do not commit real credentials.
+Copy it locally with `cp .env.example .env`. Do not commit real credentials.
 
 ## 6.6 Compose File
 
@@ -1238,7 +999,6 @@ services:
         condition: service_healthy
     networks:
       - frontend
-    restart: unless-stopped
 
   api:
     build:
@@ -1246,12 +1006,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_HOST: db
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: ${POSTGRES_DB}
-      DATABASE_USER: ${POSTGRES_USER}
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       REDIS_HOST: redis
-      REDIS_PORT: "6379"
     expose:
       - "8000"
     volumes:
@@ -1262,13 +1017,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -1276,7 +1025,6 @@ services:
     networks:
       - frontend
       - backend
-    restart: unless-stopped
 
   db:
     image: postgres:17
@@ -1294,7 +1042,6 @@ services:
       start_period: 10s
     networks:
       - backend
-    restart: unless-stopped
 
   redis:
     image: redis:8-alpine
@@ -1308,7 +1055,6 @@ services:
       retries: 10
     networks:
       - backend
-    restart: unless-stopped
 
 networks:
   frontend:
@@ -1354,49 +1100,16 @@ The API service appears in both networks. It acts as the controlled communicatio
 
 ## 6.8 Run the Application
 
-Validate the Compose model:
-
 ```bash
-docker compose config
+docker compose config            # validate the Compose model
+docker compose up -d --build     # build and start
+docker compose ps                # check status
+docker compose logs -f           # follow logs
+docker compose down              # stop containers, keep volumes
+docker compose down --volumes    # stop and delete project volumes (drops db/redis data)
 ```
 
-Build and start:
-
-```bash
-docker compose up -d --build
-```
-
-Check status:
-
-```bash
-docker compose ps
-```
-
-Open:
-
-```text
-http://localhost:8080
-```
-
-Follow logs:
-
-```bash
-docker compose logs -f
-```
-
-Stop containers while keeping volumes:
-
-```bash
-docker compose down
-```
-
-Stop and delete project volumes:
-
-```bash
-docker compose down --volumes
-```
-
-The second command deletes database and Redis data stored in project volumes.
+Open `http://localhost:8080`.
 
 ---
 
@@ -1405,72 +1118,38 @@ The second command deletes database and Redis data stored in project volumes.
 ## 7.1 Start and Stop
 
 ```bash
-# Create/start services in foreground
-docker compose up
-
-# Create/start in background
-docker compose up -d
-
-# Build before starting
-docker compose up -d --build
-
-# Stop without deleting containers
-docker compose stop
-
-# Restart existing containers
-docker compose restart
-
-# Stop and remove project containers/networks
-docker compose down
+docker compose up               # create/start in foreground
+docker compose up -d            # create/start in background
+docker compose up -d --build    # build before starting
+docker compose stop             # stop without deleting containers
+docker compose restart          # restart existing containers
+docker compose down             # stop and remove project containers/networks
 ```
 
 ## 7.2 Inspect State
 
 ```bash
-# List service containers
-docker compose ps
-
-# Render resolved configuration
-docker compose config
-
-# List images used by services
-docker compose images
-
-# Show running processes
-docker compose top
+docker compose ps        # list service containers
+docker compose config    # render resolved configuration
+docker compose images    # list images used by services
+docker compose top       # show running processes
 ```
 
 ## 7.3 Logs
 
 ```bash
-# All services
-docker compose logs
-
-# Follow all logs
-docker compose logs -f
-
-# Follow one service
-docker compose logs -f api
-
-# Last 100 lines
-docker compose logs --tail=100 api
-
-# Include timestamps
-docker compose logs -t api
+docker compose logs                   # all services
+docker compose logs -f                # follow all logs
+docker compose logs -f api            # follow one service
+docker compose logs --tail=100 api    # last 100 lines
+docker compose logs -t api            # include timestamps
 ```
 
 ## 7.4 Execute Commands
 
-Run inside an existing service container:
-
 ```bash
-docker compose exec api sh
-```
-
-Run a one-off container using a service definition:
-
-```bash
-docker compose run --rm api python -m pytest
+docker compose exec api sh                    # run inside an existing service container
+docker compose run --rm api python -m pytest   # run a new one-off container from a service definition
 ```
 
 `exec` uses an already-running container. `run` creates a new one-off container.
@@ -1478,41 +1157,23 @@ docker compose run --rm api python -m pytest
 ## 7.5 Build and Pull
 
 ```bash
-# Build all buildable services
-docker compose build
-
-# Build without cache
-docker compose build --no-cache
-
-# Pull service images
-docker compose pull
-
-# Pull and start
-docker compose up -d --pull always
+docker compose build                 # build all buildable services
+docker compose build --no-cache      # build without cache
+docker compose pull                  # pull service images
+docker compose up -d --pull always   # pull and start
 ```
 
 ## 7.6 Scale a Stateless Service
 
-```bash
-docker compose up -d --scale worker=3
-```
-
-A scaled service should not set a fixed `container_name`, and host-port mappings must be designed carefully because multiple containers cannot all bind the same host port.
+Scale with `docker compose up -d --scale worker=3`. A scaled service should not set a fixed `container_name`, and host-port mappings must be designed carefully because multiple containers cannot all bind the same host port.
 
 ## 7.7 Remove Resources
 
 ```bash
-# Remove stopped service containers
-docker compose rm
-
-# Remove containers and default project network
-docker compose down
-
-# Also remove named project volumes
-docker compose down --volumes
-
-# Also remove images created/used by the project
-docker compose down --rmi local
+docker compose rm                  # remove stopped service containers
+docker compose down                # remove containers and default project network
+docker compose down --volumes      # also remove named project volumes
+docker compose down --rmi local    # also remove images created/used by the project
 ```
 
 ---
@@ -1618,13 +1279,7 @@ A current AWS option is deploying a Docker Compose application to an Elastic Bea
 
 ## 9.1 Keep Containers Replaceable
 
-Persist important state outside the container writable layer.
-
-```text
-Replaceable container + externalized state = safer deployments
-```
-
-Use named or managed storage for persistent data and rebuild containers from images rather than modifying live containers manually.
+Persist important state outside the container writable layer: `replaceable container + externalized state = safer deployments`. Use named or managed storage for persistent data and rebuild containers from images rather than modifying live containers manually.
 
 ## 9.2 Separate Stateful and Stateless Components
 
@@ -1652,19 +1307,7 @@ This reduces unnecessary attack surface.
 
 ## 9.4 Use Service Names, Not Container IPs
 
-Correct:
-
-```text
-postgresql://db:5432/appdb
-```
-
-Fragile:
-
-```text
-postgresql://172.20.0.4:5432/appdb
-```
-
-Container addresses are runtime details and can change.
+Correct: `postgresql://db:5432/appdb`. Fragile: `postgresql://172.20.0.4:5432/appdb`. Container addresses are runtime details and can change.
 
 ## 9.5 Add Health Checks and Application Retries
 
@@ -1686,25 +1329,7 @@ Use bounded exponential backoff rather than tight infinite retry loops.
 
 ## 9.6 Pin Image Versions
 
-Prefer a controlled version:
-
-```yaml
-image: postgres:17.5
-```
-
-over an uncontrolled floating tag:
-
-```yaml
-image: postgres:latest
-```
-
-For stronger reproducibility, production pipelines can pin an image digest.
-
-```yaml
-image: postgres:17.5@sha256:...
-```
-
-Update versions deliberately through tested dependency-management processes.
+Prefer a controlled version, `image: postgres:17.5`, over an uncontrolled floating tag such as `image: postgres:latest`. For stronger reproducibility, production pipelines can pin an image digest: `image: postgres:17.5@sha256:...`. Update versions deliberately through tested dependency-management processes.
 
 ## 9.7 Keep Secrets Out of Images and Git
 
@@ -1795,24 +1420,12 @@ Check:
 
 ## 10.2 Service Cannot Reach Another Service
 
-From the calling container:
-
 ```bash
-docker compose exec api getent hosts db
-```
-
-Test TCP connectivity using an available client:
-
-```bash
+docker compose exec api getent hosts db        # DNS resolves to an IP?
 docker compose exec api python -c \
-  "import socket; socket.create_connection(('db', 5432), timeout=3); print('connected')"
-```
-
-Inspect networks:
-
-```bash
+  "import socket; socket.create_connection(('db', 5432), timeout=3); print('connected')"  # TCP reachable?
 docker network ls
-docker network inspect docker-compose-demo_backend
+docker network inspect docker-compose-demo_backend    # both services on the network?
 ```
 
 Check that:
@@ -1828,6 +1441,7 @@ Check that:
 ```bash
 docker compose ps
 docker compose port nginx 80
+lsof -i :8080    # macOS/Linux: what's bound to the host port
 ```
 
 Check:
@@ -1837,12 +1451,6 @@ Check:
 - Host bind address such as `127.0.0.1`
 - Firewall/security-group rules in remote environments
 - Whether the process listens on the container port
-
-On macOS/Linux, inspect a local port:
-
-```bash
-lsof -i :8080
-```
 
 ## 10.4 Data Disappeared
 
@@ -1868,28 +1476,16 @@ Check whether:
 ```bash
 docker compose exec api id
 docker compose exec api ls -ld /app /app/data
-```
-
-For bind mounts, also inspect the host path:
-
-```bash
-ls -ld ./data
+ls -ld ./data    # for bind mounts, also check the host path
 ```
 
 Align ownership and permissions with the runtime user. Avoid solving every permission issue by running the container as root.
 
 ## 10.6 Compose Uses Unexpected Values
 
-Render the final model:
-
 ```bash
-docker compose config
-```
-
-Show the environment used for interpolation:
-
-```bash
-docker compose config --environment
+docker compose config                 # render the final model
+docker compose config --environment   # show the environment used for interpolation
 ```
 
 Check:
@@ -1906,52 +1502,12 @@ Check:
 docker compose down
 docker compose build --no-cache
 docker compose up -d
-```
-
-Delete volumes only when data loss is acceptable:
-
-```bash
-docker compose down --volumes
+docker compose down --volumes    # only if data loss is acceptable
 ```
 
 ---
 
-# 11. Key Takeaways
-
-## Volumes
-
-- A container's writable layer is temporary and tied to that container.
-- Named volumes are the default choice for persistent container-managed data.
-- Bind mounts are ideal for source code and host-controlled files.
-- `tmpfs` is for disposable in-memory data.
-- Persistence is not the same as backup.
-
-## Networking
-
-- Use user-defined networks for container communication and DNS discovery.
-- Use service names such as `db` and `redis`, not container IP addresses.
-- `localhost` inside a container means that container itself.
-- Publish only the ports that host users or external systems must reach.
-- Separate frontend and backend networks when isolation benefits the design.
-
-## Compose
-
-- Compose defines services, networks, volumes, configs and secrets in one application model.
-- Use the modern `docker compose` command and the rolling Compose Specification.
-- The top-level `version:` field is no longer necessary.
-- `depends_on` can coordinate startup, while health checks and application retries provide readiness and resilience.
-- Use `docker compose config` whenever the effective configuration is unclear.
-
-## AWS
-
-- Store images in ECR and use managed secret services instead of committed credentials.
-- VPCs, subnets, security groups and load balancers control production network reachability.
-- EBS, EFS and managed databases solve different persistence requirements.
-- Compose is highly useful locally and on single hosts; ECS/EKS commonly provide broader production orchestration.
-
----
-
-# 12. Official References
+# 11. Official References
 
 ## Docker
 

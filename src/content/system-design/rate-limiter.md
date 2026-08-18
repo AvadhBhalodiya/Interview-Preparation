@@ -2,14 +2,36 @@
 title: "Design a Rate Limiter"
 group: "Classic Designs"
 order: 11
+updated: "3 August 2026"
 ---
 
 # Design a Distributed Rate Limiter
 
-> **Category:** System Design  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Goal:** Design a low-latency, scalable, fault-tolerant rate limiter that applies limits consistently across many application instances and regions.  
-> **Last reviewed:** 3 August 2026
+> Design a low-latency, scalable, fault-tolerant rate limiter that applies limits consistently across many application instances and regions.
+
+## In short
+
+- The hard part is not the algorithm, it is **shared mutable counters**: three instances each allowing 100/min allow 300/min, so the check-and-consume must be one atomic operation, never a read followed by a write from application code.
+- Enforce in **two layers** — an in-process bucket for microsecond-level self-protection, and a central Redis-backed limiter that holds the global truth.
+- **Token bucket** is the default choice: constant state per key, an explicit burst capacity, weighted costs, and a clean mapping onto one Redis script.
+- Redis must be the **time source** inside that script; using each caller's clock lets machine skew silently shift every window.
+- Choose **fail-open or fail-closed per policy**, not once for the system: an abuse rule fails closed, a fairness quota fails open.
+- **Hot keys** defeat sharding, because one large tenant lands on one slot — pre-limit locally, or lease a block of tokens instead of paying a round trip per request.
+- A strictly global limit costs a cross-region round trip on every request; allocate regional quotas or lease from a global pool instead.
+
+```mermaid
+flowchart TD
+    CLIENT[Client] --> EDGE["CDN / WAF"]
+    EDGE --> GW[API Gateway]
+    GW --> BUCKET[Local token bucket]
+    GW --> RPC[Global rate-limit RPC]
+    RPC --> LIMITER[Stateless limiter]
+    LIMITER --> REDIS[(Redis Cluster)]
+```
+
+**Interview answer:** Put a stateless limiter service in front of a Redis cluster and run check-and-consume as a single Lua script per key, so no gateway can read a stale count and overspend it. Use a token bucket keyed by `policy + identity` with a TTL so idle keys evict themselves, and add a small in-process bucket in each gateway to absorb obvious abuse without a network hop. Then say explicitly what happens when Redis is unavailable and what happens across regions — those two answers, not the algorithm, are what separates a distributed design from a single-server one.
+
+**Gotcha:** Reaching for one perfectly accurate global counter. Cross-region coordination on the request path costs more latency than the limit is worth and turns the limiter into a single point of failure; real systems layer local protection, strict regional enforcement, and approximate or leased global quotas, and accept a small overshoot at the seams.
 
 ---
 
@@ -101,11 +123,7 @@ A strict global limit across distant regions requires cross-region coordination,
 
 ## 2.7 Fairness
 
-A system-wide limit alone can allow one tenant to consume the entire capacity. Rate limits frequently need several levels:
-
-```text
-Platform → Tenant → User → API route
-```
+A system-wide limit alone can allow one tenant to consume the entire capacity. Rate limits frequently need several levels: `Platform → Tenant → User → API route`.
 
 ---
 
@@ -178,12 +196,7 @@ Assume:
 - Decision payload: approximately **300 bytes**
 - Redis operation and response: approximately **500 bytes combined**
 
-Approximate internal network traffic:
-
-```text
-3,000,000 × 500 bytes
-= 1.5 GB/second
-```
+Approximate internal network traffic is `3,000,000 × 500 bytes = 1.5 GB/second`.
 
 Sending every policy as a separate network request is expensive.
 
@@ -209,11 +222,7 @@ key bytes
 TTL metadata
 ```
 
-The raw fields are small, but datastore overhead dominates. At roughly 100–200 bytes per active key:
-
-```text
-20,000,000 × 150 bytes ≈ 3 GB
-```
+The raw fields are small, but datastore overhead dominates. At roughly 100-200 bytes per active key, `20,000,000 × 150 bytes ≈ 3 GB`.
 
 Production capacity should include replicas, fragmentation, failover headroom, and traffic growth. A safer provision might be several times the raw estimate.
 
@@ -264,200 +273,27 @@ The request is allowed only when every required policy has capacity.
 
 ---
 
-# 6. Rate-Limiting Algorithms
+# 6. Choosing the Algorithm
 
-## 6.1 Fixed Window Counter
+[Rate Limiting in API Design & REST](../api-design/rate-limiting.md) owns the algorithms in full: fixed window, sliding window log, sliding window counter, token bucket, and leaky bucket, each with its formula, the boundary-burst problem, and the comparison table. The summary that a distributed design needs:
 
-Count requests in a fixed interval.
+| Algorithm | State per key | Burst | Where it earns its place |
+|---|---|---|---|
+| Fixed window | One counter | Accidental, at the boundary | Coarse quotas where a 2x boundary overshoot is harmless |
+| Sliding window log | One entry per request | Configurable | Low-volume, security-sensitive rules such as login attempts |
+| Sliding window counter | Two counters | Limited | A good general API default when bursts are unwanted |
+| Token bucket | Tokens plus a timestamp | Explicit, via capacity | The primary distributed limiter |
+| Leaky bucket | Queue plus drain rate | Smoothed away | Shaping asynchronous work, not synchronous APIs |
 
-```text
-Key: rl:user-123:2026-08-03T11:55
-Value: 72
-TTL: 60 seconds
-```
-
-### Flow
-
-```text
-current_count = INCR(key)
-
-if current_count == 1:
-    EXPIRE(key, window)
-
-allow when current_count <= limit
-```
-
-### Advantages
-
-- Simple
-- Fast
-- Low memory usage
-- Easy to understand
-
-### Limitation: Boundary Burst
-
-For a limit of 100 requests/minute:
+Use a **token bucket** for the primary distributed limiter. Capacity sets the burst a client may take immediately and the refill rate sets the sustained rate, so `capacity = 100, refill = 10/second` permits an instant burst of 100 and about 10 requests per second thereafter. It keeps constant state per key regardless of traffic, supports weighted requests, and reduces to a single arithmetic step that a Redis script can perform atomically:
 
 ```text
-12:00:59 → 100 requests
-12:01:00 → 100 requests
-
-200 requests can arrive within about one second.
+elapsed          = now - last_refill
+refilled_tokens  = min(capacity, previous_tokens + elapsed x refill_rate)
+allowed          = refilled_tokens >= request_cost
 ```
 
----
-
-## 6.2 Sliding Window Log
-
-Store every request timestamp, normally in a sorted set.
-
-```text
-ZREMRANGEBYSCORE key -inf now-window
-ZCARD key
-ZADD key now request_id
-```
-
-### Advantages
-
-- Highly accurate
-- No fixed-window boundary spike
-
-### Limitations
-
-- One entry per request
-- More memory
-- More CPU for cleanup
-- Expensive for high-cardinality traffic
-
-Use it when precision matters more than cost, such as sensitive authentication flows with low limits.
-
----
-
-## 6.3 Sliding Window Counter
-
-Combine counts from the current and previous fixed windows.
-
-```text
-estimated_count =
-    current_window_count
-    + previous_window_count × overlap_percentage
-```
-
-Example:
-
-```text
-Limit: 100/minute
-Current window count: 40
-Previous window count: 80
-Current window is 25% complete
-
-Previous contribution = 80 × 75% = 60
-Estimated count = 40 + 60 = 100
-```
-
-### Advantages
-
-- Better boundary behavior than fixed window
-- Much less memory than sliding logs
-- Good API default
-
-### Limitation
-
-It is an approximation rather than a perfect timestamp-level count.
-
----
-
-## 6.4 Token Bucket
-
-A bucket contains tokens.
-
-- Each request consumes one or more tokens.
-- Tokens refill continuously.
-- Bucket capacity controls burst size.
-- Refill rate controls sustained traffic.
-
-```text
-capacity = 100 tokens
-refill_rate = 10 tokens/second
-request_cost = 1 token
-```
-
-A client can immediately burst up to 100 requests, but over time it can sustain about 10 requests per second.
-
-### Formula
-
-```text
-elapsed = now - last_refill
-
-refilled_tokens =
-    min(capacity, previous_tokens + elapsed × refill_rate)
-
-allowed = refilled_tokens >= request_cost
-```
-
-### Advantages
-
-- Natural burst support
-- Efficient state
-- Good fit for APIs
-- Supports weighted operations
-
-### Limitation
-
-Requires atomic floating-point or scaled-integer arithmetic and careful time handling.
-
----
-
-## 6.5 Leaky Bucket
-
-Requests enter a bucket and leave at a fixed rate.
-
-It can be implemented as:
-
-- A policing limiter that rejects overflow.
-- A queue that shapes traffic at a controlled rate.
-
-```mermaid
-flowchart TD
-    BURST[Burst traffic] --> BUCKET[Bucket]
-    BUCKET -->|Fixed drain rate| DOWNSTREAM[Downstream service]
-```
-
-### Advantages
-
-- Smooth output
-- Protects sensitive downstream systems
-
-### Limitations
-
-- Queuing increases latency
-- Queue growth must be bounded
-- More suitable for asynchronous work than synchronous APIs
-
----
-
-## 6.6 Algorithm Comparison
-
-| Algorithm | Accuracy | Burst Support | Memory | Complexity | Typical Use |
-|---|---|---:|---:|---:|---|
-| Fixed window | Medium | Accidental boundary burst | Low | Low | Simple quotas |
-| Sliding log | Very high | Configurable | High | High | Login/security limits |
-| Sliding counter | High enough | Limited | Low | Medium | General APIs |
-| Token bucket | High | Explicit | Low | Medium | Most API throttling |
-| Leaky bucket | High | Smooths burst | Medium | Medium | Queueing and traffic shaping |
-
-## 6.7 Chosen Algorithm
-
-Use a **token bucket** for the primary distributed limiter because it:
-
-- Supports short bursts.
-- Enforces a sustained rate.
-- Uses constant state per key.
-- Supports weighted requests.
-- Maps well to Redis atomic scripts.
-- Is widely used by modern API infrastructure.
-
-Use a sliding log only for a few low-volume, security-sensitive rules.
+Reserve the sliding log for a handful of low-volume, security-sensitive rules where a per-request timestamp is worth its memory. The point for this design is that only the token bucket keeps state small enough to live in a shared store at millions of keys while still expressing burst and sustained rate as separate, tunable numbers.
 
 ---
 
@@ -751,15 +587,7 @@ This reduces:
 
 ## 11.1 Token-Bucket Key
 
-```text
-rl:{shard-key}:v{policy-version}:{policy-id}:{identity-hash}
-```
-
-Example:
-
-```text
-rl:{tenant-42}:v7:payment-create:user-728
-```
+A bucket key is `rl:{shard-key}:v{policy-version}:{policy-id}:{identity-hash}`, for example `rl:{tenant-42}:v7:payment-create:user-728`.
 
 The braces are a Redis Cluster hash tag. Keys with the same hash tag map to the same hash slot when a multi-key atomic operation requires colocated keys.
 
@@ -774,11 +602,7 @@ last_refill_ms  1785738305123
 
 Use scaled integers to avoid inconsistent floating-point behavior.
 
-Example:
-
-```text
-1 logical token = 1,000 microtokens
-```
+Example: `1 logical token = 1,000 microtokens`
 
 Then:
 
@@ -790,11 +614,7 @@ request cost: 1 token     = 1,000 microtokens
 
 ## 11.3 TTL
 
-Set the TTL long enough for an empty bucket to become full:
-
-```text
-ttl ≈ ceil(capacity / refill_rate) + safety_margin
-```
+Set the TTL long enough for an empty bucket to become full: `ttl ≈ ceil(capacity / refill_rate) + safety_margin`.
 
 Example:
 
@@ -945,13 +765,7 @@ Risks:
 - Clock skew between rate-limit service instances.
 - A clock moving backwards can affect refill logic.
 
-Mitigation:
-
-```text
-elapsed = max(0, now - last_refill)
-```
-
-Use synchronized clocks and monotonic time for local calculations.
+Clamp the elapsed time with `elapsed = max(0, now - last_refill)`. Use synchronized clocks and monotonic time for local calculations.
 
 ### Redis Server Time
 
@@ -1090,9 +904,7 @@ Request counters are transient. Policies are durable business configuration.
 
 ## 14.2 Policy States
 
-```text
-DRAFT → SHADOW → ENFORCED → DISABLED
-```
+A policy moves through `DRAFT → SHADOW → ENFORCED → DISABLED`.
 
 ### Draft
 
@@ -1112,11 +924,7 @@ Policy remains auditable but is not evaluated.
 
 ## 14.3 Policy Versioning
 
-Include the version in counter keys:
-
-```text
-rl:{tenant-42}:v7:payment-create
-```
+Include the version in counter keys, as in `rl:{tenant-42}:v7:payment-create`.
 
 This prevents a major policy change from incorrectly reusing incompatible state.
 
@@ -1227,11 +1035,7 @@ The limiter must not fail slowly.
 
 Redis Cluster partitions keys across hash slots.
 
-Use a stable key with sufficient cardinality:
-
-```text
-hash(policy_id + identity)
-```
+Use a stable key with sufficient cardinality, such as `hash(policy_id + identity)`.
 
 Avoid using only `policy_id`, because all clients for one policy would hit one shard.
 
@@ -1277,11 +1081,7 @@ Use consistent operational procedures:
 
 ## 16.5 Redis Command Discipline
 
-Avoid expensive commands such as:
-
-```text
-KEYS rl:*
-```
+Avoid expensive commands such as `KEYS rl:*`.
 
 Rely on:
 
@@ -1517,11 +1317,7 @@ Avoid one system-wide failure mode for every endpoint.
 
 ## 19.6 Circuit Breaker
 
-When Redis is unhealthy:
-
-```text
-CLOSED → OPEN → HALF-OPEN → CLOSED
-```
+When Redis is unhealthy the breaker moves `CLOSED → OPEN → HALF-OPEN → CLOSED`.
 
 While open:
 
@@ -1627,63 +1423,9 @@ This hierarchical design minimizes global coordination.
 
 # 21. Response Semantics
 
-## 21.1 Rejected Request
+The rejection contract belongs to the API layer and is specified in full in [Rate Limiting in API Design & REST](../api-design/rate-limiting.md): `429 Too Many Requests` with an `application/problem+json` body, `Retry-After`, the draft IETF `RateLimit` and `RateLimit-Policy` fields, the legacy `X-RateLimit-*` compatibility strategy, and the client-side backoff rules.
 
-Use HTTP `429 Too Many Requests`.
-
-```http
-HTTP/1.1 429 Too Many Requests
-Content-Type: application/problem+json
-Retry-After: 2
-Cache-Control: no-store
-
-{
-  "type": "https://api.example.com/problems/rate-limit-exceeded",
-  "title": "Rate limit exceeded",
-  "status": 429,
-  "detail": "The payment creation limit has been exceeded.",
-  "policy_id": "payment-create-pro",
-  "retry_after_ms": 1840,
-  "request_id": "req-6da3"
-}
-```
-
-`Retry-After` can contain seconds or an HTTP date. Seconds are usually easier for API clients.
-
-## 21.2 Rate-Limit Headers
-
-Historically, APIs have used custom headers such as:
-
-```http
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 23
-X-RateLimit-Reset: 1785738360
-```
-
-As of 3 August 2026, the IETF work for standardized HTTP rate-limit fields is still represented by an Internet-Draft, `draft-ietf-httpapi-ratelimit-headers-11`, defining `RateLimit-Policy` and `RateLimit`. An Internet-Draft is not yet a final RFC.
-
-A compatibility strategy can expose:
-
-```http
-RateLimit-Policy: "default";q=100;w=60
-RateLimit: "default";r=23;t=14
-Retry-After: 14
-```
-
-and, during migration, legacy `X-RateLimit-*` headers if existing clients require them.
-
-Always confirm the latest IETF specification before implementing its exact syntax.
-
-## 21.3 Client Guidance
-
-Clients should:
-
-- Respect `Retry-After`.
-- Use exponential backoff with jitter.
-- Avoid immediate retry loops.
-- Reduce concurrency.
-- Cache where possible.
-- Request higher quota through an explicit process.
+Two details are specific to this design. The limiter service returns a decision, not an HTTP response — the gateway translates `DENY` into `429`. And because `Retry-After` is expressed in whole seconds, return the precise wait separately (`"retry_after_ms": 1840`) so SDKs can schedule the retry accurately instead of rounding a sub-second wait up to a full second.
 
 ---
 
@@ -1742,11 +1484,7 @@ Per-source key-creation limits
 
 The limiter is usually behind some infrastructure. A volumetric attack may saturate the network before application-level rate limiting executes.
 
-Use upstream controls:
-
-```text
-CDN → DDoS protection → WAF → load balancer → API rate limiter
-```
+Use upstream controls: `CDN → DDoS protection → WAF → load balancer → API rate limiter`.
 
 ---
 
@@ -1868,23 +1606,7 @@ Tracing should be sampled because every request may invoke the limiter.
 
 Suppose one rate-limit service instance handles 40,000 decision requests/second at the desired p99.
 
-For a peak of 1,000,000 decisions/second:
-
-```text
-1,000,000 / 40,000 = 25 instances
-```
-
-Add 40% headroom:
-
-```text
-25 × 1.4 = 35 instances
-```
-
-Distribute across three availability zones:
-
-```text
-12 + 12 + 11
-```
+A peak of 1,000,000 decisions/second therefore needs `1,000,000 / 40,000 = 25 instances`, or `25 × 1.4 = 35` with 40% headroom, distributed across three availability zones as `12 + 12 + 11`.
 
 Ensure the remaining two zones can handle traffic if one zone fails.
 
@@ -1892,17 +1614,7 @@ Ensure the remaining two zones can handle traffic if one zone fails.
 
 Suppose a shard safely sustains 100,000 atomic scripts/second under production payload and latency targets.
 
-For 1,000,000 operations/second:
-
-```text
-1,000,000 / 100,000 = 10 primary shards
-```
-
-Add failover and growth headroom:
-
-```text
-Provision 14–16 primaries, each with a replica
-```
+For 1,000,000 operations/second that is `1,000,000 / 100,000 = 10 primary shards`; with failover and growth headroom, provision 14-16 primaries, each with a replica.
 
 These numbers are examples. Benchmark the actual script, key sizes, network, Redis version, and hardware.
 
@@ -2078,103 +1790,20 @@ Because the service is stateless, it does not need to transfer counter state.
 
 # 27. Alternative Designs
 
-## 27.1 Rate Limiting Inside Every Application
+The design above is one point in a space. The realistic alternatives differ mainly in where the limiting logic lives and how consistent the counters are.
 
-```text
-Application instance → Redis
-```
+| Design | Shape | Advantages | Disadvantages |
+|---|---|---|---|
+| Inside every application | `Application instance → Redis` | Fewer infrastructure components; service-specific control | Repeated implementation, inconsistent behaviour, a client per language, harder policy governance, more Redis connections |
+| Gateway plugin | `Gateway plugin → Redis` | One less network hop; low latency | Complex logic inside gateway extensions; Redis credentials on every gateway; harder independent deployment; gateway-specific |
+| Dedicated service | `Gateway → Rate-limit service → Redis` | Central policy model, language-independent, independently scalable, easier observability, reusable across gateways | One extra network hop; another service to operate |
+| Database counter | Rows plus transactions | Strongly consistent | Too slow and too write-heavy for per-request limiting |
+| CRDT / eventually consistent counters | Regional counters that merge | High availability, regional writes, partition tolerance | Temporary overshoot, more complex quota semantics, harder to compute an immediate retry time |
+| Service mesh or proxy | Envoy local plus external global limiting | Reuses existing mesh; descriptors built from route and request metadata | Only sensible where the mesh already exists |
 
-### Advantages
+The dedicated service is the recommended general-purpose design: it centralizes policy, scales independently of the gateways, and is the only option that stays consistent across many languages and many gateway products.
 
-- Fewer infrastructure components
-- Service-specific control
-
-### Disadvantages
-
-- Repeated implementation
-- Inconsistent behavior
-- Every language needs a client
-- Harder policy governance
-- More Redis connections
-
-Suitable for a small system, but difficult to operate consistently at scale.
-
-## 27.2 Gateway Plugin Directly to Redis
-
-```text
-Gateway plugin → Redis
-```
-
-### Advantages
-
-- One less network hop
-- Low latency
-
-### Disadvantages
-
-- Complex logic inside gateway extensions
-- Redis credentials on every gateway
-- Harder independent deployment
-- Gateway-specific implementation
-
-Good when the gateway has a mature, well-supported distributed rate-limit extension.
-
-## 27.3 Dedicated Global Rate-Limit Service
-
-```text
-Gateway → Rate-limit service → Redis
-```
-
-### Advantages
-
-- Central policy model
-- Language-independent
-- Independently scalable
-- Easier observability
-- Reusable across gateways
-
-### Disadvantages
-
-- Additional network hop
-- Another service to operate
-
-This is the recommended general-purpose design.
-
-## 27.4 Database Counter
-
-Using PostgreSQL rows with transactions is strongly consistent but usually too slow and write-heavy for per-request rate limiting.
-
-It can work for:
-
-- Very low traffic
-- Daily or monthly quotas
-- Administrative operations
-
-Do not use it for million-RPS throttling.
-
-## 27.5 CRDT or Eventually Consistent Counters
-
-CRDT-style counters can merge regional usage without one global primary.
-
-Advantages:
-
-- High availability
-- Regional writes
-- Partition tolerance
-
-Disadvantages:
-
-- Temporary overshoot
-- More complex quota semantics
-- Harder to compute immediate retry time
-
-Useful for approximate global quotas, not strict per-request protection.
-
-## 27.6 Service Mesh or Proxy-Based Limiting
-
-Envoy supports local and external/global rate-limiting patterns. A proxy can create descriptors from routes and request metadata, then call a generic rate-limit service.
-
-This is a strong choice when the organization already uses Envoy or a service mesh.
+The other rows still have a place. Application-local limiting suits a small system. A gateway plugin is a good choice when the gateway already ships a mature distributed rate-limit extension. A database counter is fine for very low traffic, daily or monthly quotas, and administrative operations — never for million-rps throttling. CRDT-style counters merge regional usage without a global primary and suit approximate global quotas rather than strict per-request protection.
 
 ---
 
@@ -2194,6 +1823,8 @@ This is a strong choice when the organization already uses Envoy or a service me
 | Atomicity | Per-bucket or colocated multi-bucket | Avoid distributed transactions |
 | HTTP rejection | 429 + Retry-After | Standard client behavior |
 | Rollout | Shadow mode first | Safe policy validation |
+
+Behind every row is one trade-off: stricter global accuracy against lower latency and higher availability. For most production APIs the answer is not a single perfectly global counter but a hierarchy — local emergency protection, strong regional enforcement, and approximate or leased global quotas. That keeps failure domains small enough to reason about while still bounding total traffic.
 
 ---
 
@@ -2252,11 +1883,7 @@ Authenticated claims:
 }
 ```
 
-Normalized route:
-
-```text
-POST:/v1/payments
-```
+The normalized route is `POST:/v1/payments`.
 
 ## 29.3 Descriptors
 
@@ -2308,15 +1935,7 @@ Use `Retry-After: 1` because the HTTP delta value is expressed in whole seconds,
 
 ## 29.6 Interaction with Idempotency
 
-Rate limiting and idempotency solve different problems.
-
-```text
-Rate limiting:
-Controls how often an operation is attempted.
-
-Idempotency:
-Prevents duplicate execution of the same logical operation.
-```
+Rate limiting and idempotency solve different problems: rate limiting controls how often an operation is *attempted*, while idempotency prevents duplicate *execution* of the same logical operation. See [Idempotency: Which HTTP Methods Are Idempotent?](../api-design/idempotency-http-methods.md).
 
 A retried payment request may still consume rate-limit capacity, but the idempotency layer prevents duplicate payment creation.
 
@@ -2324,73 +1943,7 @@ For expensive retries, the system may optionally assign a lower cost to a verifi
 
 ---
 
-# 30. Interview-Focused Summary
-
-A strong design explanation should move in this order:
-
-```mermaid
-flowchart TD
-    REQ[Requirements] --> IDENTITY[Rate-limit identity and dimensions]
-    IDENTITY --> ALGO[Algorithm selection]
-    ALGO --> SCOPE[Local versus global enforcement]
-    SCOPE --> SVC[Stateless service and Redis]
-    SVC --> ATOMIC[Atomic operation]
-    ATOMIC --> SHARD[Sharding and hot keys]
-    SHARD --> FAILURE[Failure behavior]
-    FAILURE --> REGION[Multi-region trade-offs]
-    REGION --> OBS[Observability and rollout]
-```
-
-## 30.1 Core Design
-
-```mermaid
-flowchart TD
-    CLIENT[Client] --> EDGE["CDN / WAF"]
-    EDGE --> GW[API Gateway]
-    GW --> BUCKET[Local token bucket]
-    GW --> RPC[Global rate-limit RPC]
-    RPC --> LIMITER[Stateless limiter]
-    LIMITER --> REDIS[(Redis Cluster)]
-```
-
-## 30.2 Most Important Design Choices
-
-1. Use a token bucket for sustained rate plus burst support.
-2. Keep policy configuration in memory on the data plane.
-3. Use Redis atomic scripting for check-and-consume.
-4. Add TTL so inactive identities disappear automatically.
-5. Apply local limits to protect the distributed limiter.
-6. Shard by a high-cardinality identity, not only policy ID.
-7. Handle hot keys with local limits or quota leasing.
-8. Make failure mode specific to endpoint risk.
-9. Prefer regional enforcement over cross-region coordination per request.
-10. Use shadow mode before enabling enforcement.
-
-## 30.3 Key Trade-Off
-
-The central trade-off is:
-
-```text
-Stricter global accuracy
-        versus
-Lower latency and higher availability
-```
-
-For most production APIs, the best answer is not one perfectly global counter. It is a hierarchy:
-
-```text
-Local emergency protection
-        +
-Strong regional enforcement
-        +
-Approximate or leased global quotas
-```
-
-That architecture scales while keeping failure domains manageable.
-
----
-
-# 31. References
+# 30. References
 
 The following primary or official sources were reviewed for current implementation guidance:
 

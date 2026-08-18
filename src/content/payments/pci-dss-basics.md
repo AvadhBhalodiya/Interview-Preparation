@@ -2,14 +2,55 @@
 title: "PCI-DSS Basics"
 group: "Compliance"
 order: 5
+updated: "August 2026"
 ---
 
 # PCI DSS Basics for Backend Engineers
 
-> **Category:** Payments & Fintech  
-> **Audience:** Backend engineers with 3+ years of development experience  
-> **Standard covered:** PCI DSS v4.0.1  
-> **Updated:** August 2026
+> What PCI DSS actually requires of backend engineers, how tokenization shrinks the compliance scope, and which card data must never be stored.
+>
+> **Standard covered:** PCI DSS v4.0.1
+
+## In short
+
+- PCI DSS (Payment Card Industry Data Security Standard, currently v4.0.1) is an environment-level standard — it covers networks, APIs, access control, and logging, not just "is the database encrypted."
+- **Cardholder Data (CHD)** — PAN, cardholder name, expiration date, service code — may be stored if protected; **Sensitive Authentication Data (SAD)** — full track data, CVV/CVC/CID, PIN — must never be stored after authorization, even encrypted.
+- Scope is the **Cardholder Data Environment (CDE)**: any system that stores, processes, or transmits CHD/SAD, plus any system that can affect CDE security (CI/CD, secrets manager, DNS, identity provider, jump servers).
+- The strongest scope-reduction move is keeping raw card data off your backend entirely — hosted checkout redirects, provider-hosted iframes/hosted fields, and client-side tokenization all hand the PAN straight to the provider.
+- The 12 PCI DSS requirements span network security, secure configuration, encryption, access control, logging, testing, and organizational policy.
+- Compliance is validated, not assumed: an **SAQ** (self-assessment) or a QSA-run **ROC** produces an **AOC** — and a payment provider's AOC never covers your own insecure integration.
+
+The recommended flow keeps raw card data off the merchant backend entirely:
+
+```mermaid
+sequenceDiagram
+    participant C as Customer Browser
+    participant M as Merchant Backend
+    participant P as PCI-compliant Payment Provider
+    participant D as Merchant Database
+
+    C->>M: Request checkout session
+    M->>P: Create payment session
+    P-->>M: Session/client token
+    M-->>C: Return session/client token
+
+    C->>P: Submit card data directly
+    P-->>C: Return payment-method token
+
+    C->>M: Confirm order with token
+    M->>M: Load trusted order amount
+    M->>P: Create/confirm payment using token + idempotency key
+    P-->>M: Payment result
+    M->>D: Store provider IDs and safe metadata
+
+    P-->>M: Signed webhook
+    M->>M: Verify signature and deduplicate event
+    M->>D: Update final payment state
+```
+
+**Interview answer:** Never let raw PAN or CVV touch your backend — use a hosted checkout page, hosted fields, or client-side tokenization so the browser sends card data straight to a PCI-compliant provider, and your server only ever sees an opaque payment token plus the provider's ID, amount, currency, and status. That keeps your Cardholder Data Environment small, keeps you out of Sensitive Authentication Data storage entirely, and typically qualifies you for a much shorter SAQ than if you handled card data directly.
+
+**Gotcha:** Storing the CVV/CVC/CID (or full track data / PIN) anywhere after authorization — even encrypted, even just in a log line, cache entry, queue message, or backup — is the classic violation; SAD must be discarded the moment authorization completes, with no exceptions for encryption.
 
 ---
 
@@ -162,9 +203,6 @@ flowchart LR
     DB --> BKP[Backups]
     ADM[Admin Access] --> API
     CICD[CI/CD System] --> API
-
-    classDef scope stroke-width:2px;
-    class LB,API,Q,C,DB,LOG,BKP,ADM,CICD scope;
 ```
 
 Even if only the API receives PAN, connected systems may become in scope because they receive the data, can access it, or can affect the security of the API.
@@ -219,32 +257,6 @@ Useful scope-reduction techniques include:
 ## 4.1 Low-scope tokenized flow
 
 In a preferred design, the merchant backend never receives raw card data.
-
-```mermaid
-sequenceDiagram
-    participant C as Customer Browser
-    participant M as Merchant Backend
-    participant P as PCI-compliant Payment Provider
-    participant D as Merchant Database
-
-    C->>M: Request checkout session
-    M->>P: Create payment session
-    P-->>M: Session/client token
-    M-->>C: Return session/client token
-
-    C->>P: Submit card data directly
-    P-->>C: Return payment-method token
-
-    C->>M: Confirm order with token
-    M->>M: Load trusted order amount
-    M->>P: Create/confirm payment using token + idempotency key
-    P-->>M: Payment result
-    M->>D: Store provider IDs and safe metadata
-
-    P-->>M: Signed webhook
-    M->>M: Verify signature and deduplicate event
-    M->>D: Update final payment state
-```
 
 The merchant stores values such as:
 
@@ -619,16 +631,13 @@ from pydantic import BaseModel, Field
 
 app = FastAPI()
 
-
 class ConfirmPaymentRequest(BaseModel):
     order_id: str = Field(min_length=1, max_length=64)
     payment_method_token: str = Field(min_length=8, max_length=256)
 
-
 class PaymentResponse(BaseModel):
     payment_id: str
     status: str
-
 
 class PaymentProvider(Protocol):
     async def confirm_payment(
@@ -640,11 +649,9 @@ class PaymentProvider(Protocol):
         idempotency_key: str,
     ) -> dict: ...
 
-
 async def get_payment_provider() -> PaymentProvider:
     # Resolve a configured provider client from application dependencies.
     raise NotImplementedError
-
 
 async def load_payable_order(order_id: str) -> dict:
     # The amount must come from a trusted server-side order record.
@@ -654,7 +661,6 @@ async def load_payable_order(order_id: str) -> dict:
         "currency": "INR",
         "status": "pending",
     }
-
 
 @app.post("/payments/confirm", response_model=PaymentResponse)
 async def confirm_payment(
@@ -716,7 +722,6 @@ ALLOWED_LOG_FIELDS = {
     "error_code",
 }
 
-
 def payment_log(event: str, **context: Any) -> None:
     safe_context = {
         key: value
@@ -725,7 +730,6 @@ def payment_log(event: str, **context: Any) -> None:
     }
 
     logger.info(event, extra={"payment_context": safe_context})
-
 
 payment_log(
     "payment_authorized",
@@ -743,55 +747,9 @@ Also configure your framework, reverse proxy, APM agent, and exception reporter 
 
 ## 7.3 Webhook signature verification
 
-A payment webhook must be authenticated before it changes payment state.
+A payment webhook must be authenticated before it changes payment state: verify the HMAC-SHA256 signature over the raw, unmodified body with a constant-time comparison, reject stale timestamps, and deduplicate by provider event ID before applying any state transition. Store only the minimum event data required and avoid logging the full webhook body.
 
-```python
-from __future__ import annotations
-
-import hashlib
-import hmac
-import time
-
-
-class InvalidWebhookSignature(ValueError):
-    pass
-
-
-def verify_webhook_signature(
-    *,
-    raw_body: bytes,
-    timestamp: int,
-    supplied_signature: str,
-    secret: bytes,
-    tolerance_seconds: int = 300,
-) -> None:
-    now = int(time.time())
-
-    if abs(now - timestamp) > tolerance_seconds:
-        raise InvalidWebhookSignature("Webhook timestamp is outside the allowed window")
-
-    signed_payload = str(timestamp).encode("ascii") + b"." + raw_body
-    expected_signature = hmac.new(
-        secret,
-        signed_payload,
-        hashlib.sha256,
-    ).hexdigest()
-
-    if not hmac.compare_digest(expected_signature, supplied_signature):
-        raise InvalidWebhookSignature("Webhook signature is invalid")
-```
-
-A production webhook handler should also:
-
-- Use the payment provider's official signature scheme
-- Verify against the unmodified raw body
-- Reject stale timestamps
-- Deduplicate by provider event ID
-- Make state transitions idempotent
-- Store the minimum event data required
-- Avoid logging the full webhook body
-- Return quickly and process durable work safely
-- Re-fetch critical payment details from the provider when appropriate
+Full detail: [Webhooks](../api-design/webhooks.md)
 
 ## 7.4 Payment data model
 
@@ -963,56 +921,9 @@ This design reduces the merchant's exposure while preserving normal billing and 
 
 ---
 
-# 11. Backend Engineer Mental Model
+# 11. Implementation Checklist
 
-Use the following sequence whenever reviewing a payment feature:
-
-```mermaid
-flowchart LR
-    A[1. Identify data] --> B[2. Trace the flow]
-    B --> C[3. Define scope]
-    C --> D[4. Minimize data]
-    D --> E[5. Protect access]
-    E --> F[6. Log safely]
-    F --> G[7. Test controls]
-    G --> H[8. Keep evidence]
-```
-
-### 1. Identify data
-
-Is the system handling PAN, CVV, track data, PIN data, a token, or only a provider payment ID?
-
-### 2. Trace the flow
-
-Follow data through the browser, API gateway, application, queue, cache, database, logs, analytics, backups, and third parties.
-
-### 3. Define scope
-
-Include systems that handle card data and systems that can affect CDE security.
-
-### 4. Minimize data
-
-Remove unnecessary collection, transmission, storage, and retention.
-
-### 5. Protect access
-
-Apply segmentation, least privilege, MFA, secure identities, encryption, and key management.
-
-### 6. Log safely
-
-Record security and business events without recording prohibited or unnecessary payment data.
-
-### 7. Test controls
-
-Use code review, automated security testing, vulnerability scans, penetration tests, tamper detection, and incident exercises.
-
-### 8. Keep evidence
-
-Document architecture, decisions, ownership, reviews, tests, changes, and remediation.
-
----
-
-# 12. Implementation Checklist
+Keep raw card data out of your systems whenever possible; where a system must handle payment data or can affect its security, minimize access, protect every path, monitor continuously, test regularly, and retain evidence that the controls work. Start from the data itself — identify exactly what each component touches (PAN, CVV, track data, PIN, a provider token, or only a payment ID) and trace it end to end through the browser, API gateway, queues, cache, database, logs, analytics, backups, and third parties — then use the checklist below to verify each area.
 
 ## Payment flow
 
@@ -1068,7 +979,7 @@ Document architecture, decisions, ownership, reviews, tests, changes, and remedi
 
 ---
 
-# 13. Official References
+# 12. Official References
 
 The references below are official PCI Security Standards Council resources.
 
@@ -1082,14 +993,6 @@ The references below are official PCI Security Standards Council resources.
 8. [PCI DSS v4.0.1 SAQs bulletin](https://www.pcisecuritystandards.org/wp-content/uploads/2024/10/SAQs_for_PCI_DSS_v4.0.1_Bulletin.pdf)
 9. [PCI DSS Tokenization Guidelines](https://www.pcisecuritystandards.org/documents/Tokenization_Guidelines_Info_Supplement.pdf)
 10. [PCI SSC Glossary](https://www.pcisecuritystandards.org/glossary/)
-
----
-
-## Final takeaway
-
-For a backend engineer, PCI DSS can be reduced to one guiding principle:
-
-> **Keep raw card data out of your systems whenever possible. When a system must handle payment data or can affect its security, minimize access, protect every path, monitor continuously, test regularly, and retain evidence that the controls work.**
 
 ---
 

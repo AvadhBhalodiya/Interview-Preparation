@@ -6,8 +6,31 @@ order: 5
 
 # Prioritization & Trade-offs
 
-> **Category:** Behavioral Interview Preparation  
-> **Level:** Intermediate Developer (3+ Years Experience)
+> How to decide what to work on when there is always more work than capacity, and how to explain those trade-offs convincingly in an interview.
+
+## In short
+
+- Prioritization is deciding what goes first, what gets reduced, and what explicitly does not get done — not working faster on everything.
+- Score work on five dimensions: impact, urgency, risk, effort, and dependencies. Urgent and important are not the same thing.
+- A trade-off is healthy when it is intentional, evidence-based, communicated, reversible where possible, and reviewed when conditions change.
+- The harder a decision is to reverse, the more evidence and review it deserves. Under high uncertainty, prefer the small reversible experiment.
+- With a fixed deadline, cut scope before cutting security, data integrity, tests, or rollback capability.
+- Never prioritize by who is loudest. Use shared criteria, make the cost of delay explicit, and own a recommendation instead of only asking what to do.
+- The decision is not finished until you have said what is being delayed, why, and when it will be revisited.
+
+```mermaid
+flowchart TD
+    A[Understand the requests] --> B["Measure impact, urgency, risk,<br/>effort, and dependencies"]
+    B --> C[Compare realistic options]
+    C --> D[Recommend a priority]
+    D --> E["Explain what will be delayed<br/>or reduced"]
+    E --> F[Add mitigation and review points]
+    F --> G["Communicate and document<br/>the decision"]
+```
+
+**Interview answer:** Name the competing demands and the constraint that made them impossible to satisfy together. Then walk the evidence you gathered — affected users, error rate, revenue, deadline, effort — and show that you compared realistic options rather than picking one. Close with the recommendation you made, what you deliberately delayed, how you reduced the cost of delaying it, and what changed in how the team prioritizes now.
+
+**Gotcha:** Describing a choice as obvious. If the answer contains no cost — nothing was delayed, nobody was disappointed — it was not a prioritization story, and the interviewer learns nothing about your judgment.
 
 ---
 
@@ -21,16 +44,7 @@ Prioritization is the process of deciding:
 - What should not be done
 - Where limited time, people, and budget should be used
 
-In software development, there are almost always more tasks than the team can complete immediately.
-
-A developer may need to choose between:
-
-- Fixing a production bug
-- Completing a planned feature
-- Improving test coverage
-- Reducing technical debt
-- Supporting another team
-- Investigating a performance issue
+In software development, there are almost always more tasks than the team can complete immediately. A developer may need to choose between fixing a production bug, completing a planned feature, improving test coverage, reducing technical debt, supporting another team, or investigating a performance issue.
 
 Good prioritization is not about working faster on everything. It is about focusing effort on the work that creates the most value or reduces the most important risk.
 
@@ -47,48 +61,13 @@ flowchart TD
 
 Prioritization helps teams use limited resources effectively.
 
-## 2.1 Business Impact
+**Business impact.** The most technically interesting task may not always be the most valuable task. A small payment bug may affect customer revenue, a large refactoring task may improve code quality but have no immediate user impact, and a minor-looking compliance issue may block an important release. A strong developer connects technical work with business outcomes.
 
-The most technically interesting task may not always be the most valuable task.
+**Risk management.** Some tasks must be prioritized because delaying them creates significant risk: security vulnerabilities, data corruption, payment failures, regulatory or compliance issues, production outages, expiring certificates, and critical dependency vulnerabilities.
 
-For example:
+**Team alignment.** Clear priorities prevent different people from working toward conflicting goals. Without alignment, developers start unrelated tasks, product managers expect features that engineering has delayed, support teams do not know when customer issues will be resolved, and stakeholders assume everything is equally urgent.
 
-- A small payment bug may affect customer revenue.
-- A large refactoring task may improve code quality but have no immediate user impact.
-- A minor-looking compliance issue may block an important release.
-
-A strong developer connects technical work with business outcomes.
-
-## 2.2 Risk Management
-
-Some tasks must be prioritized because delaying them creates significant risk.
-
-Examples include:
-
-- Security vulnerabilities
-- Data corruption
-- Payment failures
-- Regulatory or compliance issues
-- Production outages
-- Expiring certificates
-- Critical dependency vulnerabilities
-
-## 2.3 Team Alignment
-
-Clear priorities prevent different people from working toward conflicting goals.
-
-Without alignment:
-
-- Developers may start unrelated tasks.
-- Product managers may expect features that engineering has delayed.
-- Support teams may not know when customer issues will be resolved.
-- Stakeholders may assume everything is equally urgent.
-
-## 2.4 Delivery Predictability
-
-Prioritization allows teams to create realistic commitments.
-
-It is better to deliver three important items reliably than to start ten items and finish none.
+**Delivery predictability.** Prioritization allows teams to create realistic commitments. It is better to deliver three important items reliably than to start ten items and finish none.
 
 ---
 
@@ -114,26 +93,13 @@ Common trade-offs include:
 
 A trade-off does not automatically mean compromising quality. It means making a conscious decision based on context.
 
-## 3.1 Healthy Trade-off
-
-A healthy trade-off is:
-
-- Intentional
-- Based on evidence
-- Clearly communicated
-- Reversible where possible
-- Documented when important
-- Reviewed after conditions change
-
-## 3.2 Poor Trade-off
-
-A poor trade-off is:
-
-- Made without understanding the impact
-- Hidden from stakeholders
-- Based only on convenience
-- Treated as permanent without review
-- Missing a mitigation plan
+| A healthy trade-off is | A poor trade-off is |
+|---|---|
+| Intentional | Made without understanding the impact |
+| Based on evidence | Based only on convenience |
+| Clearly communicated | Hidden from stakeholders |
+| Reversible where possible | Missing a mitigation plan |
+| Documented when important, and reviewed after conditions change | Treated as permanent without review |
 
 ---
 
@@ -164,74 +130,27 @@ flowchart TD
 
 ## 4.1 Impact
 
-Ask:
+Ask how many users are affected, whether this affects revenue, whether it blocks a release, whether it improves a critical customer journey, whether it reduces operational cost, and whether it supports an important company goal.
 
-- How many users are affected?
-- Does this affect revenue?
-- Does it block a release?
-- Does it improve a critical customer journey?
-- Does it reduce operational cost?
-- Does it support an important company goal?
-
-Example:
-
-A bug affecting 40% of payment attempts has much greater impact than a visual issue on an internal admin page.
+For example, a bug affecting 40% of payment attempts has much greater impact than a visual issue on an internal admin page.
 
 ## 4.2 Urgency
 
-Urgency describes how quickly action is required.
+Urgency describes how quickly action is required. Ask whether there is a fixed deadline, whether a customer is blocked now, whether the impact will become worse over time, whether a release or dependency is waiting, and whether there is a regulatory date.
 
-Ask:
-
-- Is there a fixed deadline?
-- Is a customer blocked now?
-- Will the impact become worse over time?
-- Is a release or dependency waiting for this?
-- Is there a regulatory date?
-
-Urgency and importance are not always the same.
-
-A task can be:
-
-- Urgent and important
-- Important but not urgent
-- Urgent but low-impact
-- Neither urgent nor important
+Urgency and importance are not always the same. A task can be urgent and important, important but not urgent, urgent but low-impact, or neither.
 
 ## 4.3 Risk
 
-Risk includes:
-
-- Security risk
-- Financial risk
-- Compliance risk
-- Operational risk
-- Data integrity risk
-- Reputational risk
-- Delivery risk
-
-A low-effort task that removes a high risk is often worth prioritizing.
+Risk includes security, financial, compliance, operational, data-integrity, reputational, and delivery risk. A low-effort task that removes a high risk is often worth prioritizing.
 
 ## 4.4 Effort
 
-Effort includes more than coding time.
-
-Consider:
-
-- Development time
-- Testing effort
-- Review time
-- Deployment complexity
-- Cross-team coordination
-- Migration effort
-- Monitoring requirements
-- Rollback complexity
+Effort includes more than coding time: development, testing, review, deployment complexity, cross-team coordination, migration effort, monitoring requirements, and rollback complexity.
 
 ## 4.5 Dependencies
 
 Some tasks unlock or block other work.
-
-For example:
 
 ```mermaid
 flowchart TD
@@ -264,44 +183,10 @@ quadrantChart
     quadrant-4 Avoid or defer
 ```
 
-### Quick Wins
-
-High impact and low effort.
-
-Examples:
-
-- Adding a missing database index
-- Fixing a common validation bug
-- Enabling an existing monitoring alert
-- Correcting a broken API timeout setting
-
-These tasks should usually be prioritized.
-
-### Major Projects
-
-High impact and high effort.
-
-Examples:
-
-- Replacing a legacy payment system
-- Migrating to a new authentication platform
-- Redesigning a large data pipeline
-
-These require planning, milestones, and stakeholder alignment.
-
-### Fill-ins
-
-Low impact and low effort.
-
-These can be completed when there is available capacity, but they should not displace high-impact work.
-
-### Avoid or Defer
-
-Low impact and high effort.
-
-These tasks should be challenged, reduced in scope, or removed.
-
----
+- **Quick wins** (high impact, low effort) should usually be prioritized: adding a missing database index, fixing a common validation bug, enabling an existing monitoring alert, correcting a broken API timeout setting.
+- **Major projects** (high impact, high effort) require planning, milestones, and stakeholder alignment: replacing a legacy payment system, migrating to a new authentication platform, redesigning a large data pipeline.
+- **Fill-ins** (low impact, low effort) can be completed when there is available capacity, but they should not displace high-impact work.
+- **Avoid or defer** (low impact, high effort) tasks should be challenged, reduced in scope, or removed.
 
 ## 5.2 Eisenhower Matrix
 
@@ -319,24 +204,13 @@ Software examples:
 - **Delegate or limit:** Repeated manual report request
 - **Remove or defer:** Cosmetic internal change with no measurable value
 
----
-
 ## 5.3 RICE Scoring
 
 RICE is useful for product and feature prioritization.
 
-```text
-RICE Score = (Reach × Impact × Confidence) / Effort
-```
+> `RICE Score = (Reach × Impact × Confidence) / Effort`
 
-Where:
-
-- **Reach:** Number of users or events affected
-- **Impact:** Expected value per user
-- **Confidence:** Confidence in estimates
-- **Effort:** Time or person-months required
-
-Example:
+Where **Reach** is the number of users or events affected, **Impact** is the expected value per user, **Confidence** is your confidence in the estimates, and **Effort** is the time or person-months required.
 
 | Factor | Value |
 |---|---:|
@@ -399,36 +273,13 @@ flowchart TD
     C["High uncertainty<br/>Low confidence"] --> D["Small, reversible experiment"]
 ```
 
-Examples of reversible decisions:
-
-- Feature flags
-- Gradual rollout
-- Canary deployment
-- Temporary adapter layer
-- Short proof of concept
-- Limited customer pilot
-
-Examples of difficult-to-reverse decisions:
-
-- Public API contracts
-- Database partitioning strategy
-- Core data model
-- Vendor lock-in
-- Breaking authentication changes
+Reversible decisions include feature flags, gradual rollout, canary deployment, a temporary adapter layer, a short proof of concept, and a limited customer pilot. Difficult-to-reverse decisions include public API contracts, database partitioning strategy, the core data model, vendor lock-in, and breaking authentication changes.
 
 The harder a decision is to reverse, the more evidence and review it should receive.
 
 ## 6.3 Cost of Delay
 
-Cost of delay is the loss created by postponing a task.
-
-Examples:
-
-- A payment bug loses revenue every day.
-- A security issue increases exposure over time.
-- A delayed integration blocks a partner launch.
-- A performance issue increases infrastructure cost.
-- A compliance change may result in penalties after a deadline.
+Cost of delay is the loss created by postponing a task. A payment bug loses revenue every day, a security issue increases exposure over time, a delayed integration blocks a partner launch, a performance issue increases infrastructure cost, and a compliance change may result in penalties after a deadline.
 
 A task with a high cost of delay may deserve priority even when its implementation effort is large.
 
@@ -438,18 +289,9 @@ A task with a high cost of delay may deserve priority even when its implementati
 
 ## 7.1 Production Incident vs Planned Feature
 
-A production incident usually takes priority when it affects:
+A production incident usually takes priority when it affects availability, data correctness, security, payments, critical customer workflows, or a significant percentage of users.
 
-- Availability
-- Data correctness
-- Security
-- Payments
-- Critical customer workflows
-- A significant percentage of users
-
-However, not every production bug should automatically interrupt all planned work.
-
-The team should evaluate severity.
+However, not every production bug should automatically interrupt all planned work. The team should evaluate severity.
 
 | Severity | Example | Typical Response |
 |---|---|---|
@@ -460,19 +302,7 @@ The team should evaluate severity.
 
 ## 7.2 Feature Work vs Technical Debt
 
-Technical debt should not be treated as an unrelated engineering preference.
-
-It should be connected to measurable impact.
-
-Examples:
-
-- Slow release process
-- Frequent defects
-- Difficult onboarding
-- High infrastructure cost
-- Security exposure
-- Long development lead time
-- Repeated production incidents
+Technical debt should not be treated as an unrelated engineering preference. It should be connected to measurable impact: a slow release process, frequent defects, difficult onboarding, high infrastructure cost, security exposure, long development lead time, or repeated production incidents.
 
 A strong explanation is:
 
@@ -484,9 +314,7 @@ A weak explanation is:
 
 ## 7.3 Speed vs Quality
 
-Speed and quality are not always opposites.
-
-The better trade-off is often to reduce scope while protecting critical quality.
+Speed and quality are not always opposites. The better trade-off is often to reduce scope while protecting critical quality.
 
 ```mermaid
 flowchart TD
@@ -511,15 +339,11 @@ When deciding whether to build a system internally or use an external service, c
 | Vendor dependency | Low | Higher |
 | Compliance | Fully controlled | Depends on vendor support |
 
-The best choice depends on whether the capability creates strategic advantage.
-
-A company may build its core pricing engine but buy email delivery, monitoring, or identity verification.
+The best choice depends on whether the capability creates strategic advantage. A company may build its core pricing engine but buy email delivery, monitoring, or identity verification.
 
 ## 7.5 Performance vs Maintainability
 
-Highly optimized code may be more difficult to understand and maintain.
-
-A practical approach is:
+Highly optimized code may be more difficult to understand and maintain. A practical approach is:
 
 1. Start with the simplest correct solution.
 2. Measure actual performance.
@@ -531,17 +355,9 @@ A practical approach is:
 
 # 8. Handling Conflicting Priorities
 
-Conflicting priorities commonly occur when:
-
-- Product wants a new feature.
-- Support wants an urgent customer fix.
-- Security wants a vulnerability resolved.
-- Engineering wants to reduce technical debt.
-- Management wants a deadline maintained.
+Conflicting priorities commonly occur when product wants a new feature, support wants an urgent customer fix, security wants a vulnerability resolved, engineering wants to reduce technical debt, and management wants a deadline maintained.
 
 A developer should not silently choose one stakeholder over another.
-
-## 8.1 Conflict Resolution Process
 
 ```mermaid
 flowchart LR
@@ -554,192 +370,49 @@ flowchart LR
     G --> H[Communicate the Decision]
 ```
 
-## 8.2 Step 1: Clarify the Requests
+**Step 1 — clarify the requests.** Understand the desired outcome, the deadline, the affected users, the consequence of delay, the expected effort, and the dependency on other work.
 
-Understand:
+**Step 2 — use shared criteria.** Avoid prioritizing based on who speaks the loudest. Use criteria such as customer impact, revenue, risk, compliance, delivery deadline, cost of delay, strategic alignment, and engineering effort.
 
-- The desired outcome
-- The deadline
-- The affected users
-- The consequence of delay
-- The expected effort
-- The dependency on other work
-
-## 8.3 Step 2: Use Shared Criteria
-
-Avoid prioritizing based on who speaks the loudest.
-
-Use criteria such as:
-
-- Customer impact
-- Revenue
-- Risk
-- Compliance
-- Delivery deadline
-- Cost of delay
-- Strategic alignment
-- Engineering effort
-
-## 8.4 Step 3: Present Options
-
-A useful communication format is:
+**Step 3 — present options.** A useful communication format makes the trade-off visible:
 
 > “We can deliver the reporting feature this sprint, but the performance work will move to next sprint. Alternatively, we can deliver a smaller reporting scope and complete the highest-risk performance fix now.”
 
-This makes the trade-off visible.
+**Step 4 — escalate the decision when necessary.** A developer should provide technical context and a recommendation, but the final decision may belong to a product manager, engineering manager, technical lead, security owner, incident commander, or business stakeholder.
 
-## 8.5 Step 4: Escalate the Decision When Necessary
-
-A developer should provide technical context and a recommendation.
-
-The final decision may belong to:
-
-- Product manager
-- Engineering manager
-- Technical lead
-- Security owner
-- Incident commander
-- Business stakeholder
-
-Escalation is appropriate when:
-
-- Priorities affect different departments
-- Business impact is unclear
-- A deadline conflicts with security or reliability
-- The decision requires budget or staffing
-- The risk exceeds the developer’s authority
-
-Escalation should include evidence and options, not only the problem.
+Escalation is appropriate when priorities affect different departments, business impact is unclear, a deadline conflicts with security or reliability, the decision requires budget or staffing, or the risk exceeds the developer’s authority. Escalation should include evidence and options, not only the problem.
 
 ---
 
 # 9. Communicating Priority Decisions
 
-Prioritization is incomplete until the decision is communicated.
-
-A clear priority update includes:
-
-1. The selected priority
-2. The reason
-3. The work being delayed
-4. The expected impact
-5. The next review point
-
-## 9.1 Example Communication
+Prioritization is incomplete until the decision is communicated. A clear priority update includes the selected priority, the reason, the work being delayed, the expected impact, and the next review point.
 
 > “We are prioritizing the checkout failure because it affects approximately 18% of payment attempts and directly impacts revenue. The admin export enhancement will move to the next sprint. We expect to deploy the fix today and will review the export timeline during sprint planning.”
 
-## 9.2 Use Evidence
+**Use evidence** — the number of affected users, error rate, revenue impact, support ticket volume, delivery deadline, security severity, estimated effort, dependency count, and system metrics.
 
-Useful evidence includes:
-
-- Number of affected users
-- Error rate
-- Revenue impact
-- Support ticket volume
-- Delivery deadline
-- Security severity
-- Estimated effort
-- Dependency count
-- System metrics
-
-## 9.3 Avoid Overpromising
-
-Do not present every request as a top priority.
-
-When everything is called urgent, nothing is truly prioritized.
-
-A strong response may be:
+**Avoid overpromising.** Do not present every request as a top priority; when everything is called urgent, nothing is truly prioritized. A strong response may be:
 
 > “This is important, but it is not more urgent than the current production issue. I can start it after the incident is stable, or we can reduce the current sprint scope if it must be delivered earlier.”
 
-## 9.4 Document Important Decisions
-
-For important trade-offs, record:
-
-- Context
-- Options considered
-- Decision
-- Reason
-- Risks accepted
-- Mitigation
-- Review date
-
-Architecture Decision Records, issue comments, sprint notes, and incident documents are useful places for this information.
+**Document important decisions.** For important trade-offs, record the context, options considered, decision, reason, risks accepted, mitigation, and review date. Architecture Decision Records, issue comments, sprint notes, and incident documents are useful places for this information.
 
 ---
 
 # 10. Behavioral Interview Story Structure
 
-In behavioral interviews, prioritization stories should show your decision-making process, not only the final result.
+In behavioral interviews, prioritization stories should show your decision-making process, not only the final result. STAR carries the story, and [The STAR Method](star-method.md) covers what each part needs; a prioritization story then adds a **Reflection** beat, because the lasting value is usually a change to how the team decides.
 
-The STAR structure works well.
+**Situation** — the project or system, the competing priorities, the time or resource constraints, and the business impact.
 
-## 10.1 Situation
+**Task** — your responsibility: deciding what the team should handle first, recommending a priority to stakeholders, protecting a release deadline, balancing a customer issue with planned work, or reducing scope without reducing critical quality.
 
-Describe the context.
+**Action** — the most important section. Explain how you collected facts, measured impact, compared urgency and risk, estimated effort, identified dependencies, presented alternatives, aligned stakeholders, communicated the trade-off, and added mitigation or follow-up work.
 
-Include:
+**Result** — measurable outcomes where possible: reduced error rate, avoided revenue loss, delivered on time, prevented a production incident, reduced scope while protecting quality, improved stakeholder alignment, or completed deferred work in a later sprint.
 
-- Project or system
-- Competing priorities
-- Time or resource constraints
-- Business impact
-
-## 10.2 Task
-
-Explain your responsibility.
-
-Examples:
-
-- Decide what the team should handle first
-- Recommend a priority to stakeholders
-- Protect a release deadline
-- Balance a customer issue with planned work
-- Reduce scope without reducing critical quality
-
-## 10.3 Action
-
-This is the most important section.
-
-Explain how you:
-
-- Collected facts
-- Measured impact
-- Compared urgency and risk
-- Estimated effort
-- Identified dependencies
-- Presented alternatives
-- Aligned stakeholders
-- Communicated the trade-off
-- Added mitigation or follow-up work
-
-## 10.4 Result
-
-Use measurable outcomes where possible.
-
-Examples:
-
-- Reduced error rate
-- Avoided revenue loss
-- Delivered on time
-- Prevented a production incident
-- Reduced scope while protecting quality
-- Improved stakeholder alignment
-- Completed deferred work in a later sprint
-
-## 10.5 Reflection
-
-A strong senior-level answer often includes learning.
-
-Examples:
-
-- Introduced a severity matrix
-- Added monitoring
-- Improved sprint intake
-- Created clearer ownership
-- Added a technical-debt allocation
-- Documented decision criteria
+**Reflection** — what you changed afterward: introduced a severity matrix, added monitoring, improved sprint intake, created clearer ownership, added a technical-debt allocation, or documented decision criteria.
 
 ```mermaid
 flowchart TD
@@ -836,74 +509,27 @@ The important lesson is that the team did not simply abandon one priority. It ma
 
 ## 12.1 Prioritize Outcomes, Not Activity
 
-Completing many tasks does not always create value.
-
-Focus on:
-
-- Customer impact
-- Business results
-- Risk reduction
-- System reliability
-- Team effectiveness
+Completing many tasks does not always create value. Focus on customer impact, business results, risk reduction, system reliability, and team effectiveness.
 
 ## 12.2 Make Trade-offs Explicit
 
-Every priority decision means something else receives less attention.
-
-Clearly state:
-
-- What is being prioritized
-- What is being delayed
-- Why the decision is reasonable
-- When the decision will be reviewed
+Every priority decision means something else receives less attention. Clearly state what is being prioritized, what is being delayed, why the decision is reasonable, and when the decision will be reviewed.
 
 ## 12.3 Protect Non-Negotiable Quality
 
-Some standards should not be casually traded away:
-
-- Security
-- Data integrity
-- Regulatory compliance
-- Payment correctness
-- Safe deployment
-- Rollback capability
-- Critical test coverage
-
-When deadlines are fixed, reduce scope before removing essential controls.
+Some standards should not be casually traded away: security, data integrity, regulatory compliance, payment correctness, safe deployment, rollback capability, and critical test coverage. When deadlines are fixed, reduce scope before removing essential controls.
 
 ## 12.4 Use Data, but Do Not Wait for Perfect Data
 
-Decisions often need to be made with incomplete information.
-
-Use the best available evidence:
-
-- Logs
-- Metrics
-- Customer reports
-- Historical incidents
-- Estimates
-- Small experiments
-
-State uncertainty clearly and choose a reversible path when possible.
+Decisions often need to be made with incomplete information. Use the best available evidence — logs, metrics, customer reports, historical incidents, estimates, and small experiments. State uncertainty clearly and choose a reversible path when possible.
 
 ## 12.5 Revisit Priorities
 
-Priorities can change when:
-
-- New information appears
-- Business goals change
-- A risk becomes more severe
-- A dependency is delayed
-- User impact is different from the original estimate
-- Team capacity changes
-
-Prioritization is a continuous process, not a one-time activity.
+Priorities can change when new information appears, business goals change, a risk becomes more severe, a dependency is delayed, user impact differs from the original estimate, or team capacity changes. Prioritization is a continuous process, not a one-time activity.
 
 ## 12.6 Own the Recommendation
 
-A strong developer does not only ask stakeholders what to do.
-
-They provide a recommendation:
+A strong developer does not only ask stakeholders what to do. They provide a recommendation:
 
 > “Based on current failure rates, revenue impact, and lack of a workaround, I recommend pausing the feature deployment and assigning two engineers to the payment issue. We can provide the report manually and reassess the feature release after stability is confirmed.”
 
@@ -913,29 +539,6 @@ This demonstrates ownership while respecting the final decision-maker.
 
 # 13. Summary
 
-Prioritization is the ability to focus limited resources on the work that creates the greatest value or prevents the greatest risk.
+Prioritization is the ability to focus limited resources on the work that creates the greatest value or prevents the greatest risk. Trade-offs are unavoidable in software development; strong developers make them consciously and communicate them clearly.
 
-Trade-offs are unavoidable in software development. Strong developers make them consciously and communicate them clearly.
-
-A practical decision process is:
-
-```mermaid
-flowchart TD
-    A[Understand the requests] --> B["Measure impact, urgency, risk,<br/>effort, and dependencies"]
-    B --> C[Compare realistic options]
-    C --> D[Recommend a priority]
-    D --> E["Explain what will be delayed<br/>or reduced"]
-    E --> F[Add mitigation and review points]
-    F --> G["Communicate and document<br/>the decision"]
-```
-
-For behavioral interviews, a strong prioritization example should demonstrate:
-
-- Clear judgment
-- Business awareness
-- Technical understanding
-- Evidence-based decision-making
-- Stakeholder communication
-- Ownership
-- Measurable results
-- Learning and process improvement
+For behavioral interviews, a strong prioritization example should demonstrate clear judgment, business awareness, technical understanding, evidence-based decision-making, stakeholder communication, ownership, measurable results, and learning or process improvement.

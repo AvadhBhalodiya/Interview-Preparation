@@ -8,7 +8,27 @@ order: 11
 
 > Django caching stores the result of expensive work—such as database queries, API calls, calculations, or rendered HTML—so later requests can reuse that result instead of performing the same work again.
 
-This guide is based on **Django 6.0 documentation**. At the time of writing, the latest official Django release is **6.0.7**.
+## In short
+
+- Django exposes four caching levels: per-site middleware, per-view `@cache_page`, template fragment `{% cache %}`, and the low-level `cache.get()` / `cache.set()` / `cache.get_or_set()` API — the low-level API gives the most control and is the one most business code needs.
+- Choose the backend by deployment shape: `django.core.cache.backends.redis.RedisCache` or Memcached when several workers must share the cache, `LocMemCache` for development only (each process gets its own copy), `DatabaseCache` when there is no cache server, `DummyCache` to switch caching off without branching the code.
+- Cache-aside is the default pattern: read the key, and on a miss compute the value and `cache.set()` it with a TTL. The database stays the source of truth; the cache is a disposable copy.
+- Namespace every key — `KEY_PREFIX` separates environments and applications, `VERSION` (or a `:v2:` segment) survives shape changes, and keys must stay short and portable because Memcached caps them at 250 characters, so hash long filter sets.
+- Never cache private or user-specific data under a shared key: put the user or tenant in the key, use `never_cache` or `cache_control(private=True)`, and set `Vary` headers such as `vary_on_cookie` so a shared cache cannot reuse one user's response for another.
+- Invalidate after the write commits — `transaction.on_commit(lambda: cache.delete(key))` — so a rolled-back transaction never evicts a still-valid entry, and pair explicit deletion with a TTL as a backstop.
+
+```mermaid
+flowchart TD
+    A[Request arrives] --> B{Value exists in cache?}
+    B -- Yes: Cache hit --> C[Return cached value]
+    B -- No: Cache miss --> D[Read or calculate fresh value]
+    D --> E[Store value in cache]
+    E --> F[Return fresh value]
+```
+
+**Interview answer:** Measure which operation is actually slow first, then apply the narrowest level that covers it — `@cache_page` when a whole public response can be reused, `{% cache %}` when only one fragment is expensive, and the low-level `cache` API when a query, calculation, or external call is the cost. Configure a shared backend such as `django.core.cache.backends.redis.RedisCache` with a per-environment `KEY_PREFIX`, write cache-aside reads behind a central key-builder function, and give every entry a TTL. Invalidate explicitly with `cache.delete()` inside `transaction.on_commit()` when the underlying rows change.
+
+**Gotcha:** Reaching for `@cache_page` on a view that renders anything user-specific. The cache key comes from the URL plus any `Vary` headers, so `/account/dashboard/` will serve the first user's rendered page to everyone else — such views need `never_cache` or a user-scoped low-level key instead.
 
 ---
 
@@ -67,15 +87,6 @@ The later requests avoid the database query.
 # 2. How Caching Works
 
 The most common caching pattern is called **cache-aside** or **lazy loading**.
-
-```mermaid
-flowchart TD
-    A[Request arrives] --> B{Value exists in cache?}
-    B -- Yes: Cache hit --> C[Return cached value]
-    B -- No: Cache miss --> D[Read or calculate fresh value]
-    D --> E[Store value in cache]
-    E --> F[Return fresh value]
-```
 
 ## 2.1 Cache Hit
 
@@ -232,17 +243,9 @@ Memcached is a distributed, memory-only cache.
 
 It is useful when you need a simple and very fast cache without Redis's broader data structures.
 
-Supported Django backends include:
+Supported Django backends include: `"django.core.cache.backends.memcached.PyMemcacheCache"`
 
-```python
-"django.core.cache.backends.memcached.PyMemcacheCache"
-```
-
-and:
-
-```python
-"django.core.cache.backends.memcached.PyLibMCCache"
-```
+and: `"django.core.cache.backends.memcached.PyLibMCCache"`
 
 ## 5.4 Local-Memory Cache
 
@@ -284,11 +287,7 @@ CACHES = {
 }
 ```
 
-Create the cache table:
-
-```bash
-python manage.py createcachetable
-```
+Create the cache table: `python manage.py createcachetable`
 
 This is simple, but caching in the same database you are trying to protect from load may reduce the benefit.
 
@@ -314,11 +313,7 @@ It is useful when:
 
 # 6. Configuring Redis
 
-Install the Redis Python client:
-
-```bash
-python -m pip install redis
-```
+Install the Redis Python client: `python -m pip install redis`
 
 A basic Django configuration:
 
@@ -354,11 +349,7 @@ CACHES = {
 }
 ```
 
-Example environment value:
-
-```bash
-REDIS_CACHE_URL=redis://redis:6379/1
-```
+Example environment value: `REDIS_CACHE_URL=redis://redis:6379/1`
 
 ## 6.1 Multiple Caches
 
@@ -401,11 +392,7 @@ Multiple aliases are useful when different data requires different:
 
 # 7. The Low-Level Cache API
 
-Import the default cache:
-
-```python
-from django.core.cache import cache
-```
+Import the default cache: `from django.core.cache import cache`
 
 ## 7.1 `set()`
 
@@ -557,13 +544,10 @@ from django.shortcuts import get_object_or_404
 
 from shop.models import Product
 
-
 PRODUCT_CACHE_TTL = 10 * 60
-
 
 def product_cache_key(product_id: int) -> str:
     return f"product:v1:{product_id}"
-
 
 def get_product_data(product_id: int) -> dict:
     key = product_cache_key(product_id)
@@ -653,7 +637,6 @@ Use `cache_page()` when the entire response from a view can be reused.
 from django.http import JsonResponse
 from django.views.decorators.cache import cache_page
 
-
 @cache_page(60 * 5)
 def public_statistics(request):
     return JsonResponse(calculate_public_statistics())
@@ -670,7 +653,6 @@ from django.urls import path
 from django.views.decorators.cache import cache_page
 
 from .views import public_statistics
-
 
 urlpatterns = [
     path(
@@ -764,7 +746,6 @@ However, user-level fragment caching can create many entries. Cache shared role-
 from django.core.cache import cache
 from django.core.cache.utils import make_template_fragment_key
 
-
 key = make_template_fragment_key(
     "user_navigation",
     [str(user_id)],
@@ -841,17 +822,9 @@ A cache key should clearly identify:
 - Relevant variations
 - A schema or logic version
 
-Example:
+Example: `product:v2:42`
 
-```text
-product:v2:42
-```
-
-A more complex example:
-
-```text
-tenant:8:dashboard:v3:2026-07
-```
+A more complex example: `tenant:8:dashboard:v3:2026-07`
 
 ## 12.1 Good Key Design
 
@@ -906,11 +879,7 @@ product_data = cache.get("product:42", version=2)
 
 Django combines the prefix, version, and key internally.
 
-You can also increment a key's version:
-
-```python
-cache.incr_version("product:42")
-```
+You can also increment a key's version: `cache.incr_version("product:42")`
 
 Versioning is useful after changing:
 
@@ -930,7 +899,6 @@ For a long parameter set, hash the variable portion:
 ```python
 import hashlib
 import json
-
 
 def search_cache_key(filters: dict) -> str:
     normalized = json.dumps(
@@ -987,7 +955,6 @@ Prefer:
 
 ```python
 from django.db import transaction
-
 
 def update_product(product, validated_data):
     for field, value in validated_data.items():
@@ -1074,7 +1041,6 @@ Caching only by URL could make `/account/dashboard/` unsafe because every user r
 ```python
 from django.views.decorators.cache import never_cache
 
-
 @never_cache
 @login_required
 def account_dashboard(request):
@@ -1105,7 +1071,6 @@ key = (
 ```python
 from django.views.decorators.cache import cache_control
 
-
 @cache_control(private=True)
 def private_view(request):
     ...
@@ -1119,7 +1084,6 @@ A `Vary` header tells caches that a response changes based on a request header.
 
 ```python
 from django.views.decorators.vary import vary_on_cookie
-
 
 @vary_on_cookie
 def localized_homepage(request):
@@ -1154,7 +1118,6 @@ Examples:
 ```python
 from django.core.cache import cache
 
-
 async def get_product_summary(product_id: int):
     key = f"product-summary:v1:{product_id}"
 
@@ -1186,18 +1149,9 @@ Use asynchronous cache APIs inside async views or async services so synchronous 
 
 # 16. Cache Stampede and Race Conditions
 
-A **cache stampede**, also called a dogpile, occurs when many requests miss the same key at the same time.
+When a popular key expires, every concurrent request misses at once and recomputes the same value, which defeats the purpose of caching and can overload the database.
 
-```mermaid
-flowchart TD
-    A[Cache entry expires] --> B[100 requests arrive together]
-    B --> C[All 100 detect a cache miss]
-    C --> D[All 100 run the expensive query]
-```
-
-This defeats the purpose of caching and can overload the database.
-
-## 16.1 Use `get_or_set()` for Basic Cases
+Django's built-in first line of defence is `cache.get_or_set()`:
 
 ```python
 value = cache.get_or_set(
@@ -1207,49 +1161,9 @@ value = cache.get_or_set(
 )
 ```
 
-This simplifies the pattern, but strong duplicate-work prevention depends on backend behavior and application design.
+It handles the simple case, but it is not atomic across processes — two workers can still both see the miss and both compute. Django's generic cache API also provides no universal distributed-lock abstraction.
 
-## 16.2 Add TTL Jitter
-
-If thousands of keys are created together with the same timeout, they may all expire together.
-
-```python
-import random
-
-ttl = 300 + random.randint(0, 60)
-cache.set(key, value, timeout=ttl)
-```
-
-This spreads expiration across time.
-
-## 16.3 Use a Distributed Lock for Expensive Work
-
-For very expensive regeneration, a Redis lock or another distributed coordination mechanism may be appropriate.
-
-Conceptual flow:
-
-```mermaid
-flowchart TD
-    A[Cache miss] --> B{Acquire regeneration lock?}
-    B -- Yes --> C[Generate fresh value]
-    C --> D[Store in cache]
-    D --> E[Release lock]
-    B -- No --> F[Wait briefly or serve stale value]
-```
-
-Django's generic cache API does not provide a universal distributed-lock abstraction. Locking is normally implemented through the selected backend or a dedicated coordination system.
-
-## 16.4 Stale-While-Revalidate
-
-For some public data, serving slightly stale data is better than making users wait.
-
-```text
-Request gets stale-but-acceptable value
-             +
-One worker refreshes the value
-```
-
-This requires application-level design or an HTTP cache/CDN that supports the desired stale behavior.
+The full set of mitigations — TTL jitter, a distributed lock, stale-while-revalidate, and probabilistic early recomputation — is covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
 ---
 
@@ -1262,7 +1176,6 @@ Caching should be measurable and testable.
 ```python
 from django.core.cache import cache
 from django.test import TestCase
-
 
 class ProductCacheTests(TestCase):
     def setUp(self):
@@ -1291,7 +1204,6 @@ def test_missing_product_cache_returns_none(self):
 ```python
 from django.test import TestCase, override_settings
 
-
 @override_settings(
     CACHES={
         "default": {
@@ -1308,11 +1220,7 @@ class CachedServiceTests(TestCase):
 
 Tests should not depend on data left in the cache by another test.
 
-Use:
-
-```python
-cache.clear()
-```
+Use: `cache.clear()`
 
 or uniquely namespaced test keys.
 
@@ -1331,11 +1239,7 @@ Useful production metrics include:
 | Error rate | Shows unavailable cache connections |
 | Database query rate | Confirms whether caching reduces DB load |
 
-Hit rate:
-
-```text
-Hit Rate = Cache Hits / (Cache Hits + Cache Misses)
-```
+Hit rate: `Hit Rate = Cache Hits / (Cache Hits + Cache Misses)`
 
 A high hit rate is useful only when the cached data is correct and valuable.
 
@@ -1343,17 +1247,9 @@ A high hit rate is useful only when the cached data is correct and valuable.
 
 Decide what should happen when Redis is unavailable.
 
-Possible policies:
+Possible policies: `Cache failure → Query database → Return correct but slower response`
 
-```text
-Cache failure → Query database → Return correct but slower response
-```
-
-or:
-
-```text
-Cache failure → Fail request
-```
+or: `Cache failure → Fail request`
 
 Most ordinary read caches should fail open to the database when practical. Rate limiters, idempotency controls, and distributed locks may require stricter behavior because bypassing them can affect correctness.
 
@@ -1390,9 +1286,7 @@ def monthly_report_cache_key(
 ```python
 from django.core.cache import caches
 
-
 report_cache = caches["reports"]
-
 
 def get_monthly_report(
     tenant_id: int,
@@ -1420,7 +1314,6 @@ def get_monthly_report(
 
 ```python
 from django.db import transaction
-
 
 def update_transaction(transaction_record, data):
     transaction_record.amount = data["amount"]
@@ -1507,39 +1400,6 @@ Why this design works:
 - Prefer targeted deletion over `cache.clear()`.
 - Use short TTLs for broad or hard-to-invalidate query results.
 - Use namespace versions during large cache-format changes.
-
----
-
-# 20. Final Summary
-
-Django's caching framework provides four main levels:
-
-```mermaid
-flowchart TD
-    A[Entire site] --> B[Individual view]
-    B --> C[Template fragment]
-    C --> D[Low-level cached value]
-```
-
-The most practical production approach is usually:
-
-```mermaid
-flowchart TD
-    A[Django application] --> B[Shared Redis or Memcached]
-    B --> C[Cache-aside reads with controlled TTL]
-    C --> D[Explicit invalidation after database commits]
-```
-
-The essential mental model is:
-
-1. Read from the cache.
-2. On a hit, return the cached value.
-3. On a miss, calculate or load fresh data.
-4. Store it with a suitable TTL.
-5. Invalidate it when the source data changes.
-6. Never allow private or tenant-specific data to share an unsafe key.
-
-Caching improves performance only when the key, lifetime, invalidation strategy, and privacy rules are designed together.
 
 ---
 

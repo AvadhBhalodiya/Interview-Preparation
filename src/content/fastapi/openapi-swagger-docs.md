@@ -8,25 +8,40 @@ order: 7
 
 > FastAPI reads your route declarations, Python type hints, Pydantic models, validation rules, responses, and security dependencies, then converts them into an **OpenAPI schema**. Swagger UI and ReDoc use that schema to display API documentation automatically.
 
+## In short
+
+- The schema is built from declarations you already write — route decorator, function signature, type hints, Pydantic models, `response_model`, security dependencies — so documentation cannot drift from runtime behaviour.
+- Three URLs exist by default: `/docs` (Swagger UI, interactive), `/redoc` (ReDoc, readable reference) and `/openapi.json` (the raw schema). Both UIs only render that schema; neither inspects Python.
+- Enrich it with field metadata (`Field`, `Path`, `Query`: `description`, `examples`, constraints) and route metadata (`summary`, `description`, `response_description`, `tags`, `operation_id`, `deprecated=True`).
+- Declare error contracts with `responses={404: {"model": ErrorResponse, "description": "..."}}`, and keep the runtime body identical to what you documented.
+- `include_in_schema=False` hides a route from the schema only — the route still exists and still serves requests.
+- Security dependencies such as `OAuth2PasswordBearer`, `APIKeyHeader` and `HTTPBearer` produce the **Authorize** button, but your application must still validate the credential.
+- `docs_url`, `redoc_url` and `openapi_url` move or disable the interfaces (`openapi_url=None` disables all of it), and `root_path` fixes docs served behind a proxy prefix.
+
+```mermaid
+flowchart TD
+    A[Route decorator] --> G[OpenAPI operation]
+    B[Function parameters] --> G
+    C[Python type hints] --> G
+    D[Pydantic models] --> G
+    E[response_model] --> G
+    F[Security dependencies] --> G
+    G --> H["/openapi.json"]
+    H --> I["/docs - Swagger UI"]
+    H --> J["/redoc - ReDoc"]
+```
+
+**Interview answer:** FastAPI inspects every route as the application starts — path and method from the decorator, parameter sources and types from the function signature, request and response JSON Schemas from the Pydantic models, plus any declared metadata and security schemes — and assembles all of it into one OpenAPI document served at `/openapi.json`. Swagger UI and ReDoc are simply two viewers over that document, which is why the published docs always match the validation the code actually performs. The same schema also drives client SDK generation, contract tests in CI, and API gateway imports.
+
+**Gotcha:** the `responses` mapping only documents an error shape; it does not produce one. A plain `HTTPException` still returns `{"detail": "..."}`, so an endpoint documented as returning `ErrorResponse` with `code` and `message` will lie to its consumers until you add an exception handler that emits that exact body.
+
 ---
 
 # 1. What Automatic API Documentation Means
 
 In many frameworks, developers manually write and maintain API documentation. That documentation can become outdated when endpoints change.
 
-FastAPI follows a different approach:
-
-```mermaid
-flowchart TD
-    A[Python route declaration] --> S[Generated OpenAPI schema]
-    B[Type hints and validation rules] --> S
-    C["Pydantic request/response models"] --> S
-    D[Metadata and security dependencies] --> S
-    S --> E[Swagger UI<br/>Interactive testing]
-    S --> F[ReDoc<br/>Readable reference]
-```
-
-You define the API contract in Python, and FastAPI generates the machine-readable and human-readable documentation from the same source.
+FastAPI follows a different approach: you define the API contract in Python, and FastAPI generates both the machine-readable and the human-readable documentation from that same source.
 
 ## Main benefit
 
@@ -67,13 +82,7 @@ It describes information such as:
 - Authentication schemes
 - API metadata
 
-FastAPI normally exposes the generated schema as JSON.
-
-```text
-GET /openapi.json
-```
-
-A simplified part of an OpenAPI schema looks like this:
+FastAPI normally exposes the generated schema as JSON at `GET /openapi.json`. A simplified part of it looks like this:
 
 ```json
 {
@@ -137,20 +146,7 @@ flowchart LR
 
 # 3. How FastAPI Generates the Documentation
 
-FastAPI collects metadata from several parts of your application.
-
-```mermaid
-flowchart TD
-    A[Route decorator] --> G[OpenAPI operation]
-    B[Function parameters] --> G
-    C[Python type hints] --> G
-    D[Pydantic models] --> G
-    E[response_model] --> G
-    F[Security dependencies] --> G
-    G --> H["/openapi.json"]
-    H --> I["/docs - Swagger UI"]
-    H --> J["/redoc - ReDoc"]
-```
+FastAPI collects metadata from several parts of your application, as shown in the diagram at the top of this note. Each declaration contributes a specific part of the generated operation.
 
 ## Common sources of schema information
 
@@ -188,25 +184,7 @@ FastAPI creates these endpoints automatically:
 | `/openapi.json` | Raw OpenAPI schema |
 | `/docs/oauth2-redirect` | Swagger UI OAuth2 redirect helper |
 
-For local development:
-
-```text
-http://127.0.0.1:8000/docs
-http://127.0.0.1:8000/redoc
-http://127.0.0.1:8000/openapi.json
-```
-
-Run the application with:
-
-```bash
-fastapi dev main.py
-```
-
-or:
-
-```bash
-uvicorn main:app --reload
-```
+Locally those become `http://127.0.0.1:8000/docs`, `/redoc` and `/openapi.json`. Run the application with `fastapi dev main.py` or `uvicorn main:app --reload`.
 
 ---
 
@@ -222,16 +200,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-
 class ItemCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     price: float = Field(gt=0)
     quantity: int = Field(ge=0)
 
-
 class ItemResponse(ItemCreate):
     id: int
-
 
 @app.post(
     "/items",
@@ -298,11 +273,9 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-
 class ItemUpdate(BaseModel):
     name: str
     price: float
-
 
 @app.put("/items/{item_id}")
 async def update_item(
@@ -337,7 +310,6 @@ A Pydantic model becomes a reusable JSON Schema component inside OpenAPI.
 
 ```python
 from pydantic import BaseModel, Field
-
 
 class ProductCreate(BaseModel):
     name: str = Field(
@@ -378,7 +350,6 @@ The documentation displays:
 ```python
 from pydantic import BaseModel, ConfigDict, Field
 
-
 class CustomerCreate(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -410,35 +381,9 @@ Avoid using one database model for every purpose.
 | `ProductResponse` | Fields returned to the client |
 | `ProductDB` | Internal persistence representation |
 
-Example:
+Declaring `response_model=UserResponse` on a route whose `UserCreate` body carries a password keeps that password out of both the documented schema and the serialized response.
 
-```python
-from pydantic import BaseModel
-
-
-class UserCreate(BaseModel):
-    email: str
-    password: str
-
-
-class UserResponse(BaseModel):
-    id: int
-    email: str
-```
-
-```python
-@app.post("/users", response_model=UserResponse)
-async def create_user(payload: UserCreate):
-    return {
-        "id": 101,
-        "email": payload.email,
-        "password": "must-not-appear",
-    }
-```
-
-Because the response model is `UserResponse`, the password is excluded from the documented and serialized response.
-
-> `response_model` is not only documentation. It also validates and filters the output according to the declared response contract.
+> `response_model` is not only documentation. It also validates and filters the output according to the declared response contract — see [Response Models](response-models.md).
 
 ---
 
@@ -454,7 +399,6 @@ from typing import Annotated
 from fastapi import FastAPI, Path
 
 app = FastAPI()
-
 
 @app.get("/orders/{order_id}")
 async def get_order(
@@ -478,7 +422,6 @@ A path parameter is always required because the URL cannot match without it.
 from typing import Annotated, Literal
 
 from fastapi import Query
-
 
 @app.get("/products")
 async def list_products(
@@ -525,13 +468,7 @@ async def get_reports(
     return {"from": from_date}
 ```
 
-Client request:
-
-```text
-GET /reports?from=2026-07-01
-```
-
-Python code still uses the valid identifier `from_date`.
+The client calls `GET /reports?from=2026-07-01` while the Python code keeps the valid identifier `from_date`.
 
 ---
 
@@ -543,7 +480,6 @@ Good documentation describes both successful and expected error responses.
 
 ```python
 from fastapi import status
-
 
 @app.post(
     "/products",
@@ -563,16 +499,13 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-
 class ProductResponse(BaseModel):
     id: int
     name: str
 
-
 class ErrorResponse(BaseModel):
     code: str
     message: str
-
 
 @app.get(
     "/products/{product_id}",
@@ -599,24 +532,7 @@ async def get_product(product_id: int):
 
 The `responses` dictionary documents additional responses, but it does not automatically make your runtime exception body match the declared model.
 
-For example, the standard `HTTPException` response is normally:
-
-```json
-{
-  "detail": "Product not found"
-}
-```
-
-If your documented error contract is:
-
-```json
-{
-  "code": "PRODUCT_NOT_FOUND",
-  "message": "Product not found"
-}
-```
-
-then your exception handler must return that exact structure.
+The standard `HTTPException` response is `{"detail": "Product not found"}`. If your documented error contract is `{"code": "PRODUCT_NOT_FOUND", "message": "Product not found"}`, then an exception handler must return that exact structure.
 
 ## 9.3 Reusable error responses
 
@@ -631,7 +547,6 @@ ERROR_RESPONSES = {
         "description": "The authenticated user is not allowed to perform this action",
     },
 }
-
 
 @app.delete(
     "/products/{product_id}",
@@ -726,7 +641,6 @@ Tags keep large APIs readable.
 ```python
 from fastapi import FastAPI
 
-
 tags_metadata = [
     {
         "name": "Products",
@@ -767,7 +681,6 @@ router = APIRouter(
     tags=["Products"],
 )
 
-
 @router.get("")
 async def list_products():
     ...
@@ -775,27 +688,7 @@ async def list_products():
 
 ## Recommended tag structure
 
-Prefer domain-oriented tags:
-
-```text
-Products
-Orders
-Customers
-Payments
-Reports
-Administration
-```
-
-Avoid overly technical group names such as:
-
-```text
-GET APIs
-POST APIs
-Database APIs
-Utility APIs
-```
-
-Consumers usually search by business capability, not by implementation layer.
+Prefer domain-oriented tags such as `Products`, `Orders`, `Customers`, `Payments`, `Reports` and `Administration`. Avoid technical group names such as `GET APIs`, `POST APIs`, `Database APIs` or `Utility APIs` — consumers search by business capability, not by implementation layer.
 
 ---
 
@@ -814,7 +707,6 @@ from fastapi.security import OAuth2PasswordBearer
 app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
-
 
 @app.get("/profile", tags=["Users"])
 async def read_profile(
@@ -843,7 +735,6 @@ from fastapi.security import APIKeyHeader
 
 api_key_header = APIKeyHeader(name="X-API-Key")
 
-
 @app.get("/internal/status")
 async def internal_status(
     api_key: Annotated[str, Security(api_key_header)],
@@ -871,34 +762,17 @@ app = FastAPI(
 )
 ```
 
-New paths:
+The interfaces now live at `/api/docs`, `/api/reference` and `/api/openapi.json`.
 
-```text
-/api/docs
-/api/reference
-/api/openapi.json
-```
-
-## Disable only one interface
+## Disabling interfaces selectively
 
 ```python
-app = FastAPI(
-    docs_url="/docs",
-    redoc_url=None,
-)
+# ReDoc only is disabled
+app = FastAPI(docs_url="/docs", redoc_url=None)
+
+# Both interfaces gone, schema still served for SDK generation and tooling
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url="/openapi.json")
 ```
-
-## Disable both visual interfaces but keep the schema
-
-```python
-app = FastAPI(
-    docs_url=None,
-    redoc_url=None,
-    openapi_url="/openapi.json",
-)
-```
-
-The raw OpenAPI document remains available for SDK generation or API tooling.
 
 ## Disable OpenAPI and both documentation interfaces
 
@@ -978,7 +852,6 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui():
     return get_swagger_ui_html(
@@ -1027,13 +900,11 @@ Documentation visibility can be controlled through application settings.
 from fastapi import FastAPI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
 
     app_env: str = "development"
     openapi_url: str = "/openapi.json"
-
 
 settings = Settings()
 
@@ -1047,22 +918,13 @@ app = FastAPI(
 Example environment values:
 
 ```env
-# Development
-OPENAPI_URL=/openapi.json
-```
-
-```env
-# Environment where schema exposure is intentionally disabled
-OPENAPI_URL=
+OPENAPI_URL=/openapi.json   # development
+OPENAPI_URL=                # schema exposure intentionally disabled
 ```
 
 ## Do not treat hidden documentation as API security
 
-```text
-Docs disabled != Endpoints disabled
-Docs hidden   != Authorization enabled
-Schema absent != Vulnerability removed
-```
+Disabled docs are not disabled endpoints, hidden docs are not enabled authorization, and an absent schema is not a removed vulnerability.
 
 Protect the API using real controls:
 
@@ -1100,7 +962,6 @@ from fastapi.openapi.utils import get_openapi
 
 app = FastAPI(title="Billing API", version="1.0.0")
 
-
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -1119,20 +980,12 @@ def custom_openapi():
     app.openapi_schema = schema
     return app.openapi_schema
 
-
 app.openapi = custom_openapi
 ```
 
 ## Why cache the schema?
 
-Schema generation inspects application routes. Once routes are fully registered, the result can normally be reused.
-
-```python
-if app.openapi_schema:
-    return app.openapi_schema
-```
-
-This avoids rebuilding the same document on every schema request.
+Schema generation inspects application routes. Once routes are fully registered the result can be reused, which is what the `if app.openapi_schema: return app.openapi_schema` guard above does — it avoids rebuilding the same document on every schema request.
 
 ## Stable operation IDs
 
@@ -1157,31 +1010,7 @@ Operation IDs must remain unique across the entire OpenAPI document.
 
 Documentation can fail when the application is hosted behind a proxy under a path prefix.
 
-Example public URL:
-
-```text
-https://api.example.com/service-a/docs
-```
-
-Internal FastAPI application path:
-
-```text
-/docs
-```
-
-The external prefix is `/service-a`. Configure `root_path` when the proxy removes that prefix before forwarding the request.
-
-```python
-from fastapi import FastAPI
-
-app = FastAPI(root_path="/service-a")
-```
-
-Or provide it to the server when appropriate:
-
-```bash
-fastapi run main.py --root-path /service-a
-```
+A public URL of `https://api.example.com/service-a/docs` reaches the application at the internal path `/docs`, so the external prefix is `/service-a`. Configure `root_path` when the proxy removes that prefix before forwarding the request — either on the app with `app = FastAPI(root_path="/service-a")`, or on the server with `fastapi run main.py --root-path /service-a`.
 
 ## Conceptual request flow
 
@@ -1254,7 +1083,6 @@ from app.main import app
 
 client = TestClient(app)
 
-
 def test_openapi_schema_is_available():
     response = client.get("/openapi.json")
 
@@ -1321,19 +1149,9 @@ This prevents internal or sensitive fields from leaking into public responses.
 
 ## 21.3 Document business constraints
 
-Validation rules describe structural constraints, but not always business meaning.
+Validation rules describe structural constraints, but not always business meaning. A bare `amount: number` is a weak description; this is better:
 
-Weak description:
-
-```text
-amount: number
-```
-
-Better description:
-
-```text
-Payment amount in the invoice currency. It must not exceed the invoice's outstanding balance.
-```
+> Payment amount in the invoice currency. It must not exceed the invoice's outstanding balance.
 
 ## 21.4 Keep examples realistic and safe
 
@@ -1367,16 +1185,7 @@ Only document responses that your API can actually return, and keep the runtime 
 
 ## 21.7 Avoid manual schema modification unless necessary
 
-Prefer normal FastAPI declarations first:
-
-```text
-Type hints
-Pydantic models
-Field metadata
-Route metadata
-Security dependencies
-Documented responses
-```
+Prefer the normal declarations first: type hints, Pydantic models, `Field` metadata, route metadata, security dependencies and documented responses.
 
 Use a custom `app.openapi()` function only for requirements the standard declarations cannot express cleanly.
 
@@ -1386,213 +1195,19 @@ FastAPI's documentation interfaces use frontend assets and framework dependencie
 
 ---
 
-# 22. Complete Practical Example
+# 22. Putting the Declarations Together
 
-The following example combines application metadata, tags, request models, response models, examples, documented errors, pagination parameters, authentication, and hidden operational routes.
+Most of this note's declarations belong on the same operation. This example adds the one security scheme not shown above — `HTTPBearer`, for a plain `Authorization: Bearer <token>` header — and pairs it with documented failure responses and a route deliberately kept out of the schema.
 
 ```python
-from typing import Annotated, Literal
+from typing import Annotated
 
-from fastapi import (
-    Depends,
-    FastAPI,
-    Path,
-    Query,
-    Request,
-    Security,
-    status,
-)
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
 
+app = FastAPI(title="Product Catalog API", version="1.0.0")
 
-tags_metadata = [
-    {
-        "name": "Products",
-        "description": "Product catalog operations.",
-    },
-    {
-        "name": "Operations",
-        "description": "Operational endpoints not intended for normal API consumers.",
-    },
-]
-
-app = FastAPI(
-    title="Product Catalog API",
-    description=(
-        "Manage products and query the product catalog. "
-        "All write operations require bearer authentication."
-    ),
-    version="1.0.0",
-    openapi_tags=tags_metadata,
-    swagger_ui_parameters={
-        "displayRequestDuration": True,
-        "filter": True,
-        "tagsSorter": "alpha",
-    },
-)
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-class ErrorResponse(BaseModel):
-    code: str = Field(examples=["PRODUCT_NOT_FOUND"])
-    message: str = Field(examples=["Product 999 was not found"])
-
-
-class AppError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
-        self.status_code = status_code
-        self.code = code
-        self.message = message
-
-
-@app.exception_handler(AppError)
-async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"code": exc.code, "message": exc.message},
-    )
-
-
-class ProductCreate(BaseModel):
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "name": "Mechanical Keyboard",
-                    "sku": "KB-MECH-001",
-                    "price": 129.99,
-                    "status": "active",
-                }
-            ]
-        }
-    )
-
-    name: str = Field(
-        min_length=2,
-        max_length=120,
-        description="Customer-facing product name",
-    )
-    sku: str = Field(
-        pattern=r"^[A-Z0-9-]+$",
-        description="Unique uppercase stock-keeping unit",
-    )
-    price: float = Field(
-        gt=0,
-        description="Selling price; must be greater than zero",
-    )
-    status: Literal["draft", "active"] = Field(
-        default="draft",
-        description="Initial product lifecycle status",
-    )
-
-
-class ProductResponse(BaseModel):
-    id: int
-    name: str
-    sku: str
-    price: float
-    status: Literal["draft", "active", "retired"]
-
-
-class ProductListResponse(BaseModel):
-    items: list[ProductResponse]
-    page: int
-    page_size: int
-    total: int
-
-
-def require_token(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_scheme),
-    ],
-) -> str:
-    if credentials is None or credentials.credentials != "development-token":
-        raise AppError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code="INVALID_TOKEN",
-            message="A valid bearer token is required",
-        )
-
-    return credentials.credentials
-
-
-@app.get(
-    "/products",
-    response_model=ProductListResponse,
-    summary="Search the product catalog",
-    response_description="A paginated product collection",
-    tags=["Products"],
-    operation_id="listProducts",
-)
-async def list_products(
-    search: Annotated[
-        str | None,
-        Query(
-            min_length=2,
-            max_length=50,
-            description="Case-insensitive text searched in product names",
-        ),
-    ] = None,
-    page: Annotated[int, Query(ge=1, description="Page number")] = 1,
-    page_size: Annotated[
-        int,
-        Query(ge=1, le=100, description="Maximum records per page"),
-    ] = 20,
-):
-    product = ProductResponse(
-        id=1,
-        name="Mechanical Keyboard",
-        sku="KB-MECH-001",
-        price=129.99,
-        status="active",
-    )
-
-    return ProductListResponse(
-        items=[product],
-        page=page,
-        page_size=page_size,
-        total=1,
-    )
-
-
-@app.get(
-    "/products/{product_id}",
-    response_model=ProductResponse,
-    summary="Get one product",
-    tags=["Products"],
-    operation_id="getProductById",
-    responses={
-        404: {
-            "model": ErrorResponse,
-            "description": "Product was not found",
-        }
-    },
-)
-async def get_product(
-    product_id: Annotated[
-        int,
-        Path(gt=0, description="Numeric product identifier"),
-    ],
-):
-    if product_id != 1:
-        raise AppError(
-            status_code=status.HTTP_404_NOT_FOUND,
-            code="PRODUCT_NOT_FOUND",
-            message=f"Product {product_id} was not found",
-        )
-
-    return ProductResponse(
-        id=1,
-        name="Mechanical Keyboard",
-        sku="KB-MECH-001",
-        price=129.99,
-        status="active",
-    )
-
+bearer_scheme = HTTPBearer()
 
 @app.post(
     "/products",
@@ -1603,127 +1218,22 @@ async def get_product(
     tags=["Products"],
     operation_id="createProduct",
     responses={
-        401: {
-            "model": ErrorResponse,
-            "description": "Bearer authentication failed",
-        },
-        409: {
-            "model": ErrorResponse,
-            "description": "A product with the same SKU already exists",
-        },
+        401: {"model": ErrorResponse, "description": "Bearer authentication failed"},
+        409: {"model": ErrorResponse, "description": "A product with the same SKU exists"},
     },
 )
 async def create_product(
     payload: ProductCreate,
-    token: Annotated[str, Depends(require_token)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Security(bearer_scheme)],
 ):
-    return ProductResponse(
-        id=2,
-        **payload.model_dump(),
-    )
-
+    ...
 
 @app.get("/health", include_in_schema=False)
 async def health_check():
     return {"status": "healthy"}
 ```
 
-## What appears in the generated documentation
-
-```text
-Product Catalog API 1.0.0
-
-Products
-├── GET  /products
-│   ├── search: optional string
-│   ├── page: integer >= 1
-│   ├── page_size: integer from 1 to 100
-│   └── response: ProductListResponse
-│
-├── GET  /products/{product_id}
-│   ├── product_id: required integer > 0
-│   ├── 200: ProductResponse
-│   └── 404: ErrorResponse
-│
-└── POST /products
-    ├── bearer authentication required
-    ├── request: ProductCreate
-    ├── 201: ProductResponse
-    ├── 401: ErrorResponse
-    └── 409: ErrorResponse
-
-Hidden from OpenAPI:
-└── GET /health
-```
-
----
-
-# 23. Quick Revision
-
-## Core mental model
-
-```mermaid
-flowchart TD
-    A[FastAPI declarations] --> B[OpenAPI schema]
-    B --> C[Swagger UI<br/>Interactive testing]
-    B --> D[ReDoc<br/>API reference]
-```
-
-## Default paths
-
-| Path | Serves |
-| --- | --- |
-| `/docs` | Swagger UI |
-| `/redoc` | ReDoc |
-| `/openapi.json` | Raw OpenAPI schema |
-
-## Most useful declarations
-
-```python
-FastAPI(
-    title="...",
-    description="...",
-    version="...",
-    openapi_tags=[...],
-)
-```
-
-```python
-@app.post(
-    "/resources",
-    response_model=ResourceResponse,
-    status_code=201,
-    summary="Create a resource",
-    description="...",
-    response_description="...",
-    tags=["Resources"],
-    operation_id="createResource",
-    responses={404: {"description": "Resource not found"}},
-)
-async def create_resource(payload: ResourceCreate):
-    ...
-```
-
-```python
-field: str = Field(
-    min_length=2,
-    description="...",
-    examples=["..."],
-)
-```
-
-## Key points to remember
-
-1. FastAPI generates OpenAPI from route declarations, type hints, Pydantic models, metadata, responses, and security dependencies.
-2. Swagger UI and ReDoc are interfaces that render the same OpenAPI schema.
-3. `response_model` documents, validates, and filters response data.
-4. Use `Field`, `Path`, and `Query` to make constraints and descriptions explicit.
-5. Use domain-based tags to organize larger APIs.
-6. Document expected error responses and make runtime bodies match the documented contract.
-7. Security dependencies create Swagger UI authorization controls, but the backend must still validate credentials and permissions.
-8. `include_in_schema=False` hides a route from documentation; it does not secure or disable the route.
-9. Disabling docs is not a substitute for authentication and authorization.
-10. Treat `/openapi.json` as a versioned API contract that can support client generation and CI checks.
+Swagger UI groups this operation under **Products**, offers an **Authorize** button for the bearer token, documents the `201`, `401` and `409` bodies, and shows no `/health` entry at all.
 
 ---
 

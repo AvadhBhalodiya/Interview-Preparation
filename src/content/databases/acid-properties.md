@@ -6,9 +6,31 @@ order: 4
 
 # ACID Properties in Databases
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer  
-> **Purpose:** Understand how relational databases keep transactional data correct during failures and concurrent access.
+> Understand how relational databases keep transactional data correct during failures and concurrent access.
+
+## In short
+
+- **Atomicity** — a transaction is one indivisible unit: every operation is applied, or none of them is.
+- **Consistency** — a successful transaction moves the database from one valid state to another, preserving constraints and business invariants.
+- **Isolation** — concurrent transactions must produce a result equivalent to some valid serial order; isolation levels trade anomalies against concurrency.
+- **Durability** — once a `COMMIT` is acknowledged, the change survives a crash or restart, normally through write-ahead logging.
+- `COMMIT` makes changes permanent and `ROLLBACK` cancels them; autocommit treats each standalone statement as its own transaction, so related operations need an explicit `BEGIN`.
+- A database rollback cannot undo an external side effect, such as a payment already accepted by a payment API.
+- Stronger guarantees cost latency, lock waits and retries, so match the guarantee to the business risk instead of choosing the strongest setting everywhere.
+
+```mermaid
+flowchart LR
+    A[BEGIN] --> B[Execute SQL statements]
+    B --> C{All operations valid?}
+    C -- Yes --> D[COMMIT]
+    C -- No --> E[ROLLBACK]
+    D --> F[Changes become permanent]
+    E --> G[Database returns to previous valid state]
+```
+
+**Interview answer:** ACID is the set of four properties that make database transactions reliable — atomicity (either every operation succeeds or none of them is applied), consistency (the transaction leaves the database in a valid state under every constraint and invariant), isolation (concurrent transactions do not incorrectly interfere), and durability (committed data survives crashes and restarts). Databases provide them with transaction boundaries and undo information, constraints, locks and MVCC, and a write-ahead or redo log. In practice it means putting the operations that must succeed together into one short, explicit transaction.
+
+**Gotcha:** The `C` in ACID means preserving defined rules and invariants, not that every replica returns the same latest value — that is distributed consistency, a different idea that borrows the same word.
 
 ---
 
@@ -23,13 +45,17 @@ order: 4
 | **I** | Isolation | Concurrent transactions should not incorrectly interfere |
 | **D** | Durability | Committed data must survive crashes and restarts |
 
-A useful mental model is:
+The four are not independent. Atomicity, consistency, and isolation all describe what must be true at the moment a transaction commits; durability is what makes that commit outlast the machine.
 
-```text
-Atomicity   → Complete the whole unit of work or undo it
-Consistency → Preserve business rules and database constraints
-Isolation   → Control what concurrent transactions can observe
-Durability  → Preserve committed results after failure
+```mermaid
+flowchart TB
+    T[ACID transaction]
+    T --> A["All or nothing<br/>Atomicity"]
+    T --> C["Valid state<br/>Consistency"]
+    T --> I["Safe concurrency<br/>Isolation"]
+    A --> D["Commit survives failure<br/>Durability"]
+    C --> D
+    I --> D
 ```
 
 ## Why ACID Matters
@@ -66,18 +92,6 @@ The transaction has two normal outcomes:
 
 - `COMMIT` makes its changes permanent.
 - `ROLLBACK` cancels its uncommitted changes.
-
-## Transaction Lifecycle
-
-```mermaid
-flowchart LR
-    A[BEGIN] --> B[Execute SQL statements]
-    B --> C{All operations valid?}
-    C -- Yes --> D[COMMIT]
-    C -- No --> E[ROLLBACK]
-    D --> F[Changes become permanent]
-    E --> G[Database returns to previous valid state]
-```
 
 ## Autocommit
 
@@ -316,7 +330,7 @@ In distributed systems, the word **consistency** is also used to describe whethe
 
 ## 5.1 Definition
 
-**Isolation controls how concurrent transactions see and affect one another.**
+**Isolation controls how concurrent transactions see and affect one another.** It is the `I` in ACID: concurrent transactions must not corrupt each other.
 
 The ideal behavior is that concurrently executed transactions produce a result equivalent to some valid serial order.
 
@@ -336,181 +350,17 @@ B completed before A
 
 Complete serial execution is safe but can reduce concurrency. Databases therefore provide multiple isolation levels.
 
-## 5.2 Common Concurrency Anomalies
+## 5.2 Anomalies and Isolation Levels
 
-### Dirty Read
+The four concurrency anomalies — dirty read, non-repeatable read, phantom read, and lost update — the four standard isolation levels (`READ UNCOMMITTED`, `READ COMMITTED`, `REPEATABLE READ`, `SERIALIZABLE`), the syntax for setting a level, and the trade-offs behind choosing one are covered in full in [Transaction Isolation Levels](transaction-isolation-levels.md).
 
-Transaction B reads a change made by Transaction A before A commits.
+That note is the canonical owner of this material and keeps all of it, so nothing is lost by not repeating it here.
 
-```text
-Transaction A                    Transaction B
--------------                    -------------
-UPDATE balance = 500
-                                SELECT balance → 500
-ROLLBACK
-```
+## 5.3 Locking and Optimistic Concurrency
 
-Transaction B used a value that never became permanent.
+When a transaction reads a row and then makes a decision based on it, the row has to be protected from a competing writer.
 
----
-
-### Non-Repeatable Read
-
-A transaction reads the same row twice and receives different committed values.
-
-```text
-Transaction A                    Transaction B
--------------                    -------------
-SELECT balance → 500
-                                UPDATE balance = 400
-                                COMMIT
-SELECT balance → 400
-```
-
-The row changed between Transaction A's reads.
-
----
-
-### Phantom Read
-
-A transaction repeats a range query and sees additional or missing rows.
-
-```text
-Transaction A                    Transaction B
--------------                    -------------
-SELECT COUNT(*)
-FROM orders
-WHERE status = 'NEW';
-Result: 10
-                                INSERT new matching order
-                                COMMIT
-Run same query
-Result: 11
-```
-
-The second query returns a different set of rows.
-
----
-
-### Lost Update
-
-Two transactions read the same value, calculate a new value, and one update overwrites the other.
-
-```text
-Initial stock = 10
-
-Transaction A reads 10
-Transaction B reads 10
-
-Transaction A writes 9
-Transaction B writes 9
-
-Expected stock = 8
-Actual stock   = 9
-```
-
-A safer statement performs the update atomically:
-
-```sql
-UPDATE inventory
-SET stock = stock - 1
-WHERE product_id = 100
-  AND stock > 0;
-```
-
-The application must then verify that exactly one row was updated.
-
-## 5.3 Standard Isolation Levels
-
-| Isolation Level | Dirty Reads | Non-Repeatable Reads | Phantom Reads | Relative Concurrency |
-|---|---:|---:|---:|---|
-| `READ UNCOMMITTED` | Possible | Possible | Possible | Highest |
-| `READ COMMITTED` | Prevented | Possible | Possible | High |
-| `REPEATABLE READ` | Prevented | Prevented | Standard permits possibility | Medium |
-| `SERIALIZABLE` | Prevented | Prevented | Prevented | Lowest |
-
-> Actual behavior differs across database engines. For example, PostgreSQL treats `READ UNCOMMITTED` as `READ COMMITTED`, and its `REPEATABLE READ` implementation prevents phantom reads but can still require transaction retries for serialization-related conflicts.
-
-## 5.4 Setting an Isolation Level
-
-PostgreSQL-style syntax:
-
-```sql
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
--- Transaction statements
-
-COMMIT;
-```
-
-Another common form is:
-
-```sql
-BEGIN;
-
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-
--- Transaction statements
-
-COMMIT;
-```
-
-## 5.5 Choosing an Isolation Level
-
-### Use `READ COMMITTED` when:
-
-- Each statement may use the latest committed data
-- Maximum throughput is important
-- The application uses targeted locks or atomic updates where needed
-- Occasional re-reading of changed data is acceptable
-
-### Use `REPEATABLE READ` when:
-
-- A transaction needs a stable view of data
-- Reports or multi-step calculations must use a consistent snapshot
-- The database engine's exact repeatable-read behavior is understood
-
-### Use `SERIALIZABLE` when:
-
-- Complex invariants must remain correct under concurrency
-- Conflicting transactions are relatively uncommon
-- The application can retry serialization failures
-
-## 5.6 Row Locking
-
-When a transaction must read a row and then make a decision based on it, a locking read may be appropriate.
-
-```sql
-BEGIN;
-
-SELECT balance
-FROM accounts
-WHERE id = 1
-FOR UPDATE;
-
-UPDATE accounts
-SET balance = balance - 100
-WHERE id = 1;
-
-COMMIT;
-```
-
-`FOR UPDATE` commonly locks the selected row against conflicting updates until the transaction ends.
-
-## 5.7 Optimistic Concurrency Control
-
-Another approach detects whether data changed before an update.
-
-```sql
-UPDATE documents
-SET
-    content = 'updated content',
-    version = version + 1
-WHERE id = 50
-  AND version = 7;
-```
-
-If zero rows are updated, another transaction changed the document first. The application can reload the data and retry or report a conflict.
+`SELECT ... FOR UPDATE` locking reads, the version-column pattern for optimistic concurrency control, and when to pick each are covered in [Optimistic vs Pessimistic Locking](locking-optimistic-pessimistic.md).
 
 ---
 
@@ -767,61 +617,13 @@ BEGIN database transaction
 
 A normal database rollback cannot undo a payment already accepted by an external service.
 
-## 9.3 Transactional Outbox Pattern
+## 9.3 Outbox and Idempotency
 
-The **transactional outbox** pattern stores an event in the same database transaction as the business change.
+A database commit and an external side effect are not one atomic unit, and a retried request must not charge twice. The **transactional outbox** pattern answers the first problem: the event row is stored in the same database transaction as the business change, and a separate process publishes pending outbox events afterwards. An **idempotency key** answers the second: a unique key makes repeated requests resolve to one recorded operation.
 
-```mermaid
-flowchart LR
-    A[Application] --> B[Database transaction]
-    B --> C[Update order]
-    B --> D[Insert outbox event]
-    C --> E[COMMIT]
-    D --> E
-    E --> F[Background publisher]
-    F --> G[Message broker or external service]
-```
+Idempotency keys, safe retries, and which HTTP methods are idempotent are covered in [HTTP Idempotency and Methods](../api-design/idempotency-http-methods.md).
 
-Example:
-
-```sql
-BEGIN;
-
-UPDATE orders
-SET status = 'PAID'
-WHERE id = 5001;
-
-INSERT INTO outbox_events (
-    event_type,
-    aggregate_id,
-    payload
-)
-VALUES (
-    'ORDER_PAID',
-    '5001',
-    '{"order_id": 5001}'
-);
-
-COMMIT;
-```
-
-A separate process publishes pending outbox events. This prevents the database update and event creation from becoming inconsistent.
-
-## 9.4 Idempotency
-
-A retryable operation should avoid applying the same logical request twice.
-
-```sql
-CREATE TABLE payment_requests (
-    idempotency_key VARCHAR(100) PRIMARY KEY,
-    payment_id BIGINT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-A unique idempotency key can ensure that repeated requests resolve to one recorded operation.
-
-## 9.5 Distributed Transactions
+## 9.4 Distributed Transactions
 
 A local ACID transaction protects one transactional database boundary. It does not automatically make a workflow across multiple databases and services atomic.
 
@@ -968,67 +770,7 @@ Useful tests include:
 
 ---
 
-# 12. Quick Revision
-
-## 12.1 One-Line Definitions
-
-```text
-Atomicity:
-A transaction is all-or-nothing.
-
-Consistency:
-A transaction preserves defined data rules and invariants.
-
-Isolation:
-Concurrent transactions behave safely according to an isolation model.
-
-Durability:
-Committed results survive supported failures.
-```
-
-## 12.2 Complete Mental Model
-
-```mermaid
-flowchart TB
-    T[ACID transaction]
-    T --> A["All or nothing<br/>Atomicity"]
-    T --> C["Valid state<br/>Consistency"]
-    T --> I["Safe concurrency<br/>Isolation"]
-    A --> D["Commit survives failure<br/>Durability"]
-    C --> D
-    I --> D
-```
-
-## 12.3 Fast Comparison
-
-| Property | Main Question |
-|---|---|
-| Atomicity | Did the entire unit succeed or get undone? |
-| Consistency | Are all required rules still true? |
-| Isolation | Can concurrent work produce an incorrect result? |
-| Durability | Will committed data survive a failure? |
-
-## 12.4 Final Example
-
-For an order placement transaction:
-
-```text
-Atomicity
-→ Order, items, and inventory reservation succeed together.
-
-Consistency
-→ Quantities, references, and state transitions remain valid.
-
-Isolation
-→ Two customers cannot incorrectly reserve the same final item.
-
-Durability
-→ A confirmed order remains stored after a restart.
-```
-
----
-
-# 13. Official References
+# 12. Official References
 
 The explanations in this guide were checked against current official database documentation in July 2026.
 

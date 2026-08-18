@@ -2,14 +2,40 @@
 title: "TDD"
 group: "Quality & Practice"
 order: 4
+updated: "August 2026"
 ---
 
 # Test-Driven Development (TDD): Concept and When It Is Useful
 
-> **Category:** Testing  
-> **Audience:** Developers with 3+ years of experience  
-> **Focus:** Practical understanding, day-to-day usage, design impact, and interview-relevant concepts  
-> **Last reviewed:** August 2026
+> Practical understanding, day-to-day usage, design impact, and interview-relevant concepts
+
+## In short
+
+- TDD is **Red → Green → Refactor**, repeated one small behaviour at a time — not "write unit tests before code".
+- **Red:** the test must fail, and fail for the intended reason. A failure caused by a typo, a bad import, or a broken fixture proves nothing.
+- **Green:** write the minimum code that satisfies the test. Minimum means no speculative features or abstractions, not deliberately bad code.
+- **Refactor** is inside the cycle, not an optional fourth step. Skipping it produces code that passes and steadily rots.
+- The third product of TDD is **design feedback**: a test that is hard to write usually signals hidden dependencies, too many responsibilities, or global state.
+- Most valuable for business rules, bug fixes, parsers, algorithms, API contracts, and long-lived shared code; least valuable for spikes, visual UI work, and unclear requirements.
+- TDD strengthens the developer feedback loop — it does not replace integration tests, code review, security testing, or monitoring.
+
+```mermaid
+flowchart LR
+    A[Choose one small behavior] --> B[RED: Write a failing test]
+    B --> C{Does it fail for the expected reason?}
+    C -- No --> B
+    C -- Yes --> D[GREEN: Write minimum code]
+    D --> E{Do all tests pass?}
+    E -- No --> D
+    E -- Yes --> F[REFACTOR: Improve code and tests]
+    F --> G{Still green?}
+    G -- No --> F
+    G -- Yes --> A
+```
+
+**Interview answer:** TDD means writing one failing test for the next small piece of behaviour, watching it fail for the reason you expect, writing the least code that makes it pass, then refactoring while the suite stays green — and repeating. The test is doing three jobs at once: it specifies the behaviour, it verifies it, and the difficulty of writing it gives feedback on the design. I use it where behaviour can be stated as concrete examples — pricing rules, validation, parsers, and reproducible bug fixes — and I relax it during exploratory spikes or when the requirement itself is still unclear.
+
+**Gotcha:** Never actually observing the red. A test written after the code, or accepted because it was green on first run, has never demonstrated that it can detect the behaviour being absent — so it may be asserting nothing at all. Watching the failure is the step that proves the test works.
 
 ---
 
@@ -70,19 +96,7 @@ This test acts as a precise statement of the expected behavior. The production c
 
 # 2. The Core TDD Cycle
 
-```mermaid
-flowchart LR
-    A[Choose one small behavior] --> B[RED: Write a failing test]
-    B --> C{Does it fail for the expected reason?}
-    C -- No --> B
-    C -- Yes --> D[GREEN: Write minimum code]
-    D --> E{Do all tests pass?}
-    E -- No --> D
-    E -- Yes --> F[REFACTOR: Improve code and tests]
-    F --> G{Still green?}
-    G -- No --> F
-    G -- Yes --> A
-```
+The cycle diagram is in **In short** at the top of this note. Each full pass through it covers exactly one small behaviour.
 
 ## 2.1 Red: Write a Failing Test
 
@@ -147,11 +161,7 @@ def test_premium_customer_receives_ten_percent_discount():
     ...
 ```
 
-This is more precise than a vague comment such as:
-
-```python
-# Apply discount when appropriate
-```
+This is more precise than a vague comment such as: `# Apply discount when appropriate`
 
 Tests become living examples of business behavior and are automatically checked whenever the suite runs.
 
@@ -266,7 +276,6 @@ pytest -q
 
 from checkout import calculate_total
 
-
 def test_order_below_free_delivery_threshold_adds_delivery_fee():
     result = calculate_total(subtotal=800)
 
@@ -283,7 +292,6 @@ RED: test fails
 
 ```python
 # checkout.py
-
 
 def calculate_total(subtotal: int) -> int:
     return subtotal + 50
@@ -333,7 +341,6 @@ Both tests now pass.
 ```python
 import pytest
 
-
 def test_negative_subtotal_is_rejected():
     with pytest.raises(ValueError, match="subtotal cannot be negative"):
         calculate_total(subtotal=-1)
@@ -362,7 +369,6 @@ def calculate_total(subtotal: int) -> int:
 FREE_DELIVERY_THRESHOLD = 1000
 STANDARD_DELIVERY_FEE = 50
 
-
 def calculate_total(subtotal: int) -> int:
     """Return the payable order total after applying delivery rules."""
     if subtotal < 0:
@@ -386,18 +392,14 @@ import pytest
 
 from checkout import calculate_total
 
-
 def test_order_below_free_delivery_threshold_adds_delivery_fee():
     assert calculate_total(subtotal=800) == 850
-
 
 def test_order_at_free_delivery_threshold_has_no_delivery_fee():
     assert calculate_total(subtotal=1000) == 1000
 
-
 def test_order_above_free_delivery_threshold_has_no_delivery_fee():
     assert calculate_total(subtotal=1500) == 1500
-
 
 def test_negative_subtotal_is_rejected():
     with pytest.raises(ValueError, match="subtotal cannot be negative"):
@@ -413,11 +415,7 @@ Test 3 forced input validation.
 Refactoring improved readability without adding behavior.
 ```
 
-The tests drove both the implementation and the shape of the API:
-
-```python
-calculate_total(subtotal: int) -> int
-```
+The tests drove both the implementation and the shape of the API: `calculate_total(subtotal: int) -> int`
 
 The function has an explicit input, a deterministic result, and no dependency on a database or external service.
 
@@ -657,72 +655,15 @@ flowchart TD
 
 # 7. Choosing the Right Test Boundary
 
-TDD is often associated with unit tests, but behavior can be driven at different levels.
+TDD is often associated with unit tests, but behavior can be driven from any level. The short recap:
 
-## 7.1 Unit-Level TDD
+- **Unit-level** drives a function, class, or domain service — the fastest loop and the usual home for calculations, validation, and state transitions.
+- **Component or service-level** drives a use case through its public interface with the internals real and only the far boundary faked; these cycles survive refactoring best.
+- **Integration-level** drives a real boundary — database, broker, cache, filesystem — and is slower, so it stays focused.
 
-Tests a small unit such as a function, class, or domain service.
+The levels themselves, what each proves, and how to size the mix belong to [Unit vs Integration vs E2E](unit-integration-e2e.md). What matters for TDD is that the boundary you drive from is the boundary your tests become coupled to. Drive from too deep inside the component and the mocking required will couple the cycle to implementation details, which is exactly what the next point is about.
 
-```text
-Test → Function/Class → Result
-```
-
-Best for:
-
-- Calculations.
-- Validation.
-- Domain rules.
-- State transitions.
-- Algorithms.
-
-Advantages:
-
-- Very fast.
-- Precise failures.
-- Easy edge-case coverage.
-
-Risk:
-
-- Excessive mocking can couple tests to implementation details.
-
-## 7.2 Component or Service-Level TDD
-
-Tests a meaningful component through its public interface while allowing several internal classes to work together.
-
-```text
-Test → Application service → Domain logic → Fake repository
-```
-
-Best for:
-
-- Use cases.
-- Service methods.
-- Business workflows.
-- API application layers.
-
-These tests often survive refactoring better because they focus on externally visible behavior.
-
-## 7.3 Integration-Level Tests
-
-Verify boundaries such as:
-
-- Database queries.
-- Message brokers.
-- File systems.
-- Caches.
-- External services.
-
-They are important but normally slower and more expensive than unit tests.
-
-A balanced approach is:
-
-```text
-Many fast behavior tests
-Some focused integration tests
-Few critical end-to-end tests
-```
-
-## 7.4 Prefer Observable Behavior over Internal Calls
+## 7.1 Prefer Observable Behavior over Internal Calls
 
 Fragile test:
 
@@ -786,27 +727,7 @@ def test_created_invoice_contains_expected_summary():
 
 Avoid combining unrelated scenarios in one test because a failure becomes harder to diagnose.
 
-## 8.3 Deterministic Results
-
-The same test should produce the same result under the same conditions.
-
-Control unstable inputs such as:
-
-- Current time.
-- Random values.
-- Network responses.
-- External API state.
-- Environment configuration.
-- Shared database records.
-
-Instead of calling the current clock directly, inject it:
-
-```python
-def is_expired(expiry_time, now):
-    return now >= expiry_time
-```
-
-## 8.4 Fast Feedback
+## 8.3 Fast Feedback
 
 The tests used in the inner TDD loop should usually run in seconds or less.
 
@@ -818,39 +739,17 @@ Release loop: end-to-end and environment validation
 
 A slow suite discourages frequent execution and weakens the TDD workflow.
 
-## 8.5 Independent Tests
+## 8.4 Deterministic, Independent, and Clearly Named
 
-A test should not depend on another test running first.
+These three properties are what make a cycle repeatable, and they are the same properties that make any test good:
 
-Bad dependency:
+- **Deterministic:** the same code produces the same result, so current time, random values, network responses, external API state, environment configuration, and shared database records must be injected or controlled rather than read from the ambient environment.
+- **Independent:** each test creates and cleans up the state it needs, so it can run alone, in any order, and in parallel. `Test A creates user → Test B expects that user` is the shape to avoid.
+- **Clearly named:** the name states behavior and context — `test_duplicate_payment_reference_is_rejected` rather than `test_payment_2` — so a red run in CI is readable without opening the file.
 
-```text
-Test A creates user → Test B expects that user → Test C deletes user
-```
+Worked examples of all three, and the assertion patterns that go with them, are in [Coverage & Good Tests](test-coverage-good-tests.md).
 
-Better:
-
-```text
-Each test creates and cleans up its own required state.
-```
-
-## 8.6 Meaningful Test Names
-
-Use names that describe behavior and context.
-
-```python
-def test_duplicate_payment_reference_is_rejected():
-    ...
-```
-
-Less useful:
-
-```python
-def test_payment_2():
-    ...
-```
-
-## 8.7 Minimal Necessary Mocking
+## 8.5 Minimal Necessary Mocking
 
 Mock external or expensive boundaries when appropriate:
 
@@ -862,7 +761,7 @@ Mock external or expensive boundaries when appropriate:
 
 Do not mock every internal collaborator. Excessive mocking makes tests verify the current implementation structure instead of useful behavior.
 
-## 8.8 Tests Are Production Assets
+## 8.6 Tests Are Production Assets
 
 Test code should be maintained with the same care as production code:
 
@@ -1007,13 +906,7 @@ flowchart TD
 
 TDD does not require every method, branch, or framework declaration to have a dedicated test.
 
-The goal is confidence in valuable behavior, not maximum test count.
-
-```text
-Useful coverage = important behavior protected by meaningful tests
-
-Not necessarily = every line executed by any test
-```
+The goal is confidence in valuable behavior, not maximum test count: useful coverage means important behavior protected by meaningful tests, which is not the same thing as every line being executed by some test. How to read a coverage percentage, and what it can and cannot prove, belongs to [Coverage & Good Tests](test-coverage-good-tests.md).
 
 ---
 
@@ -1046,17 +939,9 @@ Small enough:
 
 ## 11.3 Run a Focused Test Continuously
 
-During development:
+During development: `pytest tests/test_checkout.py -q`
 
-```bash
-pytest tests/test_checkout.py -q
-```
-
-Before committing:
-
-```bash
-pytest -q
-```
+Before committing: `pytest -q`
 
 The exact command depends on the project, but the idea is to keep the local loop fast and run the broader suite before integration.
 
@@ -1097,25 +982,7 @@ A mature approach is not “TDD everywhere” or “TDD nowhere.” It is:
 
 ---
 
-# 12. Key Takeaways
-
-```text
-TDD = Red → Green → Refactor → Repeat
-```
-
-- **Red:** Write a test for one small expected behavior and confirm it fails correctly.
-- **Green:** Implement only enough behavior to make the test suite pass.
-- **Refactor:** Improve design while preserving behavior and keeping tests green.
-- TDD is most valuable for business rules, bug fixes, APIs, transformations, algorithms, and long-lived code.
-- Strict TDD may provide less value during exploratory work, subjective UI design, or unclear requirements.
-- Tests should focus on observable behavior rather than private implementation details.
-- Fast, deterministic, independent tests create the strongest development feedback loop.
-- TDD supports quality but does not replace integration tests, code review, security testing, performance testing, or monitoring.
-- The main outcome is not merely a large test suite. It is a development process that makes behavior explicit and provides continuous design feedback.
-
----
-
-# 13. References
+# 12. References
 
 The following sources were reviewed for the concepts and current guidance in this document:
 

@@ -2,32 +2,24 @@
 title: "PostgreSQL Specifics"
 group: "Postgres & NoSQL"
 order: 10
+updated: "July 27, 2026"
 ---
 
 # PostgreSQL Specifics: JSONB, Partial Indexes, and VACUUM
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer (3+ years of experience)  
-> **Production baseline:** PostgreSQL 18.4  
-> **Verified on:** July 27, 2026
+> Three PostgreSQL features that come up in interviews: JSONB for document-style data, partial indexes for filtered queries, and VACUUM for reclaiming space under MVCC.
+>
+> **Production baseline:** PostgreSQL 18.4
 
-PostgreSQL is more than a traditional relational database. It combines relational modeling, document-style JSON storage, advanced indexing, and an MVCC-based storage engine. Three PostgreSQL-specific areas appear frequently in real development work:
+## In short
 
-1. **JSONB** for flexible, queryable document data.
-2. **Partial indexes** for indexing only the rows that matter.
-3. **VACUUM** for cleaning dead row versions and keeping MVCC healthy.
-
-These features solve different problems, but they are closely connected. JSONB workloads often need specialized indexes, partial indexes can reduce index size and write overhead, and VACUUM maintains the table and index structures affected by frequent updates.
-
----
-
-# 1. Big Picture
-
-Consider an e-commerce application that stores products, orders, payments, and webhook events.
-
-- Product specifications differ between categories, so some attributes may be stored in **JSONB**.
-- Most queries target active products or incomplete orders, so **partial indexes** can avoid indexing historical rows.
-- Products and orders are updated frequently. PostgreSQL creates new row versions instead of overwriting rows in place, so **VACUUM** must clean obsolete versions.
+- `jsonb` stores a parsed binary document that can be searched and indexed; plain `json` only preserves the original text, key order, whitespace, and duplicate keys.
+- Keep relationally important fields (join keys, money, status, timestamps) in typed columns and put only genuinely variable attributes in JSONB.
+- GIN `jsonb_ops` covers key existence (`?`, `?|`, `?&`) plus containment; `jsonb_path_ops` is smaller but supports containment and JSONPath only.
+- For one frequently queried scalar path, a B-tree expression index on `(attributes ->> 'brand')` is cheaper than a whole-column GIN index.
+- A partial index stores entries only for rows matching its `WHERE` predicate, so it pays off when that subset is much smaller than the table and is queried often.
+- Partial unique indexes encode subset business rules — one active subscription per customer, unique email among non-deleted users — and stay safe under concurrency.
+- Under MVCC every `UPDATE`/`DELETE` leaves a dead row version, so VACUUM must reclaim that space, freeze old transaction IDs, and maintain the visibility map that makes index-only scans possible.
 
 ```mermaid
 flowchart LR
@@ -38,6 +30,20 @@ flowchart LR
     E --> F[VACUUM reclaims reusable space]
     F --> G[Healthy tables and indexes]
 ```
+
+**Interview answer:** PostgreSQL never overwrites a row in place — an `UPDATE` writes a new tuple version and a `DELETE` only marks the old one, because concurrent transactions may still need to see the previous version under MVCC. Those dead tuples accumulate in the heap and in every index, so VACUUM exists to mark that space reusable, clean dead index entries, refresh the visibility map, and freeze sufficiently old rows before transaction ID wraparound. Autovacuum does this in the background once change counters cross a threshold, and long-running or `idle in transaction` sessions hold cleanup back because their snapshots may still need the old versions.
+
+**Gotcha:** Writing the query without the index predicate — `WHERE created_at < ...` instead of `WHERE status = 'PENDING' AND created_at < ...` — means the planner cannot prove the partial index applies, so it silently falls back to a sequential scan.
+
+---
+
+# 1. Big Picture
+
+Consider an e-commerce application that stores products, orders, payments, and webhook events.
+
+- Product specifications differ between categories, so some attributes may be stored in **JSONB**.
+- Most queries target active products or incomplete orders, so **partial indexes** can avoid indexing historical rows.
+- Products and orders are updated frequently. PostgreSQL creates new row versions instead of overwriting rows in place, so **VACUUM** must clean obsolete versions.
 
 A useful mental model is:
 
@@ -53,12 +59,7 @@ VACUUM         = storage and MVCC maintenance
 
 ## 2.1 JSON vs JSONB
 
-PostgreSQL provides two JSON data types:
-
-- `json`
-- `jsonb`
-
-Both accept valid JSON input, but they store it differently.
+PostgreSQL provides two JSON data types, `json` and `jsonb`. Both accept valid JSON input, but they store it differently.
 
 | Area | `json` | `jsonb` |
 |---|---|---|
@@ -177,17 +178,9 @@ It makes constraints, joins, statistics, data validation, and query optimization
 
 ### Default value
 
-Use an empty JSON object when the field represents properties:
+Use an empty JSON object when the field represents properties: `attributes jsonb NOT NULL DEFAULT '{}'::jsonb`
 
-```sql
-attributes jsonb NOT NULL DEFAULT '{}'::jsonb
-```
-
-Use an empty array when the field represents a list:
-
-```sql
-tags jsonb NOT NULL DEFAULT '[]'::jsonb
-```
+Use an empty array when the field represents a list: `tags jsonb NOT NULL DEFAULT '[]'::jsonb`
 
 ### Basic validation with constraints
 
@@ -257,11 +250,7 @@ SELECT attributes -> 'dimensions'
 FROM products;
 ```
 
-Result:
-
-```json
-{"width_cm": 20, "height_cm": 10}
-```
+Result: `{"width_cm": 20, "height_cm": 10}`
 
 ### `->>` returns text
 
@@ -270,11 +259,7 @@ SELECT attributes ->> 'brand'
 FROM products;
 ```
 
-Result:
-
-```text
-Acme
-```
+Result: `Acme`
 
 ### Nested traversal
 
@@ -283,7 +268,7 @@ SELECT attributes -> 'dimensions' ->> 'width_cm'
 FROM products;
 ```
 
-Or use a path:
+Or use a path, where `#>` returns JSON/JSONB and `#>>` returns text:
 
 ```sql
 SELECT attributes #>> '{dimensions,width_cm}'
@@ -545,14 +530,7 @@ ON products
 USING gin (attributes);
 ```
 
-This is useful for operators such as:
-
-- `?`
-- `?|`
-- `?&`
-- `@>`
-- `@?`
-- `@@`
+This is useful for the key-existence, containment, and JSONPath operators: `?`, `?|`, `?&`, `@>`, `@?`, and `@@`.
 
 Example:
 
@@ -578,7 +556,7 @@ Bitmap Heap Scan
   -> Bitmap Index Scan on products_attributes_gin_idx
 ```
 
-GIN indexes commonly produce bitmap scans because multiple index entries may match a document.
+GIN indexes commonly produce bitmap scans because multiple index entries may match a document. For how to read plan nodes, costs, and timings in general, see [EXPLAIN and EXPLAIN ANALYZE](explain-analyze.md).
 
 ---
 
@@ -602,12 +580,6 @@ ON products
 USING gin (attributes jsonb_ops);
 ```
 
-Supports:
-
-- Key existence: `?`, `?|`, `?&`
-- Containment: `@>`
-- JSONPath: `@?`, `@@`
-
 Use it when the application has varied JSONB query patterns, especially key-existence queries.
 
 ### Specialized: `jsonb_path_ops`
@@ -617,12 +589,6 @@ CREATE INDEX products_attributes_path_idx
 ON products
 USING gin (attributes jsonb_path_ops);
 ```
-
-Supports:
-
-- `@>`
-- `@?`
-- `@@`
 
 It does **not** support the key-existence operators `?`, `?|`, and `?&`.
 
@@ -642,11 +608,7 @@ Its index is often smaller and more specific for containment-heavy workloads.
 
 ### Selection rule
 
-```text
-Need key-existence operators?  -> jsonb_ops
-Mostly containment/JSONPath?   -> consider jsonb_path_ops
-Unsure?                        -> begin with jsonb_ops, measure real queries
-```
+Choose `jsonb_ops` when key-existence operators are needed, and consider `jsonb_path_ops` when the workload is mostly containment or JSONPath. When unsure, begin with `jsonb_ops` and measure real queries.
 
 Avoid creating both operator classes automatically. Each extra index consumes disk, memory, maintenance time, and write I/O.
 
@@ -654,7 +616,7 @@ Avoid creating both operator classes automatically. Each extra index consumes di
 
 ## 2.9 Expression and Scalar Indexes
 
-A full-column GIN index is not always the best solution.
+A full-column GIN index is not always the best solution. The indexes below are ordinary indexes built over an expression instead of a bare column — see [B-Tree Indexing](indexing-btree.md) for general B-tree and composite-index behavior.
 
 ### GIN expression index for one JSON path
 
@@ -733,38 +695,33 @@ This combines JSONB extraction with a partial index.
 
 ## 2.10 JSONB Design and Performance
 
-### 1. JSONB is flexible, not schema-free
+### JSONB is flexible, not schema-free
 
 The schema still exists; it is simply enforced through application code, constraints, generated columns, indexes, and conventions.
 
-### 2. Large JSONB updates can be expensive
+### Large JSONB updates can be expensive
 
 A small logical change can create a new row version and may rewrite a large value, including TOAST-managed storage. Frequently changing fields may belong in normal columns or child tables.
 
-### 3. Every JSONB index increases write cost
+### Every JSONB index increases write cost
 
 On inserts and updates, PostgreSQL must maintain each affected index. GIN indexes are powerful but can be comparatively expensive to update.
 
-### 4. Prefer query-specific indexes
+### Prefer query-specific indexes
 
 A narrow expression index can be smaller and cheaper than a broad GIN index when the application repeatedly queries one path.
 
-### 5. Extract strongly typed business fields
+### Extract strongly typed business fields
 
 Do not leave `status`, `customer_id`, `created_at`, `amount`, or join keys buried in JSONB merely for convenience.
 
-### 6. Keep JSON documents reasonably atomic
+### Keep JSON documents reasonably atomic
 
 One JSONB document should represent data normally updated together. Independent, high-frequency sub-entities often deserve their own rows.
 
-### 7. Measure with real plans
+### Measure with real plans
 
-Use:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-...
-```
+Run the real application queries under `EXPLAIN (ANALYZE, BUFFERS)` rather than assuming an index is used.
 
 Also inspect index usage:
 
@@ -1099,7 +1056,7 @@ CREATE INDEX events_type_b_idx ON events (created_at) WHERE event_type = 'B';
 CREATE INDEX events_type_c_idx ON events (created_at) WHERE event_type = 'C';
 ```
 
-A composite index may be simpler:
+A composite index may be simpler (see [B-Tree Indexing](indexing-btree.md) for column-order rules):
 
 ```sql
 CREATE INDEX events_type_created_idx
@@ -1196,17 +1153,7 @@ Examples:
 
 ## 4.2 Standard VACUUM
 
-Run standard VACUUM:
-
-```sql
-VACUUM products;
-```
-
-Verbose output:
-
-```sql
-VACUUM (VERBOSE) products;
-```
+Run standard VACUUM with `VACUUM products;`, or `VACUUM (VERBOSE) products;` for a detailed per-table report.
 
 Important behavior:
 
@@ -1277,11 +1224,7 @@ This combines:
 - `VACUUM`: dead-row and visibility maintenance
 - `ANALYZE`: planner statistics collection
 
-Run only ANALYZE when cleanup is not needed but statistics should be refreshed:
-
-```sql
-ANALYZE products;
-```
+Run only ANALYZE when cleanup is not needed but statistics should be refreshed: `ANALYZE products;`
 
 Accurate statistics help PostgreSQL estimate:
 
@@ -1294,17 +1237,7 @@ Accurate statistics help PostgreSQL estimate:
 
 Poor estimates can produce inefficient plans even when the correct index exists.
 
-After a large bulk load, consider:
-
-```sql
-ANALYZE products;
-```
-
-After a large batch of updates/deletes, consider:
-
-```sql
-VACUUM (ANALYZE) products;
-```
+After a large bulk load, consider `ANALYZE products;`. After a large batch of updates or deletes, consider `VACUUM (ANALYZE) products;`.
 
 Autovacuum normally handles both automatically, but manual execution is useful after unusual bulk operations.
 
@@ -1368,21 +1301,9 @@ autovacuum_vacuum_scale_factor   = 0.2
 autovacuum_vacuum_max_threshold  = 100,000,000
 ```
 
-For a table with 1,000,000 estimated tuples:
+For a table with 1,000,000 estimated tuples, that is `50 + 0.2 × 1,000,000 = 200,050` changed tuples, which may be too late for a high-write production table.
 
-```text
-50 + 0.2 × 1,000,000 = 200,050 changed tuples
-```
-
-That may be too late for a high-write production table.
-
-For a table with 500,000,000 tuples:
-
-```text
-50 + 0.2 × 500,000,000 = 100,000,050
-```
-
-The default maximum threshold caps the trigger around 100,000,000 updated/deleted tuples.
+For a table with 500,000,000 tuples the formula gives `50 + 0.2 × 500,000,000 = 100,000,050`, so the default maximum threshold caps the trigger around 100,000,000 updated/deleted tuples.
 
 ### Analyze trigger
 
@@ -1494,11 +1415,7 @@ ORDER BY xid_age DESC
 LIMIT 20;
 ```
 
-Manual freeze operation:
-
-```sql
-VACUUM (FREEZE, VERBOSE) large_static_table;
-```
+Manual freeze operation: `VACUUM (FREEZE, VERBOSE) large_static_table;`
 
 Do not treat `VACUUM FREEZE` as a universal performance command. It is primarily related to tuple freezing and transaction-age management.
 
@@ -1652,11 +1569,7 @@ WHERE xact_start IS NOT NULL
 ORDER BY xact_start;
 ```
 
-Pay special attention to:
-
-```text
-state = 'idle in transaction'
-```
+Pay special attention to sessions reporting `state = 'idle in transaction'`.
 
 ### Replication slots retaining old data
 
@@ -1997,11 +1910,7 @@ FROM pg_stat_user_tables
 WHERE relname = 'catalog_products';
 ```
 
-Manual maintenance after a large test load:
-
-```sql
-VACUUM (ANALYZE, VERBOSE) catalog_products;
-```
+Manual maintenance after a large test load: `VACUUM (ANALYZE, VERBOSE) catalog_products;`
 
 ---
 
@@ -2046,75 +1955,7 @@ VACUUM (ANALYZE, VERBOSE) catalog_products;
 
 ---
 
-# 8. Quick Revision Summary
-
-## JSONB
-
-```text
-json  = original text representation
-jsonb = parsed binary representation optimized for processing and indexing
-```
-
-Important operators:
-
-```text
-->    return JSON/JSONB
-->>   return text
-#>    return JSON/JSONB by path
-#>>   return text by path
-@>    contains
-?     top-level key/element exists
-?|    any listed key exists
-?&    all listed keys exist
-@?    JSONPath exists/matches
-@@    JSONPath predicate result
-```
-
-Important indexing choices:
-
-```text
-GIN jsonb_ops       = flexible, supports key existence and containment
-GIN jsonb_path_ops  = smaller/focused, containment and JSONPath only
-B-tree expression   = scalar equality/range/sort
-GIN expression      = repeated search within one JSON path
-```
-
-## Partial index
-
-```text
-A partial index stores entries only for rows satisfying a WHERE predicate.
-```
-
-Best fits:
-
-```text
-active rows
-pending jobs
-unprocessed events
-non-deleted records
-subset-specific uniqueness
-```
-
-The query condition must imply the index predicate.
-
-## VACUUM
-
-```text
-UPDATE/DELETE -> old row versions -> dead tuples -> VACUUM -> reusable space
-```
-
-```text
-VACUUM          = routine cleanup and visibility maintenance
-VACUUM ANALYZE  = cleanup plus planner statistics
-VACUUM FULL     = blocking table rewrite and file shrink
-Autovacuum      = automatic VACUUM/ANALYZE based on activity thresholds
-```
-
-VACUUM also protects against transaction ID wraparound and improves the effectiveness of index-only scans through the visibility map.
-
----
-
-# 9. Official References
+# 8. Official References
 
 This guide was checked against the PostgreSQL 18 current documentation and release information available on July 27, 2026.
 

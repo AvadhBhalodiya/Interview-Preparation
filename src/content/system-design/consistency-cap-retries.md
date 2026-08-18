@@ -2,19 +2,22 @@
 title: "Consistency & CAP"
 group: "Design Fundamentals"
 order: 1
+updated: "3 August 2026"
 ---
 
 # Consistency, CAP, and Why Retries Need Idempotency
 
-> **Category:** System Design  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Last reviewed:** 3 August 2026
+> Why a distributed read can return stale data, what CAP and PACELC really constrain, and why every retry policy needs idempotency behind it.
 
----
+## In short
 
-# 1. The Core Idea
-
-These three topics are connected:
+- Consistency is not "no corrupt rows" — it is the rule for **what a client may observe after a completed write**: linearizable, sequential, causal, or eventual.
+- CAP only bites **during a partition**: while replicas cannot talk, an operation is either CP (reject or delay to stay correct) or AP (accept and reconcile later). It is never "pick any two".
+- PACELC covers the other 99% of the time: **e**lse, with no partition, you still trade **l**atency against **c**onsistency on every replicated read and write.
+- Choose the model **per operation**, not per product — one service can serve balances strongly and profile pages eventually.
+- Session guarantees (read-your-writes, monotonic reads) buy a coherent user experience without paying for global linearizability.
+- A timeout means **the caller stopped waiting**, not that the server rolled back — the write may have committed with only the response lost.
+- That ambiguity forces retries, and retries duplicate side effects, so backoff with jitter, a total deadline, and a stable operation key are one design rather than four.
 
 ```mermaid
 flowchart TD
@@ -24,6 +27,16 @@ flowchart TD
     RETRY --> SIDE[Retries can repeat side effects]
     SIDE --> IDEM[Idempotency prevents duplicate business effects]
 ```
+
+**Interview answer:** Pick the consistency model per business invariant — anything guarding money, stock, or uniqueness needs linearizable reads and writes, and everything derived from it (feeds, counters, search indexes, notifications) can be eventual. CAP then tells you what that choice costs during a partition, and PACELC what it costs the rest of the time. Because any remote call can time out with the outcome unknown, every write on the critical path must also carry a stable operation key, so that a retry converges on one effect instead of two.
+
+**Gotcha:** Treating CAP as a one-time architectural label ("we are an AP system"). Partitions are rare and the choice is per-operation: the same service normally refuses a double-spend (CP) while still serving a stale product page (AP). Reciting "consistency, availability, partition tolerance — pick two", as though partition tolerance were something you could decline, is the answer interviewers are listening for.
+
+---
+
+# 1. The Core Idea
+
+Those three topics form one chain. Replication buys availability and latency but forces a consistency trade-off; network failure makes the outcome of any single request uncertain; clients therefore retry; and a retry repeats the side effect unless the operation is idempotent.
 
 A distributed system cannot assume that:
 
@@ -563,506 +576,25 @@ The client must provide an identifier that expresses business intent.
 
 ---
 
-# 6. Idempotency
+# 6. Idempotency: What Retries Actually Require
 
-## 6.1 Definition
+An operation is idempotent when repeating the same *intended* operation produces the same business effect as performing it once. "Set the address to Pune", "cancel order `ORD-100`", and "create one payment for checkout attempt `CHK-9001`" already behave that way. "Increment the balance by ₹100", "create a new order", "send an email", and "capture a card payment" do not, and are made idempotent by attaching a stable operation identity and remembering its result.
 
-An operation is idempotent when applying the same intended operation multiple times produces the same intended business effect as applying it once.
+[Idempotency: Which HTTP Methods Are Idempotent?](../api-design/idempotency-http-methods.md) owns this topic in full — the method matrix, the `Idempotency-Key` contract, the request fingerprint and `409` rule, the `idempotency_records` schema, concurrent-duplicate handling, retention, and the consumer inbox table. The short version, which is what a distributed-systems answer needs:
 
-```text
-f(f(x)) = f(x)
-```
+| Requirement | Why the distributed case needs it |
+|---|---|
+| A client-generated key per logical intent | A retry must reuse it; a genuinely new intent must not. Two identical payments of the same amount are legitimate, so the request body cannot identify the intent. |
+| Key scoped as `tenant + operation + key` | Stops unrelated endpoints and tenants colliding inside one shared store. |
+| A stored request fingerprint | The same key with a different payload is a client bug: answer `409 Conflict`, never replay the old result. |
+| Claim and mutation in one transaction | A uniqueness constraint is the only reliable concurrency guard. A cache can be evicted, instances restart, and two of them can race. |
+| An explicit `unknown` outcome | When a provider call times out, "unknown" is correct and "failed" is dangerous — recording failure invites a second charge. |
+| The same key passed downstream | Retry the provider with the *original* key. Minting a fresh key because the last attempt timed out is exactly how double charges happen. |
+| Retention longer than the real retry window | Hours for order creation, days for payments, provider-defined for webhook redelivery. |
 
-Examples:
+Idempotency is not exactly-once execution. The handler may genuinely run more than once; what you build is at-least-once delivery plus durable deduplication plus atomic state protection, and together those give **effectively-once** business outcomes. Across an arbitrary network, a database, a queue, and an external provider, "exactly once" is never a transport guarantee — it is assembled from unique operation identifiers, durable deduplication records, transactions, uniqueness constraints, idempotent side effects, and reconciliation.
 
-```text
-Set email_verified = true
-Set shipping address = "Pune"
-Cancel order ORD-100
-Create one payment for checkout attempt CHK-9001
-```
-
-Non-idempotent examples:
-
-```text
-Increment balance by ₹100
-Create a new order
-Send an email
-Capture a card payment
-Append another ledger entry
-```
-
-These operations can be made idempotent by attaching a stable operation identity and remembering its result.
-
----
-
-## 6.2 HTTP idempotency vs business idempotency
-
-RFC 9110 defines `GET`, `HEAD`, `OPTIONS`, `TRACE`, `PUT`, and `DELETE` as idempotent by method semantics. `POST` is not idempotent by default.
-
-However, HTTP method names do not automatically make application code safe.
-
-### PUT example
-
-```http
-PUT /users/42/address
-
-{
-  "city": "Pune"
-}
-```
-
-Repeating “set the address to Pune” has the same intended effect.
-
-### Misleading PUT example
-
-```http
-PUT /accounts/42/increment-balance
-
-{
-  "amount": 100
-}
-```
-
-This increments on every request. The endpoint is not business-idempotent even though it uses `PUT`.
-
-### DELETE nuance
-
-Deleting the same resource twice may return different responses:
-
-```text
-First DELETE  → 204 No Content
-Second DELETE → 404 Not Found
-```
-
-The final intended server state is still “resource absent,” so the operation can remain idempotent.
-
-### POST with an idempotency key
-
-```http
-POST /payments
-Idempotency-Key: 5fdd80f8-6098-4ef8-a16e-9b132e7088e3
-
-{
-  "order_id": "ORD-901",
-  "amount": 500000,
-  "currency": "INR"
-}
-```
-
-A server-side idempotency contract can make this state-changing `POST` safe to retry.
-
----
-
-## 6.3 Idempotency is not exactly-once execution
-
-The server may receive and execute request-handling code more than once.
-
-Idempotency aims for:
-
-```text
-At-least-once attempts
-          +
-Duplicate detection
-          +
-Atomic state protection
-          =
-One effective business outcome
-```
-
-This is often called **effectively-once processing**.
-
-“Exactly once” across arbitrary networks, databases, queues, and external providers is normally not a magic transport guarantee. It is built from:
-
-- unique operation identifiers;
-- durable deduplication records;
-- transactions;
-- uniqueness constraints;
-- idempotent side effects;
-- reconciliation.
-
----
-
-# 7. Designing an Idempotent API
-
-## 7.1 Request contract
-
-A reliable idempotency contract normally includes the following.
-
-### Client-generated key
-
-The client generates a high-entropy key, commonly a UUID.
-
-```text
-Idempotency-Key: 5fdd80f8-6098-4ef8-a16e-9b132e7088e3
-```
-
-The same logical operation must reuse the same key across retries.
-
-A new business intent must use a new key.
-
----
-
-### Scope
-
-Do not treat the key as globally unique unless that is intentional.
-
-A practical uniqueness scope is:
-
-```text
-tenant_id + operation + idempotency_key
-```
-
-For example:
-
-```text
-tenant-12 + create-payment + key-abc
-```
-
-This prevents unrelated endpoints or tenants from conflicting.
-
----
-
-### Request fingerprint
-
-Store a canonical hash of the fields that define the request's intent.
-
-```text
-SHA-256(
-    method
-    + normalized path
-    + tenant
-    + canonical JSON body
-)
-```
-
-When the same key arrives with different parameters, reject it:
-
-```http
-HTTP/1.1 409 Conflict
-
-{
-  "code": "IDEMPOTENCY_KEY_REUSED",
-  "message": "The key was already used with different request data."
-}
-```
-
-Do not silently return the previous result for a different payload.
-
----
-
-### Stable response semantics
-
-For the same key and same request intent, return:
-
-- the stored original response; or
-- a semantically equivalent response representing the same resource/outcome.
-
-Returning a stable result makes retry handling simple for clients.
-
----
-
-## 7.2 Server-side workflow
-
-```mermaid
-flowchart TD
-    A[Receive request + idempotency key] --> B[Build request hash]
-    B --> C{Key exists?}
-
-    C -- No --> D[Create idempotency record]
-    D --> E[Execute business operation]
-    E --> F[Store status and response]
-    F --> G[Return response]
-
-    C -- Yes --> H{Request hash matches?}
-    H -- No --> I[Return 409 conflict]
-    H -- Yes --> J{Stored state}
-
-    J -- Completed --> K[Return stored response]
-    J -- Processing --> L[Wait, return 202/409, or retry later]
-    J -- Retryable failure --> M[Resume according to contract]
-    J -- Final failure --> N[Return stored failure]
-```
-
-The central rule is:
-
-> Recording the idempotency key and applying the protected mutation must not leave a gap where only one of them succeeds.
-
-For a database-only operation, keep them in one transaction.
-
----
-
-## 7.3 Database schema
-
-Example PostgreSQL table:
-
-```sql
-CREATE TABLE idempotency_requests (
-    tenant_id       UUID        NOT NULL,
-    operation       VARCHAR(100) NOT NULL,
-    idempotency_key VARCHAR(255) NOT NULL,
-    request_hash    CHAR(64)     NOT NULL,
-
-    status          VARCHAR(20)  NOT NULL
-                    CHECK (status IN (
-                        'processing',
-                        'succeeded',
-                        'failed'
-                    )),
-
-    resource_id     UUID,
-    http_status     SMALLINT,
-    response_body   JSONB,
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at      TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (tenant_id, operation, idempotency_key)
-);
-
-CREATE INDEX idx_idempotency_expiry
-    ON idempotency_requests (expires_at);
-```
-
-The primary key is the final concurrency guard. An in-memory cache alone is not enough because:
-
-- application instances restart;
-- requests can reach different instances;
-- cache entries can be evicted;
-- two instances can race;
-- the cache and business database can diverge.
-
-A cache may accelerate lookup, but durable storage or a database uniqueness constraint should protect correctness.
-
----
-
-## 7.4 Handling concurrent duplicate requests
-
-Two copies of the same request may arrive at nearly the same time:
-
-```mermaid
-sequenceDiagram
-    participant C1 as Client attempt 1
-    participant C2 as Client attempt 2
-    participant A1 as API instance A
-    participant A2 as API instance B
-    participant DB as Database
-
-    C1->>A1: Key K
-    C2->>A2: Key K
-    A1->>DB: INSERT key K
-    A2->>DB: INSERT key K
-    DB-->>A1: Inserted
-    DB-->>A2: Unique conflict
-    A1->>DB: Perform mutation and store result
-    A2->>DB: Read result for K
-```
-
-Possible behavior for the losing request:
-
-- wait briefly for the first transaction;
-- return `202 Accepted` with a status URL;
-- return `409 Conflict` or `425 Too Early` with a retry hint;
-- return the completed result if it becomes available.
-
-Do not allow both requests to execute the side effect independently.
-
----
-
-## 7.5 Choosing a retention period
-
-The idempotency record must remain available longer than the maximum retry window.
-
-Consider:
-
-- client retry duration;
-- queue redelivery delay;
-- mobile devices reconnecting hours later;
-- delayed network packets;
-- business reconciliation period;
-- storage cost;
-- privacy and compliance rules.
-
-Possible policies:
-
-```text
-Normal order creation: 24–72 hours
-Payment operation:     several days or longer
-Webhook event:         based on provider redelivery policy
-Financial ledger key:  potentially permanent business uniqueness
-```
-
-After expiry, reusing the same key may be treated as a new request. The API contract must state this clearly.
-
-Do not put email addresses, card data, access tokens, or other sensitive information inside the idempotency key.
-
----
-
-# 8. Implementation Patterns
-
-## 8.1 Database-only operation
-
-For an operation fully contained in one database, use one transaction.
-
-### Transaction outline
-
-```sql
-BEGIN;
-
--- Only one transaction can claim this key.
-INSERT INTO idempotency_requests (
-    tenant_id,
-    operation,
-    idempotency_key,
-    request_hash,
-    status,
-    expires_at
-)
-VALUES (
-    :tenant_id,
-    'create-order',
-    :key,
-    :request_hash,
-    'processing',
-    NOW() + INTERVAL '48 hours'
-)
-ON CONFLICT DO NOTHING;
-```
-
-If the row was inserted, perform the business mutation:
-
-```sql
-INSERT INTO orders (
-    id,
-    tenant_id,
-    customer_id,
-    total_amount,
-    status
-)
-VALUES (
-    :order_id,
-    :tenant_id,
-    :customer_id,
-    :total_amount,
-    'created'
-);
-```
-
-Then store the response:
-
-```sql
-UPDATE idempotency_requests
-SET status = 'succeeded',
-    resource_id = :order_id,
-    http_status = 201,
-    response_body = :response_json,
-    updated_at = NOW()
-WHERE tenant_id = :tenant_id
-  AND operation = 'create-order'
-  AND idempotency_key = :key;
-
-COMMIT;
-```
-
-If the business insert fails, the idempotency claim rolls back with it.
-
-When the initial insert reports a conflict:
-
-1. read the existing record;
-2. verify the request hash;
-3. return the stored result or the defined in-progress response.
-
-### Simplified Python-style service flow
-
-```python
-def create_order(command: CreateOrder, key: str, tenant_id: UUID) -> dict:
-    request_hash = hash_canonical_request(command)
-
-    with db.transaction() as tx:
-        record = tx.claim_idempotency_key(
-            tenant_id=tenant_id,
-            operation="create-order",
-            key=key,
-            request_hash=request_hash,
-        )
-
-        if not record.claimed:
-            existing = tx.get_idempotency_record_for_update(
-                tenant_id=tenant_id,
-                operation="create-order",
-                key=key,
-            )
-
-            if existing.request_hash != request_hash:
-                raise IdempotencyKeyReusedError()
-
-            if existing.status == "succeeded":
-                return existing.response_body
-
-            raise RequestAlreadyProcessingError()
-
-        order = tx.insert_order(command)
-
-        response = {
-            "id": str(order.id),
-            "status": order.status,
-        }
-
-        tx.complete_idempotency_record(
-            tenant_id=tenant_id,
-            operation="create-order",
-            key=key,
-            resource_id=order.id,
-            http_status=201,
-            response_body=response,
-        )
-
-        return response
-```
-
-The transaction and unique constraint matter more than the framework-specific code.
-
----
-
-## 8.2 External payment provider
-
-A local database transaction cannot atomically commit with an external payment provider.
-
-This is unsafe:
-
-```text
-BEGIN database transaction
-Call external payment API
-Commit database
-```
-
-The network call can take a long time, hold locks, and still leave an uncertain outcome if the process crashes.
-
-Use a durable workflow.
-
-```mermaid
-flowchart LR
-    A[API request with key K] --> B[Create payment_attempt K]
-    B --> C[Commit local state]
-    C --> D[Worker calls provider with key K]
-    D --> E{Provider result}
-    E -- Success --> F[Store provider payment ID and success]
-    E -- Definitive failure --> G[Store final failure]
-    E -- Timeout / unknown --> H[Query provider or retry with same key K]
-```
-
-Recommended rules:
-
-1. Persist a `payment_attempt` with a unique idempotency key.
-2. Commit that intent before starting unreliable remote work.
-3. Pass a stable idempotency key to the payment provider if supported.
-4. On timeout, retry using the same provider key.
-5. If status remains unknown, query the provider using the key or provider request ID.
-6. Reconcile provider records with local records.
-7. Never generate a new key merely because the previous attempt timed out.
-
-Example state machine:
+The `unknown` state deserves its own transition rather than being collapsed into failure:
 
 ```mermaid
 flowchart TD
@@ -1075,114 +607,11 @@ flowchart TD
     RECONCILING --> FAILED
 ```
 
-An `unknown` state is better than incorrectly marking a payment as failed and charging again.
+Two dual-write patterns pair with the same reasoning. An **inbox** table keyed on `consumer_name + event_id` makes an at-least-once consumer safe, with the insert and the business mutation in one transaction. A **transactional outbox** writes the domain row and the event row in one transaction and publishes later, so a committed state change can never become invisible downstream — but because publishing is retried, consumers still deduplicate on the event ID.
 
 ---
 
-## 8.3 Message consumer deduplication
-
-Queues commonly provide at-least-once delivery. A message can therefore be delivered more than once.
-
-```text
-Event E-101 delivered
-Consumer updates invoice
-Acknowledgement is lost
-Queue delivers E-101 again
-```
-
-Use an inbox or processed-events table.
-
-```sql
-CREATE TABLE processed_events (
-    consumer_name VARCHAR(100) NOT NULL,
-    event_id      UUID         NOT NULL,
-    processed_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-
-    PRIMARY KEY (consumer_name, event_id)
-);
-```
-
-Process the event and record its ID in the same transaction:
-
-```sql
-BEGIN;
-
-INSERT INTO processed_events (consumer_name, event_id)
-VALUES ('invoice-service', :event_id)
-ON CONFLICT DO NOTHING;
-
--- Continue only if the insert succeeded.
-UPDATE invoices
-SET status = 'paid'
-WHERE id = :invoice_id;
-
-COMMIT;
-```
-
-If the event ID already exists, acknowledge the duplicate without reapplying the mutation.
-
-The consumer name belongs in the key because different consumers may each need to process the same event once.
-
----
-
-## 8.4 Transactional outbox
-
-Another dual-write problem occurs when a service must:
-
-1. update its database; and
-2. publish an event.
-
-This is unsafe:
-
-```text
-Update database succeeds
-Publish event fails
-```
-
-The database now contains a change that downstream services never hear about.
-
-The transactional outbox pattern writes both records in one transaction:
-
-```sql
-BEGIN;
-
-UPDATE orders
-SET status = 'confirmed'
-WHERE id = :order_id;
-
-INSERT INTO outbox_events (
-    id,
-    aggregate_type,
-    aggregate_id,
-    event_type,
-    payload
-)
-VALUES (
-    :event_id,
-    'order',
-    :order_id,
-    'OrderConfirmed',
-    :payload
-);
-
-COMMIT;
-```
-
-A publisher later sends outbox events. Because publishing may be retried, consumers still need idempotency using the event ID.
-
-```mermaid
-flowchart TD
-    TX[Database transaction] --> STATE[Update domain state]
-    TX --> OUTBOX[Insert outbox event]
-    OUTBOX --> PUB[At-least-once publisher]
-    PUB --> CONSUMERS[Idempotent consumers]
-```
-
-Outbox and inbox patterns work together to provide reliable, effectively-once business processing.
-
----
-
-# 9. Safe Retry Policy
+# 7. Safe Retry Policy
 
 Idempotency prevents duplicate effects, but retry behavior must still be controlled.
 
@@ -1326,29 +755,11 @@ Without one of these, automatic retry can be unsafe.
 
 ---
 
-# 10. End-to-End Payment Example
+# 8. End-to-End Payment Example
 
-Assume a checkout service must collect ₹5,000 for order `ORD-901`.
+A checkout service must collect ₹5,000 for order `ORD-901`. It sends `POST /v1/payments` carrying `Idempotency-Key: 5fdd80f8-...` and an amount of `500000` — amounts belong in the smallest currency unit, so that no rounding happens in transit.
 
-## Request
-
-```http
-POST /v1/payments
-Authorization: Bearer <token>
-Idempotency-Key: 5fdd80f8-6098-4ef8-a16e-9b132e7088e3
-Content-Type: application/json
-
-{
-  "order_id": "ORD-901",
-  "amount": 500000,
-  "currency": "INR",
-  "payment_method_id": "pm_123"
-}
-```
-
-Amounts should normally be represented in the smallest currency unit to avoid floating-point errors.
-
----
+The point of the example is not the request shape but how many independent things can be repeated behind it while the customer is still charged once.
 
 ## Processing flow
 
@@ -1378,14 +789,7 @@ sequenceDiagram
     API-->>C: PAY-101 succeeded
 ```
 
-There may be multiple:
-
-- HTTP attempts;
-- queue deliveries;
-- worker executions;
-- provider calls.
-
-But there is one effective payment.
+There may be several HTTP attempts, several queue deliveries, several worker executions, and several provider calls — but exactly one effective payment.
 
 ---
 
@@ -1418,12 +822,7 @@ Do not create a “one payment per order” constraint if the business legitimat
 
 ## Consistency decision
 
-For the payment ledger:
-
-- use strongly controlled state transitions;
-- protect balance and ledger invariants with transactions or atomic writes;
-- avoid accepting conflicting state changes in two disconnected partitions;
-- allow non-critical views, notifications, and analytics to update asynchronously.
+The payment ledger uses strongly controlled state transitions, protects its balance invariants with transactions or atomic writes, and refuses conflicting state changes in two disconnected partitions. Views, notifications, and analytics derived from it update asynchronously.
 
 ```text
 Critical core:
@@ -1441,7 +840,7 @@ This is a common system-design approach: keep the correctness-critical core smal
 
 ---
 
-# 11. Observability and Operational Controls
+# 9. Observability and Operational Controls
 
 Idempotency failures are difficult to debug without traceable identifiers.
 
@@ -1509,7 +908,7 @@ For each record:
 
 ---
 
-# 12. Design Checklist
+# 10. Design Checklist
 
 ## Consistency
 
@@ -1532,16 +931,12 @@ For each record:
 
 ## Idempotency
 
-- [ ] The client supplies a stable key for one logical intent.
-- [ ] New intent uses a new key.
-- [ ] The key is scoped by tenant and operation.
-- [ ] The request fingerprint is stored and checked.
-- [ ] Duplicate concurrent requests are serialized or deduplicated.
-- [ ] Key registration and database mutation are atomic where possible.
-- [ ] External providers receive a stable downstream key.
-- [ ] In-progress, success, failure, and unknown states are defined.
-- [ ] Retention exceeds the realistic retry/redelivery window.
-- [ ] Stored responses do not expose sensitive data.
+See [Idempotency: Which HTTP Methods Are Idempotent?](../api-design/idempotency-http-methods.md) for the full contract checklist.
+
+- [ ] Key registration and the database mutation are atomic.
+- [ ] External providers receive a stable downstream key, reused on retry.
+- [ ] In-progress, success, failure, and *unknown* states are all defined.
+- [ ] Retention exceeds the realistic retry and redelivery window.
 
 ## Retries
 
@@ -1556,45 +951,7 @@ For each record:
 
 ---
 
-# 13. Interview Summary
-
-A strong system-design explanation should connect the concepts rather than define them independently.
-
-### Consistency
-
-Replication improves availability, latency, and fault tolerance, but replicas may temporarily disagree. Consistency models define what clients are allowed to observe. Strong consistency is needed for critical invariants; eventual or causal consistency is often better for scalable derived data and user-facing content where temporary staleness is acceptable.
-
-### CAP
-
-CAP applies when replicas cannot communicate. During that partition, an operation cannot guarantee both linearizable consistency and availability. CP behavior rejects or delays some work to avoid conflicts. AP behavior continues accepting work and reconciles later. The correct choice is made per business operation, not once for the whole product.
-
-### Retries
-
-Retries are necessary because distributed calls fail transiently. A timeout creates an ambiguous result: the operation may not have started, may still be running, or may have committed while the response was lost.
-
-### Idempotency
-
-Idempotency makes repeated attempts produce one intended business effect. A client-generated operation key identifies the intent. The server stores the key, request fingerprint, status, and result; uses transactions and uniqueness constraints to prevent races; and returns the previous or equivalent result for duplicate requests.
-
-### Final mental model
-
-```text
-Consistency answers:
-"What state may a client observe?"
-
-CAP answers:
-"What happens when replicas cannot communicate?"
-
-Retries answer:
-"How do we recover from temporary uncertainty?"
-
-Idempotency answers:
-"How do repeated attempts avoid repeating the business effect?"
-```
-
----
-
-# 14. References
+# 11. References
 
 1. Seth Gilbert and Nancy A. Lynch, **Perspectives on the CAP Theorem**, IEEE Computer, 2012.  
    https://groups.csail.mit.edu/tds/papers/Gilbert/Brewer2.pdf

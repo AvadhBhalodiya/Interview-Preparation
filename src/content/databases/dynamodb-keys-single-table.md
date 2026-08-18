@@ -2,14 +2,36 @@
 title: "DynamoDB"
 group: "Postgres & NoSQL"
 order: 12
+updated: "July 2026"
 ---
 
 # DynamoDB: Keys, GSI/LSI, and Single-Table Design
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer  
-> **Purpose:** Build a practical understanding of DynamoDB key design, secondary indexes, and single-table modeling for real application development and technical interviews.  
-> **Last reviewed:** July 2026
+> Build a practical understanding of DynamoDB key design, secondary indexes, and single-table modeling for real application development and technical interviews.
+
+## In short
+
+- A primary key is either a partition key alone or a partition key plus a sort key; the pair must be unique.
+- The partition key controls distribution, so it needs high cardinality and even traffic or one value becomes a hot partition.
+- The sort key orders items inside one partition-key value, which is what models one-to-many, hierarchy, time ranges, and prefix queries.
+- A `Query` needs an exact partition-key value plus an optional sort-key condition; a `FilterExpression` runs after the read, so it does not reduce read work.
+- A GSI adds a new access path across the whole table but is eventually consistent only; an LSI adds another sort order inside the same partition key, must exist at table creation, and caps the item collection at 10 GB.
+- Single-table design stores several entity types in one table under prefixed keys such as `USER#U100` and `ORDER#O900`, so one query returns a whole aggregate.
+- Model access patterns first: list every operation the application must run, then design a key path for each one.
+
+```mermaid
+flowchart TB
+    O["PK = ORDER#O900"]
+    O --> M["SK = METADATA"]
+    O --> I1["SK = ITEM#P100"]
+    O --> I2["SK = ITEM#P200"]
+    O --> P["SK = PAYMENT#PAY700"]
+    O --> S["SK = SHIPMENT#S300"]
+```
+
+**Interview answer:** Single-table design stores multiple entity types — users, orders, order lines, payments — in one table, keyed so that the items read together share a partition-key value and form one item collection. DynamoDB pushes you toward it because there are no joins: the only efficient way to fetch a parent and its children together is to make them one `Query` on one partition key. So you list the application's access patterns first, then design `PK`/`SK` and any GSIs to serve each one.
+
+**Gotcha:** The common mistake is modelling relationally first — normalizing entities into separate tables and expecting to join them later — instead of starting from the access patterns the application must serve.
 
 ---
 
@@ -107,12 +129,6 @@ flowchart LR
     A["Request: PK = USER#U100"] --> B["Hash partition-key value"]
     B --> C["Locate physical partition"]
     C --> D["Read item or item collection"]
-```
-
-### Example
-
-```text
-PK = USER#U100
 ```
 
 A good partition key normally has:
@@ -226,11 +242,7 @@ Without padding, lexical order may produce unexpected results:
 
 ### Simple Primary Key
 
-```text
-Primary key = PK
-```
-
-The partition-key value must be unique across the table.
+The primary key is `PK` alone, so the partition-key value must be unique across the table.
 
 Example:
 
@@ -245,11 +257,7 @@ Use it when each partition key maps to exactly one item.
 
 ### Composite Primary Key
 
-```text
-Primary key = PK + SK
-```
-
-The combined value must be unique, but multiple items may share the same `PK`.
+The primary key is `PK` plus `SK`. The combined value must be unique, but multiple items may share the same `PK`.
 
 Example:
 
@@ -259,13 +267,7 @@ Example:
 | `USER#U100` | `ORDER#O900` | Order |
 | `USER#U100` | `ORDER#O901` | Order |
 
-Uniqueness is evaluated using the complete pair:
-
-```text
-(USER#U100, PROFILE)
-(USER#U100, ORDER#O900)
-(USER#U100, ORDER#O901)
-```
+Uniqueness is evaluated using the complete `(PK, SK)` pair, so `(USER#U100, ORDER#O900)` and `(USER#U100, ORDER#O901)` are two different items.
 
 ### Practical Rule
 
@@ -284,12 +286,6 @@ A DynamoDB `Query` requires:
 
 - Equality on one partition-key value
 - An optional condition on the sort key
-
-```text
-PK = exact value
-AND
-SK condition
-```
 
 Supported sort-key conditions include:
 
@@ -360,38 +356,11 @@ DEFAULT
 
 ### Add Type Prefixes
 
-Prefer:
-
-```text
-USER#U100
-ORDER#O900
-PRODUCT#P200
-```
-
-Instead of:
-
-```text
-U100
-O900
-P200
-```
-
-Prefixes provide:
-
-- Clearer debugging
-- Protection against identifier collisions
-- Easier prefix queries
-- Better support for multiple entity types
+Prefix key values with the entity type — `USER#U100` rather than a bare `U100`. Section 4.3 covers what that buys you.
 
 ### Avoid Unbounded Item Collections
 
-A key such as:
-
-```text
-PK = TENANT#T1
-```
-
-may become too large or too hot when one tenant owns millions of records.
+A key such as `PK = TENANT#T1` may become too large or too hot when one tenant owns millions of records.
 
 Possible alternatives:
 
@@ -420,13 +389,7 @@ Ask:
 
 A secondary index creates an additional key-based view of table data.
 
-The table's primary key might support:
-
-```text
-Get an order by order ID
-```
-
-The application may also need:
+The table's primary key might support "get an order by order ID", while the application may also need:
 
 ```text
 Get all orders for a customer
@@ -448,17 +411,7 @@ PK = ORDER#<order_id>
 SK = METADATA
 ```
 
-This efficiently supports:
-
-```text
-Get order O900
-```
-
-It does not directly support:
-
-```text
-Get all orders for customer C100
-```
+This efficiently supports "get order O900", but not "get all orders for customer C100".
 
 A GSI can provide another key structure:
 
@@ -499,16 +452,10 @@ GSI1SK = 2026-07-27T10:30:00Z#ORDER#O900
 
 ### GSI Characteristics
 
-- Can be created when the table is created
-- Can also be added to or removed from an existing table
-- Supports eventually consistent reads only
-- Has separate throughput settings in provisioned capacity mode
-- Consumes additional storage
-- Adds write cost because matching writes update the index
-- Can have a different partition key and sort key from the table
+Section 3.4 compares GSI and LSI feature by feature. Two GSI properties are easy to miss in that comparison:
+
 - Does not enforce uniqueness on index-key values
 - Is sparse by default: only items containing the required index-key attributes appear in it
-- Has a default quota of 20 per table
 
 ### Eventual Consistency
 
@@ -531,13 +478,7 @@ Do not immediately read a GSI when correctness requires read-after-write consist
 
 ### GSI Write Impact
 
-When an item has GSI key attributes, a base-table write may also cause an index write.
-
-```text
-Application write
-    ├── Base table write
-    └── GSI update
-```
+When an item has GSI key attributes, a base-table write also causes an index write, so one application write becomes a base-table write plus a GSI update.
 
 In provisioned mode, insufficient GSI write capacity can throttle writes associated with that index. Monitor table and index metrics separately.
 
@@ -548,19 +489,7 @@ GSI1PK = STATUS#PENDING
 GSI1SK = 2026-07-27T10:30:00Z#ORDER#O900
 ```
 
-Query:
-
-```text
-GSI1PK = STATUS#PENDING
-```
-
-Potential issue:
-
-```text
-STATUS#PENDING
-```
-
-may become a hot partition-key value.
+A query on `GSI1PK = STATUS#PENDING` returns every pending order, but that single value may become a hot partition-key value.
 
 A sharded design can distribute traffic:
 
@@ -596,36 +525,13 @@ PK = CUSTOMER#C100
 LSI1SK = 2026-07-27T10:30:00Z
 ```
 
-This provides two orderings for the same item collection:
-
-```text
-Base table: orders arranged by order identifier
-LSI:        orders arranged by creation time
-```
-
-### LSI Characteristics
-
-- Must be created at table-creation time
-- Cannot be added to an existing table later
-- Cannot be deleted independently from the table
-- Must use the same partition key as the base table
-- Must use a different sort key
-- Supports eventually consistent and strongly consistent reads
-- Uses the base table's throughput
-- Has a maximum of 5 per table
-- Introduces a 10 GB limit for each partition-key item collection, including related LSI data
+This provides two orderings for the same item collection: the base table arranges orders by order identifier, the LSI arranges the same orders by creation time.
 
 ### Important LSI Limitation
 
-With an LSI, all items sharing one base-table partition-key value form an item collection whose total size is limited to 10 GB.
+With an LSI, all items sharing one base-table partition-key value form an item collection whose total size is limited to 10 GB, including the related LSI data.
 
-Example:
-
-```text
-PK = CUSTOMER#C100
-```
-
-If this customer can generate an unbounded amount of order history, an LSI may create a long-term scaling constraint.
+If one customer such as `PK = CUSTOMER#C100` can generate an unbounded amount of order history, an LSI may create a long-term scaling constraint.
 
 ### When an LSI Is Reasonable
 
@@ -827,33 +733,13 @@ ApplicationTable
  └── Payment item
 ```
 
-Entity identity is usually encoded with prefixes:
-
-```text
-USER#U100
-ORDER#O900
-PRODUCT#P200
-PAYMENT#PAY700
-```
+Entity identity is usually encoded with prefixes: `USER#U100`, `ORDER#O900`, `PRODUCT#P200`, `PAYMENT#PAY700`.
 
 ---
 
 ## 4.2 Access-Pattern-First Modeling
 
-Before creating the table, list the exact operations the application must support.
-
-Example:
-
-1. Get a user profile by user ID
-2. Get a user's addresses
-3. Get a user's orders, newest first
-4. Get one order by order ID
-5. Get all lines for an order
-6. Get orders by status and date
-7. Get a product by product ID
-8. Get products by category and price
-
-Then design a key path for each operation.
+Before creating the table, list the exact operations the application must support, then design a key path for each operation.
 
 ### Access-Pattern Matrix
 
@@ -920,15 +806,7 @@ Do not rely only on parsing keys when explicit type information improves maintai
 
 ## 4.4 Item Collections
 
-An item collection is the set of items sharing the same partition-key value.
-
-Example:
-
-```text
-PK = ORDER#O900
-```
-
-Items:
+An item collection is the set of items sharing the same partition-key value. For example, `PK = ORDER#O900` holds these items:
 
 ```text
 SK = METADATA
@@ -938,19 +816,7 @@ SK = PAYMENT#PAY700
 SK = SHIPMENT#S300
 ```
 
-One query can return the complete order aggregate.
-
-```mermaid
-flowchart TB
-    O["PK = ORDER#O900"]
-    O --> M["SK = METADATA"]
-    O --> I1["SK = ITEM#P100"]
-    O --> I2["SK = ITEM#P200"]
-    O --> P["SK = PAYMENT#PAY700"]
-    O --> S["SK = SHIPMENT#S300"]
-```
-
-This replaces several relational joins with one key-based query.
+One query can return the complete order aggregate, which replaces several relational joins with one key-based query.
 
 The design intentionally duplicates some information when another access pattern needs a different grouping.
 
@@ -1155,7 +1021,6 @@ from boto3.dynamodb.conditions import Key
 
 table = boto3.resource("dynamodb").Table("Commerce")
 
-
 def get_user(user_id: str) -> dict[str, Any] | None:
     response = table.get_item(
         Key={
@@ -1281,19 +1146,9 @@ def list_products_by_price(
     return response.get("Items", [])
 ```
 
-For production money values, store the amount in the smallest integer currency unit when appropriate:
+For production money values, store the amount in the smallest integer currency unit when appropriate, so `$99.99` becomes `9999` cents. This avoids floating-point comparison problems.
 
-```text
-$99.99 -> 9999 cents
-```
-
-This avoids floating-point comparison problems.
-
-A more robust price sort key would be:
-
-```text
-PRICE_CENTS#0000009999#PRODUCT#P200
-```
+A more robust price sort key would be `PRICE_CENTS#0000009999#PRODUCT#P200`.
 
 ---
 
@@ -1306,11 +1161,7 @@ GSI1PK = STATUS#<status>#SHARD#<n>
 GSI1SK = <created_at>#ORDER#<order_id>
 ```
 
-Supports:
-
-```text
-List orders for a status in a time range
-```
+This supports listing orders for a status within a time range.
 
 ### GSI2: Multiple Browse and Lookup Patterns
 
@@ -1405,15 +1256,7 @@ SK = EVENT#2026-07-27T10:30:00.123Z#E900
 
 ## 6.4 Write Sharding
 
-A single logical key may receive too much write traffic.
-
-Instead of:
-
-```text
-PK = COUNTER#GLOBAL
-```
-
-Use:
+A single logical key may receive too much write traffic. Instead of a single `PK = COUNTER#GLOBAL`, use:
 
 ```text
 PK = COUNTER#GLOBAL#SHARD#00
@@ -1422,15 +1265,7 @@ PK = COUNTER#GLOBAL#SHARD#01
 PK = COUNTER#GLOBAL#SHARD#19
 ```
 
-Writes choose a shard. Reads aggregate all shards.
-
-Trade-off:
-
-```text
-Better write distribution
-vs
-More complex reads
-```
+Writes choose a shard. Reads aggregate all shards. The trade-off is better write distribution against more complex reads.
 
 ---
 
@@ -1672,13 +1507,7 @@ Get all items for order
 Find order by payment reference
 ```
 
-Avoid vague requirements such as:
-
-```text
-Search orders in every possible way
-```
-
-DynamoDB is strongest when important queries are known.
+Avoid vague requirements such as "search orders in every possible way". DynamoDB is strongest when important queries are known.
 
 ---
 
@@ -1711,12 +1540,7 @@ SK = METADATA | ITEM#... | PAYMENT#... | SHIPMENT#...
 
 ## Step 4: Add GSIs for Remaining Access Patterns
 
-Example:
-
-```text
-GSI1: orders by customer
-GSI2: orders by status
-```
+For example, a `GSI1` for orders by customer and a `GSI2` for orders by status.
 
 Try to overload an index only when:
 
@@ -1830,41 +1654,7 @@ Test:
 
 ---
 
-# 11. Key Takeaways
-
-1. **The partition key controls distribution.**  
-   A poor partition key can create hot spots even when the table has little data.
-
-2. **The sort key models relationships and ordering.**  
-   It enables one-to-many collections, time ranges, prefixes, and hierarchical queries.
-
-3. **A Query always starts with one partition-key value.**  
-   Optional sort-key conditions refine the result.
-
-4. **A GSI creates a new access path across the table.**  
-   It is flexible, can be added later, and supports eventually consistent reads only.
-
-5. **An LSI creates another sort order within the same partition key.**  
-   It supports strong reads but must be created with the table and introduces a 10 GB item-collection limit.
-
-6. **Indexes are not free.**  
-   They add storage, write work, capacity requirements, and operational complexity.
-
-7. **GSI keys do not enforce uniqueness.**  
-   Use conditional writes and transaction-based lock items when uniqueness is required.
-
-8. **Single-table design begins with access patterns.**  
-   Model how the application reads data before deciding how items are stored.
-
-9. **Denormalization is intentional in DynamoDB.**  
-   Duplicate relationships or summary data when it removes expensive read paths, with a clear consistency strategy.
-
-10. **A good DynamoDB schema makes normal requests boring.**  
-    Most operations should become a direct `GetItem` or a targeted `Query`, not a scan followed by application-side filtering.
-
----
-
-# 12. Official References
+# 11. Official References
 
 - [Amazon DynamoDB Developer Guide — Core components](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.CoreComponents.html)
 - [DynamoDB read consistency](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.ReadConsistency.html)

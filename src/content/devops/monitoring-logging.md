@@ -2,33 +2,58 @@
 title: "Monitoring & Logging"
 group: "DevOps & Observability"
 order: 6
+updated: "July 2026"
 ---
 
 # Monitoring & Logging with CloudWatch and Sentry
 
-> **Category:** AWS, Docker & DevOps  
-> **Level:** Intermediate developer (3+ years)  
-> **Last reviewed:** July 2026  
-> **Goal:** Understand how to monitor infrastructure, centralize logs, detect application errors, trace slow requests, and build actionable production alerts.
+> Understand how to monitor infrastructure, centralize logs, detect application errors, trace slow requests, and build actionable production alerts.
+
+## In short
+
+- **Metrics** measure system health over time (CPU, latency, error rate) for dashboards and threshold alerts; **logs** are timestamped records of what happened for one event; **traces** show where time was spent as a request crosses services — three different questions, three different tools.
+- Log in **structured JSON** with stable fields (`timestamp`, `level`, `service`, `request_id`, `trace_id`, `event`) instead of free text — free text can be read once but not queried, aggregated, or alerted on reliably.
+- **CloudWatch** owns AWS infrastructure health, centralized container logs, and operational alarms; **Sentry** owns application exceptions, stack traces, issue grouping, and release regressions — use both, with each as the source of truth for its own signals.
+- A **correlation ID** (`request_id`, forwarded in headers and queue messages, echoed into logs and Sentry tags) ties one request across the load balancer, API, worker, CloudWatch logs, and Sentry event so an incident can be followed end to end.
+- Alert on the **four golden signals** — latency, traffic, errors, saturation — because they are customer-visible symptoms; a lone threshold like `CPU > 80%` is noise, not evidence of real impact.
+- Docker containers should write only to `stdout`/`stderr`; the platform (the `awslogs` driver, FireLens) ships that output to CloudWatch — never rely on logs surviving inside a disposable container.
+- Control telemetry cost deliberately — explicit log retention, sampled traces, narrow Logs Insights time windows — or the observability stack becomes as expensive as the system it watches.
+
+```mermaid
+flowchart LR
+    U[Client] --> ALB[Application Load Balancer]
+    ALB --> APP[ECS / Docker Application]
+
+    APP --> DB[(RDS / PostgreSQL)]
+    APP --> CACHE[(Redis)]
+    APP --> QUEUE[SQS / Message Broker]
+    QUEUE --> WORKER[Worker Containers]
+
+    APP -- stdout / stderr --> CWL[CloudWatch Logs]
+    WORKER -- stdout / stderr --> CWL
+
+    ALB -- service metrics --> CWM[CloudWatch Metrics]
+    APP -- custom metrics / OTEL --> CWM
+    WORKER -- custom metrics / OTEL --> CWM
+
+    APP -- errors and traces --> SENTRY[Sentry]
+    WORKER -- errors and traces --> SENTRY
+
+    CWM --> ALARM[CloudWatch Alarms]
+    CWL --> INSIGHTS[Logs Insights]
+    ALARM --> NOTIFY[Incident Notifications]
+    SENTRY --> DEV[Developer Alerts]
+```
+
+**Interview answer:** Instrument the application with structured JSON logs, metrics, and distributed traces, then split responsibility: CloudWatch centralizes AWS infrastructure metrics, container logs, and operational alarms, while Sentry owns application exceptions, stack traces, and release-aware issue grouping. Tie every log line, trace, and Sentry event to a shared `request_id`/`trace_id` so one incident can be followed end to end, and alert on the four golden signals — latency, traffic, errors, saturation — so pages reflect customer impact rather than internal noise.
+
+**Gotcha:** Wiring a CloudWatch 5xx alarm, an error-log alarm, and a Sentry issue-spike alert to the same on-call channel for the same underlying incident. Pick one primary paging signal and treat the rest as diagnostic evidence, or the team gets paged four times for one outage.
 
 ---
 
 # 1. Why Monitoring and Logging Matter
 
-A production application can fail even when the code works correctly on a developer machine.
-
-Common production problems include:
-
-- CPU or memory exhaustion
-- Containers restarting repeatedly
-- Slow database queries
-- Increased API latency
-- Failed background tasks
-- Third-party API timeouts
-- Unexpected exceptions
-- Disk space exhaustion
-- Traffic spikes
-- Deployment regressions
+A production application can fail even when the code works correctly on a developer machine. Common production problems include CPU or memory exhaustion, containers restarting repeatedly, slow database queries, increased API latency, failed background tasks, third-party API timeouts, unexpected exceptions, disk space exhaustion, traffic spikes, and deployment regressions.
 
 Monitoring and logging help answer different questions:
 
@@ -71,9 +96,7 @@ A practical observability setup normally uses four types of data.
 
 ## 2.1 Metrics
 
-A metric is a numeric measurement collected over time.
-
-Examples:
+A metric is a numeric measurement collected over time, for example:
 
 - CPU utilization: `72%`
 - API request count: `4,500 requests/minute`
@@ -82,21 +105,9 @@ Examples:
 - P95 response time: `780 ms`
 - Available memory: `1.4 GB`
 
-Metrics are efficient for:
+Metrics are efficient for dashboards, threshold-based alerts, trend analysis, capacity planning, and service-level objectives.
 
-- Dashboards
-- Threshold-based alerts
-- Trend analysis
-- Capacity planning
-- Service-level objectives
-
-A metric normally contains:
-
-```text
-Metric name + timestamp + value + dimensions
-```
-
-Example:
+A metric normally contains a name, timestamp, value, and dimensions, for example:
 
 ```text
 Name: api_request_duration
@@ -109,17 +120,13 @@ Dimensions:
   method=POST
 ```
 
-Dimensions make metrics filterable, but excessive high-cardinality dimensions can increase cost and complexity.
-
-Avoid using values such as `user_id`, `request_id`, or random UUIDs as metric dimensions.
+Dimensions make metrics filterable, but excessive high-cardinality dimensions can increase cost and complexity. Avoid using values such as `user_id`, `request_id`, or random UUIDs as metric dimensions.
 
 ---
 
 ## 2.2 Logs
 
-A log is a timestamped record of an event.
-
-Example:
+A log is a timestamped record of an event, for example:
 
 ```json
 {
@@ -135,16 +142,7 @@ Example:
 }
 ```
 
-Logs are useful for:
-
-- Debugging failures
-- Auditing application behavior
-- Inspecting request details
-- Searching specific error codes
-- Investigating incidents
-- Building log-derived metrics
-
-A good log explains an event without requiring a developer to reproduce the issue.
+Logs are useful for debugging failures, auditing application behavior, inspecting request details, searching specific error codes, investigating incidents, and building log-derived metrics. A good log explains an event without requiring a developer to reproduce the issue.
 
 ---
 
@@ -164,14 +162,7 @@ POST /checkout                            1,250 ms
 └── Publish order-created event             35 ms
 ```
 
-Tracing helps identify:
-
-- Slow downstream services
-- Expensive database queries
-- Network latency
-- Repeated calls
-- Dependency bottlenecks
-- Errors across microservices
+Tracing helps identify slow downstream services, expensive database queries, network latency, repeated calls, dependency bottlenecks, and errors across microservices.
 
 Metrics may show that latency increased. Traces help explain **where the time was spent**.
 
@@ -179,13 +170,7 @@ Metrics may show that latency increased. Traces help explain **where the time wa
 
 ## 2.4 Events and Alerts
 
-An event represents a meaningful state change, such as:
-
-- A deployment completed
-- An EC2 instance stopped
-- A container restarted
-- A new Sentry issue appeared
-- An alarm moved to the `ALARM` state
+An event represents a meaningful state change, such as a deployment completed, an EC2 instance stopped, a container restarted, a new Sentry issue appeared, or an alarm moved to the `ALARM` state.
 
 An alert is a notification generated when a rule or condition is matched.
 
@@ -207,7 +192,7 @@ The objective is not to alert on every error. The objective is to alert when hum
 
 # 3. Amazon CloudWatch Overview
 
-Amazon CloudWatch is AWS's monitoring and observability service.
+Amazon CloudWatch is AWS's monitoring and observability service. The AWS services it monitors are introduced in [AWS Core Services](aws-core-services.md).
 
 It can collect and work with:
 
@@ -220,17 +205,7 @@ It can collect and work with:
 - Metric and composite alarms
 - Cross-account observability data
 
-CloudWatch is especially useful for infrastructure and AWS-native workloads.
-
-```mermaid
-flowchart TD
-    RES["AWS Resources<br/>EC2 | ECS | EKS | Lambda | RDS | ALB | SQS"] --> CW[Amazon CloudWatch]
-    CW --> MET[Metrics]
-    CW --> LOG[Logs]
-    CW --> TRC[Traces]
-    CW --> DASH[Dashboards]
-    CW --> ALM[Alarms]
-```
+CloudWatch is especially useful for infrastructure and AWS-native workloads: AWS resources such as EC2, ECS, EKS, Lambda, RDS, ALB, and SQS publish directly into it.
 
 ---
 
@@ -268,19 +243,7 @@ CloudWatch receives metrics through two main paths:
 | Resolution | Frequency at which metric data is stored |
 | Unit | Seconds, bytes, count, percent, and so on |
 
-Example custom namespace:
-
-```text
-MyCompany/Payments
-```
-
-Example custom metrics:
-
-```text
-PaymentSuccessCount
-PaymentFailureCount
-PaymentProcessingTime
-```
+Example custom namespace `MyCompany/Payments`, with metrics such as `PaymentSuccessCount`, `PaymentFailureCount`, and `PaymentProcessingTime`.
 
 ### Custom metric example with Boto3
 
@@ -441,14 +404,7 @@ CloudWatch Logs Insights supports commands for parsing, pattern analysis, aggreg
 
 ### Query discipline
 
-Keep the time range as narrow as possible.
-
-A narrow time range:
-
-- Returns results faster
-- Scans less data
-- Reduces query cost
-- Makes incident analysis easier
+Keep the time range as narrow as possible — a narrow range returns results faster, scans less data, reduces query cost, and makes incident analysis easier.
 
 ---
 
@@ -476,35 +432,7 @@ Action: Notify production incident channel
 
 This means the alert fires only when the rule is breached for the configured evaluation behavior, instead of reacting to one isolated failure.
 
-### Static alarm
-
-Uses a fixed threshold.
-
-```text
-CPUUtilization > 80%
-```
-
-### Anomaly detection alarm
-
-Uses the historical behavior of a metric to identify unusual values.
-
-Useful when:
-
-- Traffic changes by time of day
-- A fixed threshold is too simple
-- Normal usage has seasonal patterns
-
-### Composite alarm
-
-Combines multiple alarms.
-
-Example:
-
-```text
-HighLatencyAlarm AND High5xxAlarm
-```
-
-Composite alarms reduce noise when one metric by itself is not enough to indicate a real incident.
+Alarms can be static, anomaly-based, or composite. A **static alarm** uses a fixed threshold, such as `CPUUtilization > 80%`. An **anomaly detection alarm** uses the historical behavior of a metric to identify unusual values — useful when traffic changes by time of day, a fixed threshold is too simple, or normal usage has seasonal patterns. A **composite alarm** combines multiple alarms, for example `HighLatencyAlarm AND High5xxAlarm`, to reduce noise when one metric by itself is not enough to indicate a real incident.
 
 ### Log-based alarm flow
 
@@ -517,13 +445,7 @@ flowchart TD
     E --> F["SNS / Incident notification"]
 ```
 
-Example metric filter idea:
-
-```text
-Count logs where:
-level = ERROR
-and service = payment-api
-```
+For example, a metric filter idea: count logs where `level = ERROR and service = payment-api`.
 
 Prefer application-native metrics for important business signals when possible. Log-derived metrics are useful, but tightly coupling alerting to free-form log text is fragile.
 
@@ -562,21 +484,9 @@ Avoid dashboards containing dozens of unrelated graphs without clear operational
 
 ## 3.6 CloudWatch Agent
 
-The CloudWatch agent can collect metrics, logs, and traces from:
+The CloudWatch agent can collect metrics, logs, and traces from EC2 instances, on-premises servers, containerized applications, and supported operating systems including Linux and Windows.
 
-- EC2 instances
-- On-premises servers
-- Containerized applications
-- Supported operating systems, including Linux and Windows
-
-It is commonly used to collect metrics not available through basic EC2 monitoring, such as:
-
-- Memory utilization
-- Disk usage
-- Swap usage
-- Process metrics
-- Additional network or system metrics
-- Application log files
+It is commonly used to collect metrics not available through basic EC2 monitoring, such as memory utilization, disk usage, swap usage, process metrics, additional network or system metrics, and application log files.
 
 ### Important distinction
 
@@ -597,40 +507,15 @@ flowchart TD
     CA --> TRD[Trace destination]
 ```
 
-A CloudWatch agent configuration is JSON and can contain sections such as:
-
-```text
-agent
-metrics
-logs
-traces
-```
-
-Store and distribute the configuration consistently, for example through infrastructure automation or AWS Systems Manager Parameter Store.
+A CloudWatch agent configuration is JSON and can contain `agent`, `metrics`, `logs`, and `traces` sections. Store and distribute the configuration consistently, for example through infrastructure automation or AWS Systems Manager Parameter Store.
 
 ---
 
 ## 3.7 Application Signals and OpenTelemetry
 
-CloudWatch Application Signals provides an application-centric view of services and their dependencies.
+CloudWatch Application Signals provides an application-centric view of services and their dependencies. It can help with service health, request volume, faults and errors, latency, service dependencies, performance against service-level objectives, and root-cause analysis.
 
-It can help with:
-
-- Service health
-- Request volume
-- Faults and errors
-- Latency
-- Service dependencies
-- Performance against service-level objectives
-- Root-cause analysis
-
-OpenTelemetry is an open standard for generating and exporting:
-
-- Metrics
-- Logs
-- Traces
-
-A modern architecture can instrument applications with OpenTelemetry and route telemetry to CloudWatch or another compatible backend.
+OpenTelemetry is an open standard for generating and exporting metrics, logs, and traces. A modern architecture can instrument applications with OpenTelemetry and route telemetry to CloudWatch or another compatible backend.
 
 ```mermaid
 flowchart TD
@@ -690,20 +575,7 @@ flowchart TD
 
 ## 4.1 Error Monitoring
 
-When an unhandled exception occurs, the Sentry SDK can capture an event containing information such as:
-
-- Exception type
-- Exception message
-- Stack trace
-- Source file and line
-- HTTP request details
-- Environment
-- Release version
-- Runtime information
-- Tags
-- Breadcrumbs
-- User or tenant context, when intentionally configured
-- Related trace information
+When an unhandled exception occurs, the Sentry SDK can capture an event containing information such as exception type and message, stack trace, source file and line, HTTP request details, environment, release version, runtime information, tags, breadcrumbs, related trace information, and user or tenant context when intentionally configured.
 
 Sentry groups similar events into an **issue**.
 
@@ -752,16 +624,7 @@ Tracing is useful for connecting an exception with the operation in which it occ
 
 Capturing every trace in a busy production system can create unnecessary volume.
 
-Use a production sampling strategy based on:
-
-- Environment
-- Endpoint
-- Error status
-- Transaction type
-- Traffic volume
-- Business criticality
-
-Example:
+Use a production sampling strategy based on environment, endpoint, error status, transaction type, traffic volume, and business criticality, for example:
 
 ```python
 def traces_sampler(sampling_context: dict) -> float:
@@ -783,39 +646,9 @@ Errors and traces are different data types. A low trace sampling rate should not
 
 ## 4.3 Releases and Environments
 
-Always identify the deployed release.
+Always identify the deployed release. Good release identifiers include a Git commit SHA, Docker image digest, semantic version, or CI/CD build number — for example, `payment-api@2026.07.30.2`.
 
-Good release identifiers include:
-
-```text
-Git commit SHA
-Docker image digest
-Semantic version
-CI/CD build number
-```
-
-Example:
-
-```text
-payment-api@2026.07.30.2
-```
-
-Use consistent environment names:
-
-```text
-development
-staging
-production
-```
-
-Avoid accidental variations:
-
-```text
-prod
-production
-Production
-live
-```
+Use consistent environment names (`development`, `staging`, `production`) and avoid accidental variations such as `prod`, `Production`, or `live`.
 
 Consistent release and environment metadata allows developers to answer:
 
@@ -845,19 +678,7 @@ Example:
 
 ### Tags
 
-Tags are searchable key-value fields.
-
-Good tags:
-
-```text
-environment=production
-service=payment-api
-region=ap-south-1
-provider=stripe
-tenant_tier=enterprise
-```
-
-Avoid uncontrolled high-cardinality tags unless there is a clear debugging need.
+Tags are searchable key-value fields, such as `environment=production`, `service=payment-api`, `region=ap-south-1`, `provider=stripe`, or `tenant_tier=enterprise`. Avoid uncontrolled high-cardinality tags unless there is a clear debugging need.
 
 ### Context
 
@@ -900,58 +721,13 @@ CloudWatch and Sentry overlap in some areas, but they solve different primary pr
 
 ### Recommended approach
 
-Use both when the application is important enough to require infrastructure and code-level visibility.
-
-```text
-CloudWatch
-├── AWS resource health
-├── Central logs
-├── Infrastructure metrics
-├── Operational alarms
-└── Capacity and service dashboards
-
-Sentry
-├── Application exceptions
-├── Stack traces
-├── Issue grouping
-├── Release regressions
-├── Error ownership
-└── Developer-focused traces
-```
-
-Do not send every piece of telemetry to every platform without a reason. Define which tool is the source of truth for each signal.
+Use both when the application is important enough to require infrastructure and code-level visibility, but do not send every piece of telemetry to every platform without a reason — define which tool is the source of truth for each signal.
 
 ---
 
 # 6. Recommended Production Architecture
 
-A common AWS and Docker architecture:
-
-```mermaid
-flowchart LR
-    U[Client] --> ALB[Application Load Balancer]
-    ALB --> APP[ECS / Docker Application]
-
-    APP --> DB[(RDS / PostgreSQL)]
-    APP --> CACHE[(Redis)]
-    APP --> QUEUE[SQS / Message Broker]
-    QUEUE --> WORKER[Worker Containers]
-
-    APP -- stdout / stderr --> CWL[CloudWatch Logs]
-    WORKER -- stdout / stderr --> CWL
-
-    ALB -- service metrics --> CWM[CloudWatch Metrics]
-    APP -- custom metrics / OTEL --> CWM
-    WORKER -- custom metrics / OTEL --> CWM
-
-    APP -- errors and traces --> SENTRY[Sentry]
-    WORKER -- errors and traces --> SENTRY
-
-    CWM --> ALARM[CloudWatch Alarms]
-    CWL --> INSIGHTS[Logs Insights]
-    ALARM --> NOTIFY[Incident Notifications]
-    SENTRY --> DEV[Developer Alerts]
-```
+The architecture diagram in **In short** above shows the common AWS and Docker shape: client through the load balancer and ECS/Docker application, out to RDS, Redis, and SQS, with both the application and its workers shipping logs and metrics to CloudWatch and errors and traces to Sentry.
 
 ### Responsibility model
 
@@ -969,16 +745,7 @@ flowchart LR
 
 # 7. Logging Docker Containers to CloudWatch
 
-A containerized application should normally write logs to:
-
-```text
-STDOUT
-STDERR
-```
-
-The container platform or logging driver is responsible for collecting and forwarding them.
-
-Avoid writing only to internal container files because containers are disposable.
+A containerized application should normally write logs to `STDOUT` and `STDERR`; the container platform or logging driver is responsible for collecting and forwarding them. Avoid writing only to internal container files because containers are disposable.
 
 ```mermaid
 flowchart TD
@@ -1015,28 +782,13 @@ services:
 
 ### Required permissions
 
-The Docker host or runtime credentials need relevant CloudWatch Logs permissions, commonly including actions such as:
-
-```text
-logs:CreateLogStream
-logs:PutLogEvents
-```
-
-Creating log groups dynamically additionally requires permission such as:
-
-```text
-logs:CreateLogGroup
-```
+The Docker host or runtime credentials need relevant CloudWatch Logs permissions, commonly `logs:CreateLogStream` and `logs:PutLogEvents`; creating log groups dynamically additionally requires `logs:CreateLogGroup`.
 
 In production, it is often cleaner to create log groups through infrastructure as code and apply retention, encryption, and tags explicitly.
 
 ### Blocking vs non-blocking
 
-Docker logging is blocking by default.
-
-With non-blocking delivery, the application is less likely to block because the logging destination is slow or unavailable. However, logs can be dropped when the buffer is full.
-
-This is a trade-off:
+Docker logging is blocking by default. Non-blocking delivery avoids blocking the application when the logging destination is slow or unavailable, at the cost of dropping logs when the buffer is full:
 
 ```text
 Blocking mode
@@ -1091,13 +843,7 @@ The resulting stream naming commonly follows the configured prefix and task/cont
 
 For advanced routing, transformation, filtering, or delivery to multiple destinations, ECS FireLens can be used with Fluent Bit or Fluentd.
 
-Use FireLens when you require features such as:
-
-- Multiple log destinations
-- Log enrichment
-- Filtering before delivery
-- Custom parsing
-- Vendor-neutral routing
+Use FireLens when you require features such as multiple log destinations, log enrichment, filtering before delivery, custom parsing, or vendor-neutral routing.
 
 Do not introduce a complex log router when the simple `awslogs` driver fully satisfies the requirement.
 
@@ -1142,19 +888,7 @@ Logging configuration changes normally apply to newly created containers. Recrea
 
 Structured logs are easier to search and aggregate than free-form text.
 
-### Weak log
-
-```text
-Something failed
-```
-
-### Better log
-
-```text
-Payment failed for order 12098 because provider returned timeout
-```
-
-### Best structured log
+A weak log only says `Something failed`. A better log explains it in prose: `Payment failed for order 12098 because provider returned timeout`. The best approach is a structured log with explicit fields:
 
 ```json
 {
@@ -1212,7 +946,6 @@ import logging
 import sys
 from datetime import datetime, timezone
 
-
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
@@ -1240,7 +973,6 @@ class JsonFormatter(logging.Formatter):
 
         return json.dumps(payload, default=str)
 
-
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(JsonFormatter())
 
@@ -1264,33 +996,13 @@ logger.info(
 
 ### Stable event names
 
-Use stable event identifiers for queries and metrics.
-
-Good:
-
-```text
-event=payment_failed
-event=order_created
-event=webhook_signature_invalid
-```
-
-Fragile:
-
-```text
-message contains "payment could not complete today"
-```
-
-Messages can evolve for readability. Stable event names should remain consistent for dashboards and searches.
+Use stable event identifiers for queries and metrics. Good: `event=payment_failed`, `event=order_created`, `event=webhook_signature_invalid`. Fragile: matching on `message contains "payment could not complete today"` — messages can evolve for readability, but stable event names must remain consistent for dashboards and searches.
 
 ---
 
 # 9. Using Sentry in Python Applications
 
-Install the Sentry Python SDK:
-
-```bash
-pip install sentry-sdk
-```
+Install the Sentry Python SDK: `pip install sentry-sdk`
 
 Store the DSN in a secret-management solution or environment variable.
 
@@ -1341,7 +1053,6 @@ Sentry's Python SDK integrations can automatically connect with supported framew
 ```python
 from typing import Any
 
-
 def before_send(
     event: dict[str, Any],
     hint: dict[str, Any],
@@ -1371,30 +1082,16 @@ Filtering should be narrow and documented. Do not hide real production failures 
 
 ## 9.2 FastAPI
 
-Basic FastAPI setup:
+Initialize with the same `sentry_sdk.init(...)` arguments as the Django example above (called once at process startup), then wire the app:
 
 ```python
-import os
-
-import sentry_sdk
 from fastapi import FastAPI
 
-
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN"),
-    environment=os.getenv("SENTRY_ENVIRONMENT", "development"),
-    release=os.getenv("APP_RELEASE"),
-    send_default_pii=False,
-    traces_sample_rate=0.1,
-)
-
 app = FastAPI()
-
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
 
 @app.get("/debug-sentry")
 async def debug_sentry() -> None:
@@ -1408,7 +1105,6 @@ Use a verification endpoint only temporarily in a controlled non-production envi
 ```python
 from fastapi import Request
 import sentry_sdk
-
 
 @app.middleware("http")
 async def sentry_request_context(request: Request, call_next):
@@ -1429,30 +1125,13 @@ For concurrent applications, use the SDK's current isolation and scope APIs acco
 
 ## 9.3 Celery Workers
 
-Celery errors occur outside the web request process, so worker initialization matters.
-
-```python
-import os
-import sentry_sdk
-
-
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN"),
-    environment=os.getenv("SENTRY_ENVIRONMENT", "development"),
-    release=os.getenv("APP_RELEASE"),
-    send_default_pii=False,
-    traces_sample_rate=0.1,
-)
-```
-
-For a standalone Celery deployment, initialize the SDK in the worker application startup path.
+Celery errors occur outside the web request process, so worker initialization matters: call the same `sentry_sdk.init(...)` shown for Django, but from the worker application's own startup path (for a standalone deployment), not only from the web process.
 
 Attach useful task context:
 
 ```python
 from celery import shared_task
 import sentry_sdk
-
 
 @shared_task(
     bind=True,
@@ -1481,17 +1160,12 @@ Avoid sending complete message bodies when they may contain credentials or sensi
 
 Unhandled exceptions are usually captured automatically by supported integrations.
 
-Use manual capture when:
-
-- An exception is caught and not re-raised
-- A failure is represented by a returned error result
-- You need to report a meaningful non-exception event
+Use manual capture when an exception is caught and not re-raised, a failure is represented by a returned error result, or you need to report a meaningful non-exception event.
 
 ### Capture an exception
 
 ```python
 import sentry_sdk
-
 
 try:
     charge_customer()
@@ -1532,17 +1206,7 @@ request_id=req-82c4
 trace_id=2ac045d9ef3c4fc5
 ```
 
-Now the same incident can be followed across:
-
-- Load balancer or gateway
-- API container
-- Database operation
-- Downstream service
-- Queue message
-- Worker
-- CloudWatch logs
-- Sentry event
-- Distributed trace
+Now the same incident can be followed from the load balancer or gateway, through the API container, database operation, downstream service, queue message, and worker, to CloudWatch logs, the Sentry event, and the distributed trace.
 
 ### Request ID middleware example
 
@@ -1552,14 +1216,12 @@ from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
 
-
 request_id_var: ContextVar[str] = ContextVar(
     "request_id",
     default="unknown",
 )
 
 app = FastAPI()
-
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
@@ -1610,16 +1272,7 @@ A practical service dashboard should cover four essential signals.
 
 ## 11.1 Latency
 
-How long does the operation take?
-
-Monitor:
-
-- P50
-- P95
-- P99
-- Dependency latency
-- Database latency
-- Queue processing time
+How long does the operation take? Monitor P50, P95, P99, dependency latency, database latency, and queue processing time.
 
 Do not rely only on average latency. Averages can hide a poor experience for a smaller but important percentage of users.
 
@@ -1627,20 +1280,9 @@ Do not rely only on average latency. Averages can hide a poor experience for a s
 
 ## 11.2 Traffic
 
-How much demand is reaching the system?
+How much demand is reaching the system? Monitor requests per second, jobs per minute, messages published, active users, concurrent connections, and data processed.
 
-Monitor:
-
-- Requests per second
-- Jobs per minute
-- Messages published
-- Active users
-- Concurrent connections
-- Data processed
-
-Traffic gives context to other signals.
-
-An error count of 100 has different meaning at:
+Traffic gives context to other signals. An error count of 100 has different meaning at:
 
 ```text
 1,000 total requests  -> 10% error rate
@@ -1651,43 +1293,15 @@ An error count of 100 has different meaning at:
 
 ## 11.3 Errors
 
-How often is the system failing?
+How often is the system failing? Monitor HTTP 5xx rate, failed background tasks, unhandled exceptions, dependency failures, database errors, authentication failures, and business-operation failures.
 
-Monitor:
-
-- HTTP 5xx rate
-- Failed background tasks
-- Unhandled exceptions
-- Dependency failures
-- Database errors
-- Authentication failures
-- Business-operation failures
-
-Prefer rates for service-level alerts:
-
-```text
-error_rate = failed_requests / total_requests
-```
-
-Absolute counts remain useful for low-traffic critical workflows.
+Prefer rates for service-level alerts, for example `error_rate = failed_requests / total_requests`; absolute counts remain useful for low-traffic critical workflows.
 
 ---
 
 ## 11.4 Saturation
 
-How close is the system to its limit?
-
-Monitor:
-
-- CPU
-- Memory
-- Disk
-- Database connections
-- Thread pools
-- Queue depth
-- Worker concurrency
-- Rate-limit usage
-- File descriptors
+How close is the system to its limit? Monitor CPU, memory, disk, database connections, thread pools, queue depth, worker concurrency, rate-limit usage, and file descriptors.
 
 Saturation often predicts an incident before customers see failures.
 
@@ -1702,15 +1316,7 @@ flowchart TD
 
 # 12. Alert Design
 
-A good alert is:
-
-- Actionable
-- Owned
-- Prioritized
-- Low-noise
-- Linked to investigation context
-- Tested
-- Based on customer or system impact
+A good alert is actionable, owned, prioritized, low-noise, linked to investigation context, tested, and based on customer or system impact.
 
 ### Alert severity
 
@@ -1721,37 +1327,11 @@ A good alert is:
 | Medium | Requires investigation during working hours | Queue backlog rising |
 | Low | Informational or trend | Disk utilization approaching planning level |
 
-### Weak alert
-
-```text
-CPU > 80% for 1 minute
-```
-
-This may fire during normal short-lived bursts.
-
-### Better alert
-
-```text
-CPU > 85% for 15 minutes
-AND
-P95 latency > 1 second
-```
-
-This is closer to customer impact.
+A weak alert such as `CPU > 80% for 1 minute` may fire during normal short-lived bursts. A better alert combines conditions and stays closer to customer impact, for example `CPU > 85% for 15 minutes AND P95 latency > 1 second`.
 
 ### Multi-window thinking
 
-Use short windows for fast detection and longer windows for confirmation.
-
-Example:
-
-```text
-Fast signal:
-Error rate > 5% for 5 minutes
-
-Slow signal:
-Error rate > 1% for 30 minutes
-```
+Use short windows for fast detection and longer windows for confirmation — for example a fast signal at `error rate > 5% for 5 minutes` alongside a slower confirmation signal at `error rate > 1% for 30 minutes`.
 
 ### Alert content template
 
@@ -1810,48 +1390,17 @@ Use separate dashboards for separate audiences.
 
 ## Service dashboard
 
-For developers and on-call engineers:
-
-```text
-Request rate
-Error rate
-P50 / P95 / P99 latency
-Top slow endpoints
-Dependency latency
-Recent deployments
-Active Sentry issues
-```
+For developers and on-call engineers: request rate, error rate, P50/P95/P99 latency, top slow endpoints, dependency latency, recent deployments, and active Sentry issues.
 
 ## Infrastructure dashboard
 
-For platform and DevOps teams:
-
-```text
-ECS task CPU and memory
-Desired vs running tasks
-ALB healthy targets
-RDS CPU and connections
-Cache memory and evictions
-Queue depth
-Disk utilization
-```
+For platform and DevOps teams: ECS task CPU and memory, desired vs running tasks, ALB healthy targets, RDS CPU and connections, cache memory and evictions, queue depth, and disk utilization.
 
 ## Business-flow dashboard
 
-For critical application outcomes:
+For critical application outcomes: orders created, payments succeeded, payments failed, invoices generated, webhook processing delay, and lead creation success rate.
 
-```text
-Orders created
-Payments succeeded
-Payments failed
-Invoices generated
-Webhook processing delay
-Lead creation success rate
-```
-
-Business metrics are important because a technically healthy service can still fail to deliver the intended outcome.
-
-Example:
+Business metrics are important because a technically healthy service can still fail to deliver the intended outcome — for example:
 
 ```text
 HTTP 200 responses: Normal
@@ -1868,18 +1417,7 @@ Infrastructure-only monitoring may miss this failure.
 
 Logs and error events can unintentionally expose sensitive data.
 
-Never log:
-
-- Passwords
-- Access tokens
-- Refresh tokens
-- API keys
-- Session cookies
-- Authorization headers
-- Private encryption keys
-- Full payment-card data
-- Unnecessary personal or medical information
-- Complete request bodies without review
+Never log passwords, access tokens, refresh tokens, API keys, session cookies, authorization headers, private encryption keys, full payment-card data, unnecessary personal or medical information, or complete request bodies without review.
 
 ### Redaction
 
@@ -1896,7 +1434,6 @@ SENSITIVE_KEYS = {
     "api_key",
 }
 
-
 def redact(value):
     if isinstance(value, dict):
         return {
@@ -1912,30 +1449,11 @@ def redact(value):
 
 ### IAM least privilege
 
-CloudWatch log writers should receive only the permissions they require.
-
-Separate permissions for:
-
-- Writing logs
-- Querying logs
-- Changing retention
-- Deleting log groups
-- Creating alarms
-- Managing dashboards
-
-An application should not need administrative CloudWatch permissions.
+CloudWatch log writers should receive only the permissions they require. Separate permissions for writing logs, querying logs, changing retention, deleting log groups, creating alarms, and managing dashboards — an application should not need administrative CloudWatch permissions.
 
 ### Encryption and access
 
-Review:
-
-- CloudWatch Logs encryption requirements
-- Sentry data-region and organizational policies
-- Role-based access
-- Audit requirements
-- Retention and deletion policies
-- Data-processing agreements
-- Tenant isolation
+Review CloudWatch Logs encryption requirements, Sentry data-region and organizational policies, role-based access, audit requirements, retention and deletion policies, data-processing agreements, and tenant isolation.
 
 Observability systems often contain production context and should be treated as sensitive systems.
 
@@ -2160,22 +1678,7 @@ Structured logs reconstructed the request timeline.
 
 ---
 
-# 18. Key Takeaways
-
-1. **Metrics show system health; logs explain events; traces show request flow; Sentry explains code failures.**
-2. **CloudWatch is the primary AWS infrastructure and operational telemetry platform.**
-3. **Sentry is strongest for exception grouping, stack traces, release regressions, and developer debugging.**
-4. **Docker applications should log to `stdout` and `stderr`, then let the runtime collect the output.**
-5. **Use structured JSON logs with stable event names and correlation IDs.**
-6. **Monitor latency, traffic, errors, and saturation.**
-7. **Alert on customer or service impact, not every isolated technical event.**
-8. **Set log retention and sampling intentionally to control cost.**
-9. **Never expose secrets or unnecessary personal data in logs or Sentry events.**
-10. **The strongest production setup uses CloudWatch and Sentry together, with clearly separated responsibilities.**
-
----
-
-# 19. Official References
+# 18. Official References
 
 ## AWS
 

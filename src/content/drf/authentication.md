@@ -6,16 +6,34 @@ order: 3
 
 # DRF Authentication: Session, Token, and JWT
 
-> Authentication answers **“Who is making this request?”**  
+> Authentication answers **“Who is making this request?”**
+>
 > Permissions answer **“Is this authenticated user allowed to perform this action?”**
 
-This guide explains the three authentication approaches commonly used with Django REST Framework:
+## In short
 
-1. **Session Authentication**
-2. **DRF Token Authentication**
-3. **JWT Authentication**
+- DRF runs authentication **before** permissions. An authentication class either sets `request.user` and `request.auth`, or leaves `AnonymousUser` — it never decides access; permission classes do.
+- **Session** authentication is a cookie plus a server-side session. It fits a same-site Django browser app, and unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) then require a CSRF token.
+- **DRF Token** authentication is one long-lived database row per user, sent as `Authorization: Token <key>`. No expiry, no refresh; revocation is deleting the row.
+- **JWT** (Simple JWT) sends a short-lived signed access token as `Authorization: Bearer <token>` alongside a longer-lived refresh token. Expiry is built into the token; immediate revocation is not.
+- `DEFAULT_AUTHENTICATION_CLASSES` sets the scheme globally, `authentication_classes` overrides it per view. Several classes are tried in order and the first one that authenticates wins.
+- `401` vs `403` is decided by the *first* authentication class: DRF returns `401` only when that class supplies a `WWW-Authenticate` header, so `SessionAuthentication` denials surface as `403`.
+- Being authenticated is not being authorized to a row. Scope `get_queryset()` by user or tenant as well.
 
-The examples are written for developers who already understand Django models, views, URLs, and basic REST APIs.
+```mermaid
+flowchart TD
+    A[Who consumes the API?] --> B{Same-site Django browser app?}
+    B -- Yes --> C[Session Authentication]
+    B -- No --> D{Very simple internal or client API?}
+    D -- Yes --> E[DRF Token Authentication]
+    D -- No --> F{SPA, mobile, or multiple services?}
+    F -- Yes --> G[JWT with Simple JWT]
+    F -- No --> H[Review requirements before choosing]
+```
+
+**Interview answer:** DRF ships three practical schemes and they differ in where the state lives. Session authentication keeps the state on the server and the key in a cookie, so it is the natural fit when Django already renders the site — at the cost of CSRF handling. DRF's own `TokenAuthentication` is a single database-backed key per user: trivial to set up and to revoke, but with no expiry, no refresh, and no per-device separation. JWT via Simple JWT moves the state into a signed, expiring token that any service can verify without a lookup, which is what a SPA, a mobile client, or a multi-service backend needs — and the price is that you now own storage, refresh, rotation, and blacklisting.
+
+**Gotcha:** Treating a JWT "logout" endpoint as if it ended the session. Blacklisting invalidates the **refresh** token; the access token already in the client's hands keeps working until its `exp`. That window is why access-token lifetimes are kept short.
 
 ---
 
@@ -23,32 +41,9 @@ The examples are written for developers who already understand Django models, vi
 
 Django REST Framework runs authentication before permission checks and before the main view logic.
 
-A successful authentication class normally sets:
-
-```python
-request.user
-request.auth
-```
-
-A view then uses permission classes such as `IsAuthenticated` to decide whether the request is allowed.
+A successful authentication class normally sets `request.user` and `request.auth`. A view then uses permission classes such as `IsAuthenticated` to decide whether the request is allowed.
 
 ## Authentication request flow
-
-```mermaid
-flowchart LR
-    A[Client Request] --> B[DRF Authentication Classes]
-    B --> C{Credentials valid?}
-    C -- No credentials --> D[AnonymousUser]
-    C -- Invalid credentials --> E[Authentication Error]
-    C -- Valid credentials --> F[request.user and request.auth]
-    D --> G[Permission Classes]
-    F --> G
-    G --> H{Permission granted?}
-    H -- Yes --> I[Run View Logic]
-    H -- No --> J[401 or 403 Response]
-```
-
-A simplified internal flow looks like this:
 
 ```mermaid
 flowchart TD
@@ -79,7 +74,6 @@ Example:
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-
 class CurrentUserView(APIView):
     def get(self, request):
         return Response(
@@ -93,18 +87,7 @@ class CurrentUserView(APIView):
 
 ## Authentication vs permissions
 
-Authentication only identifies the requester.
-
-It does not automatically guarantee that the requester can access every endpoint.
-
-```python
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
-
-
-class ProfileView(APIView):
-    permission_classes = [IsAuthenticated]
-```
+Authentication only identifies the requester. It does not automatically guarantee that the requester can access every endpoint — that is what a view's `permission_classes` decides.
 
 Common permission classes:
 
@@ -119,11 +102,7 @@ Common permission classes:
 
 # 2. Common Project Setup
 
-Install Django REST Framework:
-
-```bash
-python -m pip install djangorestframework
-```
+Install Django REST Framework: `python -m pip install djangorestframework`
 
 Add DRF to `INSTALLED_APPS`:
 
@@ -148,18 +127,7 @@ REST_FRAMEWORK = {
 }
 ```
 
-This makes endpoints private by default.
-
-Public endpoints must then explicitly use `AllowAny`.
-
-```python
-from rest_framework.permissions import AllowAny
-from rest_framework.views import APIView
-
-
-class HealthCheckView(APIView):
-    permission_classes = [AllowAny]
-```
+This makes endpoints private by default. Public endpoints must then explicitly opt out with `permission_classes = [AllowAny]`.
 
 > **Practical rule:** Private-by-default APIs are generally safer than making every endpoint public and protecting them individually.
 
@@ -249,7 +217,6 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-
 class SessionLoginView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -279,7 +246,6 @@ class SessionLoginView(APIView):
                 "username": user.get_username(),
             }
         )
-
 
 class SessionLogoutView(APIView):
     permission_classes = [IsAuthenticated]
@@ -391,11 +357,7 @@ Avoid it as the default choice when:
 
 DRF Token Authentication uses a long random token associated with a user.
 
-The client sends the token on every request:
-
-```http
-Authorization: Token 0123456789abcdef...
-```
+The client sends the token on every request: `Authorization: Token 0123456789abcdef...`
 
 The server looks up the token in the database and identifies its user.
 
@@ -438,11 +400,7 @@ INSTALLED_APPS = [
 ]
 ```
 
-Run migrations:
-
-```bash
-python manage.py migrate
-```
+Run migrations: `python manage.py migrate`
 
 Configure DRF:
 
@@ -507,7 +465,6 @@ from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.response import Response
 
-
 class CustomAuthTokenView(ObtainAuthToken):
     def post(self, request, *args, **kwargs):
         serializer = self.serializer_class(
@@ -530,22 +487,13 @@ class CustomAuthTokenView(ObtainAuthToken):
         )
 ```
 
-URL:
+Route it with `path("auth/token/login/", CustomAuthTokenView.as_view())`.
 
-```python
-path("auth/token/login/", CustomAuthTokenView.as_view())
-```
-
-You can also generate a token from the command line:
+You can also manage tokens from the command line:
 
 ```bash
-python manage.py drf_create_token alice
-```
-
-Regenerate an existing token:
-
-```bash
-python manage.py drf_create_token -r alice
+python manage.py drf_create_token alice       # create
+python manage.py drf_create_token -r alice    # regenerate an existing token
 ```
 
 ## Using and revoking a token
@@ -564,7 +512,6 @@ A simple logout endpoint deletes the token:
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
 
 class TokenLogoutView(APIView):
     permission_classes = [IsAuthenticated]
@@ -615,63 +562,17 @@ JWT authentication is not included directly in DRF’s core authentication class
 
 A widely used DRF integration is **Simple JWT**.
 
-## How JWT works
+## What you need to know about the format
 
-JWT stands for **JSON Web Token**.
+The JWT format itself — structure, claim validation, algorithm choice, revocation strategies, and browser storage — is covered in [JWT Pitfalls](../security/jwt-pitfalls.md). The five points that matter for the DRF wiring below:
 
-A JWT usually contains three Base64URL-encoded sections:
+- A JWT is `header.payload.signature`, Base64URL-**encoded, not encrypted**: anyone holding it can read every claim, so nothing secret goes into a Simple JWT claim.
+- The signature only proves the token was not modified. Issuer, audience, token type, and expiry still have to be validated — Simple JWT does this for you when `ISSUER`, `AUDIENCE`, and `ALGORITHM` are configured.
+- Verification needs no database lookup, which is what makes JWT portable across services and what makes revoking a live access token hard.
+- Expiry is carried inside the token as `exp`, so a JWT expires without the server tracking it.
+- Simple JWT's own claims include `user_id`, `token_type`, `exp`, `iat`, and `jti`; the `jti` is what the blacklist application keys on.
 
-```text
-header.payload.signature
-```
-
-Example structure:
-
-```text
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
-.
-eyJ1c2VyX2lkIjoxLCJleHAiOjE3MDAwMDAwMDB9
-.
-signature-value
-```
-
-```mermaid
-flowchart LR
-    A[Header] --> D[header.payload.signature]
-    B[Payload / Claims] --> D
-    C[Cryptographic Signature] --> D
-```
-
-### Header
-
-Describes token metadata, commonly the signing algorithm.
-
-```json
-{
-  "alg": "HS256",
-  "typ": "JWT"
-}
-```
-
-### Payload
-
-Contains claims.
-
-```json
-{
-  "user_id": 12,
-  "token_type": "access",
-  "exp": 1785000000,
-  "iat": 1784999700,
-  "jti": "unique-token-id"
-}
-```
-
-### Signature
-
-Allows the server to detect modification of the header or payload.
-
-> A signed JWT is **not encrypted**. Anyone holding the token can decode its header and payload. Never place passwords, secrets, or unnecessary sensitive data inside JWT claims.
+The rest of this section is `djangorestframework-simplejwt` specifically.
 
 ## Access and refresh tokens
 
@@ -702,11 +603,7 @@ A refresh token improves user experience because users do not need to submit the
 
 ## Simple JWT configuration
 
-Install Simple JWT:
-
-```bash
-python -m pip install "djangorestframework-simplejwt[crypto]"
-```
+Install Simple JWT: `python -m pip install "djangorestframework-simplejwt[crypto]"`
 
 Configure authentication:
 
@@ -793,65 +690,27 @@ These are design examples, not universal security rules.
 
 ## Obtaining, refreshing, and verifying tokens
 
-### Obtain a token pair
-
 ```bash
-curl \
-  -X POST \
-  -H "Content-Type: application/json" \
+# Obtain a pair -> {"refresh": "<refresh-token>", "access": "<access-token>"}
+curl -X POST -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"strong-password"}' \
   http://localhost:8000/api/token/
-```
 
-Response:
+# Call a protected endpoint
+curl -H "Authorization: Bearer <access-token>" http://localhost:8000/api/profile/
 
-```json
-{
-  "refresh": "<refresh-token>",
-  "access": "<access-token>"
-}
-```
-
-### Call a protected endpoint
-
-```bash
-curl \
-  -H "Authorization: Bearer <access-token>" \
-  http://localhost:8000/api/profile/
-```
-
-### Refresh an access token
-
-```bash
-curl \
-  -X POST \
-  -H "Content-Type: application/json" \
+# Refresh -> {"access": "<new-access-token>"} plus a new "refresh" when rotation is on
+curl -X POST -H "Content-Type: application/json" \
   -d '{"refresh":"<refresh-token>"}' \
   http://localhost:8000/api/token/refresh/
-```
 
-Typical response:
-
-```json
-{
-  "access": "<new-access-token>",
-  "refresh": "<new-refresh-token-when-rotation-is-enabled>"
-}
-```
-
-### Verify token format and signature
-
-```bash
-curl \
-  -X POST \
-  -H "Content-Type: application/json" \
+# Verify signature and structure only
+curl -X POST -H "Content-Type: application/json" \
   -d '{"token":"<token>"}' \
   http://localhost:8000/api/token/verify/
 ```
 
-Token verification confirms that a token is structurally and cryptographically valid.
-
-It does not by itself decide whether a particular user is authorized to access a resource.
+`TokenVerifyView` confirms that a token is structurally and cryptographically valid. It does not by itself decide whether a particular user is authorized to access a resource.
 
 ## JWT logout and token blacklisting
 
@@ -868,11 +727,7 @@ INSTALLED_APPS = [
 ]
 ```
 
-Run migrations:
-
-```bash
-python manage.py migrate
-```
+Run migrations: `python manage.py migrate`
 
 Add the blacklist endpoint:
 
@@ -891,37 +746,17 @@ urlpatterns = [
 ]
 ```
 
-Logout request:
-
 ```bash
-curl \
-  -X POST \
-  -H "Content-Type: application/json" \
+# Logout: blacklist a refresh token
+curl -X POST -H "Content-Type: application/json" \
   -d '{"refresh":"<refresh-token>"}' \
   http://localhost:8000/api/token/blacklist/
-```
 
-### What happens after logout?
-
-- The submitted refresh token becomes unusable.
-- A previously issued access token may remain valid until it expires.
-- Short access-token lifetimes reduce this remaining risk window.
-
-This is a central JWT trade-off:
-
-```mermaid
-flowchart TD
-    A[No database lookup for every token] --> B[Fast and portable verification]
-    B --> C[Immediate access-token revocation<br/>becomes harder]
-```
-
-Remove expired blacklist records regularly:
-
-```bash
+# Housekeeping: drop expired blacklist rows. Run this on a schedule.
 python manage.py flushexpiredtokens
 ```
 
-Schedule this command through cron, a job scheduler, or your deployment platform.
+After this call, the submitted refresh token is unusable, but an access token already issued from it stays valid until its `exp` — which is why access-token lifetimes are kept short. [JWT Pitfalls](../security/jwt-pitfalls.md) covers the stronger revocation strategies (`jti` denylists, session versioning, introspection) when that window is unacceptable.
 
 ## Custom JWT claims
 
@@ -935,7 +770,6 @@ Example custom serializer:
 from rest_framework_simplejwt.serializers import (
     TokenObtainPairSerializer,
 )
-
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
@@ -957,20 +791,11 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .serializers import CustomTokenObtainPairSerializer
 
-
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 ```
 
-URL:
-
-```python
-path(
-    "api/token/",
-    CustomTokenObtainPairView.as_view(),
-    name="token_obtain_pair",
-)
-```
+Register it in place of `TokenObtainPairView` at the same `api/token/` path, keeping `name="token_obtain_pair"`.
 
 Use custom claims carefully.
 
@@ -1013,46 +838,24 @@ Avoid JWT by default when:
 
 # 6. Protecting API Endpoints
 
-A protected function-based view:
+The same protection, written as a function-based view and as a class-based view:
 
 ```python
-from rest_framework.decorators import (
-    api_view,
-    permission_classes,
-)
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def profile(request):
-    return Response(
-        {
-            "id": request.user.id,
-            "username": request.user.get_username(),
-        }
-    )
-```
-
-A protected class-based view:
-
-```python
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def profile(request):
+    return Response({"id": request.user.id, "username": request.user.get_username()})
 
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(
-            {
-                "id": request.user.id,
-                "username": request.user.get_username(),
-            }
-        )
+        return Response({"id": request.user.id, "username": request.user.get_username()})
 ```
 
 A protected ViewSet:
@@ -1063,7 +866,6 @@ from rest_framework.viewsets import ModelViewSet
 
 from .models import Project
 from .serializers import ProjectSerializer
-
 
 class ProjectViewSet(ModelViewSet):
     queryset = Project.objects.all()
@@ -1099,7 +901,6 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
-
 class BrowserOnlyView(APIView):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]
@@ -1115,7 +916,6 @@ from rest_framework.decorators import (
     permission_classes,
 )
 from rest_framework.permissions import IsAuthenticated
-
 
 @api_view(["GET"])
 @authentication_classes([TokenAuthentication])
@@ -1260,18 +1060,7 @@ Accept the additional responsibility for:
 - Key management.
 - Token expiry handling.
 
-## Decision tree
-
-```mermaid
-flowchart TD
-    A[Who consumes the API?] --> B{Same-site Django browser app?}
-    B -- Yes --> C[Session Authentication]
-    B -- No --> D{Very simple internal or client API?}
-    D -- Yes --> E[DRF Token Authentication]
-    D -- No --> F{SPA, mobile, or multiple services?}
-    F -- Yes --> G[JWT with Simple JWT]
-    F -- No --> H[Review requirements before choosing]
-```
+The decision tree covering all three is in **In short** at the top of this note.
 
 ---
 
@@ -1290,11 +1079,8 @@ Always use HTTPS outside local development.
 ```python
 authentication_classes = [JWTAuthentication]
 permission_classes = [IsAuthenticated]
-```
 
-Then enforce resource ownership:
-
-```python
+# ...then enforce resource ownership in the view:
 def get_queryset(self):
     return Invoice.objects.filter(customer=self.request.user)
 ```
@@ -1328,47 +1114,27 @@ CSRF_COOKIE_SAMESITE = "Lax"
 
 Choose `SameSite`, domain, and cross-origin settings according to the actual deployment architecture.
 
-## Handle JWT signing keys safely
-
-Do not hard-code production signing keys.
+## Configure `SIMPLE_JWT` defensively
 
 ```python
 SIMPLE_JWT = {
+    # Never hard-code the key, and keep it independent of Django's SECRET_KEY
+    # so JWT keys can rotate without disturbing unrelated Django cryptography.
     "SIGNING_KEY": env("JWT_SIGNING_KEY"),
-}
-```
 
-Prefer a signing key independent from Django’s `SECRET_KEY`.
-
-This allows JWT keys to be rotated without also changing unrelated Django cryptographic behavior.
-
-## Use issuer and audience validation
-
-```python
-SIMPLE_JWT = {
+    # Reduce the chance that a token minted for one system is accepted by another.
     "ISSUER": "https://api.example.com",
     "AUDIENCE": "example-web-and-mobile-clients",
-}
-```
 
-These claims reduce the chance that a valid token created for one system is accepted by another system unintentionally.
-
-## Keep access tokens short-lived
-
-An access token may remain usable until expiration even after its refresh token has been blacklisted.
-
-Shorter access-token lifetimes reduce this window.
-
-## Rotate refresh tokens
-
-```python
-SIMPLE_JWT = {
+    # The client must replace the old refresh token with the newly returned one.
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
 ```
 
-The client must replace the old refresh token with the newly returned refresh token.
+## Keep access tokens short-lived
+
+An access token may remain usable until expiration even after its refresh token has been blacklisted. Shorter access-token lifetimes reduce this window.
 
 ## Do not log secrets
 
@@ -1384,50 +1150,7 @@ Sanitize request logging and application monitoring.
 
 ## Store browser tokens deliberately
 
-There is no single storage design that fits every application.
-
-Common approaches include:
-
-### Access token in memory
-
-- Reduces long-term persistence.
-- Lost on page refresh unless renewed.
-- Still exposed to successful script injection while the page is running.
-
-### Refresh token in a secure HttpOnly cookie
-
-- JavaScript cannot directly read the cookie.
-- Browser sends it automatically.
-- Requires appropriate CSRF and cookie configuration.
-
-### Local storage
-
-- Easy to implement.
-- Readable by JavaScript.
-- A successful XSS attack can steal stored tokens.
-
-For security-sensitive browser applications, design storage together with:
-
-- Content Security Policy.
-- XSS prevention.
-- CSRF protection.
-- Short access-token lifetime.
-- Refresh rotation.
-- Secure and HttpOnly cookie settings.
-
-## Do not put secrets inside JWT claims
-
-JWT payloads are encoded, not hidden.
-
-This is unsafe:
-
-```json
-{
-  "user_id": 12,
-  "password": "secret",
-  "database_key": "..."
-}
-```
+There is no single storage design that fits every application: an in-memory access token is lost on refresh, `localStorage` is readable by any successful XSS, and an `HttpOnly` cookie closes that but then needs CSRF handling. The full comparison, the backend-for-frontend pattern, and the rule that nothing secret belongs in a claim are in [JWT Pitfalls](../security/jwt-pitfalls.md).
 
 ## Invalidate credentials when risk changes
 
@@ -1447,17 +1170,15 @@ The implementation differs by authentication method.
 
 ## Test with DRF APIClient
 
-### Force authentication
-
-Useful when testing business behavior rather than the authentication mechanism itself.
+`APIClient` offers three ways to authenticate a request. `force_authenticate()` bypasses the scheme entirely and is what you want when the test is about business behavior, not about the credential; `credentials()` sets a real header and therefore exercises the authentication class itself.
 
 ```python
 from django.contrib.auth import get_user_model
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
-
+from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
-
 
 class ProfileTests(APITestCase):
     def setUp(self):
@@ -1466,92 +1187,37 @@ class ProfileTests(APITestCase):
             password="strong-password",
         )
 
-    def test_authenticated_user_can_read_profile(self):
+    def test_force_authenticate_bypasses_the_scheme(self):
         self.client.force_authenticate(user=self.user)
-
-        response = self.client.get("/api/profile/")
-
-        self.assertEqual(response.status_code, 200)
-```
-
-### Test token authentication
-
-```python
-from rest_framework.authtoken.models import Token
-from rest_framework.test import APITestCase
-
-
-class TokenProfileTests(APITestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(
-            username="alice",
-            password="strong-password",
-        )
-        self.token = Token.objects.create(user=self.user)
+        self.assertEqual(self.client.get("/api/profile/").status_code, 200)
 
     def test_token_header_authenticates_user(self):
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Token {self.token.key}"
-        )
-
-        response = self.client.get("/api/profile/")
-
-        self.assertEqual(response.status_code, 200)
-```
-
-### Test JWT authentication
-
-```python
-from rest_framework.test import APITestCase
-from rest_framework_simplejwt.tokens import RefreshToken
-
-
-class JWTProfileTests(APITestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(
-            username="alice",
-            password="strong-password",
-        )
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.assertEqual(self.client.get("/api/profile/").status_code, 200)
 
     def test_access_token_authenticates_user(self):
         access_token = RefreshToken.for_user(self.user).access_token
-
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Bearer {access_token}"
-        )
-
-        response = self.client.get("/api/profile/")
-
-        self.assertEqual(response.status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        self.assertEqual(self.client.get("/api/profile/").status_code, 200)
 ```
 
 > When creating JWTs manually, check that the user is active before issuing a token. `RefreshToken.for_user()` does not replace your account-status validation.
 
-## Test unauthenticated behavior
+## Test unauthenticated and unauthorized behavior separately
 
 ```python
 def test_anonymous_user_cannot_read_profile(self):
     response = self.client.get("/api/profile/")
-
+    # 401 or 403 depending on the configured authentication class and its order.
     self.assertIn(response.status_code, [401, 403])
-```
 
-The exact status can depend on the configured authentication class and its order.
-
-## Test authorization separately
-
-```python
 def test_user_cannot_read_another_users_project(self):
     self.client.force_authenticate(user=self.user)
-
-    response = self.client.get(
-        f"/api/projects/{self.other_users_project.id}/"
-    )
-
+    response = self.client.get(f"/api/projects/{self.other_users_project.id}/")
+    # A filtered queryset returns 404 rather than revealing the object exists.
     self.assertEqual(response.status_code, 404)
 ```
-
-Filtering the queryset can return `404` instead of exposing that another user’s object exists.
 
 ---
 
@@ -1599,19 +1265,6 @@ Suggested responsibilities:
 | `tests/` | Login, logout, expiry, refresh, and permission tests |
 
 Avoid placing all authentication, authorization, and user-management logic in one large view.
-
----
-
-# 14. Key Takeaways
-
-- **Session Authentication** is usually the best fit for a same-site Django browser application.
-- **DRF Token Authentication** is simple and database-backed, but has no built-in expiration or refresh-token flow.
-- **JWT Authentication** provides signed, expiring access and refresh tokens but introduces more lifecycle and storage complexity.
-- Authentication identifies the requester; permissions decide whether that requester may perform an action.
-- Session-based unsafe requests require CSRF protection.
-- A JWT payload is readable and must not contain secrets.
-- Short-lived access tokens, refresh rotation, blacklisting, HTTPS, throttling, and secure key management are important production controls.
-- Choose the simplest authentication design that satisfies the real client, security, and revocation requirements.
 
 ---
 

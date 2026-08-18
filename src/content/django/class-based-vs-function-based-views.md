@@ -8,6 +8,38 @@ order: 9
 
 > Django views can be written as **functions** or **classes**. Both follow the same core contract: receive an `HttpRequest` and return an `HttpResponse`. The right choice depends on the complexity, reuse requirements, and readability of the feature—not on a rule that one style is always better.
 
+## In short
+
+- Both styles satisfy the same contract — an `HttpRequest` goes in, an `HttpResponse` comes out — so the choice is about structure and reuse, not capability.
+- An FBV is one callable that branches on `request.method`; a CBV is a class whose `dispatch()` routes the request to `get()`, `post()`, `put()`, or `delete()`.
+- A CBV is registered as `BookListView.as_view()` because the URL resolver needs a callable, and that wrapper is also what builds a fresh view instance for every request.
+- Generic CBVs (`TemplateView`, `ListView`, `DetailView`, `CreateView`, `UpdateView`, `DeleteView`) already implement the CRUD workflow, so the class only declares the model, the template, and the hooks that differ.
+- Reuse travels differently: CBVs share behavior through mixins and inherited hooks, FBVs through decorators and plain helper or service functions.
+- Mixin order is MRO order — `LoginRequiredMixin` and other guards must be listed before the concrete view class, otherwise their `dispatch()` never runs first.
+- Never put request-specific or eagerly evaluated data on a class attribute; override `get_queryset()`, where `self.request` exists.
+
+```mermaid
+flowchart TD
+    A[HTTP Request] --> B[URL Resolver]
+    B --> C[as_view Callable]
+    C --> D[Create View Instance]
+    D --> E[setup]
+    E --> F[dispatch]
+    F --> G{HTTP Method}
+    G -->|GET| H[get]
+    G -->|POST| I[post]
+    G -->|PUT| J[put]
+    G -->|DELETE| K[delete]
+    H --> L[HttpResponse]
+    I --> L
+    J --> L
+    K --> L
+```
+
+**Interview answer:** Use a CBV when the feature matches a workflow Django already implements — list, detail, form, create, update, delete — or when several views must share the same behavior, because a generic view plus a mixin removes the boilerplate and gives every view the same shape. Use an FBV when the workflow is small, one-off, or highly custom, such as a health check, a webhook receiver, or a multi-step business flow, where explicit top-to-bottom control reads better than a chain of inherited hooks. Both return the same `HttpResponse`, so the deciding factors are readability and reuse, and in an existing codebase matching the project's convention usually outweighs either preference.
+
+**Gotcha:** Treating a class attribute as per-request data. `queryset = Book.objects.filter(created_by=request.user)` is evaluated once at import time, where `request` does not even exist, and any queryset defined that way is then shared by every request. Anything that depends on the current request belongs in `get_queryset()` or `get_context_data()`, where `self.request` is available.
+
 ---
 
 # 1. The Core Idea
@@ -32,9 +64,7 @@ The two common implementations are:
 # Function-Based View
 def book_list(request):
     ...
-```
 
-```python
 # Class-Based View
 class BookListView(View):
     def get(self, request):
@@ -45,19 +75,11 @@ Django does not treat one approach as universally superior. Class-based views ar
 
 ## 1.1 Common View Contract
 
-Both styles ultimately behave like this:
-
-```python
-request -> view callable -> response
-```
+Both styles ultimately behave like this: `request -> view callable -> response`.
 
 An FBV is already a callable function.
 
-A CBV becomes a callable through `as_view()`:
-
-```python
-path("books/", BookListView.as_view())
-```
+A CBV becomes a callable through `as_view()`, so the URLconf entry is `path("books/", BookListView.as_view())`.
 
 `as_view()` creates the function-like entry point expected by Django's URL resolver.
 
@@ -75,7 +97,6 @@ from django.shortcuts import render
 
 from .models import Book
 
-
 def book_list(request):
     books = Book.objects.filter(is_published=True)
 
@@ -84,9 +105,7 @@ def book_list(request):
         "books/book_list.html",
         {"books": books},
     )
-```
 
-```python
 # books/urls.py
 from django.urls import path
 
@@ -118,7 +137,6 @@ from django.shortcuts import redirect, render
 
 from .forms import BookForm
 
-
 def book_create(request):
     if request.method == "POST":
         form = BookForm(request.POST)
@@ -138,18 +156,9 @@ def book_create(request):
 
 The function explicitly checks `request.method`.
 
-## 2.4 Strengths of FBVs
+## 2.4 Where FBVs Fit Well
 
-- The complete flow is visible from top to bottom.
-- They are easy to understand for small endpoints.
-- Decorators work naturally.
-- They are useful for unique workflows that do not match generic CRUD patterns.
-- Control flow is explicit.
-- Debugging is often straightforward because fewer framework hooks are involved.
-
-## 2.5 Where FBVs Fit Well
-
-FBVs are commonly a good fit for:
+Because fewer framework hooks are involved, control flow stays explicit and debugging is often straightforward. FBVs are commonly a good fit for:
 
 - Simple health-check endpoints.
 - Webhook receivers.
@@ -164,7 +173,6 @@ Example:
 ```python
 from django.http import JsonResponse
 
-
 def health_check(request):
     return JsonResponse({"status": "ok"})
 ```
@@ -177,12 +185,7 @@ Using a large generic CBV for this endpoint would add structure without adding u
 
 A **Class-Based View**, or **CBV**, is a Python class whose methods handle HTTP requests.
 
-Django provides:
-
-- Base views such as `View`, `TemplateView`, and `RedirectView`.
-- Display views such as `ListView` and `DetailView`.
-- Editing views such as `FormView`, `CreateView`, `UpdateView`, and `DeleteView`.
-- Mixins that add reusable behavior.
+Django provides base views (`View`, `TemplateView`, `RedirectView`), display views (`ListView`, `DetailView`), editing views (`FormView`, `CreateView`, `UpdateView`, `DeleteView`), and mixins that add reusable behavior. Section 7.1 lists the full set.
 
 ## 3.1 Basic CBV
 
@@ -193,7 +196,6 @@ from django.views import View
 
 from .models import Book
 
-
 class BookListView(View):
     def get(self, request):
         books = Book.objects.filter(is_published=True)
@@ -203,9 +205,7 @@ class BookListView(View):
             "books/book_list.html",
             {"books": books},
         )
-```
 
-```python
 # books/urls.py
 from django.urls import path
 
@@ -225,11 +225,7 @@ The class itself is not used directly:
 ```python
 # Incorrect
 path("books/", BookListView)
-```
 
-Instead:
-
-```python
 # Correct
 path("books/", BookListView.as_view())
 ```
@@ -262,7 +258,6 @@ from django.views import View
 
 from .forms import BookForm
 
-
 class BookCreateView(View):
     template_name = "books/book_form.html"
 
@@ -291,16 +286,7 @@ class BookCreateView(View):
 
 HTTP methods are separated into methods such as `get()` and `post()`.
 
-## 3.4 Strengths of CBVs
-
-- HTTP methods are separated clearly.
-- Common behavior can be reused through inheritance and mixins.
-- Django's generic views reduce repetitive CRUD code.
-- View configuration can be expressed using class attributes.
-- Complex view families can follow a consistent structure.
-- Framework hooks allow targeted customization.
-
-## 3.5 Where CBVs Fit Well
+## 3.4 Where CBVs Fit Well
 
 CBVs are commonly a good fit for:
 
@@ -339,23 +325,7 @@ else:
 
 ## 4.2 CBV Request Flow
 
-```mermaid
-flowchart TD
-    A[HTTP Request] --> B[URL Resolver]
-    B --> C[as_view Callable]
-    C --> D[Create View Instance]
-    D --> E[setup]
-    E --> F[dispatch]
-    F --> G{HTTP Method}
-    G -->|GET| H[get]
-    G -->|POST| I[post]
-    G -->|PUT| J[put]
-    G -->|DELETE| K[delete]
-    H --> L[HttpResponse]
-    I --> L
-    J --> L
-    K --> L
-```
+The request reaches the `as_view()` callable, which creates a view instance, calls `setup()`, and then hands over to `dispatch()` (see the diagram in **In short**).
 
 The important CBV method is `dispatch()`:
 
@@ -390,7 +360,6 @@ from django.conf import settings
 from django.db import models
 from django.urls import reverse
 
-
 class Book(models.Model):
     title = models.CharField(max_length=200)
     author = models.CharField(max_length=120)
@@ -420,7 +389,6 @@ from django.shortcuts import render
 
 from .models import Book
 
-
 def book_list(request):
     books = (
         Book.objects
@@ -442,7 +410,6 @@ from django.shortcuts import render
 from django.views import View
 
 from .models import Book
-
 
 class BookListView(View):
     template_name = "books/book_list.html"
@@ -469,7 +436,6 @@ This is structurally different from the FBV, but it does not yet remove much cod
 from django.views.generic import ListView
 
 from .models import Book
-
 
 class BookListView(ListView):
     model = Book
@@ -514,11 +480,11 @@ urlpatterns = [
 ## 6.1 FBV Method Handling
 
 ```python
+# Manual method handling
 from django.http import (
     HttpResponse,
     HttpResponseNotAllowed,
 )
-
 
 def notification_view(request):
     if request.method == "GET":
@@ -528,13 +494,9 @@ def notification_view(request):
         return HttpResponse("Create notification")
 
     return HttpResponseNotAllowed(["GET", "POST"])
-```
 
-Django also provides method decorators:
-
-```python
+# Django also provides method decorators
 from django.views.decorators.http import require_http_methods
-
 
 @require_http_methods(["GET", "POST"])
 def notification_view(request):
@@ -546,7 +508,6 @@ def notification_view(request):
 ```python
 from django.http import HttpResponse
 from django.views import View
-
 
 class NotificationView(View):
     def get(self, request):
@@ -595,14 +556,11 @@ Generic CBVs are most valuable when a feature follows a common web pattern.
 ```python
 from django.views.generic import TemplateView
 
-
 class AboutView(TemplateView):
     template_name = "pages/about.html"
 ```
 
-```python
-path("about/", AboutView.as_view(), name="about")
-```
+It is registered with `path("about/", AboutView.as_view(), name="about")`.
 
 ## 7.3 `DetailView`
 
@@ -610,7 +568,6 @@ path("about/", AboutView.as_view(), name="about")
 from django.views.generic import DetailView
 
 from .models import Book
-
 
 class BookDetailView(DetailView):
     model = Book
@@ -626,15 +583,7 @@ class BookDetailView(DetailView):
         )
 ```
 
-The object is retrieved from a URL keyword such as `pk`:
-
-```python
-path(
-    "books/<int:pk>/",
-    BookDetailView.as_view(),
-    name="book-detail",
-)
-```
+The object is retrieved from a URL keyword such as `pk`, so the route is `path("books/<int:pk>/", BookDetailView.as_view(), name="book-detail")`.
 
 ## 7.4 Generic View Mental Model
 
@@ -660,17 +609,12 @@ Use decorators:
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render
 
-
 @login_required
 def dashboard(request):
     return render(request, "dashboard.html")
-```
 
-For permissions:
-
-```python
+# For permissions
 from django.contrib.auth.decorators import permission_required
-
 
 @permission_required("books.change_book", raise_exception=True)
 def book_admin(request):
@@ -685,20 +629,15 @@ Use mixins:
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import TemplateView
 
-
 class DashboardView(LoginRequiredMixin, TemplateView):
     template_name = "dashboard.html"
     login_url = "login"
-```
 
-For permissions:
-
-```python
+# For permissions
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.views.generic import UpdateView
 
 from .models import Book
-
 
 class BookUpdateView(
     LoginRequiredMixin,
@@ -743,7 +682,6 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.cache import never_cache
 from django.views.generic import TemplateView
 
-
 @method_decorator(never_cache, name="dispatch")
 class SecurePageView(TemplateView):
     template_name = "secure/page.html"
@@ -770,11 +708,9 @@ Function-based views can reuse normal Python functions.
 ```python
 from django.core.exceptions import PermissionDenied
 
-
 def ensure_book_owner(user, book):
     if book.created_by_id != user.id:
         raise PermissionDenied
-
 
 def book_update(request, pk):
     book = get_object_or_404(Book, pk=pk)
@@ -791,7 +727,6 @@ A mixin packages behavior for several CBVs.
 ```python
 from django.core.exceptions import PermissionDenied
 
-
 class BookOwnerRequiredMixin:
     def dispatch(self, request, *args, **kwargs):
         book = self.get_object()
@@ -800,14 +735,10 @@ class BookOwnerRequiredMixin:
             raise PermissionDenied
 
         return super().dispatch(request, *args, **kwargs)
-```
 
-Usage:
-
-```python
+# Usage
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import UpdateView
-
 
 class BookUpdateView(
     LoginRequiredMixin,
@@ -866,7 +797,6 @@ Use `get_queryset()` when the queryset depends on the current request.
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import ListView
 
-
 class MyBookListView(LoginRequiredMixin, ListView):
     model = Book
     template_name = "books/my_books.html"
@@ -878,12 +808,9 @@ class MyBookListView(LoginRequiredMixin, ListView):
             .get_queryset()
             .filter(created_by=self.request.user)
         )
-```
 
-Do not calculate request-specific querysets as class attributes:
-
-```python
-# Avoid request-specific or eagerly evaluated class-level data.
+# Do not calculate request-specific querysets as class attributes.
+# Avoid eagerly evaluated class-level data.
 class MyBookListView(ListView):
     queryset = Book.objects.filter(
         created_by=request.user,  # request does not exist here
@@ -925,11 +852,7 @@ class BookListView(ListView):
         return context
 ```
 
-Always preserve parent behavior when extending a CBV hook:
-
-```python
-context = super().get_context_data(**kwargs)
-```
+Always preserve parent behavior when extending a CBV hook, by starting from `context = super().get_context_data(**kwargs)`.
 
 ---
 
@@ -942,7 +865,6 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 
 from .forms import BookForm
-
 
 @login_required
 def book_create(request):
@@ -974,7 +896,6 @@ from django.views.generic import CreateView
 from .forms import BookForm
 from .models import Book
 
-
 class BookCreateView(LoginRequiredMixin, CreateView):
     model = Book
     form_class = BookForm
@@ -1005,7 +926,6 @@ class BookUpdateView(
 ```python
 from django.urls import reverse_lazy
 from django.views.generic import DeleteView
-
 
 class BookDeleteView(
     LoginRequiredMixin,
@@ -1044,7 +964,6 @@ import asyncio
 
 from django.http import JsonResponse
 
-
 async def status_view(request):
     await asyncio.sleep(0.1)
     return JsonResponse({"status": "ready"})
@@ -1058,7 +977,6 @@ import asyncio
 from django.http import JsonResponse
 from django.views import View
 
-
 class StatusView(View):
     async def get(self, request):
         await asyncio.sleep(0.1)
@@ -1070,19 +988,15 @@ class StatusView(View):
 Within one CBV, user-defined HTTP handlers must all be synchronous or all asynchronous.
 
 ```python
+# Incorrect
 class InvalidView(View):
     async def get(self, request):
         ...
 
     def post(self, request):
         ...
-```
 
-Mixing synchronous and asynchronous HTTP handlers in one view class causes an `ImproperlyConfigured` error when `as_view()` prepares the view.
-
-Use:
-
-```python
+# Correct
 class ValidAsyncView(View):
     async def get(self, request):
         ...
@@ -1090,6 +1004,8 @@ class ValidAsyncView(View):
     async def post(self, request):
         ...
 ```
+
+Mixing synchronous and asynchronous HTTP handlers in one view class causes an `ImproperlyConfigured` error when `as_view()` prepares the view.
 
 ## 12.4 Async Does Not Automatically Make a View Faster
 
@@ -1124,7 +1040,6 @@ from django.urls import reverse
 
 from .models import Book
 
-
 class BookListTests(TestCase):
     def test_published_books_are_visible(self):
         Book.objects.create(
@@ -1152,7 +1067,6 @@ from django.urls import reverse
 from .models import Book
 
 User = get_user_model()
-
 
 class BookListTests(TestCase):
     @classmethod
@@ -1194,7 +1108,6 @@ It is possible to instantiate and prepare a CBV for focused unit tests:
 from django.test import RequestFactory, TestCase
 
 from .views import BookListView
-
 
 class BookListViewUnitTests(TestCase):
     def setUp(self):
@@ -1414,16 +1327,12 @@ A view should coordinate the request, not contain the entire domain model.
 # books/services.py
 from .models import Book
 
-
 def publish_book(*, book: Book, published_by) -> Book:
     book.is_published = True
     book.save(update_fields=["is_published"])
     return book
-```
 
-FBV:
-
-```python
+# books/views.py - FBV
 @login_required
 def book_publish(request, pk):
     book = get_object_or_404(
@@ -1438,11 +1347,8 @@ def book_publish(request, pk):
     )
 
     return redirect(book)
-```
 
-CBV:
-
-```python
+# books/views.py - CBV
 class BookPublishView(LoginRequiredMixin, View):
     def post(self, request, pk):
         book = get_object_or_404(
@@ -1505,35 +1411,11 @@ def form_valid(self, form):
 
 ## 17.5 Keep URL Configuration Clear
 
-FBV:
-
-```python
-path("books/", book_list, name="book-list")
-```
-
-CBV:
-
-```python
-path(
-    "books/",
-    BookListView.as_view(),
-    name="book-list",
-)
-```
+An FBV is registered as `path("books/", book_list, name="book-list")` and a CBV as `path("books/", BookListView.as_view(), name="book-list")`.
 
 Avoid putting substantial configuration in `urls.py` when a named view class would be clearer.
 
-Small configuration is supported:
-
-```python
-path(
-    "about/",
-    TemplateView.as_view(
-        template_name="pages/about.html",
-    ),
-    name="about",
-)
-```
+Small configuration is supported, such as `path("about/", TemplateView.as_view(template_name="pages/about.html"), name="about")`.
 
 For behavior that will grow, create a dedicated class.
 
@@ -1562,88 +1444,13 @@ This ensures users cannot update another user's object by manually changing the 
 
 A codebase that uses one well-understood pattern consistently is often easier to maintain than one that switches styles without a clear reason.
 
+CBVs also carry a higher learning curve, because hooks and the MRO must be understood before the structure pays off. That is another reason to match, rather than fight, the style a project already uses.
+
 Consistency should not prevent simplification, but new code should fit the project's established conventions where they remain suitable.
 
 ---
 
-# 18. Final Mental Model
-
-## 18.1 Function-Based View
-
-Think:
-
-> "Run this explicit request workflow from top to bottom."
-
-```text
-Function
-├── receives request
-├── checks method
-├── performs logic
-└── returns response
-```
-
-## 18.2 Class-Based View
-
-Think:
-
-> "Create a request-specific object and dispatch the request to the correct method."
-
-```text
-Class
-├── configuration attributes
-├── get()
-├── post()
-├── reusable methods
-└── inherited mixin behavior
-```
-
-## 18.3 Generic Class-Based View
-
-Think:
-
-> "Use Django's existing workflow and customize only the parts that differ."
-
-```text
-Django generic workflow
-├── object lookup/querying
-├── form handling
-├── context creation
-├── template response
-└── redirect handling
-
-Your code
-├── model/queryset
-├── template name
-├── permission rules
-└── focused hook overrides
-```
-
-## 18.4 Final Comparison
-
-| Area | Function-Based Views | Class-Based Views |
-|---|---|---|
-| Basic unit | Function | Class |
-| URL registration | Function name | `ClassName.as_view()` |
-| HTTP methods | Conditional branches | Separate handler methods |
-| Readability | Excellent for small custom flows | Excellent for structured/repeated flows |
-| Reuse | Helpers and decorators | Inheritance and mixins |
-| Generic CRUD support | Manual | Strong built-in support |
-| Learning curve | Lower | Higher because of hooks and MRO |
-| Explicit control flow | Strong | Can be distributed across inherited methods |
-| Extensibility | Composition-based | Hook- and inheritance-based |
-| Best use | Small or unique workflow | Standard patterns and reusable behavior |
-
-The most practical conclusion is:
-
-```text
-Use FBVs when directness is the main advantage.
-Use CBVs when structure and reuse are the main advantages.
-Use generic CBVs when Django already provides most of the workflow.
-```
-
----
-
-# 19. Official References
+# 18. Official References
 
 This guide targets the Django 6.0 documentation and behavior. Django 6.0 was released on December 3, 2025; the examples here are compatible with the Django 6.0 view APIs.
 

@@ -6,21 +6,19 @@ order: 14
 
 # Garbage Collection and Reference Counting in Python
 
-> Python memory management is easiest to understand as two cooperating systems:  
-> **reference counting** usually removes objects immediately, while the **cyclic garbage collector** finds unreachable objects that still reference one another.
+> Python memory management is easiest to understand as two cooperating systems:
+>
+> **reference counting:** usually removes objects immediately, while the **cyclic garbage collector** finds unreachable objects that still reference one another.
 
----
+## In short
 
-# 1. The Big Picture
-
-Python automatically manages the lifetime of objects.
-
-When an object is no longer needed, Python can reclaim the memory associated with it. In **CPython**, this normally happens through two mechanisms:
-
-| Mechanism | Main responsibility | Typical timing |
-|---|---|---|
-| Reference counting | Reclaims objects whose reference count becomes zero | Usually immediate |
-| Cyclic garbage collector | Detects unreachable groups of objects that reference one another | Periodically |
+- A name holds a reference, not the object itself; CPython counts those references and can usually deallocate an object immediately when the count reaches zero.
+- `del` removes a name, item, or attribute reference, so the object survives as long as any other strong reference to it remains.
+- Reference counting alone cannot reclaim unreachable cycles, so a cyclic collector looks for tracked containers (lists, dicts, sets, class instances, frames, closures) that reference one another but are no longer reachable from application roots.
+- That collector is generational: generations 0, 1, and 2, young objects examined most often, and a collection starting when net tracked allocations cross a configured threshold.
+- The `gc` module can force a collection, read counts and statistics, and disable automatic cycle collection, but it cannot reclaim objects the application still references and `gc.disable()` never disables reference counting.
+- Weak references and weak containers let a relationship point at an object without keeping it alive, which is how a child's parent link avoids creating a cycle.
+- Memory management is not resource management: files, sockets, locks, and transactions need `with` or an explicit `close()`, not collection timing.
 
 ```mermaid
 flowchart TD
@@ -34,6 +32,16 @@ flowchart TD
     E -- Yes --> G[Cyclic garbage collector detects cycle]
     G --> D
 ```
+
+**Interview answer:** CPython manages object lifetime with two cooperating mechanisms. Every object carries a reference count, and when its last strong reference disappears the object is normally finalized and deallocated immediately; because that can never reclaim objects that reference one another, a generational cyclic collector periodically examines tracked container objects and reclaims the cycles that are no longer reachable from application roots. Both only reclaim unreachable objects, so retention bugs and external resource cleanup remain the application's responsibility.
+
+**Gotcha:** Assuming garbage collection handles files, sockets, and locks, or that `del` frees memory. `del` only removes one reference, and an external resource stays open until it is closed, which is what `with` and explicit lifecycle methods are for.
+
+---
+
+# 1. The Big Picture
+
+Python automatically manages the lifetime of objects. In **CPython** this normally happens through two mechanisms: reference counting reclaims an object whose reference count becomes zero, usually immediately, while the cyclic garbage collector periodically detects unreachable groups of objects that reference one another.
 
 ## Core idea
 
@@ -54,27 +62,14 @@ An object becomes garbage only when it is no longer reachable from the running p
 
 # 2. Python Objects and References
 
-Python variables do not directly contain ordinary Python objects. A variable name usually holds a **reference** to an object.
-
-```python
-user = {"name": "Aarav"}
-```
-
-Conceptually:
+Python variables do not directly contain ordinary Python objects. A variable name usually holds a **reference** to an object, so `user = {"name": "Aarav"}` is conceptually:
 
 ```mermaid
 flowchart LR
     NAME[user<br/>name] --> OBJ["{'name': 'Aarav'}<br/>object"]
 ```
 
-Assigning another variable does not copy the dictionary:
-
-```python
-user = {"name": "Aarav"}
-backup = user
-```
-
-Now both names refer to the same object:
+Assigning another variable does not copy the dictionary. After `backup = user`, both names refer to the same object:
 
 ```mermaid
 flowchart LR
@@ -147,26 +142,6 @@ Reference count: 0
 Object can be destroyed
 ```
 
-```mermaid
-sequenceDiagram
-    participant P as Program
-    participant O as List object
-
-    P->>O: data references object
-    Note over O: refcount = 1
-
-    P->>O: alias references object
-    Note over O: refcount = 2
-
-    P-->>O: del data
-    Note over O: refcount = 1
-
-    P-->>O: del alias
-    Note over O: refcount = 0
-
-    O-->>O: Deallocate object
-```
-
 ---
 
 ## 3.3 Operations that commonly increase references
@@ -186,7 +161,6 @@ Example:
 ```python
 class Cache:
     pass
-
 
 item = {"id": 101}       # Reference from item
 
@@ -228,18 +202,6 @@ CPython provides `sys.getrefcount()`:
 ```python
 import sys
 
-
-items = []
-
-print(sys.getrefcount(items))
-```
-
-The result is normally at least one count higher than expected because passing `items` into `getrefcount()` temporarily creates another reference.
-
-```python
-import sys
-
-
 items = []
 before = sys.getrefcount(items)
 
@@ -249,6 +211,8 @@ after = sys.getrefcount(items)
 print(before)
 print(after)
 ```
+
+The result is normally at least one count higher than expected because passing `items` into `getrefcount()` temporarily creates another reference.
 
 Important points:
 
@@ -299,20 +263,11 @@ The object becomes eligible for immediate deallocation only when its last strong
 
 ---
 
-## 4.1 Rebinding also removes a reference
+## 4.1 Rebinding and container removal
 
-```python
-config = {"timeout": 30}
-config = {"timeout": 60}
-```
+Rebinding also removes a reference: after `config = {"timeout": 30}` followed by `config = {"timeout": 60}`, the name `config` is rebound to the new dictionary, and if nothing else refers to the old dictionary its reference count reaches zero.
 
-The name `config` is rebound to a new dictionary.
-
-If nothing else refers to the old dictionary, its reference count reaches zero.
-
----
-
-## 4.2 Container removal
+Container membership counts as a reference too:
 
 ```python
 task = {"id": 10}
@@ -321,13 +276,7 @@ queue = [task]
 del task
 ```
 
-The object remains alive because `queue[0]` still references it.
-
-```python
-queue.clear()
-```
-
-Now the container reference is removed. If no other references exist, the object can be reclaimed.
+The object remains alive because `queue[0]` still references it. After `queue.clear()` the container reference is removed as well, and if no other references exist the object can be reclaimed.
 
 ---
 
@@ -342,7 +291,6 @@ class Node:
     def __init__(self, name: str) -> None:
         self.name = name
         self.link: Node | None = None
-
 
 first = Node("first")
 second = Node("second")
@@ -407,8 +355,6 @@ flowchart LR
 
     B --> C
     C --> B
-
-    style Root stroke-width:2px
 ```
 
 In this graph, `B` and `C` are still reachable through `A`, so they must remain alive.
@@ -452,17 +398,7 @@ Simple atomic values usually do not need cyclic tracking:
 - `None`
 - Some immutable objects containing only atomic values
 
-You can inspect tracking with `gc.is_tracked()`:
-
-```python
-import gc
-
-
-print(gc.is_tracked(100))
-print(gc.is_tracked("python"))
-print(gc.is_tracked([]))
-print(gc.is_tracked([1, 2, 3]))
-```
+You can inspect tracking with `gc.is_tracked()`, for example `gc.is_tracked(100)` compared with `gc.is_tracked([1, 2, 3])`.
 
 Tracking details are implementation optimizations and should not normally influence application design.
 
@@ -474,12 +410,10 @@ Tracking details are implementation optimizations and should not normally influe
 import gc
 import weakref
 
-
 class Node:
     def __init__(self, name: str) -> None:
         self.name = name
         self.link: Node | None = None
-
 
 first = Node("first")
 second = Node("second")
@@ -547,17 +481,7 @@ Long-lived objects are examined less often, reducing collection overhead.
 
 The collector monitors the difference between tracked object allocations and deallocations.
 
-A collection can begin when this net allocation count crosses a configured threshold.
-
-```python
-import gc
-
-
-print(gc.get_count())
-print(gc.get_threshold())
-```
-
-Typical output has the form:
+A collection can begin when this net allocation count crosses a configured threshold. `gc.get_count()` and `gc.get_threshold()` report the current counters and the thresholds, in the form:
 
 ```text
 (current_count_0, current_count_1, current_count_2)
@@ -588,10 +512,6 @@ Then mention version-specific generation details only when relevant.
 
 The `gc` module provides control and diagnostic access to the cyclic collector.
 
-```python
-import gc
-```
-
 ## 8.1 Common functions
 
 | Function | Purpose |
@@ -615,18 +535,9 @@ import gc
 
 ---
 
-## 8.2 Force a collection
+## 8.2 Forcing collection and reading statistics
 
-```python
-import gc
-
-
-collected = gc.collect()
-
-print(f"Collected objects: {collected}")
-```
-
-The return value is the total number of collected and uncollectable objects found during that collection.
+`gc.collect()` returns the total number of collected and uncollectable objects found during that collection.
 
 Manual collection is useful for:
 
@@ -638,31 +549,10 @@ Manual collection is useful for:
 
 It should not be added blindly to normal request handling.
 
----
-
-## 8.3 Collection statistics
+`gc.get_stats()` returns one dictionary per generation, with fields including `collections`, `collected`, and `uncollectable`:
 
 ```python
 import gc
-from pprint import pprint
-
-
-pprint(gc.get_stats())
-```
-
-The result contains one dictionary per generation.
-
-Typical fields include:
-
-- `collections`
-- `collected`
-- `uncollectable`
-
-Example processing:
-
-```python
-import gc
-
 
 for generation, stats in enumerate(gc.get_stats()):
     print(
@@ -675,7 +565,7 @@ for generation, stats in enumerate(gc.get_stats()):
 
 ---
 
-## 8.4 Enable GC event callbacks
+## 8.3 Enable GC event callbacks
 
 You can measure collection activity using `gc.callbacks`:
 
@@ -684,9 +574,7 @@ import gc
 import time
 from typing import Any
 
-
 collection_started_at: dict[int, float] = {}
-
 
 def track_gc(phase: str, info: dict[str, Any]) -> None:
     generation = int(info["generation"])
@@ -708,7 +596,6 @@ def track_gc(phase: str, info: dict[str, Any]) -> None:
         f"duration_ms={duration_ms:.3f}"
     )
 
-
 gc.callbacks.append(track_gc)
 ```
 
@@ -716,11 +603,10 @@ In production, callbacks must stay lightweight. A callback that performs slow lo
 
 ---
 
-## 8.5 Disabling the collector
+## 8.4 Disabling the collector
 
 ```python
 import gc
-
 
 gc.disable()
 
@@ -741,11 +627,10 @@ Important:
 
 ---
 
-## 8.6 Tuning thresholds
+## 8.5 Tuning thresholds
 
 ```python
 import gc
-
 
 original = gc.get_threshold()
 
@@ -785,10 +670,8 @@ This is useful when one relationship should not control the target object's life
 ```python
 import weakref
 
-
 class User:
     pass
-
 
 user = User()
 reference = weakref.ref(user)
@@ -806,26 +689,12 @@ print(reference())
 
 ## 9.1 Breaking parent-child cycles
 
-A tree often has:
-
-- Parent references to children
-- Child references to the parent
-
-A strong reference in both directions creates cycles.
-
-```python
-class Node:
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.children: list[Node] = []
-        self.parent: Node | None = None
-```
+A tree often has parent references to children and child references to the parent. A strong reference in both directions creates cycles.
 
 A weak parent reference can prevent the child from extending the parent's lifetime:
 
 ```python
 import weakref
-
 
 class Node:
     def __init__(self, name: str) -> None:
@@ -866,21 +735,7 @@ Do not use them automatically everywhere. They add complexity and the referenced
 
 ## 9.2 Weak containers
 
-Python provides weak-reference containers:
-
-```python
-import weakref
-
-
-cache: weakref.WeakValueDictionary[str, object]
-cache = weakref.WeakValueDictionary()
-```
-
-Common types:
-
-- `weakref.WeakKeyDictionary`
-- `weakref.WeakValueDictionary`
-- `weakref.WeakSet`
+Python provides weak-reference containers: `weakref.WeakKeyDictionary`, `weakref.WeakValueDictionary`, and `weakref.WeakSet`.
 
 These are useful for metadata registries and caches that should not keep objects alive by themselves.
 
@@ -914,7 +769,6 @@ Reasons include:
 ```python
 saved: object | None = None
 
-
 class Example:
     def __del__(self) -> None:
         global saved
@@ -938,7 +792,6 @@ For fallback cleanup not tied to object resurrection, `weakref.finalize` is ofte
 ```python
 from pathlib import Path
 import weakref
-
 
 class TemporaryFile:
     def __init__(self, path: Path) -> None:
@@ -1008,7 +861,6 @@ The same principle applies to database transactions:
 ```python
 from django.db import transaction
 
-
 with transaction.atomic():
     update_order()
     create_payment_record()
@@ -1033,7 +885,6 @@ A practical definition of a memory leak is:
 ```python
 processed_requests: list[dict[str, object]] = []
 
-
 def handle_request(payload: dict[str, object]) -> None:
     processed_requests.append(payload)
 ```
@@ -1042,13 +893,19 @@ Every payload remains reachable through the global list.
 
 The garbage collector is working correctly. The application is retaining the objects.
 
+An event-listener registry has exactly the same shape: if listeners are appended to a module-level list and never removed, the registry keeps them alive. Possible solutions:
+
+- Explicit unsubscribe logic
+- Weak references
+- Scoped event buses
+- Lifecycle-aware cleanup
+
 ---
 
 ## 12.2 Unbounded cache
 
 ```python
 cache: dict[str, bytes] = {}
-
 
 def load_document(document_id: str) -> bytes:
     if document_id not in cache:
@@ -1064,7 +921,6 @@ Use a bounded cache:
 ```python
 from functools import lru_cache
 
-
 @lru_cache(maxsize=1_000)
 def load_document(document_id: str) -> bytes:
     return read_document(document_id)
@@ -1072,28 +928,7 @@ def load_document(document_id: str) -> bytes:
 
 ---
 
-## 12.3 Event-listener retention
-
-```python
-subscribers: list[object] = []
-
-
-def subscribe(listener: object) -> None:
-    subscribers.append(listener)
-```
-
-If listeners are never removed, the registry keeps them alive.
-
-Possible solutions:
-
-- Explicit unsubscribe logic
-- Weak references
-- Scoped event buses
-- Lifecycle-aware cleanup
-
----
-
-## 12.4 Closures retaining large objects
+## 12.3 Closures retaining large objects
 
 ```python
 def build_processor(records: list[dict[str, object]]):
@@ -1109,13 +944,12 @@ As long as the closure remains alive, the entire list remains alive.
 
 ---
 
-## 12.5 Exception tracebacks
+## 12.4 Exception tracebacks
 
 Tracebacks can retain stack frames, and stack frames retain local variables.
 
 ```python
 stored_exceptions: list[Exception] = []
-
 
 def run() -> None:
     large_data = bytearray(100_000_000)
@@ -1128,24 +962,11 @@ def run() -> None:
 
 Retaining exceptions or tracebacks can indirectly retain large local objects.
 
-Store concise error information instead when the full traceback is unnecessary:
-
-```python
-stored_errors: list[str] = []
-
-
-def run() -> None:
-    large_data = bytearray(100_000_000)
-
-    try:
-        raise RuntimeError("Failed")
-    except RuntimeError as exc:
-        stored_errors.append(str(exc))
-```
+When the full traceback is unnecessary, store concise error information instead, such as `stored_errors.append(str(exc))`.
 
 ---
 
-## 12.6 Native memory
+## 12.5 Native memory
 
 Libraries implemented in C, C++, Rust, or other native languages may allocate memory outside Python's object heap.
 
@@ -1162,7 +983,7 @@ Python-level object inspection may not explain all process memory growth.
 
 ---
 
-## 12.7 Memory may not return to the operating system
+## 12.6 Memory may not return to the operating system
 
 Even after Python objects are freed, process resident memory may remain high because:
 
@@ -1172,17 +993,9 @@ Even after Python objects are freed, process resident memory may remain high bec
 - Built-in free lists may retain reusable blocks
 - The operating system reports allocated pages differently
 
-Therefore:
+Therefore: `Object was reclaimed`
 
-```text
-Object was reclaimed
-```
-
-does not always imply:
-
-```text
-Process RSS immediately decreased
-```
+does not always imply: `Process RSS immediately decreased`
 
 This distinction is important when investigating production memory usage.
 
@@ -1205,71 +1018,32 @@ A reliable investigation should distinguish between:
 `tracemalloc` records Python memory allocation traces.
 
 ```python
+import gc
 import tracemalloc
-
 
 tracemalloc.start()
 
+gc.collect()
 before = tracemalloc.take_snapshot()
 
 run_workload()
 
+gc.collect()
 after = tracemalloc.take_snapshot()
 
 for statistic in after.compare_to(before, "lineno")[:10]:
     print(statistic)
+
+tracemalloc.stop()
 ```
 
 This helps identify Python source lines responsible for increased allocated memory.
-
-A more complete helper:
-
-```python
-import gc
-import tracemalloc
-from collections.abc import Callable
-from typing import Any
-
-
-def profile_allocations(
-    operation: Callable[..., Any],
-    *args: object,
-    **kwargs: object,
-) -> Any:
-    gc.collect()
-    tracemalloc.start()
-
-    before = tracemalloc.take_snapshot()
-
-    try:
-        return operation(*args, **kwargs)
-    finally:
-        gc.collect()
-
-        after = tracemalloc.take_snapshot()
-        differences = after.compare_to(before, "lineno")
-
-        print("Largest Python allocation differences:")
-
-        for item in differences[:10]:
-            print(item)
-
-        tracemalloc.stop()
-```
 
 ---
 
 ## 13.2 Inspect generation statistics
 
-```python
-import gc
-from pprint import pprint
-
-
-pprint(gc.get_stats())
-```
-
-Questions to consider:
+Read `gc.get_stats()` (see 8.2) and ask:
 
 - Is generation 0 collecting very frequently?
 - Are many cyclic objects collected?
@@ -1278,21 +1052,23 @@ Questions to consider:
 
 ---
 
-## 13.3 Inspect referrers carefully
+## 13.3 Inspect referrers and referents
 
 ```python
 import gc
-
 
 target = find_suspicious_object()
 
 gc.collect()
 
-referrers = gc.get_referrers(target)
-
-for referrer in referrers:
+for referrer in gc.get_referrers(target):
     print(type(referrer))
+
+for referent in gc.get_referents(target):
+    print(type(referent), repr(referent)[:100])
 ```
+
+`gc.get_referrers()` shows which tracked objects refer to the target; `gc.get_referents()` shows which tracked objects the target refers to.
 
 Warnings:
 
@@ -1304,25 +1080,10 @@ Warnings:
 
 ---
 
-## 13.4 Inspect referents
+## 13.4 Debug unreachable objects
 
 ```python
 import gc
-
-
-for referent in gc.get_referents(target):
-    print(type(referent), repr(referent)[:100])
-```
-
-This helps understand what tracked objects the target refers to.
-
----
-
-## 13.5 Debug unreachable objects
-
-```python
-import gc
-
 
 gc.set_debug(gc.DEBUG_SAVEALL)
 
@@ -1345,16 +1106,14 @@ Use it only during debugging and clear the saved list afterward.
 
 ---
 
-## 13.6 Compare object counts cautiously
+## 13.5 Compare object counts cautiously
 
 ```python
 import gc
 from collections import Counter
 
-
 def tracked_type_counts() -> Counter[str]:
     return Counter(type(obj).__name__ for obj in gc.get_objects())
-
 
 before = tracked_type_counts()
 
@@ -1377,7 +1136,7 @@ This can reveal growing object categories, but it has limitations:
 
 ---
 
-## 13.7 Production investigation flow
+## 13.6 Production investigation flow
 
 ```mermaid
 flowchart TD
@@ -1497,21 +1256,14 @@ Use lifecycle methods to express ownership clearly.
 
 ## 14.5 Use bounded caches
 
-Prefer:
+Prefer a bounded cache over an unbounded `cache: dict[str, Configuration] = {}`:
 
 ```python
 from functools import lru_cache
 
-
 @lru_cache(maxsize=512)
 def load_configuration(key: str) -> Configuration:
     return fetch_configuration(key)
-```
-
-Instead of:
-
-```python
-cache: dict[str, Configuration] = {}
 ```
 
 A bounded cache provides a predictable upper limit.
@@ -1523,14 +1275,10 @@ A bounded cache provides a predictable upper limit.
 ```python
 with database.connection() as connection:
     connection.execute(query)
-```
 
-```python
 with lock:
     update_shared_state()
-```
 
-```python
 with TemporaryDirectory() as directory:
     generate_files(directory)
 ```
@@ -1632,42 +1380,6 @@ flowchart TD
 ```
 
 A memory issue can exist at any of these layers.
-
----
-
-# 17. Key Takeaways
-
-1. A Python variable normally holds a reference to an object, not the object itself.
-
-2. CPython primarily uses reference counting to manage object lifetime.
-
-3. When an object's reference count reaches zero, CPython usually reclaims it immediately.
-
-4. `del` removes a reference; it does not guarantee immediate destruction of the underlying object.
-
-5. Reference counting cannot independently reclaim unreachable circular reference graphs.
-
-6. The cyclic garbage collector detects unreachable cycles among tracked objects.
-
-7. Python 3.14.5 and later use the restored three-generation collector behavior.
-
-8. GC only reclaims unreachable objects. It cannot fix an application that still retains references.
-
-9. Use `with`, `close()`, and explicit lifecycle methods for external resources.
-
-10. Use weak references when a relationship should not keep another object alive.
-
-11. Treat `__del__()` as a fallback finalization mechanism, not your primary resource-management design.
-
-12. Start memory investigations with retention analysis and `tracemalloc`, then inspect GC behavior and native memory.
-
-13. High process memory does not always mean live Python objects are leaking.
-
-14. GC tuning should follow measurement, not guesswork.
-
-15. For portable Python code, do not depend on CPython's immediate reference-count finalization.
-
----
 
 ## Compact Revision Diagram
 

@@ -8,52 +8,15 @@ order: 5
 
 > A **decorator** takes a function or class, adds or changes behavior, and returns the object that should be used in its place.
 
-Decorators are commonly used for:
+## In short
 
-- Logging and monitoring
-- Authentication and authorization
-- Validation
-- Caching
-- Retry and timeout logic
-- Database transactions
-- Framework registration
-- Converting methods into properties, class methods, or static methods
-- Generating or modifying classes
-
----
-
-# 1. Decorator Mental Model
-
-A decorator is usually a callable that:
-
-1. Receives a function or class.
-2. Creates or configures another callable.
-3. Returns the replacement object.
-
-```python
-def decorator(target):
-    # Add or modify behavior
-    return target
-```
-
-The `@` syntax is only cleaner syntax for reassignment.
-
-```python
-@decorator
-def process():
-    pass
-```
-
-The above code is approximately equivalent to:
-
-```python
-def process():
-    pass
-
-process = decorator(process)
-```
-
-## Execution Flow
+- A decorator is a callable that receives a function or class, creates or configures another callable, and returns the object that replaces it.
+- `@decorator` above `def process()` is only cleaner syntax for `process = decorator(process)`; for a class it is `Service = class_decorator(Service)`.
+- The decorator expression runs at definition/import time, while the wrapper body runs later on every call, which is how import-time registries get populated.
+- A reusable wrapper accepts `*args, **kwargs` and forwards both, so it fits any signature, including the implicit `self` of an instance method.
+- Use `@functools.wraps(func)` in almost every wrapper (or `functools.update_wrapper` for callable objects) to keep `__name__`, `__doc__`, annotations, and `__wrapped__`.
+- A configurable decorator such as `@retry(max_attempts=3)` needs one extra layer: a factory returns the decorator, which returns the wrapper.
+- Stacked decorators apply bottom-up (`process = first(second(process))`) and then execute outside-in, so the order changes behavior.
 
 ```mermaid
 flowchart LR
@@ -62,6 +25,14 @@ flowchart LR
     C --> D[Wrapper replaces original name]
     D --> E[Caller invokes decorated function]
 ```
+
+**Interview answer:** A decorator is a callable that takes a function or class and returns the object used in its place, so `@log_call` above `def add` is just `add = log_call(add)`. The usual implementation is a closure: an inner `wrapper(*args, **kwargs)` adds behavior before and after calling the original function it captured, and carries `@functools.wraps` so the original metadata survives. Because the decorator runs once at import time while the wrapper runs on every call, the same mechanism covers cross-cutting concerns such as timing, retries, authorization, caching, and registration.
+
+**Gotcha:** Forgetting `@functools.wraps`, so the wrapper's own `__name__` and empty `__doc__` replace the original's and break debugging, logging, generated API documentation, and framework routing that read those attributes.
+
+---
+
+# 1. The `@` Syntax and Decoration Timing
 
 ## Important Timing Rule
 
@@ -74,29 +45,12 @@ def register(func):
     print(f"Registering {func.__name__}")  # Runs at definition/import time
     return func
 
-
 @register
 def create_user():
     print("Creating user")  # Runs when create_user() is called
 ```
 
-Possible output:
-
-```text
-Registering create_user
-```
-
-Later:
-
-```python
-create_user()
-```
-
-Output:
-
-```text
-Creating user
-```
+Importing this module alone prints `Registering create_user`. Only a later `create_user()` call prints `Creating user`.
 
 This distinction matters because decorators can perform registration during application startup.
 
@@ -118,7 +72,6 @@ A function can be:
 def greet(name: str) -> str:
     return f"Hello, {name}"
 
-
 another_name = greet
 
 print(another_name("Avadh"))
@@ -128,7 +81,6 @@ print(another_name("Avadh"))
 
 ```python
 from collections.abc import Callable
-
 
 def choose_operation(operation: str) -> Callable[[int, int], int]:
     def add(a: int, b: int) -> int:
@@ -150,13 +102,11 @@ A closure is an inner function that remembers values from its enclosing scope.
 ```python
 from collections.abc import Callable
 
-
 def multiplier(factor: int) -> Callable[[int], int]:
     def multiply(value: int) -> int:
         return value * factor
 
     return multiply
-
 
 double = multiplier(2)
 print(double(10))  # 20
@@ -176,7 +126,6 @@ A function decorator commonly returns a wrapper function.
 from collections.abc import Callable
 from typing import Any
 
-
 def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         print(f"Calling {func.__name__}")
@@ -186,11 +135,9 @@ def log_call(func: Callable[..., Any]) -> Callable[..., Any]:
 
     return wrapper
 
-
 @log_call
 def add(a: int, b: int) -> int:
     return a + b
-
 
 print(add(2, 3))
 ```
@@ -205,11 +152,7 @@ Finished add
 
 ## What Happens Internally?
 
-```python
-add = log_call(add)
-```
-
-After decoration, the name `add` refers to `wrapper`, not directly to the original function.
+Decoration is the single statement `add = log_call(add)`, so afterwards the name `add` refers to `wrapper`, not directly to the original function.
 
 The wrapper still reaches the original function through its closure.
 
@@ -224,12 +167,7 @@ flowchart TD
 
 ## Why `*args` and `**kwargs` Are Used
 
-A reusable decorator usually does not know the decorated function's exact parameters.
-
-```python
-def wrapper(*args, **kwargs):
-    return func(*args, **kwargs)
-```
+A reusable decorator usually does not know the decorated function's exact parameters, so the wrapper is declared as `def wrapper(*args, **kwargs)` and calls `func(*args, **kwargs)`.
 
 - `*args` collects positional arguments.
 - `**kwargs` collects keyword arguments.
@@ -245,7 +183,6 @@ from typing import Any, TypeVar
 
 R = TypeVar("R")
 
-
 def measure_time(func: Callable[..., R]) -> Callable[..., R]:
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> R:
@@ -258,7 +195,6 @@ def measure_time(func: Callable[..., R]) -> Callable[..., R]:
             print(f"{func.__name__} took {duration:.4f} seconds")
 
     return wrapper
-
 
 @measure_time
 def generate_report() -> str:
@@ -273,7 +209,6 @@ Using `finally` ensures that timing is recorded even when the function raises an
 from collections.abc import Callable
 from functools import wraps
 
-
 def require_positive(func: Callable[[int], int]) -> Callable[[int], int]:
     @wraps(func)
     def wrapper(value: int) -> int:
@@ -284,7 +219,6 @@ def require_positive(func: Callable[[int], int]) -> Callable[[int], int]:
 
     return wrapper
 
-
 @require_positive
 def square(value: int) -> int:
     return value * value
@@ -294,13 +228,7 @@ def square(value: int) -> int:
 
 # 4. Decorators with Arguments
 
-A decorator such as `@retry(max_attempts=3)` needs an extra function level.
-
-```python
-@retry(max_attempts=3)
-def fetch_data():
-    ...
-```
+A decorator such as `@retry(max_attempts=3)` needs an extra function level, because `retry(max_attempts=3)` is called first and its result is what decorates the function.
 
 Think of it in three layers:
 
@@ -332,7 +260,6 @@ from functools import wraps
 from typing import Any, TypeVar
 
 R = TypeVar("R")
-
 
 def retry(
     max_attempts: int = 3,
@@ -395,19 +322,7 @@ flowchart LR
 
 ## Supporting Both `@decorator` and `@decorator(...)`
 
-Some standard decorators support both forms:
-
-```python
-@cache_result
-def first():
-    ...
-```
-
-```python
-@cache_result(max_size=100)
-def second():
-    ...
-```
+Some standard decorators support both bare `@cache_result` and configured `@cache_result(max_size=100)` usage.
 
 This is possible, but it increases implementation complexity. Prefer one clear API unless supporting both forms provides real value.
 
@@ -424,19 +339,13 @@ def audit(func):
 
     return wrapper
 
-
 @audit
 def calculate_total() -> int:
     """Calculate the final total."""
     return 100
 ```
 
-Without metadata preservation:
-
-```python
-print(calculate_total.__name__)  # wrapper
-print(calculate_total.__doc__)   # None
-```
+Without metadata preservation, `calculate_total.__name__` is `"wrapper"` and `calculate_total.__doc__` is `None`.
 
 This can affect:
 
@@ -453,7 +362,6 @@ This can affect:
 
 ```python
 from functools import wraps
-
 
 def audit(func):
     @wraps(func)
@@ -475,17 +383,7 @@ def audit(func):
 
 ## Accessing the Original Function
 
-```python
-original = calculate_total.__wrapped__
-```
-
-The `__wrapped__` chain also helps `inspect.signature()` recover the original signature.
-
-```python
-from inspect import signature
-
-print(signature(calculate_total))
-```
+The undecorated function stays reachable as `calculate_total.__wrapped__`, and the same `__wrapped__` chain lets `inspect.signature(calculate_total)` recover the original signature instead of the wrapper's `(*args, **kwargs)`.
 
 > **Rule:** Use `@functools.wraps` in almost every decorator that returns a wrapper function.
 
@@ -502,11 +400,7 @@ def process():
     pass
 ```
 
-This is approximately equivalent to:
-
-```python
-process = first(second(process))
-```
+This is approximately equivalent to `process = first(second(process))`.
 
 ## Visual Order
 
@@ -538,7 +432,6 @@ from typing import Any, TypeVar
 
 R = TypeVar("R")
 
-
 def trace(label: str):
     def decorator(func: Callable[..., R]) -> Callable[..., R]:
         @wraps(func)
@@ -552,7 +445,6 @@ def trace(label: str):
         return wrapper
 
     return decorator
-
 
 @trace("outer")
 @trace("inner")
@@ -605,7 +497,6 @@ from typing import Any, TypeVar
 
 R = TypeVar("R")
 
-
 def count_calls(func: Callable[..., R]) -> Callable[..., R]:
     call_count = 0
 
@@ -628,13 +519,11 @@ from typing import Any, Protocol, TypeVar, cast
 
 R = TypeVar("R")
 
-
 class CountedCallable(Protocol[R]):
     calls: int
 
     def __call__(self, *args: Any, **kwargs: Any) -> R:
         ...
-
 
 def count_calls(func: Callable[..., R]) -> CountedCallable[R]:
     @wraps(func)
@@ -677,18 +566,12 @@ class UserService:
         return {"id": user_id}
 ```
 
-When called through an instance, Python automatically passes `self`.
-
-```python
-service = UserService()
-service.get_user(10)
-```
+When called through an instance, as in `UserService().get_user(10)`, Python automatically passes `self`.
 
 A normal reusable wrapper using `*args` and `**kwargs` naturally receives `self` as the first positional argument.
 
 ```python
 from functools import wraps
-
 
 def log_method(func):
     @wraps(func)
@@ -723,7 +606,6 @@ Use a class method when logic:
 ```python
 class AdminUser(User):
     pass
-
 
 admin = AdminUser.anonymous()
 print(type(admin).__name__)  # AdminUser
@@ -760,13 +642,7 @@ class UserService:
         return cls()
 ```
 
-Transformation:
-
-```python
-build_default = classmethod(log_call(build_default))
-```
-
-`log_call` receives the original function, and `classmethod` performs method binding afterward.
+That transforms to `build_default = classmethod(log_call(build_default))`: `log_call` receives the original function, and `classmethod` performs method binding afterward.
 
 This ordering is generally easier for ordinary function decorators.
 
@@ -785,12 +661,7 @@ class Rectangle:
         return self.width * self.height
 ```
 
-Usage:
-
-```python
-rectangle = Rectangle(4, 5)
-print(rectangle.area)  # No parentheses
-```
+It is then read as `Rectangle(4, 5).area`, with no parentheses on `area`.
 
 ### Property Setter
 
@@ -833,7 +704,6 @@ Caches every distinct call result.
 ```python
 from functools import cache
 
-
 @cache
 def fibonacci(number: int) -> int:
     if number < 2:
@@ -857,19 +727,12 @@ Caches a limited number of recent results.
 ```python
 from functools import lru_cache
 
-
 @lru_cache(maxsize=256)
 def load_configuration(tenant_id: str) -> dict[str, str]:
     ...
 ```
 
-Useful inspection methods:
-
-```python
-load_configuration.cache_info()
-load_configuration.cache_clear()
-load_configuration.cache_parameters()
-```
+Useful inspection methods on the decorated function: `cache_info()`, `cache_clear()`, and `cache_parameters()`.
 
 Important points:
 
@@ -886,7 +749,6 @@ Computes a property once and stores the result on the instance.
 ```python
 from functools import cached_property
 
-
 class Report:
     def __init__(self, rows: list[int]) -> None:
         self.rows = rows
@@ -895,20 +757,14 @@ class Report:
     def total(self) -> int:
         print("Calculating total")
         return sum(self.rows)
-```
 
-```python
 report = Report([10, 20, 30])
 
 print(report.total)  # Calculates
 print(report.total)  # Uses stored value
 ```
 
-To force recalculation:
-
-```python
-del report.total
-```
+Deleting the attribute with `del report.total` forces recalculation.
 
 Considerations:
 
@@ -924,16 +780,13 @@ Selects an implementation based on the type of the first argument.
 from functools import singledispatch
 from typing import Any
 
-
 @singledispatch
 def serialize(value: Any) -> str:
     raise TypeError(f"Unsupported type: {type(value).__name__}")
 
-
 @serialize.register
 def _(value: int) -> str:
     return str(value)
-
 
 @serialize.register
 def _(value: list) -> str:
@@ -949,7 +802,6 @@ Converts a generator function into a context manager.
 ```python
 from contextlib import contextmanager
 from collections.abc import Iterator
-
 
 @contextmanager
 def managed_resource() -> Iterator[str]:
@@ -967,7 +819,6 @@ Marks a method that concrete subclasses must implement.
 ```python
 from abc import ABC, abstractmethod
 
-
 class PaymentGateway(ABC):
     @abstractmethod
     def charge(self, amount: float) -> str:
@@ -983,25 +834,13 @@ A class decorator receives a class and returns the class object that should repl
 ```python
 def class_decorator(cls):
     return cls
-```
 
-Usage:
-
-```python
 @class_decorator
 class Service:
     pass
 ```
 
-Equivalent form:
-
-```python
-class Service:
-    pass
-
-
-Service = class_decorator(Service)
-```
+The equivalent form without the `@` syntax is `Service = class_decorator(Service)`.
 
 ## Adding a Class Attribute
 
@@ -1010,14 +849,12 @@ from typing import TypeVar
 
 T = TypeVar("T", bound=type)
 
-
 def versioned(version: str):
     def decorator(cls: T) -> T:
         cls.api_version = version
         return cls
 
     return decorator
-
 
 @versioned("v2")
 class UserAPI:
@@ -1035,7 +872,6 @@ from typing import Any
 
 HANDLERS: dict[str, type[Any]] = {}
 
-
 def handler(event_name: str):
     def decorator(cls: type[Any]) -> type[Any]:
         if event_name in HANDLERS:
@@ -1045,7 +881,6 @@ def handler(event_name: str):
         return cls
 
     return decorator
-
 
 @handler("user.created")
 class UserCreatedHandler:
@@ -1069,7 +904,6 @@ A class decorator can return a subclass or another callable instead of the origi
 
 ```python
 from typing import Any
-
 
 def trace_creation(cls: type[Any]):
     class TracedClass(cls):
@@ -1101,7 +935,6 @@ from typing import TypeVar
 
 T = TypeVar("T", bound=type)
 
-
 def require_method(method_name: str):
     def decorator(cls: T) -> T:
         method = getattr(cls, method_name, None)
@@ -1114,7 +947,6 @@ def require_method(method_name: str):
         return cls
 
     return decorator
-
 
 @require_method("execute")
 class Command:
@@ -1136,7 +968,6 @@ The validation runs at class definition/import time.
 
 ```python
 from dataclasses import dataclass
-
 
 @dataclass(slots=True, frozen=True)
 class Coordinate:
@@ -1163,7 +994,6 @@ from typing import Any, Generic, TypeVar
 
 R = TypeVar("R")
 
-
 class CountCalls(Generic[R]):
     def __init__(self, func: Callable[..., R]) -> None:
         self.func = func
@@ -1174,7 +1004,6 @@ class CountCalls(Generic[R]):
         self.calls += 1
         print(f"Call number: {self.calls}")
         return self.func(*args, **kwargs)
-
 
 @CountCalls
 def send_notification(message: str) -> str:
@@ -1205,7 +1034,6 @@ from types import MethodType
 from typing import Any, Generic, TypeVar
 
 R = TypeVar("R")
-
 
 class CountCalls(Generic[R]):
     def __init__(self, func: Callable[..., R]) -> None:
@@ -1250,13 +1078,7 @@ These concepts operate at different levels.
 
 ## Class Decorator
 
-```python
-@register
-class Plugin:
-    pass
-```
-
-Only the decorated class is directly affected.
+With `@register` applied to `class Plugin`, only the decorated class is directly affected.
 
 ## `__init_subclass__`
 
@@ -1267,7 +1089,6 @@ class Plugin:
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         Plugin.registry.append(cls)
-
 
 class EmailPlugin(Plugin):
     pass
@@ -1282,7 +1103,6 @@ class ModelMeta(type):
     def __new__(mcls, name, bases, namespace):
         namespace["model_name"] = name.lower()
         return super().__new__(mcls, name, bases, namespace)
-
 
 class Model(metaclass=ModelMeta):
     pass
@@ -1315,7 +1135,6 @@ from typing import Any, TypeVar
 
 R = TypeVar("R")
 
-
 def log_async(
     func: Callable[..., Awaitable[R]],
 ) -> Callable[..., Awaitable[R]]:
@@ -1344,7 +1163,6 @@ async def fetch_user(user_id: int) -> dict[str, int]:
 import inspect
 from functools import wraps
 from typing import Any
-
 
 def log_call(func):
     if inspect.iscoroutinefunction(func):
@@ -1375,7 +1193,6 @@ from functools import wraps
 from typing import TypeVar
 
 T = TypeVar("T")
-
 
 def trace_items(
     func: Callable[..., Iterator[T]],
@@ -1408,11 +1225,9 @@ Marks a method that is intended to override a base-class method.
 ```python
 from typing import override
 
-
 class BaseRepository:
     def save(self, value: object) -> None:
         ...
-
 
 class UserRepository(BaseRepository):
     @override
@@ -1435,12 +1250,10 @@ Indicates that a method should not be overridden or a class should not be subcla
 ```python
 from typing import final
 
-
 class BaseService:
     @final
     def validate_security(self) -> None:
         ...
-
 
 @final
 class SecurityConfiguration:
@@ -1462,7 +1275,6 @@ from typing import ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
 
 def logged(func: Callable[P, R]) -> Callable[P, R]:
     @wraps(func)
@@ -1489,10 +1301,8 @@ from typing import Any, ParamSpec, TypeVar
 P = ParamSpec("P")
 R = TypeVar("R")
 
-
 class PermissionDenied(Exception):
     pass
-
 
 def require_role(role: str):
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -1522,7 +1332,6 @@ Conceptual pattern:
 ```python
 from functools import wraps
 
-
 def transactional(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -1539,7 +1348,6 @@ Keep transaction ownership clear. Nested transaction decorators and broad transa
 ```python
 from functools import wraps
 from time import perf_counter
-
 
 def observed(operation: str):
     def decorator(func):
@@ -1582,7 +1390,6 @@ Do not log passwords, tokens, personal data, or complete request payloads withou
 ```python
 COMMANDS: dict[str, callable] = {}
 
-
 def command(name: str):
     def decorator(func):
         if name in COMMANDS:
@@ -1598,11 +1405,7 @@ Registries are simple and useful, but import order determines when registrations
 
 ## Caching
 
-Use caching decorators only when the function behaves like:
-
-```text
-same valid inputs + same relevant state = same result
-```
+Use caching decorators only when the function behaves like: `same valid inputs + same relevant state = same result`
 
 Always define:
 
@@ -1660,7 +1463,6 @@ With `pytest`:
 ```python
 import pytest
 
-
 def test_require_positive_rejects_zero() -> None:
     @require_positive
     def identity(value: int) -> int:
@@ -1701,11 +1503,7 @@ def test_metadata_is_preserved() -> None:
 
 ## Test the Undecorated Function
 
-When `@wraps` is used:
-
-```python
-original = process.__wrapped__
-```
+When `@wraps` is used, the original is available as `process.__wrapped__`.
 
 This can help isolate:
 
@@ -1717,15 +1515,7 @@ Do not make every test bypass the decorator. Important policies such as authoriz
 
 ## Dependency Injection Improves Testing
 
-Instead of hard-coding a dependency inside a decorator:
-
-```python
-def audited(logger):
-    def decorator(func):
-        ...
-```
-
-Tests can pass a fake logger and assert emitted events.
+Instead of hard-coding a dependency inside a decorator, take it as a factory argument, as in `def audited(logger)` returning the decorator. Tests can then pass a fake logger and assert emitted events.
 
 ---
 
@@ -1746,34 +1536,15 @@ A decorator that handles authentication, caching, retries, validation, and respo
 
 ## Always Preserve Metadata
 
-```python
-@wraps(func)
-def wrapper(*args, **kwargs):
-    return func(*args, **kwargs)
-```
-
-Use `functools.update_wrapper` for callable objects.
+Apply `@wraps(func)` to every wrapper function, and `functools.update_wrapper` for callable objects.
 
 ## Return the Original Result
 
-Unless transformation is intentional:
-
-```python
-def wrapper(*args, **kwargs):
-    result = func(*args, **kwargs)
-    return result
-```
-
-Forgetting `return` silently changes the decorated function's result to `None`.
+Unless transformation is intentional, return the value of `func(*args, **kwargs)` unchanged. Forgetting `return` silently changes the decorated function's result to `None`.
 
 ## Forward Arguments Correctly
 
-```python
-def wrapper(*args, **kwargs):
-    return func(*args, **kwargs)
-```
-
-Do not accidentally drop positional or keyword arguments.
+Call the original as `func(*args, **kwargs)`. Do not accidentally drop positional or keyword arguments.
 
 ## Re-Raise Exceptions Correctly
 
@@ -1835,82 +1606,11 @@ Before implementing custom logic, check whether the standard library already pro
 
 ## Prefer Readability Over Decorator Density
 
-This is difficult to reason about:
+A stack of five decorators on one function is difficult to reason about. When ordering and behavior are not obvious, use an explicit service layer, middleware pipeline, or composed function.
 
-```python
-@one
-@two
-@three
-@four
-@five
-def process():
-    ...
-```
+## Templates
 
-When ordering and behavior are not obvious, use an explicit service layer, middleware pipeline, or composed function.
-
----
-
-# 18. Quick Revision
-
-## Core Transformation
-
-```python
-@decorator
-def func():
-    pass
-```
-
-Equivalent idea:
-
-```python
-func = decorator(func)
-```
-
-## Decorator with Configuration
-
-```python
-@decorator_factory(config)
-def func():
-    pass
-```
-
-Equivalent idea:
-
-```python
-func = decorator_factory(config)(func)
-```
-
-## Stacked Decorators
-
-```python
-@outer
-@inner
-def func():
-    pass
-```
-
-Equivalent idea:
-
-```python
-func = outer(inner(func))
-```
-
-## Class Decorator
-
-```python
-@decorate_class
-class Service:
-    pass
-```
-
-Equivalent idea:
-
-```python
-Service = decorate_class(Service)
-```
-
-## Standard Function Decorator Template
+Function decorator:
 
 ```python
 from collections.abc import Callable
@@ -1919,7 +1619,6 @@ from typing import ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
 
 def decorator(func: Callable[P, R]) -> Callable[P, R]:
     @wraps(func)
@@ -1932,17 +1631,9 @@ def decorator(func: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 ```
 
-## Standard Configurable Decorator Template
+Configurable decorator, with the same imports:
 
 ```python
-from collections.abc import Callable
-from functools import wraps
-from typing import ParamSpec, TypeVar
-
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
 def decorator_factory(option: str):
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
@@ -1955,45 +1646,17 @@ def decorator_factory(option: str):
     return decorator
 ```
 
-## Standard Class Decorator Template
+Class decorator:
 
 ```python
 from typing import TypeVar
 
 T = TypeVar("T", bound=type)
 
-
 def class_decorator(cls: T) -> T:
     # Validate or modify cls
     return cls
 ```
-
-## Final Mental Model
-
-```mermaid
-flowchart LR
-    subgraph FUNC[Function decorator]
-        F1[Function] --> F2[Decorator]
-        F2 --> F3[Wrapped or replacement function]
-    end
-
-    subgraph CLS[Class decorator]
-        C1[Class] --> C2[Decorator]
-        C2 --> C3[Modified or replacement class]
-    end
-
-    subgraph FACT[Decorator factory]
-        D1[Configuration] --> D2[Decorator]
-        D2 --> D3[Target]
-        D3 --> D4[Replacement]
-    end
-
-    subgraph STACK[Stacked decorators]
-        S1[Apply bottom-up] --> S2[Execute wrappers outside-in]
-    end
-```
-
-The main idea is not the `@` symbol. The main idea is **callable transformation and reassignment**.
 
 ---
 

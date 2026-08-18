@@ -8,20 +8,36 @@ order: 2
 
 > A practical, interview-focused guide for developers working with Redis caching in production systems.
 
+## In short
+
+- Invalidation is making a cached copy unusable once the source of truth changes — by deleting it, expiring it, overwriting it, or routing reads to a new key.
+- The default for cache-aside is **update the database, commit, then delete the key**. Delete rather than update: the read path already owns the canonical representation.
+- Attach a safety TTL even when active invalidation exists — it bounds staleness for the cases where the `DEL` fails.
+- Versioned keys (`catalog:v43:category:20`) invalidate a whole group of related entries with one `INCR`, with no keyspace scanning.
+- Event-driven invalidation crosses service boundaries, but needs durable delivery (Streams, Kafka, an outbox); Pub/Sub silently drops messages for disconnected subscribers.
+- Invalidation is not eviction. Eviction is Redis reclaiming memory; invalidation is the application declaring data stale.
+- The unavoidable race is a slow reader writing a pre-update value back *after* the invalidation. Bound it with a TTL, a version inside the cached value, or generation-based keys.
+
+```mermaid
+flowchart TD
+    A[Update Request] --> B[Update database]
+    B --> C{Transaction committed?}
+    C -->|No| D[Return error]
+    C -->|Yes| E[Delete Redis key]
+    E --> F[Return updated result]
+```
+
+**Interview answer:** For cache-aside, invalidate by deleting the key after the database transaction commits, never before. Deleting before the commit lets a concurrent read repopulate the old row, and updating the cache instead of deleting duplicates the read path's serialization logic in the write path. Always pair the delete with a TTL so a failed invalidation cannot produce indefinitely stale data, and when one write affects many keys, bump a namespace version instead of hunting for them.
+
+**Gotcha:** "Delete the cache, then update the database" sounds safer, but it is the ordering that produces long-lived staleness — a concurrent reader reloads the pre-update row into Redis before your transaction commits, and nothing removes it again until the TTL runs out.
+
 ---
 
 # 1. What Is Cache Invalidation?
 
 **Cache invalidation** is the process of removing, expiring, or marking cached data as outdated when the original data changes.
 
-A cache improves performance by storing frequently accessed data closer to the application. However, once the source data changes, the cached copy may become stale.
-
-```text
-Database value:  Product price = ₹1,200
-Redis value:    Product price = ₹1,000
-
-Result: The application may show incorrect data.
-```
+A cache improves performance by storing frequently accessed data closer to the application. However, once the source data changes, the cached copy may become stale: the database holds a product price of ₹1,200 while Redis still returns ₹1,000, and the application shows the wrong number.
 
 Cache invalidation ensures that the next request receives fresh data instead of an outdated cached value.
 
@@ -89,17 +105,7 @@ Redis provides multiple mechanisms that can be used to invalidate cached data.
 
 ## 4.1 Delete a key with `DEL`
 
-`DEL` removes one or more keys immediately.
-
-```redis
-DEL product:101
-```
-
-Multiple keys can be deleted in one command:
-
-```redis
-DEL product:101 product:102 product:103
-```
+`DEL` removes one or more keys immediately, and accepts several in a single command: `DEL product:101 product:102 product:103`.
 
 Typical use:
 
@@ -111,11 +117,7 @@ flowchart TD
 
 ## 4.2 Delete large values with `UNLINK`
 
-`UNLINK` removes keys from the keyspace immediately but frees their memory asynchronously.
-
-```redis
-UNLINK report:monthly:2026-07
-```
+`UNLINK report:monthly:2026-07` removes the key from the keyspace immediately but frees its memory asynchronously.
 
 This is useful when cached values are large, such as:
 
@@ -128,36 +130,21 @@ For small string values, `DEL` is normally sufficient.
 
 ## 4.3 Expire keys with TTL
 
-A TTL automatically removes a key after a configured duration.
+A TTL automatically removes a key after a configured duration. It can be set with the write, or applied separately to a key that already exists.
 
 ```redis
-SET product:101 '{"id":101,"price":1200}' EX 300
+SET product:101 '{"id":101,"price":1200}' EX 300   # value and TTL together
+HSET product:101 id 101 name "Keyboard" price 1200 # or set the value first,
+EXPIRE product:101 300                             # then attach the TTL
 ```
 
-This key expires after 300 seconds.
-
-A TTL can also be applied separately:
-
-```redis
-HSET product:101 id 101 name "Keyboard" price 1200
-EXPIRE product:101 300
-```
-
-Check the remaining TTL:
-
-```redis
-TTL product:101
-```
+Check the remaining TTL with `TTL product:101`.
 
 TTL is usually a **safety net**, not the only invalidation mechanism for frequently changing business data.
 
 ## 4.4 Overwrite the cached value
 
-Instead of deleting the key, the application can replace it with the new value.
-
-```redis
-SET product:101 '{"id":101,"price":1300}' EX 300
-```
+Instead of deleting the key, the application can replace it with the new value: `SET product:101 '{"id":101,"price":1300}' EX 300`.
 
 This can reduce the next-read latency, but the application must carefully coordinate database and cache writes.
 
@@ -165,14 +152,7 @@ This can reduce the next-read latency, but the application must carefully coordi
 
 ## 4.5 Logical invalidation through versioned keys
 
-Instead of deleting old keys, change the version used in the key name.
-
-```text
-Old key: catalog:v17:electronics
-New key: catalog:v18:electronics
-```
-
-The application starts reading from `v18`. The old key becomes unreachable and can expire naturally.
+Instead of deleting old keys, change the version used in the key name: reads move from `catalog:v17:electronics` to `catalog:v18:electronics`. The old key becomes unreachable and can expire naturally.
 
 This is useful for:
 
@@ -202,11 +182,7 @@ This is mainly useful for an **L1 local-memory cache** placed in front of Redis.
 
 ## 5.1 TTL-based invalidation
 
-The cache entry expires automatically after a fixed duration.
-
-```redis
-SET exchange-rate:USD-INR "87.20" EX 60
-```
+The cache entry expires automatically after a fixed duration — `SET exchange-rate:USD-INR "87.20" EX 60` is valid for one minute and then disappears on its own.
 
 ### Suitable for
 
@@ -233,34 +209,13 @@ SET exchange-rate:USD-INR "87.20" EX 60
 
 ### TTL with jitter
 
-Add a small random value to avoid many keys expiring simultaneously.
-
-```python
-import random
-
-base_ttl = 300
-actual_ttl = base_ttl + random.randint(0, 60)
-```
-
-```text
-Without jitter: 300, 300, 300, 300 seconds
-With jitter:    312, 349, 327, 358 seconds
-```
+Add a small random value to avoid many keys expiring simultaneously. Computing the TTL as `base_ttl + random.randint(0, 60)` turns four keys that would all expire at 300 seconds into 312, 349, 327, and 358.
 
 ---
 
 ## 5.2 Delete-on-write invalidation
 
-After successfully changing the database, delete the corresponding cache key.
-
-```text
-1. Update database
-2. Commit transaction
-3. Delete Redis key
-4. Next read reloads fresh data
-```
-
-This is the most common invalidation strategy for cache-aside systems.
+After successfully changing the database, delete the corresponding cache key; the next read reloads fresh data. This is the most common invalidation strategy for cache-aside systems.
 
 ### Example
 
@@ -279,13 +234,7 @@ Deleting the key avoids duplicating transformation and serialization logic in th
 
 ## 5.3 Update-on-write invalidation
 
-After updating the database, immediately write the new object to Redis.
-
-```text
-1. Update database
-2. Commit transaction
-3. Replace Redis value
-```
+After updating the database and committing the transaction, immediately write the new object to Redis rather than deleting the key.
 
 ### Suitable for
 
@@ -336,28 +285,12 @@ Redis Pub/Sub and keyspace notifications are useful for transient real-time sign
 
 ## 5.5 Version-based invalidation
 
-Store a version number and include it in dependent cache keys.
+Store a version number and include it in dependent cache keys. Bumping the version moves every dependent read to a fresh namespace in one command.
 
 ```redis
-SET catalog:version 42
-```
-
-The application reads:
-
-```text
-catalog:v42:category:electronics
-```
-
-After a major catalog change:
-
-```redis
-INCR catalog:version
-```
-
-New reads use:
-
-```text
-catalog:v43:category:electronics
+SET catalog:version 42        # readers use catalog:v42:category:electronics
+INCR catalog:version          # after a major catalog change
+                              # readers now use catalog:v43:category:electronics
 ```
 
 Old keys are no longer read and can expire automatically.
@@ -406,29 +339,9 @@ Use it only when versioned namespaces or direct key deletion are insufficient.
 
 # 6. Cache-Aside Invalidation Flow
 
-Cache-aside is the most frequently used Redis caching pattern.
+Cache-aside is the most frequently used Redis caching pattern. The read and write flows themselves, with working code and their trade-offs against write-through and write-behind, are covered in [Cache Strategies](cache-strategies.md).
 
-## Read flow
-
-```mermaid
-flowchart TD
-    A[Client Request] --> B{Value in Redis?}
-    B -->|Yes| C[Return cached value]
-    B -->|No| D[Read from database]
-    D --> E[Store value in Redis with TTL]
-    E --> F[Return value]
-```
-
-## Write flow
-
-```mermaid
-flowchart TD
-    A[Update Request] --> B[Update database]
-    B --> C{Transaction committed?}
-    C -->|No| D[Return error]
-    C -->|Yes| E[Delete Redis key]
-    E --> F[Return updated result]
-```
+The part that belongs to invalidation is the **ordering** of the two writes.
 
 ## Why invalidate after database commit?
 
@@ -442,11 +355,7 @@ Suppose the cache is deleted before the database transaction commits:
 5. Redis now contains stale data
 ```
 
-The safer default order is:
-
-```text
-Database commit → cache invalidation
-```
+The safer default order is therefore **database commit → cache invalidation**.
 
 This still requires a retry or outbox mechanism if Redis invalidation fails after the database commit.
 
@@ -474,13 +383,7 @@ The old value may be restored after invalidation.
 
 #### Option 1: Short safety TTL
 
-The stale value eventually disappears.
-
-```redis
-SET product:101 "..." EX 120
-```
-
-This bounds inconsistency but does not prevent it.
+Writing the entry with a short expiry such as `EX 120` means the stale value eventually disappears on its own. This bounds inconsistency but does not prevent it.
 
 #### Option 2: Version in the cached value
 
@@ -498,14 +401,7 @@ Before replacing a cache entry, ensure that an older version cannot overwrite a 
 
 #### Option 3: Generation-based keys
 
-Write the result under the version that existed when the read started.
-
-```text
-product:101:v8
-product:101:v9
-```
-
-After an update, readers switch to `v9`. A slow request can only repopulate the old `v8` namespace.
+Write the result under the version that existed when the read started, so `product:101:v8` and `product:101:v9` coexist. After an update, readers switch to `v9`. A slow request can only repopulate the old `v8` namespace.
 
 #### Option 4: Lock cache rebuilding
 
@@ -515,11 +411,7 @@ Allow only one request to rebuild a missing key. This mainly prevents stampedes 
 
 Use a Redis transaction, Lua script, or supported compare-and-delete/compare-and-set operation when invalidation depends on the current value.
 
-Redis 8.4 introduced `DELEX` for conditional deletion of string keys:
-
-```redis
-DELEX lock:product:101 IFEQ "request-token-123"
-```
+Redis 8.4 introduced `DELEX` for conditional deletion of string keys, as in `DELEX lock:product:101 IFEQ "request-token-123"`.
 
 This is especially useful when releasing locks safely: one request must not delete a lock owned by another request.
 
@@ -527,12 +419,7 @@ This is especially useful when releasing locks safely: one request must not dele
 
 ## 7.2 Database updated but invalidation failed
 
-```text
-Database update: SUCCESS
-Redis delete:    FAILED
-```
-
-The database is correct, but Redis may continue returning stale data.
+When the database update succeeds and the Redis delete fails, the database is correct but Redis may continue returning stale data indefinitely.
 
 ### Recommended protections
 
@@ -567,14 +454,7 @@ The outbox record and business update are committed in the same database transac
 
 ## 7.4 Delete versus update conflict
 
-Two concurrent operations may arrive in a different order:
-
-```text
-Event 1: Product updated to version 11
-Event 2: Product updated to version 12
-
-Consumer receives: version 12, then version 11
-```
+Two concurrent operations may arrive in a different order. If a product is updated to version 11 and then to version 12, the consumer can receive version 12 first and version 11 second.
 
 Possible protections:
 
@@ -587,67 +467,11 @@ Possible protections:
 
 # 8. Cache Stampede After Invalidation
 
-When a popular key expires or is invalidated, many requests may simultaneously query the database.
+Invalidation creates the conditions for a stampede: the moment a popular key is deleted, every in-flight request for it misses at once and hits the database together.
 
-```mermaid
-flowchart TD
-    E[Cache key expires] --> A[Request A]
-    E --> B[Request B]
-    E --> C[Request C]
-    A --> D1[(Database)]
-    B --> D2[(Database)]
-    C --> D3[(Database)]
-```
+This matters here only as a consequence to plan for. The problem itself, and the nine mitigations for it — request coalescing, distributed locking, stale-while-revalidate, early refresh, probabilistic early expiration, TTL jitter, prewarming, negative caching, and backpressure — are covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
-This is called a **cache stampede** or **thundering herd**.
-
-## 8.1 Single-flight lock
-
-Only one request rebuilds the value.
-
-```mermaid
-flowchart TD
-    A[Request A] -->|Gets lock| D[(Database)]
-    D -->|Loads value| F[Fills cache]
-    B[Request B] --> W[Waits or retries]
-    C[Request C] --> W
-```
-
-Acquire a short lock:
-
-```redis
-SET lock:product:101 "request-token" NX PX 5000
-```
-
-Release it only when the token still belongs to the same request.
-
-For Redis versions that support it:
-
-```redis
-DELEX lock:product:101 IFEQ "request-token"
-```
-
-For older versions, use a small Lua script that compares the token and deletes the lock atomically.
-
-## 8.2 Stale-while-revalidate
-
-Return a recently expired value while one worker refreshes it in the background.
-
-```text
-Fresh period             Stale grace period
-───────────────┬────────────────────────────
-Return normally│Return stale + trigger refresh
-```
-
-This is suitable when slightly stale data is safer than a latency spike.
-
-## 8.3 TTL jitter
-
-Randomize TTLs so related keys do not expire together.
-
-## 8.4 Prewarming
-
-Rebuild important cache keys before a release, campaign, or known traffic peak.
+The invalidation-side takeaway: an invalidation that deletes many hot keys at once is a self-inflicted stampede, so prefer namespace versioning (which lets old entries expire on their own schedule) over a bulk delete of live keys.
 
 ---
 
@@ -657,11 +481,7 @@ Good cache invalidation starts with predictable key naming.
 
 ## Recommended format
 
-```text
-<environment>:<service>:<resource>:<identifier>:<variant>
-```
-
-Examples:
+Name keys as `<environment>:<service>:<resource>:<identifier>:<variant>`.
 
 ```text
 prod:catalog:product:101
@@ -682,19 +502,11 @@ Better:
 search:products:q=keyboard:sort=price:page=2:tenant=15
 ```
 
-A normalized hash can be used when parameters are long:
-
-```text
-search:products:sha256-a84e...
-```
+A normalized hash can be used when parameters are long, as in `search:products:sha256-a84e...`.
 
 ## Use namespace versions
 
-```text
-prod:catalog:v4:category:20:page:1
-```
-
-Incrementing the namespace version invalidates all keys in that namespace without scanning Redis.
+Embed a version segment in the key, as in `prod:catalog:v4:category:20:page:1`. Incrementing that namespace version invalidates all keys in the namespace without scanning Redis.
 
 ## Redis Cluster hash tags
 
@@ -728,7 +540,6 @@ from typing import Protocol
 
 from redis import Redis
 
-
 @dataclass(frozen=True)
 class Product:
     id: int
@@ -736,14 +547,12 @@ class Product:
     price: float
     version: int
 
-
 class ProductRepository(Protocol):
     def get(self, product_id: int) -> Product | None:
         ...
 
     def update_price(self, product_id: int, price: float) -> Product:
         ...
-
 
 class ProductCacheService:
     BASE_TTL_SECONDS = 300
@@ -828,7 +637,6 @@ from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
 
-
 def invalidate_product(redis: Redis, product_id: int) -> None:
     key = f"product:{product_id}"
 
@@ -878,11 +686,7 @@ redis_client.delete(
 INCR category:20:cache-version
 ```
 
-The application then reads collection keys using the new version:
-
-```text
-category:20:v18:products:page:1
-```
+The application then reads collection keys using the new version: `category:20:v18:products:page:1`
 
 This is often cleaner than finding and deleting every paginated key.
 
@@ -892,19 +696,11 @@ Use a Set to track dependent keys when precise invalidation is necessary.
 
 ## Avoid broad `KEYS` scans in application traffic
 
-This pattern is risky in production:
-
-```redis
-KEYS category:20:*
-```
+This pattern is risky in production: `KEYS category:20:*`
 
 `KEYS` can block Redis while traversing a large keyspace.
 
-If an administrative scan is unavoidable, use `SCAN` incrementally:
-
-```redis
-SCAN 0 MATCH category:20:* COUNT 500
-```
+If an administrative scan is unavoidable, use `SCAN` incrementally: `SCAN 0 MATCH category:20:* COUNT 500`
 
 For normal request flows, prefer:
 
@@ -939,11 +735,7 @@ Use Redis key tracking so Redis sends invalidation messages to clients that cach
 
 ### Explicit invalidation channel
 
-Publish an application-level event:
-
-```redis
-PUBLISH cache-invalidation '{"key":"product:101"}'
-```
+Publish an application-level event: `PUBLISH cache-invalidation '{"key":"product:101"}'`
 
 Each instance removes the key from its L1 cache.
 
@@ -1054,13 +846,7 @@ Let the normal read path rebuild the canonical cached representation.
 
 ## 15.4 Make invalidation idempotent
 
-The same invalidation event may be retried multiple times.
-
-```redis
-DEL product:101
-```
-
-Deleting a missing key should still be treated as successful invalidation.
+The same invalidation event may be retried multiple times. `DEL` on a missing key returns `0` rather than failing, so a repeated delete should still be treated as successful invalidation.
 
 ## 15.5 Add TTL jitter
 
@@ -1068,7 +854,7 @@ Prevent many related keys from expiring in the same second.
 
 ## 15.6 Protect hot keys from stampedes
 
-Use a single-flight lock, stale-while-revalidate, request coalescing, or prewarming.
+Use a single-flight lock, stale-while-revalidate, request coalescing, or prewarming — see [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
 ## 15.7 Avoid wildcard deletion in request paths
 
@@ -1114,21 +900,7 @@ Verify that:
 
 ---
 
-# 16. Key Takeaways
-
-- Cache invalidation keeps Redis data consistent with its source of truth.
-- For cache-aside systems, the most common approach is **update database, commit, then delete the Redis key**.
-- TTL should usually act as a safety net, even when active invalidation exists.
-- Versioned keys are effective for invalidating large groups of related entries.
-- Event-driven invalidation is useful across services, but critical events require durable delivery.
-- Invalidation can cause cache stampedes, so hot keys need rebuild protection.
-- Key naming, versioning, observability, and retry design are part of the invalidation strategy.
-- Redis eviction is different from application-level cache invalidation.
-- A cache should remain disposable; correctness should come from the source of truth.
-
----
-
-# 17. Official References
+# 16. Official References
 
 - [Redis `DEL` command](https://redis.io/docs/latest/commands/del/)
 - [Redis `UNLINK` command](https://redis.io/docs/latest/commands/unlink/)

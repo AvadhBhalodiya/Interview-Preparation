@@ -6,21 +6,54 @@ order: 13
 
 # Multithreading vs Multiprocessing vs Asyncio
 
-> **Core idea:** Choose the concurrency model based on what makes the program wait.
+> Choose the concurrency model based on what makes the program wait.
 >
 > - Use **multithreading** when tasks mostly wait for blocking I/O.
 > - Use **multiprocessing** when pure-Python work consumes CPU time.
 > - Use **asyncio** when you need a large number of cooperative I/O operations and the libraries support async APIs.
 
+## In short
+
+- All three models provide concurrency, but only multiprocessing provides real CPU parallelism for pure-Python code.
+- Classify the workload first: if an instant network, disk, or database would remove most of the runtime, the work is I/O-bound; otherwise it is CPU-bound.
+- In default CPython the GIL generally lets one thread at a time execute Python bytecode, so threads overlap waiting rather than calculating.
+- `ThreadPoolExecutor` for blocking I/O behind synchronous libraries, `ProcessPoolExecutor` for CPU-heavy pure-Python work, `asyncio` for large numbers of async-capable I/O operations.
+- `async` syntax alone does not create concurrency; the coroutines must be scheduled together with `asyncio.gather()` or a `TaskGroup`.
+- A single blocking call or long CPU loop freezes every task sharing that event-loop thread, so it must move to `asyncio.to_thread()` or a process pool.
+- Concurrency must be bounded, because file descriptors, connection pools, rate limits, and downstream services all stay finite.
+
+```mermaid
+flowchart TD
+    A[Start: What does the task spend time doing?] --> B{Mostly CPU calculation?}
+    B -- Yes --> C{Can native library code release the GIL?}
+    C -- Unknown or No --> D[Use multiprocessing / ProcessPoolExecutor]
+    C -- Yes --> E[Benchmark threads and processes]
+
+    B -- No --> F{Mostly waiting for I/O?}
+    F -- No --> G[Profile the workload before choosing]
+    F -- Yes --> H{Does the library provide async APIs?}
+
+    H -- Yes --> I{Need high concurrency or already async?}
+    I -- Yes --> J[Use asyncio]
+    I -- No --> K[Threads or asyncio; choose simpler integration]
+
+    H -- No --> L[Use ThreadPoolExecutor]
+
+    J --> M{Any blocking calls remain?}
+    M -- Yes --> N[Use asyncio.to_thread for blocking I/O]
+    M -- CPU-heavy --> O[Use a process pool]
+    M -- No --> P[Keep the event loop non-blocking]
+```
+
+**Interview answer:** Classify the bottleneck before choosing a model. Work that waits on blocking I/O through synchronous libraries belongs in threads via `ThreadPoolExecutor`; heavy pure-Python calculation belongs in processes via `ProcessPoolExecutor`, the only one of the three that actually uses multiple CPU cores; I/O-bound work whose libraries expose async APIs belongs in asyncio, which carries far more concurrent operations per unit of memory. Production systems usually combine them, for example an async server that hands blocking SDK calls to a thread and CPU-heavy jobs to a process pool.
+
+**Gotcha:** Adding threads to make CPU-heavy pure-Python code faster. The threads simply take turns holding the GIL, so there is no proportional speed-up, and all that has been added is scheduling overhead plus the risk of race conditions.
+
 ---
 
 # 1. The Problem These Models Solve
 
-A normal Python program executes instructions sequentially:
-
-```text
-Task A starts -> Task A finishes -> Task B starts -> Task B finishes
-```
+A normal Python program executes instructions sequentially: `Task A starts -> Task A finishes -> Task B starts -> Task B finishes`.
 
 This becomes inefficient when a task spends significant time waiting for:
 
@@ -179,6 +212,8 @@ flowchart LR
     AIO["Many async I/O operations"] --> ASY[asyncio]
 ```
 
+Two cases fall outside the rule. If complex mutable state must be shared between workers, reconsider the design before adding concurrency, because message passing or clear ownership is safer than any of the three models. If it is genuinely unclear which model is faster, benchmark a realistic workload instead of reasoning from the table, since overhead and library behaviour vary.
+
 ---
 
 # 5. Multithreading
@@ -232,11 +267,7 @@ While one thread waits, another can run.
 
 Python offers optional free-threaded builds that can disable the GIL. However, this is not the default CPython configuration, and library compatibility and performance characteristics must be checked before relying on it.
 
-For general production and interview reasoning, use this default assumption unless the environment explicitly uses free-threaded Python:
-
-```text
-Default CPython + pure-Python CPU work -> processes, not threads
-```
+For general production and interview reasoning, use this default assumption unless the environment explicitly uses free-threaded Python: `Default CPython + pure-Python CPU work -> processes, not threads`.
 
 ## 5.3 When to Use Threads
 
@@ -271,12 +302,10 @@ For application code, `ThreadPoolExecutor` is usually cleaner than manually crea
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter, sleep
 
-
 def fetch_user(user_id: int) -> dict[str, object]:
     """Simulate a blocking network or database operation."""
     sleep(1)
     return {"id": user_id, "name": f"user-{user_id}"}
-
 
 def main() -> None:
     user_ids = [101, 102, 103, 104, 105]
@@ -290,7 +319,6 @@ def main() -> None:
     print(users)
     print(f"Completed in {elapsed:.2f} seconds")
 
-
 if __name__ == "__main__":
     main()
 ```
@@ -303,13 +331,11 @@ Without concurrency, five one-second calls would take roughly five seconds. With
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from time import sleep
 
-
 def call_service(service_name: str) -> str:
     sleep(0.5)
     if service_name == "billing":
         raise RuntimeError("Billing service unavailable")
     return f"{service_name}: success"
-
 
 services = ["users", "orders", "billing", "notifications"]
 
@@ -343,12 +369,10 @@ import threading
 
 counter = 0
 
-
 def increment() -> None:
     global counter
     for _ in range(100_000):
         counter += 1
-
 
 threads = [threading.Thread(target=increment) for _ in range(4)]
 
@@ -371,7 +395,6 @@ import threading
 counter = 0
 counter_lock = threading.Lock()
 
-
 def increment() -> None:
     global counter
     for _ in range(100_000):
@@ -383,13 +406,7 @@ A lock protects correctness, but excessive locking can reduce concurrency.
 
 ### Prefer Message Passing
 
-Instead of letting many threads modify the same object, send work or results through a thread-safe queue:
-
-```text
-Producer threads -> queue.Queue -> Consumer thread
-```
-
-This usually produces easier-to-reason-about ownership.
+Instead of letting many threads modify the same object, send work or results through a thread-safe queue: `Producer threads -> queue.Queue -> Consumer thread`. This usually produces easier-to-reason-about ownership.
 
 ### Threading Risks
 
@@ -462,7 +479,6 @@ from concurrent.futures import ProcessPoolExecutor
 from math import isqrt
 from time import perf_counter
 
-
 def is_prime(number: int) -> bool:
     if number < 2:
         return False
@@ -477,10 +493,8 @@ def is_prime(number: int) -> bool:
             return False
     return True
 
-
 def count_primes(start: int, end: int) -> int:
     return sum(is_prime(number) for number in range(start, end))
-
 
 def main() -> None:
     ranges = [
@@ -505,21 +519,13 @@ def main() -> None:
     print(f"Prime count: {total}")
     print(f"Completed in {elapsed:.2f} seconds")
 
-
 if __name__ == "__main__":
     main()
 ```
 
 ### Why the `__main__` Guard Matters
 
-Worker processes need to import the main module. Without this guard, process creation can recursively execute top-level code, especially with spawn-based process startup.
-
-```python
-if __name__ == "__main__":
-    main()
-```
-
-Treat this as a standard requirement for portable multiprocessing code.
+Worker processes need to import the main module. Without the `if __name__ == "__main__":` guard used above, process creation can recursively execute top-level code, especially with spawn-based process startup. Treat it as a standard requirement for portable multiprocessing code.
 
 ### Functions and Arguments Must Be Transferable
 
@@ -630,11 +636,7 @@ async def load_user(user_id: int) -> dict[str, int]:
 
 ### Coroutine Object
 
-Calling the function does not immediately execute it to completion. It creates a coroutine object:
-
-```python
-coroutine = load_user(101)
-```
+Calling the function does not immediately execute it to completion. It creates a coroutine object: `coroutine = load_user(101)`
 
 It must be awaited or scheduled.
 
@@ -694,12 +696,10 @@ Avoid asyncio as the first choice when:
 import asyncio
 from time import perf_counter
 
-
 async def fetch_user(user_id: int) -> dict[str, object]:
     """Simulate a non-blocking network or database operation."""
     await asyncio.sleep(1)
     return {"id": user_id, "name": f"user-{user_id}"}
-
 
 async def main() -> None:
     user_ids = [101, 102, 103, 104, 105]
@@ -711,7 +711,6 @@ async def main() -> None:
     elapsed = perf_counter() - started_at
     print(users)
     print(f"Completed in {elapsed:.2f} seconds")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -751,12 +750,10 @@ import asyncio
 MAX_CONCURRENT_REQUESTS = 20
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-
 async def call_service(item_id: int) -> str:
     async with semaphore:
         await asyncio.sleep(0.2)
         return f"item-{item_id}"
-
 
 async def main() -> None:
     results = await asyncio.gather(
@@ -774,11 +771,9 @@ A semaphore provides backpressure by limiting the number of operations inside th
 ```python
 import asyncio
 
-
 async def slow_operation() -> str:
     await asyncio.sleep(10)
     return "done"
-
 
 async def main() -> None:
     try:
@@ -798,11 +793,9 @@ Timeouts prevent a stalled dependency from holding resources forever.
 ```python
 import asyncio
 
-
 async def fetch(resource: str) -> str:
     await asyncio.sleep(0.2)
     return f"loaded: {resource}"
-
 
 async def main() -> None:
     resources = ["users", "orders", "payments"]
@@ -820,36 +813,9 @@ If one task fails with an unhandled exception, `TaskGroup` cancels the remaining
 
 ---
 
-# 8. Running Blocking Code from Asyncio
+# 8. Blocking Code and Asyncio
 
-A blocking call inside an async function blocks the event loop:
-
-```python
-import time
-
-
-async def bad_example() -> None:
-    time.sleep(5)  # Blocks every task on this event-loop thread.
-```
-
-Use an async-native library when available.
-
-When a blocking I/O function must be used, move it to a worker thread with `asyncio.to_thread()`:
-
-```python
-import asyncio
-from pathlib import Path
-
-
-def read_large_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-async def load_file(path: Path) -> str:
-    return await asyncio.to_thread(read_large_file, path)
-```
-
-Conceptually:
+A blocking call inside an async function blocks the whole event loop, so prefer an async-native library. When a blocking I/O function is unavoidable, `asyncio.to_thread()` moves it to a worker thread and the loop stays free:
 
 ```text
 Event-loop thread                     Worker thread
@@ -862,68 +828,20 @@ resume coroutine
 
 > `asyncio.to_thread()` is mainly suitable for blocking I/O. It does not normally turn pure-Python CPU work into multi-core parallelism in default CPython.
 
-For CPU-heavy work, use a process pool:
-
-```python
-import asyncio
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
-
-
-def calculate_score(start: int, end: int) -> int:
-    return sum(number * number for number in range(start, end))
-
-
-async def main() -> None:
-    loop = asyncio.get_running_loop()
-
-    with ProcessPoolExecutor() as pool:
-        jobs = [
-            loop.run_in_executor(pool, partial(calculate_score, 0, 5_000_000)),
-            loop.run_in_executor(pool, partial(calculate_score, 5_000_000, 10_000_000)),
-        ]
-        results = await asyncio.gather(*jobs)
-
-    print(sum(results))
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-This creates a hybrid architecture:
+CPU-heavy work goes to a process pool instead, which creates a hybrid architecture:
 
 ```mermaid
 flowchart LR
     EL[Asyncio event loop<br/>manages network requests and orchestration] --> POOL[Process pool<br/>handles CPU-heavy calculations]
 ```
 
+See [Python async/await, Event Loop, and Coroutines](async-await-event-loop.md) for the full treatment of blocking code inside async applications.
+
 ---
 
 # 9. Decision Flow
 
-```mermaid
-flowchart TD
-    A[Start: What does the task spend time doing?] --> B{Mostly CPU calculation?}
-    B -- Yes --> C{Can native library code release the GIL?}
-    C -- Unknown or No --> D[Use multiprocessing / ProcessPoolExecutor]
-    C -- Yes --> E[Benchmark threads and processes]
-
-    B -- No --> F{Mostly waiting for I/O?}
-    F -- No --> G[Profile the workload before choosing]
-    F -- Yes --> H{Does the library provide async APIs?}
-
-    H -- Yes --> I{Need high concurrency or already async?}
-    I -- Yes --> J[Use asyncio]
-    I -- No --> K[Threads or asyncio; choose simpler integration]
-
-    H -- No --> L[Use ThreadPoolExecutor]
-
-    J --> M{Any blocking calls remain?}
-    M -- Yes --> N[Use asyncio.to_thread for blocking I/O]
-    M -- CPU-heavy --> O[Use a process pool]
-    M -- No --> P[Keep the event loop non-blocking]
-```
+The full decision tree, including what to do about leftover blocking calls, is the diagram under **In short** at the top of this note. Most day-to-day choices only need the compressed form below.
 
 ## Fast Mental Model
 
@@ -942,14 +860,7 @@ flowchart TD
 
 ## Case 1: Call 30 External APIs from a Synchronous Script
 
-The HTTP client is blocking and the script already uses synchronous functions.
-
-```text
-Workload:       I/O-bound
-Library style:  Synchronous
-Concurrency:    Moderate
-Choice:         ThreadPoolExecutor
-```
+The HTTP client is blocking and the script already uses synchronous functions: I/O-bound work, a synchronous library style, and moderate concurrency, so the choice is `ThreadPoolExecutor`.
 
 Why not multiprocessing?
 
@@ -963,13 +874,7 @@ Why not asyncio?
 
 ## Case 2: Generate Thumbnails for 50,000 Images
 
-Each image requires CPU-heavy transformations.
-
-```text
-Workload:       CPU-bound
-Independence:   Each image can be processed separately
-Choice:         ProcessPoolExecutor
-```
+Each image requires CPU-heavy transformations, and each image can be processed separately, so the choice is `ProcessPoolExecutor`.
 
 Practical design:
 
@@ -984,60 +889,9 @@ Before deciding, verify whether the imaging library releases the GIL. A native i
 
 ## Case 3: WebSocket Server with Thousands of Connections
 
-Connections spend most of their time waiting for messages.
+Connections spend most of their time waiting for messages: network I/O, very high concurrency, and async libraries, so the choice is asyncio. One task can represent each connection without allocating one OS thread per connection.
 
-```text
-Workload:       Network I/O
-Concurrency:    Very high
-Library style:  Async
-Choice:         Asyncio
-```
-
-One task can represent each connection without allocating one OS thread per connection.
-
-## Case 4: Async API Endpoint Calls a Blocking SDK
-
-The API server is async, but a cloud SDK exposes only blocking methods.
-
-```text
-Choice: Keep the endpoint async and call the SDK through asyncio.to_thread()
-```
-
-```python
-result = await asyncio.to_thread(blocking_sdk.upload, file_data)
-```
-
-Also limit concurrency so that the default thread pool and downstream service are not overloaded.
-
-## Case 5: Async API Endpoint Generates a Large Report
-
-The endpoint coordinates network calls but report calculation is CPU-heavy.
-
-```text
-Network orchestration -> asyncio
-CPU-heavy generation  -> process pool or external job worker
-```
-
-For long-running jobs, a dedicated background job system is often better than keeping an HTTP request open.
-
-## Case 6: Django Management Command Processes Many Records
-
-Possible choices depend on the work performed per record:
-
-| Per-record operation | Better starting point |
-|---|---|
-| Blocking API call | Thread pool |
-| CPU-heavy transformation | Process pool |
-| Async client calls and async-compatible workflow | Asyncio |
-| Small database update | Often batching is more important than concurrency |
-
-Concurrency does not fix inefficient database access. First consider:
-
-- Bulk queries
-- `bulk_create()` or `bulk_update()`
-- Fewer network round trips
-- Appropriate indexes
-- Bounded batches
+Note the limit of all three cases: concurrency does not fix inefficient access. For a batch job that touches many database records, bulk queries, `bulk_create()` or `bulk_update()`, fewer round trips, appropriate indexes, and bounded batches usually matter more than adding workers.
 
 ---
 
@@ -1067,15 +921,12 @@ flowchart TD
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 
-
 def cpu_heavy_transform(data: list[int]) -> int:
     return sum(value * value for value in data)
-
 
 async def fetch_data() -> list[int]:
     await asyncio.sleep(0.2)  # Represents async I/O.
     return list(range(2_000_000))
-
 
 async def main() -> None:
     data = await fetch_data()
@@ -1089,7 +940,6 @@ async def main() -> None:
         )
 
     print(result)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -1128,7 +978,6 @@ import threading
 
 stop_event = threading.Event()
 
-
 def worker() -> None:
     while not stop_event.is_set():
         perform_small_unit_of_work()
@@ -1151,7 +1000,6 @@ Asyncio cancellation is cooperative. Cancellation is delivered at an await point
 
 ```python
 import asyncio
-
 
 async def worker() -> None:
     try:
@@ -1230,11 +1078,7 @@ Asyncio makes high concurrency possible; it does not make unlimited concurrency 
 
 ## Concurrency Must Be Bounded
 
-Bad pattern:
-
-```python
-await asyncio.gather(*(call_api(item) for item in one_million_items))
-```
+Bad pattern: `await asyncio.gather(*(call_api(item) for item in one_million_items))`
 
 This can create excessive tasks and memory pressure.
 
@@ -1306,6 +1150,10 @@ Do not benchmark only the worker function. Measure:
 - Propagate cancellation correctly.
 - Do not expose async internals unnecessarily across a library's public API.
 
+## The Rule Behind All of Them
+
+> Do not choose based on which model sounds more advanced. Choose based on the bottleneck, library ecosystem, required concurrency, failure model, and operational complexity.
+
 ---
 
 # 15. Modern Python Note: Free-Threaded Builds and Interpreter Pools
@@ -1341,50 +1189,7 @@ It offers an additional option between threads and processes, but introduces iso
 
 ---
 
-# 16. Final Selection Guide
-
-## Summary Table
-
-| Situation | Recommended starting point | Reason |
-|---|---|---|
-| Call many blocking APIs | `ThreadPoolExecutor` | Overlaps blocking waits with minimal code change |
-| Read or upload many files using blocking libraries | `ThreadPoolExecutor` | File operations spend time waiting |
-| Execute heavy pure-Python calculations | `ProcessPoolExecutor` | Uses multiple CPU cores |
-| Transform independent CPU-heavy data chunks | `ProcessPoolExecutor` | Natural parallel partitioning |
-| Handle many sockets or WebSockets | `asyncio` | Lightweight cooperative tasks |
-| Build an async API service | `asyncio` | Fits async servers and clients |
-| Call a blocking SDK from async code | `asyncio.to_thread()` | Keeps the event loop responsive |
-| Run CPU-heavy work from async code | Process pool or job worker | Keeps CPU work outside the event loop |
-| Share complex mutable state | Reconsider design | Message passing or ownership is safer |
-| Unsure which model is faster | Benchmark realistic workloads | Overhead and library behavior vary |
-
-## Memory Shortcut
-
-```text
-THREADS
-- One process
-- Shared memory
-- Best for blocking I/O
-- Synchronization is required
-
-PROCESSES
-- Separate interpreters and memory
-- Best for CPU-heavy Python work
-- Higher startup and communication cost
-
-ASYNCIO
-- Usually one event-loop thread
-- Best for many async I/O operations
-- Every blocking call must be controlled
-```
-
-## Final Rule
-
-> Do not choose based on which model sounds more advanced. Choose based on the bottleneck, library ecosystem, required concurrency, failure model, and operational complexity.
-
----
-
-# 17. References
+# 16. References
 
 Official Python documentation:
 

@@ -1,6 +1,6 @@
 ---
 title: "@dataclass and Abstract Base Classes"
-group: "Python OOP"
+group: "OOP"
 order: 9
 ---
 
@@ -8,24 +8,15 @@ order: 9
 
 > `@dataclass` reduces repetitive code for data-focused classes, while an **Abstract Base Class (ABC)** defines a contract that related classes must follow.
 
----
+## In short
 
-# 1. Big Picture
-
-A normal Python class can contain both:
-
-- **Data** — values stored on an object.
-- **Behavior** — methods that operate on those values.
-
-`@dataclass` and ABCs solve two different design problems.
-
-| Feature | Main Purpose |
-|---|---|
-| `@dataclass` | Reduce repetitive code in data-focused classes |
-| Abstract Base Class | Define a common interface and enforce required behavior |
-| Both together | Build structured objects that follow a shared contract |
-
-## Mental Model
+- `@dataclass` reads a class's annotated fields and generates `__init__()`, `__repr__()` and a field-based `__eq__()`; the annotations describe types but do not validate values at runtime.
+- `field()` tunes one field at a time: `default_factory` for mutable defaults, `init=False` for derived values, `repr=False` for secrets, `compare=False`, `kw_only=True`.
+- `__post_init__()` runs straight after the generated constructor, which is where cross-field validation, normalization and derived fields belong.
+- `frozen=True` blocks reassignment and normally yields a usable hash, `order=True` compares fields in declaration order, and `slots=True` trades attribute flexibility for memory.
+- An ABC declares `@abstractmethod` members that every concrete subclass must override, and the rule is enforced when an object is instantiated rather than when the class is defined.
+- An ABC can also carry concrete shared behavior (the Template Method pattern) and can accept unrelated classes through `register()` as virtual subclasses.
+- Reach for `Protocol` when statically checked structural typing is enough, and for an ABC when runtime enforcement or inherited implementation matters.
 
 ```mermaid
 flowchart LR
@@ -40,6 +31,22 @@ flowchart LR
     E --> G["Concrete implementation"]
     F --> G
 ```
+
+**Interview answer:** `@dataclass` inspects the annotated fields of a class and writes the repetitive parts for you — `__init__()`, `__repr__()`, `__eq__()`, and optionally ordering, hashing and `__slots__` — so a data-focused class is little more than its field list. An Abstract Base Class works in the opposite direction: it declares with `@abstractmethod` the operations a family of classes must provide, and Python refuses to instantiate any subclass that has not overridden all of them. The two compose, because an abstract data class can hold the shared fields and shared validation while leaving the varying operation abstract for each concrete subclass.
+
+**Gotcha:** `frozen=True` is shallow. It stops a field from being reassigned, but a list or dict already stored in one stays mutable, so `container.values.append(3)` still succeeds on a frozen instance. Use immutable field types such as `tuple[int, ...]` when the guarantee has to hold all the way down.
+
+---
+
+# 1. Big Picture
+
+A normal Python class holds both **data** (values stored on an object) and **behavior** (methods that operate on those values). `@dataclass` and ABCs solve two different halves of that problem.
+
+| Feature | Main Purpose |
+|---|---|
+| `@dataclass` | Reduce repetitive code in data-focused classes |
+| Abstract Base Class | Define a common interface and enforce required behavior |
+| Both together | Build structured objects that follow a shared contract |
 
 A useful way to remember the difference:
 
@@ -87,35 +94,22 @@ class Employee:
         )
 ```
 
-This class contains a lot of repeated setup code.
-
-The data-class version is much smaller:
+This class contains a lot of repeated setup code. The data-class version is much smaller, and the decorator creates the common methods automatically:
 
 ```python
 from dataclasses import dataclass
-
 
 @dataclass
 class Employee:
     employee_id: int
     name: str
     department: str
-```
 
-Usage:
-
-```python
-employee = Employee(
-    employee_id=101,
-    name="Aarav",
-    department="Engineering",
-)
+employee = Employee(employee_id=101, name="Aarav", department="Engineering")
 
 print(employee)
 # Employee(employee_id=101, name='Aarav', department='Engineering')
 ```
-
-The decorator creates the common methods automatically.
 
 ---
 
@@ -123,7 +117,6 @@ The decorator creates the common methods automatically.
 
 ```python
 from dataclasses import dataclass
-
 
 @dataclass
 class Product:
@@ -133,16 +126,7 @@ class Product:
     in_stock: bool = True
 ```
 
-The fields are identified mainly through type annotations:
-
-```python
-product_id: int
-name: str
-price: float
-in_stock: bool = True
-```
-
-Equivalent generated constructor:
+The fields are identified mainly through the type annotations, which produce this equivalent constructor:
 
 ```python
 def __init__(
@@ -160,40 +144,13 @@ def __init__(
 
 > Type annotations describe the expected types, but standard data classes do not automatically validate values at runtime.
 
-For example, this runs unless you add validation:
-
-```python
-product = Product(
-    product_id="incorrect type",
-    name=100,
-    price="free",
-)
-```
-
-Static type checkers such as `mypy` or `pyright` can detect these mismatches, but `@dataclass` itself normally does not reject them.
+For example, `Product(product_id="incorrect type", name=100, price="free")` runs unless you add validation. Static type checkers such as `mypy` or `pyright` can detect these mismatches, but `@dataclass` itself normally does not reject them.
 
 ---
 
 ## 2.3 Generated Methods
 
-The default decorator behaves approximately like this:
-
-```python
-@dataclass(
-    init=True,
-    repr=True,
-    eq=True,
-    order=False,
-    unsafe_hash=False,
-    frozen=False,
-    match_args=True,
-    kw_only=False,
-    slots=False,
-    weakref_slot=False,
-)
-class Example:
-    ...
-```
+A bare `@dataclass` behaves as though every parameter below were passed with its default value.
 
 ## Important Parameters
 
@@ -212,32 +169,22 @@ class Example:
 
 ### Equality Is Based on Fields
 
+With a normal class that does not define `__eq__()`, equality usually compares object identity. A generated data-class equality check compares the declared fields, and it also expects both objects to be the same concrete class.
+
 ```python
 from dataclasses import dataclass
-
 
 @dataclass
 class Coordinate:
     x: int
     y: int
 
-
-first = Coordinate(10, 20)
-second = Coordinate(10, 20)
-
-print(first == second)
-# True
-```
-
-With a normal class that does not define `__eq__()`, equality usually compares object identity.
-
-A generated data-class equality check compares the declared fields. It also expects both objects to be the same concrete class.
-
-```python
 @dataclass
 class SpecialCoordinate(Coordinate):
     label: str = "special"
 
+print(Coordinate(10, 20) == Coordinate(10, 20))
+# True
 
 print(Coordinate(10, 20) == SpecialCoordinate(10, 20))
 # False
@@ -247,94 +194,11 @@ print(Coordinate(10, 20) == SpecialCoordinate(10, 20))
 
 ## 2.4 Default Values and `default_factory`
 
-Simple immutable defaults can be assigned directly:
+Immutable defaults can be assigned directly, as in `language: str = "en"`. A plain mutable default such as `items: list[str] = []` raises `ValueError` when the class is created.
 
-```python
-from dataclasses import dataclass
+The fix is `items: list[str] = field(default_factory=list)`. The factory is called once per instance, so every object receives its own list. Pass the callable itself (`default_factory=list`), never the result of calling it (`default_factory=list()`).
 
-
-@dataclass
-class UserSettings:
-    language: str = "en"
-    notifications_enabled: bool = True
-    retry_count: int = 3
-```
-
-Mutable values such as lists, dictionaries, and sets require special care.
-
-## Incorrect Mental Model
-
-```python
-# Do not use a shared mutable object as the default.
-items: list[str] = []
-```
-
-A mutable default could be shared by multiple instances. Data classes protect against common unhashable defaults, but the correct design is still to create a fresh value for every instance.
-
-## Correct Approach
-
-```python
-from dataclasses import dataclass, field
-
-
-@dataclass
-class ShoppingCart:
-    customer_id: int
-    items: list[str] = field(default_factory=list)
-```
-
-Each object receives its own list:
-
-```python
-first_cart = ShoppingCart(customer_id=1)
-second_cart = ShoppingCart(customer_id=2)
-
-first_cart.items.append("Keyboard")
-
-print(first_cart.items)
-# ['Keyboard']
-
-print(second_cart.items)
-# []
-```
-
-## How `default_factory` Works
-
-```mermaid
-flowchart TD
-    A["ShoppingCart(customer_id=1)"] --> B["default_factory=list"]
-    B --> C["Creates a new [] for this instance"]
-```
-
-You can also use custom factory functions:
-
-```python
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-
-
-def current_utc_time() -> datetime:
-    return datetime.now(UTC)
-
-
-@dataclass
-class AuditRecord:
-    action: str
-    created_at: datetime = field(default_factory=current_utc_time)
-```
-
-Pass the function itself:
-
-```python
-default_factory=current_utc_time
-```
-
-Do not call it:
-
-```python
-# Incorrect
-default_factory=current_utc_time()
-```
+See [The Mutable Default Argument Bug](mutable-default-argument.md) for why Python behaves this way.
 
 ---
 
@@ -366,7 +230,6 @@ sequenceDiagram
 ```python
 from dataclasses import dataclass
 
-
 @dataclass
 class BankAccount:
     account_number: str
@@ -380,15 +243,8 @@ class BankAccount:
 
         if self.balance < 0:
             raise ValueError("Opening balance cannot be negative")
-```
 
-Usage:
-
-```python
-account = BankAccount(
-    account_number="  ACC-1001  ",
-    balance=500.0,
-)
+account = BankAccount(account_number="  ACC-1001  ", balance=500.0)
 
 print(account.account_number)
 # ACC-1001
@@ -398,7 +254,6 @@ print(account.account_number)
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class OrderLine:
@@ -414,16 +269,14 @@ class OrderLine:
             raise ValueError("Quantity must be greater than zero")
 
         self.total = self.unit_price * self.quantity
-```
 
-Because `total` uses `init=False`, callers cannot pass it directly:
-
-```python
 line = OrderLine(unit_price=25.0, quantity=4)
 
 print(line.total)
 # 100.0
 ```
+
+Because `total` uses `init=False`, callers cannot pass it directly. On a frozen data class the plain assignment is blocked as well, so initialize a derived field with `object.__setattr__(self, "total", ...)` inside `__post_init__()`.
 
 > Use `__post_init__()` for lightweight object invariants. For complex parsing, external I/O, database access, or heavy business workflows, prefer a service or a named constructor.
 
@@ -436,7 +289,6 @@ Use `field()` to control how an individual field participates in generated metho
 ```python
 from dataclasses import dataclass, field
 
-
 @dataclass
 class ApiCredential:
     client_id: str
@@ -445,15 +297,8 @@ class ApiCredential:
         default=None,
         compare=False,
     )
-```
 
-Output:
-
-```python
-credential = ApiCredential(
-    client_id="client-101",
-    secret="very-sensitive-value",
-)
+credential = ApiCredential(client_id="client-101", secret="very-sensitive-value")
 
 print(credential)
 # ApiCredential(client_id='client-101', last_error=None)
@@ -475,21 +320,7 @@ The secret is excluded from `repr`, reducing accidental exposure in logs.
 | `metadata={...}` | Stores read-only extension metadata |
 | `doc="..."` | Adds a field docstring in Python 3.14+ |
 
-Example using field documentation:
-
-```python
-from dataclasses import dataclass, field
-
-
-@dataclass
-class RetryPolicy:
-    max_attempts: int = field(
-        default=3,
-        doc="Maximum number of execution attempts.",
-    )
-```
-
-`doc` is available in Python 3.14 and later.
+`doc` is available in Python 3.14 and later: `max_attempts: int = field(default=3, doc="Maximum number of execution attempts.")`.
 
 ---
 
@@ -502,34 +333,23 @@ These options are related and should be selected deliberately.
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True)
 class Money:
     amount: int
     currency: str
-```
 
-Usage:
-
-```python
 price = Money(amount=100, currency="USD")
 
 # Raises dataclasses.FrozenInstanceError
 price.amount = 200
 ```
 
-`frozen=True` emulates immutability by blocking normal reassignment and deletion.
-
-It does not automatically make nested mutable values immutable:
+`frozen=True` emulates immutability by blocking normal reassignment and deletion. It does not automatically make nested mutable values immutable:
 
 ```python
-from dataclasses import dataclass
-
-
 @dataclass(frozen=True)
 class FrozenContainer:
     values: list[int]
-
 
 container = FrozenContainer(values=[1, 2])
 
@@ -537,39 +357,24 @@ container = FrozenContainer(values=[1, 2])
 container.values.append(3)
 ```
 
-For stronger immutability, use immutable field types:
-
-```python
-@dataclass(frozen=True)
-class SaferContainer:
-    values: tuple[int, ...]
-```
+For stronger immutability, use immutable field types such as `values: tuple[int, ...]`.
 
 ## Ordering
 
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(order=True)
 class BuildVersion:
     major: int
     minor: int
     patch: int
-```
 
-Usage:
-
-```python
 print(BuildVersion(2, 0, 0) > BuildVersion(1, 9, 9))
 # True
 ```
 
-The order follows the field declaration order:
-
-```text
-major -> minor -> patch
-```
+The order follows the field declaration order: `major -> minor -> patch`
 
 Only enable `order=True` when tuple-style field ordering matches the real domain meaning.
 
@@ -594,12 +399,10 @@ Example:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True)
 class CacheKey:
     tenant_id: int
     resource_id: int
-
 
 cache: dict[CacheKey, str] = {
     CacheKey(tenant_id=10, resource_id=501): "cached value",
@@ -617,29 +420,16 @@ Avoid `unsafe_hash=True` unless you fully understand the mutation and equality b
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(kw_only=True)
 class DatabaseConfig:
     host: str
     port: int
     username: str
     timeout_seconds: int = 30
-```
 
-Usage:
+config = DatabaseConfig(host="localhost", port=5432, username="app_user")
 
-```python
-config = DatabaseConfig(
-    host="localhost",
-    port=5432,
-    username="app_user",
-)
-```
-
-This is rejected:
-
-```python
-# TypeError
+# TypeError, because positional arguments are rejected.
 DatabaseConfig("localhost", 5432, "app_user")
 ```
 
@@ -654,7 +444,6 @@ You can make only selected fields keyword-only:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass
 class HttpRequest:
@@ -671,11 +460,15 @@ class HttpRequest:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(slots=True)
 class Coordinate:
     x: float
     y: float
+
+point = Coordinate(10.0, 20.0)
+
+# AttributeError because it is not a declared slot.
+point.label = "office"
 ```
 
 Benefits can include:
@@ -683,13 +476,6 @@ Benefits can include:
 - Reduced per-instance memory usage.
 - Prevention of arbitrary new attributes.
 - Potentially faster attribute access in some cases.
-
-```python
-point = Coordinate(10.0, 20.0)
-
-# AttributeError because it is not a declared slot.
-point.label = "office"
-```
 
 Use `slots=True` for large numbers of small, stable objects when the restrictions are acceptable.
 
@@ -707,25 +493,17 @@ A `ClassVar` describes class-level data rather than an instance field.
 from dataclasses import dataclass
 from typing import ClassVar
 
-
 @dataclass
 class User:
     table_name: ClassVar[str] = "users"
 
     user_id: int
     username: str
+
+user = User(user_id=1, username="aarav")
 ```
 
-`table_name` is not included in the generated constructor:
-
-```python
-user = User(
-    user_id=1,
-    username="aarav",
-)
-```
-
-It is also excluded from normal data-class field handling.
+`table_name` is not included in the generated constructor, and it is also excluded from normal data-class field handling.
 
 Use `ClassVar` for:
 
@@ -741,7 +519,6 @@ An `InitVar` is accepted by the constructor and passed to `__post_init__()`, but
 ```python
 from dataclasses import InitVar, dataclass, field
 
-
 @dataclass
 class UserRegistration:
     email: str
@@ -755,15 +532,8 @@ class UserRegistration:
 
         # Simplified example only.
         self.password_hash = f"hashed::{password}"
-```
 
-Usage:
-
-```python
-registration = UserRegistration(
-    email="user@example.com",
-    password="secure-password",
-)
+registration = UserRegistration(email="user@example.com", password="secure-password")
 
 print(registration.password_hash)
 # hashed::secure-password
@@ -783,12 +553,10 @@ A data class can inherit from another data class.
 ```python
 from dataclasses import dataclass
 
-
 @dataclass
 class Person:
     name: str
     email: str
-
 
 @dataclass
 class Employee(Person):
@@ -796,18 +564,7 @@ class Employee(Person):
     department: str
 ```
 
-Usage:
-
-```python
-employee = Employee(
-    name="Aarav",
-    email="aarav@example.com",
-    employee_id=101,
-    department="Engineering",
-)
-```
-
-The generated constructor includes inherited fields.
+The generated constructor includes inherited fields, so `Employee(name="Aarav", email="aarav@example.com", employee_id=101, department="Engineering")` is valid.
 
 ## Field Ordering Rule
 
@@ -818,11 +575,9 @@ This can cause a problem:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass
 class BaseConfig:
     timeout: int = 30
-
 
 # This design raises a TypeError because a required field follows
 # an inherited default field.
@@ -834,13 +589,9 @@ class ServiceConfig(BaseConfig):
 One solution is keyword-only fields:
 
 ```python
-from dataclasses import dataclass
-
-
 @dataclass(kw_only=True)
 class BaseConfig:
     timeout: int = 30
-
 
 @dataclass(kw_only=True)
 class ServiceConfig(BaseConfig):
@@ -856,9 +607,7 @@ class Timestamped:
     def __init__(self) -> None:
         self.created_by_framework = True
 
-
 from dataclasses import dataclass
-
 
 @dataclass
 class Event(Timestamped):
@@ -879,35 +628,20 @@ The `dataclasses` module provides useful helper functions.
 ```python
 from dataclasses import asdict, dataclass
 
-
 @dataclass
 class Address:
     city: str
     country: str
-
 
 @dataclass
 class Customer:
     customer_id: int
     address: Address
 
-
-customer = Customer(
-    customer_id=1,
-    address=Address(
-        city="Ahmedabad",
-        country="India",
-    ),
-)
+customer = Customer(customer_id=1, address=Address(city="Ahmedabad", country="India"))
 
 print(asdict(customer))
-# {
-#     'customer_id': 1,
-#     'address': {
-#         'city': 'Ahmedabad',
-#         'country': 'India',
-#     },
-# }
+# {'customer_id': 1, 'address': {'city': 'Ahmedabad', 'country': 'India'}}
 ```
 
 `asdict()` recursively processes nested data classes and deep-copies other supported nested values.
@@ -916,7 +650,6 @@ For a shallow mapping:
 
 ```python
 from dataclasses import fields
-
 
 shallow = {
     item.name: getattr(customer, item.name)
@@ -929,7 +662,6 @@ shallow = {
 ```python
 from dataclasses import astuple
 
-
 print(astuple(customer))
 # (1, ('Ahmedabad', 'India'))
 ```
@@ -941,23 +673,14 @@ print(astuple(customer))
 ```python
 from dataclasses import dataclass, replace
 
-
 @dataclass(frozen=True)
 class AppConfig:
     environment: str
     debug: bool
 
+production = AppConfig(environment="production", debug=False)
 
-production = AppConfig(
-    environment="production",
-    debug=False,
-)
-
-staging = replace(
-    production,
-    environment="staging",
-    debug=True,
-)
+staging = replace(production, environment="staging", debug=True)
 ```
 
 This is especially useful with frozen data classes.
@@ -966,7 +689,6 @@ This is especially useful with frozen data classes.
 
 ```python
 from dataclasses import fields, is_dataclass
-
 
 print(is_dataclass(AppConfig))
 # True
@@ -997,7 +719,6 @@ Example:
 ```python
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True, slots=True)
 class UserId:
     value: int
@@ -1021,9 +742,7 @@ An Abstract Base Class defines a common contract for a family of classes.
 
 It communicates:
 
-```text
-Every concrete subclass must provide these operations.
-```
+> Every concrete subclass must provide these operations.
 
 Python provides ABC support through the `abc` module.
 
@@ -1038,15 +757,7 @@ Imagine an application supports multiple storage systems:
 - Azure Blob Storage.
 - Google Cloud Storage.
 
-Every storage implementation should support operations such as:
-
-```python
-upload()
-download()
-delete()
-```
-
-Without a shared contract, a class might accidentally omit one of these methods. The failure may only appear later when the application tries to use it.
+Every storage implementation should support operations such as `upload()`, `download()`, and `delete()`. Without a shared contract, a class might accidentally omit one of these methods. The failure may only appear later when the application tries to use it.
 
 An ABC makes this expectation explicit.
 
@@ -1072,7 +783,6 @@ classDiagram
 
 ```python
 from abc import ABC, abstractmethod
-
 
 class Storage(ABC):
     @abstractmethod
@@ -1105,13 +815,7 @@ class LocalStorage(Storage):
             return file.read()
 ```
 
-Instantiation:
-
-```python
-storage = LocalStorage()
-```
-
-Trying to instantiate the incomplete base class fails:
+`LocalStorage()` now constructs, but trying to instantiate the incomplete base class fails:
 
 ```python
 # TypeError:
@@ -1125,7 +829,6 @@ An incomplete subclass also remains abstract:
 class UploadOnlyStorage(Storage):
     def upload(self, name: str, content: bytes) -> str:
         return name
-
 
 # TypeError because download() is still abstract.
 UploadOnlyStorage()
@@ -1142,7 +845,6 @@ An ABC can contain both:
 
 ```python
 from abc import ABC, abstractmethod
-
 
 class NotificationSender(ABC):
     @abstractmethod
@@ -1165,18 +867,9 @@ Concrete subclass:
 class EmailSender(NotificationSender):
     def send(self, recipient: str, message: str) -> None:
         print(f"Email sent to {recipient}: {message}")
-```
 
-Usage:
-
-```python
-sender = EmailSender()
-
-sender.send_bulk(
-    recipients=[
-        "first@example.com",
-        "second@example.com",
-    ],
+EmailSender().send_bulk(
+    recipients=["first@example.com", "second@example.com"],
     message="Deployment completed",
 )
 ```
@@ -1199,7 +892,6 @@ An abstract method does not have to contain only `pass` or `...`.
 
 ```python
 from abc import ABC, abstractmethod
-
 
 class Parser(ABC):
     @abstractmethod
@@ -1233,7 +925,6 @@ The method is still abstract because subclasses must explicitly complete or over
 ```python
 from abc import ABC, abstractmethod
 
-
 class PaymentGateway(ABC):
     @property
     @abstractmethod
@@ -1265,7 +956,6 @@ class DemoGateway(PaymentGateway):
 from abc import ABC, abstractmethod
 from typing import Self
 
-
 class Message(ABC):
     @classmethod
     @abstractmethod
@@ -1278,7 +968,6 @@ class Message(ABC):
 
 ```python
 from abc import ABC, abstractmethod
-
 
 class Identifier(ABC):
     @staticmethod
@@ -1322,30 +1011,18 @@ ABCs are enforced when a class is instantiated.
 ```python
 from abc import ABC, abstractmethod
 
-
 class ReportExporter(ABC):
     @abstractmethod
     def export(self, data: dict[str, object]) -> bytes:
         raise NotImplementedError
 ```
 
-This is incomplete:
+The incomplete subclass may be defined; only instantiation is rejected:
 
 ```python
 class PdfExporter(ReportExporter):
     pass
-```
 
-The class definition itself is allowed:
-
-```python
-print(PdfExporter)
-# <class '__main__.PdfExporter'>
-```
-
-Instantiation is rejected:
-
-```python
 PdfExporter()
 # TypeError
 ```
@@ -1369,15 +1046,12 @@ An ABC can register an unrelated class as a virtual subclass.
 ```python
 from abc import ABC
 
-
 class Plugin(ABC):
     pass
-
 
 class LegacyPlugin:
     def run(self) -> None:
         print("Running legacy plugin")
-
 
 Plugin.register(LegacyPlugin)
 ```
@@ -1390,11 +1064,8 @@ print(issubclass(LegacyPlugin, Plugin))
 
 print(isinstance(LegacyPlugin(), Plugin))
 # True
-```
 
-However, registration does not change normal inheritance:
-
-```python
+# Registration does not change normal inheritance.
 print(Plugin in LegacyPlugin.__mro__)
 # False
 ```
@@ -1410,7 +1081,6 @@ An ABC can customize structural subclass checks:
 ```python
 from abc import ABC
 
-
 class Runnable(ABC):
     @classmethod
     def __subclasshook__(cls, candidate: type) -> bool:
@@ -1424,16 +1094,12 @@ class Runnable(ABC):
                 return True
 
         return NotImplemented
-```
 
-Now a class with a `run()` method may be considered a `Runnable`:
-
-```python
 class Job:
     def run(self) -> None:
         print("Job running")
 
-
+# Any class with a run() method is now considered a Runnable.
 print(issubclass(Job, Runnable))
 # True
 ```
@@ -1460,48 +1126,24 @@ Common examples:
 | `Callable` | Can be called |
 | `Hashable` | Provides a valid hash |
 
-Example:
+Example, including the use of `collections.abc` in type annotations:
 
 ```python
 from collections.abc import Iterable, Mapping
-
 
 print(isinstance([1, 2, 3], Iterable))
 # True
 
 print(isinstance({"name": "Aarav"}, Mapping))
 # True
-```
-
-For type annotations, import collection interfaces from `collections.abc`:
-
-```python
-from collections.abc import Iterable
-
 
 def total(values: Iterable[int]) -> int:
     return sum(values)
 ```
 
-This accepts lists, tuples, generators, sets, and other integer iterables.
+`total()` accepts lists, tuples, generators, sets, and other integer iterables.
 
-Use the narrowest interface required by the function.
-
-Prefer:
-
-```python
-def process(values: Iterable[str]) -> None:
-    ...
-```
-
-Over:
-
-```python
-def process(values: list[str]) -> None:
-    ...
-```
-
-when the function only needs iteration.
+Use the narrowest interface required by the function: prefer `def process(values: Iterable[str]) -> None` over `def process(values: list[str]) -> None` when the function only needs iteration.
 
 ---
 
@@ -1539,7 +1181,6 @@ Limitations:
 ```python
 from abc import ABC, abstractmethod
 
-
 class Job(ABC):
     @abstractmethod
     def run(self) -> None:
@@ -1563,7 +1204,6 @@ Limitations:
 
 ```python
 from typing import Protocol
-
 
 class Runnable(Protocol):
     def run(self) -> None:
@@ -1599,11 +1239,8 @@ Limitations:
 
 A practical rule:
 
-```text
-Use ABC when implementation inheritance and runtime enforcement matter.
-
-Use Protocol when compatibility matters more than inheritance.
-```
+> Use ABC when implementation inheritance and runtime enforcement matter.  
+> Use Protocol when compatibility matters more than inheritance.
 
 ---
 
@@ -1614,7 +1251,6 @@ A data class can also be abstract.
 ```python
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
 
 @dataclass
 class Document(ABC):
@@ -1627,19 +1263,9 @@ class Document(ABC):
         raise NotImplementedError
 ```
 
-This class cannot be instantiated because `render()` is abstract:
+This class cannot be instantiated because `render()` is abstract, so `Document(document_id=1, title="Report")` raises `TypeError`. A concrete data-class subclass can implement the method:
 
 ```python
-Document(document_id=1, title="Report")
-# TypeError
-```
-
-A concrete data-class subclass can implement the method:
-
-```python
-from dataclasses import dataclass
-
-
 @dataclass
 class TextDocument(Document):
     body: str
@@ -1647,11 +1273,7 @@ class TextDocument(Document):
     def render(self) -> bytes:
         content = f"{self.title}\n\n{self.body}"
         return content.encode("utf-8")
-```
 
-Usage:
-
-```python
 document = TextDocument(
     document_id=1,
     title="Deployment Report",
@@ -1719,7 +1341,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import ClassVar
 
-
 @dataclass(kw_only=True, slots=True)
 class Notification(ABC):
     provider_type: ClassVar[str] = "base"
@@ -1753,11 +1374,12 @@ class Notification(ABC):
         )
 ```
 
-## Step 2: Implement Email Notification
+## Step 2: Implement the Concrete Notifications
+
+Each subclass adds its own fields, extends the shared validation through `super().__post_init__()`, and supplies the transport:
 
 ```python
 from dataclasses import dataclass, field
-
 
 @dataclass(kw_only=True, slots=True)
 class EmailNotification(Notification):
@@ -1783,7 +1405,7 @@ class EmailNotification(Notification):
         return f"email-{self.notification_id}"
 ```
 
-## Step 3: Implement SMS Notification
+`SmsNotification` has the same shape; only the fields, the extra validation, and the transport differ:
 
 ```python
 @dataclass(kw_only=True, slots=True)
@@ -1795,37 +1417,23 @@ class SmsNotification(Notification):
     def __post_init__(self) -> None:
         super().__post_init__()
 
-        self.message = self.message.strip()
-
         if not self.recipient.startswith("+"):
             raise ValueError("Phone number must include a country code")
 
-        if not self.message:
-            raise ValueError("SMS message cannot be empty")
-
     def send(self) -> str:
-        # Real implementation would call an SMS provider.
         return f"sms-{self.notification_id}"
 ```
 
-## Step 4: Use Polymorphism
+## Step 3: Use Polymorphism
+
+Callers depend on the abstract type, never on the concrete one:
 
 ```python
 from collections.abc import Iterable
 
+def send_all(notifications: Iterable[Notification]) -> list[str]:
+    return [notification.send() for notification in notifications]
 
-def send_all(
-    notifications: Iterable[Notification],
-) -> list[str]:
-    return [
-        notification.send()
-        for notification in notifications
-    ]
-```
-
-Usage:
-
-```python
 now = datetime.now(UTC)
 
 notifications: list[Notification] = [
@@ -1900,39 +1508,17 @@ class DateRange:
         return self.start <= value <= self.end
 ```
 
-Less suitable responsibility:
-
-```python
-@dataclass
-class DateRange:
-    start: date
-    end: date
-
-    def connect_to_database(self) -> None:
-        ...
-
-    def send_email(self) -> None:
-        ...
-```
-
-Keep behavior close to the data it directly protects or interprets.
+The same class carrying `connect_to_database()` and `send_email()` would be a less suitable responsibility. Keep behavior close to the data it directly protects or interprets.
 
 ## 6.2 Protect Sensitive Fields
 
-Use `repr=False` for secrets:
-
-```python
-api_key: str = field(repr=False)
-```
-
-Remember that this only affects the generated representation. It does not encrypt or securely store the value.
+Use `repr=False` for secrets, as in `api_key: str = field(repr=False)`. Remember that this only affects the generated representation. It does not encrypt or securely store the value.
 
 ## 6.3 Prefer `default_factory` for Mutable Values
 
-```python
-tags: list[str] = field(default_factory=list)
-metadata: dict[str, str] = field(default_factory=dict)
-```
+Declare mutable fields as `tags: list[str] = field(default_factory=list)` or `metadata: dict[str, str] = field(default_factory=dict)` so that every instance receives its own container.
+
+See [The Mutable Default Argument Bug](mutable-default-argument.md) for why Python behaves this way.
 
 ## 6.4 Use Frozen Value Objects
 
@@ -1945,24 +1531,9 @@ Good candidates for `frozen=True` include:
 - Cache keys.
 - Version values.
 
-```python
-@dataclass(frozen=True, slots=True)
-class TenantId:
-    value: int
-```
-
 ## 6.5 Make Constructors Readable
 
-Use keyword-only fields when argument meaning would be unclear:
-
-```python
-@dataclass(kw_only=True)
-class RetryConfig:
-    max_attempts: int
-    initial_delay: float
-    multiplier: float
-    maximum_delay: float
-```
+Use keyword-only fields when argument meaning would be unclear, such as a `@dataclass(kw_only=True)` retry configuration holding `max_attempts`, `initial_delay`, `multiplier`, and `maximum_delay`.
 
 ## 6.6 Keep ABCs Small
 
@@ -1979,9 +1550,7 @@ Avoid a large interface that forces every implementation to provide many irrelev
 
 This follows the Interface Segregation Principle:
 
-```text
-A class should not depend on methods it does not use.
-```
+> A class should not depend on methods it does not use.
 
 ## 6.7 Depend on Abstractions at Boundaries
 
@@ -1993,13 +1562,7 @@ class FileService:
         self.storage = storage
 ```
 
-Instead of constructing a concrete dependency internally:
-
-```python
-class FileService:
-    def __init__(self) -> None:
-        self.storage = S3Storage()
-```
+Instead of constructing a concrete dependency internally with `self.storage = S3Storage()`.
 
 Dependency injection improves:
 
@@ -2014,7 +1577,6 @@ When no shared implementation or runtime enforcement is needed, a `Protocol` may
 
 ```python
 from typing import Protocol
-
 
 class Clock(Protocol):
     def now(self) -> datetime:
@@ -2068,121 +1630,7 @@ def test_email_notification_send_returns_message_id() -> None:
 
 ---
 
-# 7. Quick Reference
-
-## Data-Class Syntax
-
-```python
-from dataclasses import dataclass, field
-
-
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
-class Example:
-    required_value: str
-    items: list[str] = field(default_factory=list)
-    secret: str = field(repr=False, default="")
-    calculated: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "calculated",
-            len(self.items),
-        )
-```
-
-For a frozen data class, use `object.__setattr__()` inside `__post_init__()` when initializing a derived field.
-
-## ABC Syntax
-
-```python
-from abc import ABC, abstractmethod
-
-
-class Service(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
-    def execute(self) -> None:
-        raise NotImplementedError
-
-    def log_start(self) -> None:
-        print(f"Starting {self.name}")
-```
-
-## Combined Syntax
-
-```python
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-
-
-@dataclass
-class Command(ABC):
-    command_id: str
-
-    @abstractmethod
-    def execute(self) -> None:
-        raise NotImplementedError
-
-
-@dataclass
-class CreateUserCommand(Command):
-    username: str
-
-    def execute(self) -> None:
-        print(f"Creating {self.username}")
-```
-
-## Decision Map
-
-```mermaid
-flowchart TD
-    A[Need a Python class] --> B{Main purpose?}
-
-    B -->|Store structured data| C["@dataclass"]
-    B -->|Define required behavior| D[ABC or Protocol]
-    B -->|Both| E["@dataclass + ABC"]
-
-    D --> F{Need runtime enforcement or shared code?}
-    F -->|Yes| G[ABC]
-    F -->|No, structural typing is enough| H[Protocol]
-
-    C --> I{Should values change?}
-    I -->|No| J["frozen=True"]
-    I -->|Yes| K[Mutable dataclass]
-
-    C --> L{Many instances?}
-    L -->|Yes and measured benefit| M["slots=True"]
-    L -->|No or uncertain| N[Default class storage]
-```
-
-## Core Takeaways
-
-```text
-1. @dataclass generates repetitive object methods.
-2. Type annotations do not automatically validate runtime values.
-3. Use default_factory for mutable default values.
-4. Use __post_init__ for lightweight validation and derived fields.
-5. frozen=True provides read-only-style instances, not deep immutability.
-6. An ABC defines methods or properties concrete subclasses must implement.
-7. ABC enforcement occurs when an incomplete class is instantiated.
-8. ABCs may contain reusable concrete behavior.
-9. Use Protocol for structural typing without forced inheritance.
-10. Combine @dataclass and ABC when objects need both structured data
-    and a required behavioral contract.
-```
-
----
-
-# 8. Official References
+# 7. Official References
 
 - Python `dataclasses` documentation:  
   <https://docs.python.org/3/library/dataclasses.html>

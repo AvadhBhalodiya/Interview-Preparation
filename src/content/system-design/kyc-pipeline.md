@@ -2,29 +2,45 @@
 title: "Design a KYC Pipeline"
 group: "Classic Designs"
 order: 14
+updated: "3 August 2026"
 ---
 
 # Design a KYC Verification Pipeline
 
-> **Category:** System Design  
-> **Level:** Intermediate backend developer (3+ years)  
-> **Document type:** Interview-preparation guide  
-> **Last standards check:** 3 August 2026  
-> **Scope:** Individual KYC onboarding, AML screening, manual review, periodic refresh, and extensibility for business KYC
+> Individual KYC onboarding, AML screening, manual review, periodic refresh, and extensibility for business KYC
+
+## In short
+
+- KYC is a long-running asynchronous workflow, not a request — a case waits on vendors, uploads, and reviewers for minutes or days, so it needs a durable state machine rather than an open HTTP connection.
+- Store evidence, findings, risk, and decision as four separate records; a single status field cannot explain why a case was approved or let policy change without rewriting history.
+- Verification is risk-based: a low-risk domestic wallet needs an ID plus a database check, a high-value international account also needs liveness, address proof, source of funds, and manual approval.
+- Automate the clear cases and route the uncertain ones to humans — exact matches, expired documents, and image quality are machine work; ambiguous names, transliteration, and damaged documents are not.
+- The independent checks (document, biometric, screening, duplicate detection) run in parallel, so total latency is the slowest check rather than their sum.
+- Every transition is idempotent and versioned: callbacks repeat and messages redeliver, and a decision must name the policy, model, threshold, and watchlist versions that produced it.
+- Vendors sit behind internal capability interfaces — `verify_document()`, `screen_watchlists()`, `perform_liveness()` — so swapping a provider never touches policy.
+
+```mermaid
+flowchart LR
+    CLIENT[Client apps] --> GW[API gateway<br/>and secure upload]
+    GW --> CASE[Case service]
+    CASE --> WF[Workflow orchestrator]
+    WF --> CHECKS[Document, biometric,<br/>screening, duplicate]
+    CHECKS --> RISK[Risk and policy engine]
+    RISK --> AUTO[Automatic decision]
+    RISK --> REVIEW[Manual review]
+    REVIEW --> AUTO
+    AUTO --> OUT[Signed webhook<br/>and audit record]
+```
+
+**Interview answer:** Model KYC as a durable workflow: create a case synchronously, then collect consent and evidence, fan the independent checks out asynchronously over a queue, aggregate them into normalized findings, score risk, and let a versioned policy either decide automatically or open a manual-review task. Keep every vendor behind an internal adapter and every state transition idempotent, so a retried callback or a redelivered message produces one business effect. Record evidence, findings, risk, decision, and the versions of everything that produced them, because the deliverable of a KYC system is a defensible audit trail, not a boolean.
+
+**Gotcha:** Treating a vendor outage as a customer failure. If a mandatory check cannot run, the case stays pending and retries; rejecting the customer because your screening provider returned 503 is both a bad experience and an unexplainable compliance decision.
 
 ---
 
 # 1. Problem Statement
 
-Design a system that verifies whether a customer is who they claim to be before allowing access to a regulated product such as:
-
-- A bank or wallet account
-- A brokerage account
-- A lending product
-- An insurance policy
-- A payment or remittance platform
-- A cryptocurrency or virtual-asset service
-- A marketplace with regulated payouts
+Design a system that verifies whether a customer is who they claim to be before allowing access to a regulated product — a bank or wallet account, a brokerage account, a lending product, an insurance policy, a payment or remittance platform, a cryptocurrency or virtual-asset service, or a marketplace with regulated payouts.
 
 The platform must collect identity evidence, verify documents and biometrics, screen the customer against risk lists, calculate risk, route uncertain cases to human reviewers, and preserve a defensible audit trail.
 
@@ -34,15 +50,7 @@ A KYC system is not only an upload form. It is a long-running, security-sensitiv
 
 ## 1.1 Core outcome
 
-For every verification case, the system should produce a decision such as:
-
-```text
-APPROVED
-REJECTED
-MANUAL_REVIEW_REQUIRED
-MORE_INFORMATION_REQUIRED
-EXPIRED
-```
+For every verification case the system produces one decision: `APPROVED`, `REJECTED`, `MANUAL_REVIEW_REQUIRED`, `MORE_INFORMATION_REQUIRED`, or `EXPIRED`.
 
 The decision must be explainable:
 
@@ -62,74 +70,22 @@ The decision must be explainable:
 
 ## 1.2 Design scope
 
-This document focuses primarily on **individual KYC**.
-
-The architecture can later support **KYB**, where the system must additionally verify:
-
-- Legal entity registration
-- Directors and authorized signatories
-- Ultimate beneficial owners
-- Ownership percentages
-- Corporate structure
-- Business activity and source of funds
+This document focuses primarily on **individual KYC**. The same architecture extends to **KYB**, which additionally verifies legal entity registration, directors and authorized signatories, ultimate beneficial owners and their ownership percentages, corporate structure, and business activity and source of funds.
 
 ---
 
 # 2. KYC, CDD, EDD, and AML
 
-These terms are related but not identical.
+These terms are related but not identical. Each answers a different question, and each widens the scope of the previous one.
 
-## 2.1 KYC
+| Term | Question it answers | Typical scope |
+|---|---|---|
+| **KYC** — Know Your Customer | Who is this customer? | Name, date of birth and address; identity-document validation; selfie and liveness verification; government or trusted-source verification; duplicate-identity detection |
+| **CDD** — Customer Due Diligence | What is the relationship, and how risky is it? | Everything in KYC, plus understanding the relationship's purpose, identifying beneficial owners where applicable, assessing customer risk, and monitoring the relationship over time |
+| **EDD** — Enhanced Due Diligence | What extra checks does higher risk demand? | Additional identity evidence, proof of address, source-of-funds and source-of-wealth evidence, senior compliance approval, more frequent review, tighter transaction limits |
+| **AML** — Anti-Money Laundering | What controls run for the life of the account? | Sanctions, PEP and adverse-media screening, transaction monitoring, suspicious-activity investigation and reporting, ongoing customer-risk review |
 
-**Know Your Customer** is the process of identifying and verifying a customer.
-
-Typical checks:
-
-- Name, date of birth, and address
-- Identity-document validation
-- Selfie and liveness verification
-- Government or trusted-source verification
-- Duplicate identity detection
-
-## 2.2 CDD
-
-**Customer Due Diligence** is broader than document verification.
-
-It generally includes:
-
-- Identifying the customer
-- Verifying the customer's identity
-- Understanding the relationship's purpose
-- Identifying beneficial owners when applicable
-- Assessing customer risk
-- Monitoring the relationship over time
-
-## 2.3 EDD
-
-**Enhanced Due Diligence** applies when risk is higher.
-
-Possible EDD actions:
-
-- Additional identity evidence
-- Proof of address
-- Source-of-funds evidence
-- Source-of-wealth evidence
-- Senior compliance approval
-- More frequent review
-- Tighter transaction limits
-
-## 2.4 AML
-
-**Anti-Money Laundering** controls extend beyond onboarding.
-
-They commonly include:
-
-- Sanctions screening
-- PEP screening
-- Adverse-media screening
-- Transaction monitoring
-- Suspicious-activity investigation and reporting
-- Ongoing customer-risk review
+CDD is broader than document verification, EDD is CDD applied at higher intensity, and AML extends well beyond onboarding into the life of the relationship.
 
 ```mermaid
 flowchart LR
@@ -150,28 +106,15 @@ flowchart LR
 
 ## 3.1 Functional requirements
 
-The system should:
-
-1. Create a KYC verification case.
-2. Capture consent and required disclosures.
-3. Collect customer identity information.
-4. Accept document images or trusted digital credentials.
-5. Extract document fields using OCR or barcode/QR parsing.
-6. Validate document authenticity and expiry.
-7. Verify identity details using trusted data sources.
-8. perform selfie, face-match, and liveness checks when required.
-9. Screen against sanctions, PEP, internal blocklists, and optionally adverse media.
-10. Detect duplicate or synthetic identities.
-11. Calculate customer risk.
-12. Make an automatic decision where policy permits.
-13. Route uncertain or high-risk cases to manual review.
-14. Request additional evidence from the customer.
-15. Notify upstream applications of status changes.
-16. Maintain immutable audit history.
-17. Re-screen customers when watchlists change.
-18. Trigger periodic or event-driven re-KYC.
-19. Support multiple countries, products, and policy versions.
-20. Support multiple verification vendors.
+| Stage | The system must |
+|---|---|
+| Intake | Create a verification case; capture consent and the required disclosures; collect customer identity information; accept document images or trusted digital credentials |
+| Evidence processing | Extract document fields by OCR or barcode/QR parsing; validate document authenticity and expiry |
+| Verification | Verify identity details against trusted data sources; perform selfie, face-match and liveness checks when required; screen against sanctions, PEP, internal blocklists and optionally adverse media; detect duplicate or synthetic identities |
+| Decision | Calculate customer risk; decide automatically where policy permits; route uncertain or high-risk cases to manual review; request additional evidence from the customer |
+| Downstream | Notify upstream applications of status changes; maintain immutable audit history |
+| Over time | Re-screen customers when watchlists change; trigger periodic or event-driven re-KYC |
+| Across markets | Support multiple countries, products, policy versions, and verification vendors |
 
 ## 3.2 Non-functional requirements
 
@@ -195,13 +138,7 @@ The system should:
 
 ## 4.1 Treat KYC as a workflow
 
-A KYC case can remain active for minutes, hours, or days. It may wait for:
-
-- A vendor response
-- A customer upload
-- A reviewer decision
-- A compliance approval
-- A retry after an outage
+A KYC case can remain active for minutes, hours, or days, waiting on a vendor response, a customer upload, a reviewer decision, a compliance approval, or a retry after an outage.
 
 Therefore, use a durable workflow or state machine instead of keeping a synchronous HTTP request open.
 
@@ -244,34 +181,17 @@ High-value international account:
 
 ## 4.4 Automate clear cases, review uncertain cases
 
-Automatic systems are effective at:
-
-- Exact or strong identity matches
-- Expired-document detection
-- Image-quality checks
-- Clear sanctions non-matches
-- Deterministic policy rules
-
-Humans are still useful for:
-
-- Ambiguous name matches
-- Transliteration differences
-- Damaged documents
-- Complex ownership structures
-- Inconsistent evidence
-- EDD judgment
+| Automation handles well | Humans are still needed for |
+|---|---|
+| Exact or strong identity matches | Ambiguous name matches |
+| Expired-document detection | Transliteration differences |
+| Image-quality checks | Damaged documents |
+| Clear sanctions non-matches | Complex ownership structures |
+| Deterministic policy rules | Inconsistent evidence and EDD judgment |
 
 ## 4.5 Keep vendors behind internal interfaces
 
-Business logic should call an internal capability such as:
-
-```text
-verify_document()
-screen_watchlists()
-perform_liveness()
-```
-
-It should not directly depend on one vendor's response model.
+Business logic should call an internal capability — `verify_document()`, `screen_watchlists()`, `perform_liveness()` — and never depend directly on one vendor's response model.
 
 ## 4.6 Make every transition idempotent
 
@@ -283,146 +203,68 @@ The same event must not create duplicate cases, duplicate charges, or conflictin
 
 # 5. High-Level Architecture
 
+The architecture is easier to hold in your head as three pictures than as one. The first is the intake path — how a case and its evidence enter the platform.
+
 ```mermaid
-flowchart TB
-    subgraph Clients
-        WEB[Web Application]
-        MOBILE[Mobile Application]
-        OPS[Operations Portal]
-        PRODUCT[Banking / Fintech Product]
-    end
-
-    subgraph Edge
-        GW[API Gateway<br/>Auth, Rate Limit, WAF]
-        UPLOAD[Secure Upload Service<br/>Pre-signed URLs]
-    end
-
-    subgraph Core_Platform[KYC Platform]
-        CASE[Case Service]
-        CONSENT[Consent Service]
-        WF[Workflow Orchestrator]
-        POLICY[Policy and Decision Engine]
-        RISK[Risk Scoring Service]
-        REVIEW[Manual Review Service]
-        NOTIFY[Notification / Webhook Service]
-    end
-
-    subgraph Verification_Services
-        DOC[Document Verification]
-        BIO[Face and Liveness]
-        IDV[Trusted-Source Identity Verification]
-        SCREEN[Sanctions / PEP Screening]
-        FRAUD[Fraud and Duplicate Detection]
-        MEDIA[Adverse-Media Screening]
-    end
-
-    subgraph Platform
-        BUS[(Event Bus)]
-        DB[(Operational Database)]
-        OBJ[(Encrypted Object Storage)]
-        SEARCH[(Reviewer Search Index)]
-        CACHE[(Cache)]
-        AUDIT[(Immutable Audit Store)]
-        VAULT[Secrets / Key Management]
-    end
-
-    subgraph External_Systems
-        DOCV[Document Vendor]
-        BIOV[Biometric Vendor]
-        GOV[Government / Trusted Registry]
-        LISTS[Watchlist Providers]
-        CKYC[Jurisdiction-Specific KYC Utilities]
-    end
-
-    WEB --> GW
-    MOBILE --> GW
-    OPS --> GW
-    PRODUCT --> GW
-
-    WEB --> UPLOAD
-    MOBILE --> UPLOAD
-    UPLOAD --> OBJ
-
-    GW --> CASE
-    GW --> CONSENT
-    CASE --> WF
+flowchart LR
+    WEB[Web and mobile apps] --> GW[API gateway<br/>auth, rate limit, WAF]
+    PRODUCT[Banking / fintech product] --> GW
+    OPS[Operations portal] --> GW
+    WEB --> UPLOAD[Secure upload service<br/>pre-signed URLs]
+    UPLOAD --> OBJ[(Encrypted object storage)]
+    GW --> CASE[Case service]
+    GW --> CONSENT[Consent service]
+    CASE --> WF[Workflow orchestrator]
     CONSENT --> WF
-
-    WF --> BUS
-    BUS --> DOC
-    BUS --> BIO
-    BUS --> IDV
-    BUS --> SCREEN
-    BUS --> FRAUD
-    BUS --> MEDIA
-
-    DOC --> DOCV
-    BIO --> BIOV
-    IDV --> GOV
-    SCREEN --> LISTS
-    IDV --> CKYC
-
-    DOC --> BUS
-    BIO --> BUS
-    IDV --> BUS
-    SCREEN --> BUS
-    FRAUD --> BUS
-    MEDIA --> BUS
-
-    BUS --> WF
-    WF --> RISK
-    RISK --> POLICY
-    POLICY --> REVIEW
-    POLICY --> NOTIFY
-
-    CASE --> DB
-    WF --> DB
-    REVIEW --> DB
-    REVIEW --> SEARCH
-    CASE --> AUDIT
-    WF --> AUDIT
-    REVIEW --> AUDIT
-
-    DOC --> OBJ
-    BIO --> OBJ
-    DOC -. credentials .-> VAULT
-    BIO -. credentials .-> VAULT
-    IDV -. credentials .-> VAULT
+    OBJ -. evidence ready event .-> WF
 ```
 
----
+The second is the verification fan-out. The orchestrator never calls a vendor directly: it publishes check requests on the event bus, one verification service owns each capability, and each of those fronts an external provider behind a normalizing adapter.
+
+```mermaid
+flowchart LR
+    WF[Workflow orchestrator] --> BUS[[Event bus]]
+    BUS --> DOC[Document verification]
+    BUS --> BIO[Face and liveness]
+    BUS --> IDV[Trusted-source identity]
+    BUS --> SCREEN[Sanctions and PEP screening]
+    BUS --> FRAUD[Fraud and duplicate detection]
+    BUS --> MEDIA[Adverse-media screening]
+    DOC --> DOCV[Document vendor]
+    BIO --> BIOV[Biometric vendor]
+    IDV --> GOV[Government registry<br/>and KYC utilities]
+    SCREEN --> LISTS[Watchlist providers]
+    DOC -. normalized findings .-> BUS
+    BUS -. findings .-> WF
+```
+
+The third is the decision path, which is short: the orchestrator sends aggregated findings to risk scoring, risk scoring hands a tier to the policy engine, and the policy engine either produces a decision the notification service publishes as a signed webhook, or opens a task in the manual-review service. `FRAUD` and `MEDIA` return findings on the same path as the other checks; the diagram omits their return arrows only to stay readable.
 
 ## 5.1 Important architectural split
 
-Use two paths:
+Cut the platform into two planes. The **control plane** owns case state, workflow progression, policy evaluation, human decisions, and audit records. The **evidence-processing plane** owns images, PDFs, video, OCR, face embeddings, vendor calls, and screening datasets.
 
-### Control plane
-
-Responsible for:
-
-- Case state
-- Workflow progression
-- Policy evaluation
-- Human decisions
-- Audit records
-
-### Evidence-processing plane
-
-Responsible for:
-
-- Images
-- PDFs
-- Video
-- OCR
-- Face embeddings
-- Vendor calls
-- Screening datasets
-
-This split prevents heavy media processing from slowing down case-management APIs.
+This split prevents heavy media processing from slowing down case-management APIs, and it lets the two halves scale on completely different signals: request rate for one, queue depth and CPU for the other.
 
 ---
 
-## 5.2 Trust boundaries
+## 5.2 Shared platform substrate
+
+Both planes sit on the same set of stores, and which store holds what is a design decision in its own right.
+
+| Store | Holds | Why it is separate |
+|---|---|---|
+| Event bus | Check requests and results | Decouples orchestration from slow and unreliable vendors |
+| Operational database | Cases, evidence metadata, check executions, findings, decisions | Transactional source of truth for state transitions |
+| Encrypted object storage | Document images, selfies, video | Keeps large media off the case-management request path |
+| Reviewer search index | Denormalized case and queue views | Reviewer queries must not compete with the write path |
+| Cache | Policy documents, watchlist versions, vendor health | Read-heavy configuration that changes rarely |
+| Immutable audit store | Append-only actor, action, and state records | Must survive tampering with the operational database |
+| Secrets and key management | Vendor credentials, KMS data keys | No service holds a long-lived vendor secret in its own config |
+
+---
+
+## 5.3 Trust boundaries
 
 ```mermaid
 flowchart LR
@@ -440,14 +282,7 @@ flowchart LR
     OPS --> PII
 ```
 
-Key controls:
-
-- Never trust uploaded file type or client-side validation.
-- Scan and decode documents in an isolated processing environment.
-- Restrict reviewer access using least privilege.
-- Send only required fields to each vendor.
-- Record data sent to and received from vendors.
-- Do not expose storage object paths directly.
+The controls that hold those boundaries: never trust the uploaded file type or client-side validation; scan and decode documents in an isolated processing environment; restrict reviewer access by least privilege; send only the required fields to each vendor and record what was sent and received; and never expose storage object paths directly.
 
 ---
 
@@ -455,57 +290,31 @@ Key controls:
 
 ## 6.1 Normal onboarding flow
 
+The product API creates the case with an idempotency key; the customer accepts consent, submits identity details, and uploads document and selfie straight to object storage through a pre-signed URL, which emits the `evidence.ready` event that starts the workflow.
+
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as Customer
-    participant A as Product API
-    participant K as KYC Case Service
-    participant W as Workflow Engine
-    participant O as Object Storage
-    participant D as Document Service
-    participant B as Biometric Service
-    participant S as Screening Service
-    participant P as Decision Engine
-    participant R as Reviewer
-    participant N as Webhook Service
+    participant U as Customer and product API
+    participant K as Case service
+    participant W as Workflow engine
+    participant V as Verification services
+    participant P as Decision engine
+    participant N as Webhook service
 
-    U->>A: Start onboarding
-    A->>K: POST /kyc/cases (Idempotency-Key)
-    K-->>A: case_id + required_steps
-
-    U->>K: Accept consent
-    U->>K: Submit identity details
-    U->>O: Upload document and selfie
-    O-->>K: Evidence-uploaded event
-
+    U->>K: Create case, consent, identity, evidence
     K->>W: Start verification workflow
-
-    par Automated checks
-        W->>D: Verify document
-        W->>B: Verify face and liveness
-        W->>S: Screen sanctions and PEP
-    end
-
-    D-->>W: Document findings
-    B-->>W: Biometric findings
-    S-->>W: Screening findings
-
-    W->>P: Evaluate policy and risk
-
-    alt Clear low/medium-risk case
-        P-->>W: APPROVED
-    else Definite prohibited match or fraud
-        P-->>W: REJECTED / BLOCKED
-    else Ambiguous or high-risk
+    W->>V: Document, biometric and screening checks in parallel
+    V-->>W: Normalized findings
+    W->>P: Evaluate risk and policy
+    alt Clear low/medium risk, or a definite prohibited match
+        P-->>W: APPROVED or REJECTED
+    else Ambiguous or high risk
         P-->>W: MANUAL_REVIEW_REQUIRED
-        W->>R: Create review task
-        R-->>W: Approve / Reject / Request info
+        W->>W: Reviewer approves, rejects, or requests more information
     end
-
     W->>N: Publish final status
-    N-->>A: Signed webhook
-    A-->>U: Account status updated
+    N-->>U: Signed webhook, account status updated
 ```
 
 ---
@@ -524,10 +333,7 @@ flowchart LR
     RISK --> DECISION[Decision]
 ```
 
-If these checks take 2.0 s, 3.5 s, 1.0 s, and 1.5 s:
-
-- Sequential latency: approximately 8.0 s
-- Parallel latency: approximately 3.5 s plus orchestration overhead
+If these checks take 2.0 s, 3.5 s, 1.0 s, and 1.5 s, sequential execution costs about 8.0 s while parallel execution costs about 3.5 s plus orchestration overhead — the slowest check, not the sum.
 
 ---
 
@@ -595,15 +401,7 @@ Check statuses:
 
 ## 7.3 Transition rules
 
-Each transition should validate:
-
-- Current state
-- Expected workflow version
-- Actor authorization
-- Required findings
-- Policy version
-- Idempotency key
-- Transition reason
+Each transition should validate the current state, the expected workflow version, actor authorization, required findings, the policy version, the idempotency key, and a transition reason.
 
 Example:
 
@@ -637,47 +435,19 @@ If no row is updated, another process changed the case. Reload and re-evaluate i
 
 ## 8.1 API Gateway
 
-Responsibilities:
-
-- Authentication and authorization
-- Tenant isolation
-- WAF rules
-- Rate limiting
-- Request-size limits
-- Idempotency-header enforcement
-- Request correlation IDs
-- PII-safe access logging
+The gateway handles authentication and authorization, tenant isolation, WAF rules, rate limiting, request-size limits, idempotency-header enforcement, request correlation IDs, and PII-safe access logging.
 
 Avoid logging full request bodies because KYC payloads contain highly sensitive information.
 
 ## 8.2 Case Service
 
-The Case Service owns:
-
-- Case creation
-- Customer and product references
-- Current status
-- Required steps
-- Case expiration
-- Public status API
-- Links between evidence, checks, findings, and decisions
-
-It should not contain every verification algorithm.
+The Case Service owns case creation, customer and product references, current status, required steps, case expiration, the public status API, and the links between evidence, checks, findings, and decisions. It should not contain every verification algorithm — it is a state and reference owner, not a verification engine.
 
 ## 8.3 Consent Service
 
-Store:
+Consent is evidence, so store it as evidence: consent type, version of the legal text, language, timestamp, collection channel, user-agent or device context where permitted, withdrawal status, and proof of an affirmative action.
 
-- Consent type
-- Version of legal text
-- Language
-- Timestamp
-- Collection channel
-- User agent/device context where permitted
-- Withdrawal status
-- Evidence of affirmative action
-
-Do not use one generic boolean such as `consent = true`.
+Do not use one generic boolean such as `consent = true` — it proves nothing about what the customer was actually shown.
 
 ## 8.4 Secure Upload Service
 
@@ -690,33 +460,13 @@ Recommended upload pattern:
 5. Clean evidence receives an immutable evidence ID.
 6. Workflow receives an `evidence.ready` event.
 
-Benefits:
-
-- Application servers do not proxy large files.
-- Uploads can scale independently.
-- Object storage provides durability.
-- Processing starts asynchronously.
+This keeps application servers out of the large-file path, lets uploads scale independently of the API, inherits object storage's durability, and starts processing asynchronously the moment the object lands.
 
 ## 8.5 Workflow Orchestrator
 
-The orchestrator should:
+The orchestrator starts the required checks, waits for asynchronous results, applies timeouts, retries transient failures, handles compensating actions, pauses for manual review, resumes after additional evidence arrives, and persists progress so a worker restart loses nothing.
 
-- Start required checks
-- Wait for asynchronous results
-- Apply timeouts
-- Retry transient failures
-- Handle compensating actions
-- Pause for manual review
-- Resume after additional evidence
-- Persist workflow progress
-
-Suitable approaches:
-
-- A workflow engine such as Temporal, AWS Step Functions, Azure Durable Functions, or Camunda
-- A carefully implemented database-backed state machine
-- Event-driven orchestration using Kafka/SQS plus a durable workflow store
-
-For complex KYC, a durable workflow engine usually reduces custom retry and timer logic.
+Three implementations are viable: a workflow engine such as Temporal, AWS Step Functions, Azure Durable Functions, or Camunda; a carefully implemented database-backed state machine; or event-driven orchestration on Kafka/SQS plus a durable workflow store. For complex KYC, a durable workflow engine usually removes more custom retry and timer logic than it adds operational burden.
 
 ## 8.6 Verification adapters
 
@@ -765,27 +515,11 @@ The decision engine should consume normalized findings, not raw vendor JSON.
 
 ## 8.7 Policy and decision engine
 
-The policy engine decides:
-
-- Which checks are required
-- Whether a failed check is a hard block
-- Whether EDD is needed
-- Whether manual review is required
-- Whether automatic approval is allowed
-- When re-KYC is due
-
-Policies must be versioned and testable.
+The policy engine decides which checks are required, whether a failed check is a hard block, whether EDD is needed, whether manual review is required, whether automatic approval is allowed at all, and when re-KYC becomes due. Policies must be versioned and testable; the Risk Scoring and Decisioning section below shows the shape of one.
 
 ## 8.8 Notification and webhook service
 
-It should:
-
-- Send signed status callbacks
-- Retry safely
-- Preserve delivery history
-- Avoid including unnecessary PII
-- Support event ordering
-- Allow consumers to fetch full case status after receiving a lightweight event
+It sends signed status callbacks, retries safely, preserves delivery history, keeps unnecessary PII out of the payload, supports event ordering, and lets consumers fetch full case status after receiving a deliberately lightweight event.
 
 ---
 
@@ -809,40 +543,17 @@ flowchart LR
 
 ## 9.2 File safety
 
-Before OCR:
-
-- Validate magic bytes, not only extension.
-- Limit image dimensions, file size, and page count.
-- Reject decompression bombs.
-- Re-encode images into a safe canonical format.
-- Strip unsafe metadata where appropriate.
-- Scan for malware.
-- Process untrusted files in a sandbox with restricted network access.
+An uploaded identity document is attacker-controlled input. Before OCR, validate magic bytes rather than the extension, limit image dimensions, file size and page count, reject decompression bombs, re-encode images into a safe canonical format, strip unsafe metadata where appropriate, scan for malware, and do all of it in a sandbox with restricted network access.
 
 ## 9.3 Quality checks
 
-Typical checks:
-
-- Blur
-- Glare
-- Cropping
-- Low resolution
-- Document too small
-- Unsupported orientation
-- Covered fields
-- Screenshot or photocopy detection
-- Front/back mismatch
+Typical checks are blur, glare, cropping, low resolution, document too small in frame, unsupported orientation, covered fields, screenshot or photocopy detection, and front/back mismatch.
 
 Fail quality checks early so the customer can retake the image before expensive verification calls.
 
 ## 9.4 Classification
 
-The system identifies:
-
-- Document type
-- Issuing country
-- Document side
-- Template/version
+The system identifies document type, issuing country, document side, and template version.
 
 Example:
 
@@ -859,32 +570,18 @@ Low-confidence classification should request a customer selection or route to re
 
 ## 9.5 Field extraction
 
-Possible extraction sources:
-
-- OCR
-- Machine-readable zone
-- PDF417 barcode
-- Secure QR code
-- NFC chip
-- Digitally signed XML
-- Trusted digital credential
-
-Prefer cryptographically verifiable data over OCR where supported.
+Fields can come from OCR, the machine-readable zone, a PDF417 barcode, a secure QR code, an NFC chip, digitally signed XML, or a trusted digital credential. Prefer cryptographically verifiable data over OCR wherever the document supports it — a signed credential removes an entire class of extraction error and forgery.
 
 ## 9.6 Authenticity checks
 
-Possible signals:
+Authenticity is a weight of evidence, not one test, and the signals are genuinely independent of each other:
 
-- Template consistency
+- Template consistency, and font and layout consistency
 - Hologram or security-feature analysis
-- Font and layout consistency
-- MRZ checksum
-- Barcode-to-visible-field consistency
-- Digital-signature verification
-- NFC chip authenticity
-- Image manipulation detection
-- Document-number format
-- Issuer database verification
+- MRZ checksum, and barcode-to-visible-field consistency
+- Digital-signature verification and NFC chip authenticity
+- Image-manipulation detection
+- Document-number format, and issuer database verification
 
 No single signal should be treated as perfect.
 
@@ -897,16 +594,7 @@ Entered name:    RAHULKUMAR PATEL
 Document name:  RAHUL KUMAR PATEL
 ```
 
-Use normalization:
-
-- Unicode normalization
-- Case folding
-- Whitespace normalization
-- Punctuation removal
-- Transliteration where permitted
-- Token order handling
-- Common-name aliases
-- Locale-aware date formats
+Normalize first: Unicode normalization, case folding, whitespace normalization, punctuation removal, transliteration where permitted, token-order handling, common-name aliases, and locale-aware date formats.
 
 Do not rely only on edit distance. Combine multiple attributes:
 
@@ -920,15 +608,7 @@ Address           partial
 
 ## 9.8 Trusted-source verification
 
-Where legally and technically available, verify selected attributes against:
-
-- Government identity service
-- Tax-identity service
-- Trusted digital-document provider
-- Credit bureau
-- Central KYC registry
-- Mobile-network identity service
-- Bank-account ownership verification
+Where legally and technically available, verify selected attributes against a government identity service, a tax-identity service, a trusted digital-document provider, a credit bureau, a central KYC registry, a mobile-network identity service, or bank-account ownership verification.
 
 For India, integrations may include permitted flows around Aadhaar offline verification, PAN verification, DigiLocker, CKYCR, or video-based customer identification. The exact allowed process depends on the regulated entity, product, purpose, consent, and current law.
 
@@ -970,52 +650,17 @@ flowchart LR
 
 ## 10.2 Liveness
 
-Liveness tries to determine whether the capture comes from a live person rather than:
+Liveness tries to determine whether the capture comes from a live person rather than a printed photo, a screen replay, a recorded video, a mask, or a synthetic or manipulated face.
 
-- A printed photo
-- A screen replay
-- A recorded video
-- A mask
-- A synthetic or manipulated face
-
-Approaches:
-
-### Passive liveness
-
-The user simply takes a selfie or short video.
-
-Advantages:
-
-- Better user experience
-- Faster completion
-- Lower abandonment
-
-### Active liveness
-
-The user performs an action such as turning their head or following an on-screen challenge.
-
-Advantages:
-
-- More signals against simple replay attacks
-
-Trade-off:
-
-- More friction
-- Accessibility concerns
-- Harder completion on poor devices or networks
+| | Passive liveness | Active liveness |
+|---|---|---|
+| What the user does | Takes a selfie or short video | Turns their head or follows an on-screen challenge |
+| For | Better experience, faster completion, lower abandonment | More signals against simple replay attacks |
+| Against | Fewer explicit anti-replay signals | More friction, accessibility concerns, harder to complete on poor devices or networks |
 
 ## 10.3 Face matching
 
-The system compares the live capture with the face on identity evidence.
-
-Store:
-
-- Vendor/model version
-- Similarity score
-- Threshold version
-- Image-quality score
-- Decision
-- Reason codes
+The system compares the live capture with the face on identity evidence, and stores the vendor and model version, the similarity score, the threshold version, the image-quality score, the decision, and the reason codes. Storing the score without the threshold version makes the result unreproducible the moment the threshold moves.
 
 Example:
 
@@ -1032,18 +677,9 @@ Thresholds must be calibrated using representative data. A global threshold may 
 
 ## 10.4 Biometric privacy
 
-Biometric data is highly sensitive.
+Biometric data is the most sensitive class in the system, and unlike a password it cannot be reissued after a breach.
 
-Recommended controls:
-
-- Avoid retaining raw biometric data longer than required.
-- Separate biometric storage from ordinary application data.
-- Encrypt with dedicated keys.
-- Restrict access to a very small set of services.
-- Do not expose embeddings to reviewers.
-- Prevent embeddings from being used for unrelated purposes.
-- Record model version and evaluation outcome.
-- Support jurisdiction-specific deletion and consent rules.
+Keep raw biometric data no longer than required; store it separately from ordinary application data and encrypt it with dedicated keys; restrict access to a very small set of services; never expose embeddings to reviewers or allow them to be reused for unrelated purposes; record the model version and evaluation outcome alongside the result; and support jurisdiction-specific deletion and consent rules.
 
 ---
 
@@ -1065,13 +701,7 @@ Searches credible sources for risk-relevant information such as fraud, corruptio
 
 ### Internal lists
 
-Examples:
-
-- Previously confirmed fraudsters
-- Closed accounts
-- Device or identity deny lists
-- Law-enforcement requests
-- Previous rejected cases
+Your own history is a screening source: previously confirmed fraudsters, closed accounts, device or identity deny lists, law-enforcement requests, and previously rejected cases.
 
 ## 11.2 Name-screening flow
 
@@ -1088,19 +718,14 @@ flowchart TD
 
 ## 11.3 Candidate matching
 
-Do not compare only the full name.
-
-Use available attributes:
+Do not compare only the full name. Score across every attribute available:
 
 - Full name and aliases
 - Date or year of birth
-- Nationality
-- Country of residence
+- Nationality and country of residence
 - Gender where lawfully used
-- Passport or national ID number
-- Address
-- Organization
-- Associates and relationships
+- Passport or national ID number, and address
+- Organization, and known associates or relationships
 
 Example:
 
@@ -1141,28 +766,11 @@ Result: likely false positive.
 
 ## 11.5 List freshness
 
-Store:
-
-- Dataset source
-- Dataset version
-- Download time
-- Effective time
-- Hash/checksum
-- Parser version
-
-A screening result is incomplete without identifying which list version was used.
+For every dataset, store the source, the dataset version, the download time, the effective time, a hash or checksum, and the parser version. A screening result is incomplete without identifying which list version produced it — "no match" against a three-week-old list is not the same claim as "no match" against today's.
 
 ## 11.6 Re-screening on list updates
 
-When a list changes:
-
-1. Ingest the new list.
-2. Calculate changed or new records.
-3. Identify customers potentially affected.
-4. Re-screen them.
-5. Create alerts for material new matches.
-6. Preserve previous and new results.
-7. Apply product restrictions according to policy.
+When a list changes, ingest the new version, diff it to find changed and new records, identify the customers those records could affect, re-screen only those, raise alerts for material new matches, preserve both the previous and the new results, and apply product restrictions according to policy.
 
 Avoid re-screening every customer against every record if incremental matching is possible.
 
@@ -1283,17 +891,15 @@ decisions:
 
 ## 12.6 Version everything
 
-Record:
+Every decision must carry the versions that produced it:
 
-- Policy version
-- Ruleset version
-- Risk-model version
-- Thresholds
-- Vendor/model versions
+- Policy version and ruleset version
+- Risk-model version and the thresholds in force
+- Vendor and model versions
 - Watchlist versions
 - Reviewer checklist version
 
-This lets the organization reproduce why a decision was made.
+This is what lets the organization reproduce, years later, why a decision was made — and it is the difference between an auditable decision and an opinion.
 
 ---
 
@@ -1301,17 +907,7 @@ This lets the organization reproduce why a decision was made.
 
 ## 13.1 Review queue
 
-Review tasks should include:
-
-- Priority
-- Risk tier
-- Service-level deadline
-- Required reviewer skill
-- Jurisdiction
-- Product
-- Reason codes
-- Evidence summary
-- Conflict-of-interest restrictions
+A review task carries enough to route and prioritize it without opening the case: priority, risk tier, service-level deadline, required reviewer skill, jurisdiction, product, reason codes, an evidence summary, and any conflict-of-interest restrictions.
 
 Example priority:
 
@@ -1324,20 +920,16 @@ P3: Low-confidence OCR
 
 ## 13.2 Reviewer workspace
 
-The reviewer needs:
+A reviewer decides faster and more consistently when everything is on one screen:
 
-- Side-by-side entered and extracted data
-- Document image with highlighted OCR regions
-- Check results
-- Name-screening candidates
-- Risk factors
-- Case timeline
-- Related customers/devices
-- Prior reviewer notes
-- Policy guidance
-- Controlled decision actions
+- Entered and extracted data side by side
+- The document image with OCR regions highlighted
+- Check results, name-screening candidates, and risk factors
+- The case timeline, and related customers and devices
+- Prior reviewer notes and the applicable policy guidance
+- A controlled set of decision actions
 
-Avoid showing unrelated PII.
+Avoid showing unrelated PII — a reviewer workspace is the largest standing PII exposure in the system.
 
 ## 13.3 Four-eyes control
 
@@ -1354,24 +946,13 @@ The second reviewer should not simply inherit unrestricted edit access to the fi
 
 ## 13.4 Override controls
 
-If a reviewer overrides an automated recommendation, require:
+If a reviewer overrides an automated recommendation, require a structured reason code, a free-text explanation where necessary, supporting evidence, the reviewer's identity, a timestamp, and — where policy demands it — supervisor approval.
 
-- Structured reason code
-- Free-text explanation where necessary
-- Supporting evidence
-- Reviewer identity
-- Timestamp
-- Optional supervisor approval
-
-Do not allow silent status editing directly in the database.
+Do not allow silent status editing directly in the database. An override that leaves no trace is indistinguishable from a compromise.
 
 ## 13.5 Prevent reviewer leakage
 
-Reviewer notes may contain sensitive intelligence or internal reasoning. Separate:
-
-- Customer-visible reason
-- Internal operational note
-- Restricted compliance note
+Reviewer notes may contain sensitive intelligence or internal reasoning, so keep three separate fields: the customer-visible reason, the internal operational note, and the restricted compliance note.
 
 ---
 
@@ -1609,25 +1190,11 @@ kyc.rescreen.requested
 
 ## 15.3 Schema evolution
 
-Use versioned schemas.
-
-Safe changes:
-
-- Add optional fields
-- Add new enum values only when consumers handle unknown values
-- Publish a new event version for breaking changes
-
-Use a schema registry for Kafka/Avro/Protobuf or automated JSON Schema compatibility checks.
+Use versioned schemas. Adding an optional field is safe; adding an enum value is safe only when consumers already handle unknown values; anything else needs a new event version. Enforce this with a schema registry for Kafka/Avro/Protobuf, or automated JSON Schema compatibility checks.
 
 ## 15.4 Ordering
 
-Ordering should normally be guaranteed per case, not globally.
-
-Partition key:
-
-```text
-partition_key = case_id
-```
+Ordering should be guaranteed per case, not globally — so `partition_key = case_id`.
 
 Still protect consumers with version checks because retries and multi-topic flows can create out-of-order processing.
 
@@ -1794,24 +1361,9 @@ Operational services can use customer IDs and tokens without accessing raw PII.
 
 ## 17.1 API idempotency
 
-For mutation requests, store:
+For mutation requests, store `tenant_id`, `idempotency_key`, `request_hash`, `response_status`, the `response_body` or a reference to it, `created_at`, and `expires_at`.
 
-```text
-tenant_id
-idempotency_key
-request_hash
-response_status
-response_body/reference
-created_at
-expires_at
-```
-
-Rules:
-
-- Same key + same payload -> return original result.
-- Same key + different payload -> return conflict.
-- Scope keys by tenant and endpoint.
-- Persist the result before returning success.
+The rules that fall out of that record: the same key with the same payload returns the original result; the same key with a different payload returns a conflict; keys are scoped by tenant and endpoint; and the result is persisted *before* success is returned. See [Idempotency and HTTP Methods](../api-design/idempotency-http-methods.md) for the general pattern.
 
 ## 17.2 Message processing
 
@@ -1853,37 +1405,22 @@ CREATE TABLE event_outbox (
 
 A publisher sends committed events to the broker and marks them as published.
 
-This avoids:
+This avoids: `Database committed but event not published`
 
-```text
-Database committed but event not published
-```
-
-or:
-
-```text
-Event published but database rolled back
-```
+or: `Event published but database rolled back`
 
 ## 17.4 Retry classification
 
-### Retryable
+Retrying a permanent failure burns vendor quota and delays the customer; not retrying a transient one rejects a legitimate customer for an infrastructure reason. Classify explicitly.
 
-- Timeout
-- Connection reset
-- HTTP 429
-- Vendor 5xx
-- Temporary registry unavailable
-- Broker delivery failure
-
-### Non-retryable
-
-- Unsupported document type
-- Invalid input schema
-- Document expired
-- Consent missing
-- Customer under minimum age
-- Definite policy violation
+| Retryable | Non-retryable |
+|---|---|
+| Timeout | Unsupported document type |
+| Connection reset | Invalid input schema |
+| HTTP 429 | Document expired |
+| Vendor 5xx | Consent missing |
+| Temporary registry unavailable | Customer under minimum age |
+| Broker delivery failure | Definite policy violation |
 
 ## 17.5 Backoff
 
@@ -1891,32 +1428,13 @@ Event published but database rolled back
 delay = min(base * 2^attempt + jitter, max_delay)
 ```
 
-Example:
-
-```text
-5 s -> 12 s -> 24 s -> 51 s -> 2 min -> 5 min
-```
-
-Use vendor-specific retry budgets.
+That yields roughly `5 s → 12 s → 24 s → 51 s → 2 min → 5 min`. Use vendor-specific retry budgets so one slow provider cannot consume the whole worker pool.
 
 ## 17.6 Vendor callbacks
 
-A vendor can send the same callback many times.
+A vendor can send the same callback many times, so deduplicate on `unique(provider, provider_event_id)`.
 
-Process by:
-
-```text
-unique(provider, provider_event_id)
-```
-
-Also verify:
-
-- Signature
-- Timestamp
-- Allowed source where feasible
-- Provider reference
-- Expected current check state
-- Payload hash
+Also verify the signature, the timestamp, the source address where feasible, the provider reference, the expected current check state, and the payload hash before acting on it.
 
 ## 17.7 Avoid pretending infrastructure gives exactly-once delivery
 
@@ -1952,30 +1470,13 @@ Classify data clearly.
 
 ## 18.2 Encryption
 
-### In transit
+**In transit:** TLS for every service connection, mTLS for sensitive internal and vendor integrations where supported, automated certificate rotation, and strong webhook signatures.
 
-- TLS for every service connection
-- mTLS for sensitive internal and vendor integrations where supported
-- Certificate rotation
-- Strong webhook signatures
-
-### At rest
-
-- Envelope encryption using a KMS/HSM
-- Separate keys by environment, tenant, or data domain where justified
-- Key rotation
-- Key-use audit logs
-- Different key policy for biometrics
+**At rest:** envelope encryption backed by a KMS or HSM, keys separated by environment, tenant, or data domain where justified, key rotation, key-use audit logs, and a distinct key policy for biometrics.
 
 ## 18.3 Tokenization
 
-Replace values such as document number with tokens.
-
-```text
-Raw PAN/passport number -> PII vault
-Application database    -> tok_doc_c8d41
-Logs and events          -> masked or tokenized value
-```
+Replace values such as a document number with tokens: the raw PAN or passport number lives only in the PII vault, the application database holds `tok_doc_c8d41`, and logs and events carry a masked or tokenized value.
 
 ## 18.4 Access control
 
@@ -1989,48 +1490,27 @@ Attributes:
   risk_clearance = STANDARD
 ```
 
-A reviewer should see only cases matching their authorization.
-
-Require step-up authentication for:
-
-- Downloading evidence
-- Viewing full document numbers
-- High-risk approvals
-- Bulk exports
-- Administrative configuration changes
+A reviewer should see only cases matching their authorization, and step-up authentication should be required for downloading evidence, viewing full document numbers, high-risk approvals, bulk exports, and administrative configuration changes.
 
 ## 18.5 Audit log
 
-Audit events should include:
+Every audit event names:
 
-- Actor
-- Action
-- Resource
-- Timestamp
-- Request/correlation ID
-- Old and new state
-- Reason
+- Actor, action, and resource
+- Timestamp and request/correlation ID
+- Old and new state, and the reason
 - Policy version
-- Source IP/device context where appropriate
-- Evidence accessed
-- Export/download actions
+- Source IP or device context where appropriate
+- Evidence accessed, and any export or download
 
-Protect the audit log from modification. Options include:
-
-- Append-only database permissions
-- Write-once object storage
-- Hash chaining
-- Signed log batches
-- Independent security-account storage
+Protect the log from modification — append-only database permissions, write-once object storage, hash chaining, signed log batches, or storage in an independent security account. Any of these is fine; having none of them makes the audit trail worth exactly as much as the operational database's access controls.
 
 ## 18.6 Log hygiene
 
-Never write these to ordinary logs:
+These must never reach an ordinary log, at any level, in any environment:
 
-- Full document images
-- Full document numbers
-- Selfies
-- Full address
+- Full document images and selfies
+- Full document numbers and full addresses
 - Raw vendor payloads
 - Access tokens
 - Biometric embeddings
@@ -2048,26 +1528,13 @@ Use structured redaction:
 
 ## 18.7 Data minimization
 
-Collect only what is required for:
-
-- Identity verification
-- Risk assessment
-- Legal retention
-- Product eligibility
+Collect only what identity verification, risk assessment, legal retention, or product eligibility actually requires.
 
 Do not collect extra identity evidence only because the vendor supports it.
 
 ## 18.8 Retention and deletion
 
-Retention may differ for:
-
-- Raw uploads
-- Extracted fields
-- Biometric captures
-- Verification results
-- Audit records
-- Sanctions-screening history
-- Rejected applications
+Retention differs by data class — raw uploads, extracted fields, biometric captures, verification results, audit records, sanctions-screening history, and rejected applications can each have their own clock.
 
 Implement a policy engine:
 
@@ -2077,39 +1544,19 @@ retain_until = relationship_end + legal_period
 legal_hold = false
 ```
 
-Deletion should include:
-
-- Primary storage
-- Search indexes
-- Caches
-- Derived thumbnails
-- Vendor-side deletion where contractually supported
-- Expired pre-signed URLs
-- Backup lifecycle according to policy
+Deletion is not one `DELETE` — it has to reach primary storage, search indexes, caches, derived thumbnails, vendor-side copies where the contract supports it, any still-valid pre-signed URLs, and the backup lifecycle according to policy.
 
 ## 18.9 Consent and purpose limitation
 
-Consent is not a universal legal basis for every regulated processing activity, but where consent or notice is required, the system must prove:
-
-- What the customer was told
-- Which version they saw
-- What action they took
-- When it occurred
-- Which purpose applied
+Consent is not a universal legal basis for every regulated processing activity, but where consent or notice is required, the system must be able to prove what the customer was told, which version of that text they saw, what action they took, when it happened, and which purpose it applied to.
 
 Data collected for KYC should not silently become marketing or unrelated analytics data.
 
 ## 18.10 Model governance
 
-For OCR, fraud, face match, liveness, or risk models:
+For OCR, fraud, face-match, liveness, or risk models: track the model version, evaluate false-accept and false-reject rates, monitor drift, test across representative conditions, and always keep a human escalation path.
 
-- Track model version
-- Evaluate false accept and false reject rates
-- Monitor drift
-- Test across representative conditions
-- Maintain human escalation
-- Protect against prompt or model-output injection if generative AI is used
-- Never let a free-form LLM directly produce a final regulatory decision without controlled rules and review
+If generative AI is used anywhere in the pipeline, protect against prompt and model-output injection, and never let a free-form LLM directly produce a final regulatory decision without controlled rules and review.
 
 ## 18.11 Jurisdiction-specific policy
 
@@ -2152,17 +1599,9 @@ Peak submitted cases per second:
 ≈ 20.8 cases/second
 ```
 
-Add a 5× burst factor:
+Add a 5× burst factor: `≈ 105 cases/second`
 
-```text
-≈ 105 cases/second
-```
-
-Check jobs:
-
-```text
-105 × 4 = 420 check jobs/second
-```
+Check jobs: `105 × 4 = 420 check jobs/second`
 
 Evidence ingestion:
 
@@ -2185,12 +1624,7 @@ Daily raw evidence:
 
 Compression, retention, duplicate uploads, video, and derived assets can change this significantly.
 
-This calculation shows why:
-
-- Object storage is required.
-- Retention matters financially.
-- Videos should not be retained indefinitely by default.
-- Lifecycle policies are part of architecture, not housekeeping.
+At 9 TB/day, object storage stops being a convenience and becomes a requirement, retention becomes a line item rather than a compliance detail, video cannot be retained indefinitely by default, and lifecycle policies become part of the architecture rather than housekeeping.
 
 ## 19.3 Service scaling
 
@@ -2211,14 +1645,7 @@ notification-worker pool
 
 ### Databases
 
-Use:
-
-- Read replicas for reviewer/search views
-- Partitioning by tenant, creation date, or regional shard
-- Indexed status and queue fields
-- Connection pooling
-- Archival of old operational records
-- Separate analytics pipeline
+Use read replicas for reviewer and search views, partition by tenant, creation date, or regional shard, index the status and queue fields, pool connections, archive old operational records, and keep analytics on a separate pipeline. See [Database Scaling](db-scaling.md) for the general playbook.
 
 ### Object processing
 
@@ -2226,15 +1653,7 @@ Use event-triggered workers with concurrency limits.
 
 ## 19.4 Backpressure
 
-When a vendor slows down:
-
-- Stop increasing concurrency blindly.
-- Queue requests.
-- Apply per-vendor rate limits.
-- Use circuit breakers.
-- Expose pending status.
-- Preserve deadlines.
-- Shift to a secondary vendor when policy allows.
+When a vendor slows down, the wrong move is to raise concurrency. Queue requests instead, apply per-vendor rate limits, put a circuit breaker in front, expose the pending status to the customer, preserve the case's deadlines, and shift to a secondary vendor where policy allows.
 
 ```mermaid
 flowchart LR
@@ -2246,14 +1665,7 @@ flowchart LR
 
 ## 19.5 Screening indexes
 
-For large watchlists:
-
-- Normalize names during ingestion.
-- Build phonetic and n-gram indexes.
-- Use candidate retrieval before expensive scoring.
-- Partition by entity type or script where useful.
-- Cache list versions, not final customer decisions.
-- Incrementally re-screen changed records.
+For large watchlists, normalize names during ingestion, build phonetic and n-gram indexes, retrieve candidates before running expensive scoring, partition by entity type or script where useful, cache list versions rather than final customer decisions, and re-screen incrementally against changed records only.
 
 ## 19.6 Multi-region strategy
 
@@ -2267,14 +1679,7 @@ Customer region
   -> centralized policy metadata
 ```
 
-Consider:
-
-- Data residency
-- Vendor endpoint location
-- Cross-border data transfer
-- Key locality
-- Failover legality
-- Watchlist synchronization
+The constraints to weigh are data residency, vendor endpoint location, cross-border data transfer, key locality, the legality of failover itself, and watchlist synchronization.
 
 A technically possible failover may still be legally unacceptable if it moves PII to another region.
 
@@ -2332,36 +1737,19 @@ The exact values depend on the provider and user journey.
 
 ## 20.4 Dead-letter queues
 
-A DLQ is for investigation, not permanent storage.
-
-Each DLQ message should retain:
-
-- Original event
-- Error classification
-- Attempts
-- First and last failure time
-- Consumer version
-- Correlation ID
+A DLQ is for investigation, not permanent storage. Each message should retain the original event, an error classification, the attempt count, the first and last failure times, the consumer version, and the correlation ID.
 
 Provide controlled replay after fixing the root cause.
 
 ## 20.5 Graceful degradation
 
-Examples:
-
-- If adverse media is unavailable but not mandatory for low-risk onboarding, continue under a documented fallback policy.
-- If sanctions screening is mandatory, keep the case pending rather than approve.
-- If the primary liveness vendor is down, use a permitted secondary provider.
-- If all providers are down, allow evidence submission and process later.
+Degradation is a policy decision, not an implementation detail. If adverse media is unavailable but not mandatory for low-risk onboarding, continue under a documented fallback policy. If sanctions screening is mandatory, keep the case pending rather than approve it. If the primary liveness vendor is down, use a permitted secondary provider; if all providers are down, still accept the customer's evidence and process it later.
 
 Do not silently skip a mandatory control.
 
 ## 20.6 Disaster recovery
 
-Define:
-
-- RPO: maximum acceptable data loss
-- RTO: maximum acceptable recovery time
+Define an RPO (maximum acceptable data loss) and an RTO (maximum acceptable recovery time) per store, because they are not the same for all three.
 
 Example:
 
@@ -2385,46 +1773,17 @@ Test recovery, including key access and workflow resumption.
 
 # 21. Observability and Auditability
 
-## 21.1 Business metrics
+## 21.1 What to measure
 
-- Cases started
-- Submission completion rate
-- Automatic approval rate
-- Manual review rate
-- Rejection rate
-- More-information rate
-- Abandonment by step
-- Median time to decision
-- Review SLA breaches
-- Re-KYC completion rate
+Three layers, and the top one is the layer most teams forget to instrument.
 
-## 21.2 Verification metrics
+| Layer | Metrics |
+|---|---|
+| Business | Cases started, submission completion rate, automatic approval rate, manual review rate, rejection rate, more-information rate, abandonment by step, median time to decision, review SLA breaches, re-KYC completion rate |
+| Verification | Document pass/fail rate, liveness pass/fail rate, face-match score distribution, sanctions and PEP alert rates, false-positive rate after review, OCR confidence distribution, duplicate-identity rate, vendor disagreement rate |
+| Technical | API latency and error rate, queue depth and oldest-message age, worker utilization, vendor latency, timeout and 429 rates, retry rate, circuit-breaker state, DLQ size, object-processing latency, database lock and conflict rate, webhook delivery success, watchlist freshness |
 
-- Document pass/fail rate
-- Liveness pass/fail rate
-- Face-match score distribution
-- Sanctions alert rate
-- PEP alert rate
-- False-positive rate after review
-- OCR confidence distribution
-- Duplicate-identity rate
-- Vendor disagreement rate
-
-## 21.3 Technical metrics
-
-- API latency and error rate
-- Queue depth and oldest-message age
-- Worker utilization
-- Vendor latency, timeout, and 429 rate
-- Retry rate
-- Circuit-breaker state
-- DLQ size
-- Object-processing latency
-- Database lock/conflict rate
-- Webhook delivery success
-- Watchlist freshness
-
-## 21.4 High-value SLOs
+## 21.2 High-value SLOs
 
 Example:
 
@@ -2436,7 +1795,7 @@ Example:
 99% of signed webhooks are delivered within 5 minutes when receiver is healthy.
 ```
 
-## 21.5 Trace model
+## 21.3 Trace model
 
 Use one trace/correlation ID across:
 
@@ -2453,7 +1812,7 @@ flowchart TD
 
 Do not attach raw PII to tracing spans.
 
-## 21.6 Alerts
+## 21.4 Alerts
 
 Examples:
 
@@ -2477,24 +1836,10 @@ KYC does not end after approval.
 
 ## 22.1 Triggers
 
-### Time based
-
-- Annual
-- Every few years
-- More frequently for high-risk customers
-- Before document expiry
-
-### Event based
-
-- Name or address change
-- Ownership change
-- Product upgrade
-- Transaction pattern change
-- New PEP or sanctions match
-- Returned mail or failed contact
-- Suspicious-activity alert
-- Identity document expiry
-- Material regulatory change
+| Trigger class | Examples |
+|---|---|
+| Time based | Annual or multi-year cycles, more frequent for high-risk customers, and always before document expiry |
+| Event based | Name or address change, ownership change, product upgrade, transaction-pattern change, a new PEP or sanctions match, returned mail or failed contact, a suspicious-activity alert, identity-document expiry, material regulatory change |
 
 ## 22.2 Re-KYC flow
 
@@ -2513,12 +1858,7 @@ flowchart TD
 
 ## 22.3 Avoid full re-verification when unnecessary
 
-A policy may require only:
-
-- Sanctions re-screening
-- Address confirmation
-- New source-of-funds evidence
-- New document because the previous one expired
+A policy may require only sanctions re-screening, an address confirmation, new source-of-funds evidence, or a replacement document because the previous one expired — not a full repeat of onboarding.
 
 Use incremental refresh to reduce customer friction.
 
@@ -2547,18 +1887,7 @@ flowchart LR
     ROUTER --> C[Government / Registry]
 ```
 
-The router chooses based on:
-
-- Country
-- Document type
-- Product
-- Data residency
-- Cost
-- Vendor health
-- Accuracy
-- Contractual restrictions
-- Customer channel
-- Fallback policy
+The router chooses on country, document type, product, data residency, cost, vendor health, accuracy, contractual restrictions, customer channel, and the configured fallback policy.
 
 ## 23.2 Normalize vendor responses
 
@@ -2604,48 +1933,27 @@ Real routing should avoid changing vendors unpredictably in ways that make outco
 
 ## 23.4 Build versus buy
 
-### Buy
+The line falls between *capabilities that need scale you do not have* and *decisions that encode your business*.
 
-Good for:
-
-- Global document template coverage
-- Liveness
-- Sanctions datasets
-- PEP datasets
-- Government-source connectivity
-- Rapid market launch
-
-### Build
-
-Good for:
-
-- Workflow orchestration
-- Policy engine
-- Audit model
-- Review tooling
-- Vendor abstraction
-- Internal blocklists
-- Product-specific risk
-- Data-retention enforcement
+| Buy | Build |
+|---|---|
+| Global document template coverage | Workflow orchestration |
+| Liveness | Policy engine |
+| Sanctions datasets | Audit model |
+| PEP datasets | Review tooling |
+| Government-source connectivity | Vendor abstraction and internal blocklists |
+| Rapid market launch | Product-specific risk and data-retention enforcement |
 
 A common practical design is:
 
-```text
-Build the KYC platform and decision layer.
-Buy specialized verification capabilities.
-```
+> Build the KYC platform and decision layer.  
+> Buy specialized verification capabilities.
 
 ## 23.5 Vendor exit plan
 
-Store enough normalized information to:
+Store enough normalized information to reproduce past decisions, change providers, re-screen customers, audit historical checks, and compare vendor quality without needing the vendor's cooperation.
 
-- Reproduce decisions
-- Change providers
-- Re-screen customers
-- Audit historical checks
-- Compare vendor quality
-
-Avoid using a vendor's case ID as your primary identity.
+Avoid using a vendor's case ID as your primary identity — that single shortcut is what turns a provider migration into a data-recovery project.
 
 ---
 
@@ -2699,29 +2007,13 @@ flowchart TB
 
 ## 24.3 Network controls
 
-- Private subnets for services and databases
-- Egress proxy or NAT with destination controls
-- Private storage endpoints
-- Dedicated vendor allowlists where possible
-- No public database endpoint
-- Separate restricted subnet/account for evidence processing
-- Service identities instead of shared credentials
+Services and databases live in private subnets with no public database endpoint; egress goes through a proxy or NAT with destination controls and per-vendor allowlists; storage is reached over private endpoints; evidence processing gets its own restricted subnet or account; and every service authenticates with its own identity rather than a shared credential.
 
 ## 24.4 Environment separation
 
-Use separate:
+Separate accounts or projects, KMS keys, databases, object buckets, vendor credentials, watchlist test data, and reviewer identities.
 
-- Accounts/projects
-- KMS keys
-- databases
-- object buckets
-- vendor credentials
-- watchlist test data
-- reviewer identities
-
-Never copy production identity documents into lower environments.
-
-Use synthetic or properly anonymized test data.
+Never copy production identity documents into lower environments. Use synthetic or properly anonymized test data.
 
 ---
 
@@ -2740,72 +2032,28 @@ Recommended: synchronous case creation, asynchronous verification.
 
 ## 25.2 Orchestration versus choreography
 
-### Orchestration
-
-A central workflow controls the sequence.
-
-Advantages:
-
-- Easier state visibility
-- Clear timeout and retry ownership
-- Better fit for manual pauses
-- Easier policy-driven branching
-
-Disadvantages:
-
-- Orchestrator becomes important infrastructure
-- Workflow evolution must be managed carefully
-
-### Choreography
-
-Services react to events without a central controller.
-
-Advantages:
-
-- Loose coupling
-- Simple for independent reactions
-
-Disadvantages:
-
-- Harder to understand end-to-end state
-- Risk of event loops and hidden dependencies
-- Difficult long-running coordination
+| | Orchestration — a central workflow controls the sequence | Choreography — services react to events with no central controller |
+|---|---|---|
+| For | Easier state visibility; clear timeout and retry ownership; a natural place to pause for manual review; easier policy-driven branching | Loose coupling; simple for independent reactions |
+| Against | The orchestrator becomes load-bearing infrastructure; workflow evolution must be managed carefully | Harder to understand end-to-end state; risk of event loops and hidden dependencies; difficult long-running coordination |
 
 Recommended: orchestrate the KYC case while using events for integration and side effects.
 
 ## 25.3 One vendor versus multiple vendors
 
-### One vendor
-
-- Faster integration
-- Simpler operations
-- Less normalization work
-- Higher concentration risk
-
-### Multiple vendors
-
-- Better coverage and resilience
-- Enables quality comparison
-- More contracts, cost, and inconsistent results
-- More complex routing and audit
+| | One vendor | Multiple vendors |
+|---|---|---|
+| For | Faster integration, simpler operations, less normalization work | Better coverage and resilience, and you can compare quality |
+| Against | Higher concentration risk | More contracts and cost, inconsistent results between providers, more complex routing and audit |
 
 Recommended: design an abstraction from day one, but add providers only when justified.
 
 ## 25.4 Rules versus machine learning
 
-### Rules
-
-- Explainable
-- Easy to audit
-- Good for policy requirements
-- Can become difficult to maintain at scale
-
-### ML
-
-- Good for fraud patterns and image analysis
-- Can combine complex signals
-- Requires monitoring and governance
-- Harder to explain
+| | Rules | Machine learning |
+|---|---|---|
+| For | Explainable, easy to audit, a good fit for policy requirements | Strong on fraud patterns and image analysis, can combine complex signals |
+| Against | Can become difficult to maintain at scale | Requires monitoring and governance, and is harder to explain to a regulator |
 
 Recommended:
 
@@ -2817,32 +2065,13 @@ Humans resolve uncertainty.
 
 ## 25.5 Strong consistency versus eventual consistency
 
-Use strong consistency for:
+Use strong consistency for the final decision, case transitions, the reviewer lock, the consent record, and active policy selection — everything a regulator would ask you to reproduce.
 
-- Final decision
-- Case transition
-- Reviewer lock
-- Consent record
-- Active policy selection
-
-Eventual consistency is acceptable for:
-
-- Analytics dashboards
-- Search indexes
-- non-critical notifications
-- Derived metrics
-- reviewer read models, if freshness is visible
+Eventual consistency is acceptable for analytics dashboards, search indexes, non-critical notifications, derived metrics, and reviewer read models provided the freshness is visible on screen. See [Consistency, CAP, and Retries](consistency-cap-retries.md) for the underlying model.
 
 ## 25.6 Centralized versus regional PII
 
-Centralized storage is operationally simpler.
-
-Regional storage may be needed for:
-
-- Data residency
-- Latency
-- Contract restrictions
-- Cross-border transfer control
+Centralized storage is operationally simpler. Regional storage may be forced by data residency, latency, contract restrictions, or cross-border transfer controls.
 
 A hybrid model often keeps raw PII regional while centralizing tokenized operational metadata.
 
@@ -2850,62 +2079,18 @@ A hybrid model often keeps raw PII regional while centralizing tokenized operati
 
 # 26. Practical Implementation Plan
 
-## 26.1 Phase 1: Core onboarding
+## 26.1 Phases
 
-Build:
+| Phase | What you build |
+|---|---|
+| 1 — Core onboarding | Case API, consent records, secure uploads, one document provider, one sanctions/PEP provider, basic risk rules, automatic approve/review/reject, a reviewer queue, signed webhooks, an audit trail |
+| 2 — Resilience and operations | Durable workflow engine, outbox and inbox, retry policies, circuit breakers, DLQ replay tooling, case search, reviewer SLA and assignment, provider health dashboard, evidence retention jobs |
+| 3 — Fraud and coverage | Liveness and face matching, duplicate identity, device and velocity signals, additional countries and documents, secondary providers, EDD flows, four-eyes approvals |
+| 4 — Continuous compliance | Incremental list ingestion, continuous sanctions/PEP screening, scheduled re-KYC, event-driven refresh, model monitoring, policy simulation, compliance reporting |
 
-- Case API
-- Consent records
-- Secure uploads
-- One document provider
-- One sanctions/PEP provider
-- Basic risk rules
-- Automatic approve/review/reject
-- Reviewer queue
-- Signed webhooks
-- Audit trail
+Phase 1 is deliberately deployable as one service. Keep the workflow modular anyway — the phase-2 move to a durable engine is a refactor only if the boundaries already exist.
 
-Keep the workflow modular even if deployed as one service.
-
-## 26.2 Phase 2: Resilience and operations
-
-Add:
-
-- Durable workflow engine
-- Outbox/inbox
-- Retry policies
-- Circuit breakers
-- DLQ replay tooling
-- Case search
-- Reviewer SLA and assignment
-- Provider health dashboard
-- Evidence retention jobs
-
-## 26.3 Phase 3: Fraud and coverage
-
-Add:
-
-- Liveness and face matching
-- Duplicate identity
-- Device and velocity signals
-- Additional countries/documents
-- Secondary providers
-- EDD flows
-- Four-eyes approvals
-
-## 26.4 Phase 4: Continuous compliance
-
-Add:
-
-- Incremental list ingestion
-- Continuous sanctions/PEP screening
-- Scheduled re-KYC
-- Event-driven refresh
-- Model monitoring
-- Policy simulation
-- Compliance reporting
-
-## 26.5 Suggested technology choices
+## 26.2 Suggested technology choices
 
 These are examples, not requirements.
 
@@ -2923,7 +2108,7 @@ These are examples, not requirements.
 | Observability | OpenTelemetry, Prometheus, Grafana, cloud-native logging |
 | Infrastructure | Kubernetes, ECS, managed containers, serverless workers |
 
-## 26.6 Simplified service pseudocode
+## 26.3 Simplified service pseudocode
 
 ```python
 async def start_verification(case_id: str, idempotency_key: str) -> str:
@@ -2973,7 +2158,7 @@ async def start_verification(case_id: str, idempotency_key: str) -> str:
     return run.id
 ```
 
-## 26.7 Aggregating results
+## 26.4 Aggregating results
 
 ```python
 async def on_check_completed(event: CheckCompleted) -> None:
@@ -3005,51 +2190,17 @@ async def on_check_completed(event: CheckCompleted) -> None:
     await unit_of_work.commit()
 ```
 
-## 26.8 Testing strategy
+## 26.5 Testing strategy
 
-### Unit tests
+The resilience row is the one that catches the defects that matter here — everything above it is table stakes.
 
-- Risk rules
-- State transitions
-- Normalization
-- Decision matrix
-- Retry classification
-- Policy selection
-
-### Integration tests
-
-- Database transactions
-- Outbox publishing
-- Object-upload completion
-- Vendor adapter mapping
-- Webhook signing
-- Watchlist ingestion
-
-### Contract tests
-
-- Provider requests/responses
-- Event schemas
-- Upstream product API
-- Reviewer portal API
-
-### End-to-end tests
-
-- Fast-path approval
-- Evidence retake
-- Possible sanctions match
-- Vendor outage and recovery
-- Manual review
-- Re-KYC trigger
-
-### Resilience tests
-
-- Duplicate event
-- Out-of-order event
-- Worker crash after vendor success
-- Database commit followed by broker outage
-- Provider callback before polling response
-- Watchlist parser failure
-- Key rotation
+| Level | What it covers |
+|---|---|
+| Unit | Risk rules, state transitions, normalization, the decision matrix, retry classification, policy selection |
+| Integration | Database transactions, outbox publishing, object-upload completion, vendor adapter mapping, webhook signing, watchlist ingestion |
+| Contract | Provider requests and responses, event schemas, the upstream product API, the reviewer portal API |
+| End-to-end | Fast-path approval, evidence retake, a possible sanctions match, vendor outage and recovery, manual review, a re-KYC trigger |
+| Resilience | Duplicate event, out-of-order event, worker crash after vendor success, database commit followed by broker outage, a provider callback arriving before the polling response, watchlist parser failure, key rotation |
 
 ---
 
@@ -3063,29 +2214,13 @@ A strong explanation can follow this order.
 
 ## 27.2 Draw the main architecture
 
-Focus on:
+Draw the backbone from "In short" and nothing more: client → API and secure upload → case service → workflow orchestrator → verification services over the event bus → risk and decision engine → automatic decision or manual review → audit and notifications.
 
-```mermaid
-flowchart TD
-    CLIENT[Client] --> API[API and secure upload]
-    API --> KYCCASE[Case service]
-    KYCCASE --> WF[Workflow orchestrator]
-    WF --> VERIFY[Verification services]
-    VERIFY --> BUS[[Event bus]]
-    BUS --> RISK[Risk and decision engine]
-    RISK --> REVIEW[Manual review]
-    REVIEW --> AUDIT[Audit and notifications]
-```
+Resist adding the thirty boxes from the full architecture. The interviewer is checking whether you know which components are load-bearing, and adding the cache and the search index to the first drawing signals the opposite.
 
 ## 27.3 Explain why it is asynchronous
 
-Mention:
-
-- External vendors can be slow or unavailable.
-- Multiple checks can run in parallel.
-- Manual review can take hours.
-- Retryable failures must not reject customers.
-- Webhooks and status APIs provide completion updates.
+External vendors can be slow or unavailable, multiple checks can run in parallel, manual review can take hours, and a retryable failure must never reject a customer. Webhooks and a status API carry completion back to the product.
 
 ## 27.4 Protect the critical invariants
 
@@ -3100,47 +2235,23 @@ State the invariants clearly:
 
 ## 27.5 Discuss scale with real bottlenecks
 
-The API is usually not the hardest part.
+The API is usually not the hardest part. The real bottlenecks are image and video upload, external provider rate limits, OCR and biometric compute, watchlist candidate matching, reviewer capacity, evidence retention cost, and re-screening the existing customer base when a list changes.
 
-Important bottlenecks:
+Reviewer capacity is worth naming explicitly: it is the one bottleneck you cannot autoscale, which is why the automatic approval rate is an architectural metric and not a business one.
 
-- Image/video upload
-- External provider limits
-- OCR and biometric compute
-- Watchlist candidate matching
-- Reviewer capacity
-- Evidence retention cost
-- Re-screening existing customers
+## 27.6 Points people miss
 
-## 27.6 Finish with trade-offs
+Four things that separate a complete answer from a partial one: use a transactional outbox so a state change and its event commit together; build re-screening and re-KYC into the *initial* data model rather than bolting them on; protect PII and biometrics with encryption, tokenization, access controls and enforced retention rather than access controls alone; and measure business outcomes (auto-approval rate, false-positive rate after review) beside technical health, because a broken integration shows up in the approval rate long before it shows up in CPU.
+
+## 27.7 Finish with trade-offs
 
 A balanced final statement:
 
-> “I would build the orchestration, policy, evidence lineage, audit, and review platform internally, while integrating specialist providers for document coverage, liveness, and watchlist data. I would keep providers behind normalized adapters so the business can change vendors without rewriting policy.”
+> “I would build the orchestration, policy, evidence lineage, audit, and review platform internally, while integrating specialist providers for document coverage, liveness, and watchlist data. I would keep providers behind normalized adapters so the business can change vendors without rewriting policy. For state, I would use strong consistency on decisions and transitions, and accept eventual consistency for analytics and search.”
 
 ---
 
-# 28. Key Takeaways
-
-- KYC is a **durable, asynchronous workflow**.
-- Store **evidence, findings, risk assessments, and decisions separately**.
-- Use a **risk-based policy** instead of applying every check to every customer.
-- Run independent checks in parallel through queues or a workflow engine.
-- Keep external providers behind stable internal adapters.
-- Treat event delivery as at least once and make every consumer idempotent.
-- Use a transactional outbox for reliable state-plus-event updates.
-- Keep mandatory-control failures pending; never treat infrastructure failure as customer failure.
-- Version policies, models, thresholds, vendor responses, and watchlists.
-- Route ambiguous matches to manual review with evidence lineage and reason codes.
-- Protect PII and biometrics using encryption, tokenization, strict access controls, and retention rules.
-- Build re-screening and re-KYC into the initial data model.
-- Measure both technical health and business outcomes.
-- Prefer strong consistency for decisions and state transitions; use eventual consistency for analytics and search.
-- A practical design builds the platform and buys specialized verification capabilities.
-
----
-
-# 29. Official References
+# 28. Official References
 
 The following sources are useful starting points. Final implementation must be reviewed by legal, compliance, privacy, and security teams for the applicable jurisdiction and product.
 

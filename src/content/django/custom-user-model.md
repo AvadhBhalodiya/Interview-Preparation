@@ -8,15 +8,34 @@ order: 10
 
 > A **custom user model** replaces Django's built-in `auth.User` model so that authentication can use fields and behavior designed for your application—for example, logging in with an email address instead of a username.
 
+## In short
+
+- Set `AUTH_USER_MODEL` before the **first** migration. Swapping it later is painful because every foreign key to the user is already baked into `0001_initial` and into the content-type and permission rows.
+- `AbstractUser` keeps Django's standard fields (username, names, permissions, staff flags) and lets you add more; `AbstractBaseUser` gives you only the auth core — password handling and `last_login` — and you define everything else, plus `USERNAME_FIELD`, `REQUIRED_FIELDS` and a manager.
+- A custom `BaseUserManager` with `create_user()` / `create_superuser()` and `normalize_email()` is mandatory for `AbstractBaseUser`, and is needed for `AbstractUser` too as soon as you drop `username`.
+- Reference the user as `settings.AUTH_USER_MODEL` in model fields and `get_user_model()` in runtime code — never `from django.contrib.auth.models import User`.
+- Extra non-auth attributes belong on a related profile or domain model, not on the identity model.
+- Email-as-username needs a case-normalised unique constraint: `normalize_email()` only lowercases the domain, so `Dev@x.com` and `dev@x.com` are two accounts unless you add `UniqueConstraint(Lower("email"))`.
+
+```mermaid
+flowchart LR
+    A[Application needs authentication] --> B{Does default User fit?}
+    B -->|Yes| C[Default auth.User can work]
+    B -->|No or uncertain| D[Create custom User at project start]
+    D --> E{How much control is needed?}
+    E -->|Small or moderate changes| F[Extend AbstractUser]
+    E -->|Complete authentication redesign| G[Extend AbstractBaseUser]
+```
+
+**Interview answer:** You use a custom user model when the login identity does not match Django's default — email instead of username, a UUID primary key, a phone number, a tenant — and you create it at the start of the project, before the first migration, because `AUTH_USER_MODEL` is resolved into every migration that touches the user. In practice: subclass `AbstractUser` in an `accounts` app, set `username = None` and a unique `email` with `USERNAME_FIELD = "email"`, add a `BaseUserManager` exposing `create_user()` and `create_superuser()`, point `AUTH_USER_MODEL` at `accounts.User`, and re-register the model with a `UserAdmin` subclass whose `fieldsets` and `add_fieldsets` match the new fields. From then on the rest of the project refers to it through `settings.AUTH_USER_MODEL` in model relationships and `get_user_model()` at runtime, so the model stays swappable.
+
+**Gotcha:** Treating `AUTH_USER_MODEL` as a setting you can flip later. Once the project has migrations, every foreign key, many-to-many table, content type and permission row already points at `auth.User`, so the switch stops being a one-line settings change and becomes a schema-and-data migration with constraint rewrites and password-hash preservation — which is why the user model has to be created in `accounts/migrations/0001_initial.py` from day one.
+
 ---
 
 # 1. Why Django Provides a Custom User Model
 
-Django includes a built-in user model:
-
-```python
-django.contrib.auth.models.User
-```
+Django includes a built-in user model: `django.contrib.auth.models.User`
 
 It provides common authentication fields such as:
 
@@ -52,16 +71,6 @@ A custom user model allows these requirements to be designed correctly from the 
 
 # 2. Default User vs Custom User
 
-```mermaid
-flowchart LR
-    A[Application needs authentication] --> B{Does default User fit?}
-    B -->|Yes| C[Default auth.User can work]
-    B -->|No or uncertain| D[Create custom User at project start]
-    D --> E{How much control is needed?}
-    E -->|Small or moderate changes| F[Extend AbstractUser]
-    E -->|Complete authentication redesign| G[Extend AbstractBaseUser]
-```
-
 | Area | Default `User` | Custom User |
 |---|---|---|
 | Login identifier | Username | Email, phone, UUID, employee ID, etc. |
@@ -83,24 +92,13 @@ Django provides two important abstract classes for custom users.
 
 ## 3.1 Using `AbstractUser`
 
-`AbstractUser` contains the complete implementation of Django's standard user.
-
-It already includes:
-
-- Password handling
-- Permissions
-- Groups
-- Staff and superuser fields
-- First name and last name
-- Login-related fields
-- Compatibility with much of Django admin
+`AbstractUser` contains the complete implementation of Django's standard user. The comparison table below lists what it brings and what `AbstractBaseUser` leaves to you.
 
 Example:
 
 ```python
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-
 
 class User(AbstractUser):
     phone_number = models.CharField(max_length=20, blank=True)
@@ -231,7 +229,6 @@ from typing import Any
 
 from django.contrib.auth.base_user import BaseUserManager
 
-
 class CustomUserManager(BaseUserManager):
     """Manager for an email-based user model."""
 
@@ -287,11 +284,7 @@ user.password = "secret123"
 user.set_password("secret123")
 ```
 
-The database stores a value similar to:
-
-```text
-pbkdf2_sha256$...$salt$hash
-```
+The database stores a value similar to: `pbkdf2_sha256$...$salt$hash`
 
 It does not store the original password.
 
@@ -308,7 +301,6 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 from .managers import CustomUserManager
-
 
 class User(AbstractUser):
     """Application user authenticated by email address."""
@@ -342,38 +334,16 @@ class User(AbstractUser):
 
 ### Important attributes
 
-#### `username = None`
+- `username = None` — removes the username field inherited from `AbstractUser`.
+- `USERNAME_FIELD = "email"` — tells Django that email is the field used as the authentication identifier.
+- `REQUIRED_FIELDS = []` — defines extra fields requested by the `createsuperuser` command. Do not include `USERNAME_FIELD` or `password`; Django handles those separately.
+- `objects = CustomUserManager()` — connects the custom manager to the model.
 
-Removes the username field inherited from `AbstractUser`.
-
-#### `USERNAME_FIELD = "email"`
-
-Tells Django that email is the field used as the authentication identifier.
-
-#### `REQUIRED_FIELDS = []`
-
-Defines extra fields requested by the `createsuperuser` command.
-
-Do not include:
-
-- `USERNAME_FIELD`
-- `password`
-
-Django handles those separately.
-
-#### `objects = CustomUserManager()`
-
-Connects the custom manager to the model.
-
-#### UUID primary key
+### UUID primary key
 
 A UUID is useful when user identifiers may appear in URLs, logs, APIs, distributed systems, or public resources.
 
-Example:
-
-```text
-9ec51303-2115-40fb-9924-79ad8bb481f7
-```
+Example: `9ec51303-2115-40fb-9924-79ad8bb481f7`
 
 An integer primary key is also valid. UUID is a project design choice, not a requirement.
 
@@ -389,17 +359,9 @@ Add this setting before creating migrations:
 AUTH_USER_MODEL = "accounts.User"
 ```
 
-The format is:
+The format is: `<app_label>.<model_name>`
 
-```text
-<app_label>.<model_name>
-```
-
-For this example:
-
-```text
-accounts.User
-```
+For this example: `accounts.User`
 
 Django will now treat `accounts.User` as the project's active user model.
 
@@ -426,7 +388,6 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
 from .models import User
-
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
@@ -519,7 +480,6 @@ from django.contrib.auth.forms import UserChangeForm, UserCreationForm
 
 from .models import User
 
-
 class CustomUserCreationForm(UserCreationForm):
     class Meta(UserCreationForm.Meta):
         model = User
@@ -529,7 +489,6 @@ class CustomUserCreationForm(UserCreationForm):
             "last_name",
             "phone_number",
         )
-
 
 class CustomUserChangeForm(UserChangeForm):
     class Meta(UserChangeForm.Meta):
@@ -549,7 +508,6 @@ The forms can then be connected to the admin:
 # accounts/admin.py
 
 from .forms import CustomUserChangeForm, CustomUserCreationForm
-
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
@@ -611,11 +569,7 @@ sequenceDiagram
 
 Django's default `ModelBackend` uses the model's `USERNAME_FIELD`.
 
-In this guide:
-
-```python
-USERNAME_FIELD = "email"
-```
+In this guide: `USERNAME_FIELD = "email"`
 
 Therefore, the email is treated as the login identifier.
 
@@ -623,7 +577,6 @@ Example:
 
 ```python
 from django.contrib.auth import authenticate, login
-
 
 user = authenticate(
     request,
@@ -662,7 +615,6 @@ Use this when defining a relationship at import time.
 from django.conf import settings
 from django.db import models
 
-
 class Article(models.Model):
     title = models.CharField(max_length=200)
 
@@ -673,11 +625,7 @@ class Article(models.Model):
     )
 ```
 
-This stores a lazy string reference such as:
-
-```text
-accounts.User
-```
+This stores a lazy string reference such as: `accounts.User`
 
 It prevents direct model-import problems and supports swapped user models.
 
@@ -696,7 +644,6 @@ Use it in:
 
 ```python
 from django.contrib.auth import get_user_model
-
 
 User = get_user_model()
 
@@ -721,7 +668,6 @@ Reference the configured model instead of importing a specific user class.
 from django.conf import settings
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def user_saved(sender, instance, created, **kwargs):
@@ -771,7 +717,6 @@ Examples:
 ```python
 from django.conf import settings
 from django.db import models
-
 
 class EmployeeProfile(models.Model):
     user = models.OneToOneField(
@@ -885,7 +830,6 @@ Keep important creation logic in a service or manager rather than duplicating it
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
-
 @transaction.atomic
 def register_user(
     *,
@@ -920,7 +864,6 @@ Benefits:
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 
-
 @login_required
 def profile_view(request):
     return JsonResponse(
@@ -940,7 +883,6 @@ def profile_view(request):
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import DetailView
 
-
 class MyProfileView(LoginRequiredMixin, DetailView):
     template_name = "accounts/profile.html"
 
@@ -948,11 +890,7 @@ class MyProfileView(LoginRequiredMixin, DetailView):
         return self.request.user
 ```
 
-The authenticated user is available through:
-
-```python
-request.user
-```
+The authenticated user is available through: `request.user`
 
 For unauthenticated requests, it is usually an `AnonymousUser` instance.
 
@@ -966,9 +904,7 @@ A basic registration serializer:
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-
 User = get_user_model()
-
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
@@ -1055,11 +991,7 @@ Do not return fields such as:
 - Sensitive identity-provider data
 - Permission internals in public APIs
 
-The password should usually be:
-
-```python
-write_only=True
-```
+The password should usually be: `write_only=True`
 
 ---
 
@@ -1067,11 +999,7 @@ write_only=True
 
 A custom user model is a **swappable model**. Other applications may depend on whichever model is configured in `AUTH_USER_MODEL`.
 
-Django migrations can represent this dependency using:
-
-```python
-migrations.swappable_dependency(settings.AUTH_USER_MODEL)
-```
+Django migrations can represent this dependency using: `migrations.swappable_dependency(settings.AUTH_USER_MODEL)`
 
 Example generated migration:
 
@@ -1079,7 +1007,6 @@ Example generated migration:
 from django.conf import settings
 from django.db import migrations, models
 import django.db.models.deletion
-
 
 class Migration(migrations.Migration):
     dependencies = [
@@ -1174,7 +1101,6 @@ Tests should verify manager behavior, password hashing, uniqueness, and configur
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-
 class UserModelTests(TestCase):
     def setUp(self):
         self.User = get_user_model()
@@ -1241,7 +1167,6 @@ Example for databases that support functional unique constraints:
 from django.db import models
 from django.db.models.functions import Lower
 
-
 class User(AbstractUser):
     # Fields...
 
@@ -1292,11 +1217,7 @@ A database uniqueness constraint prevents two simultaneous requests from creatin
 email = self.normalize_email(email)
 ```
 
-For stricter policies:
-
-```python
-email = self.normalize_email(email).strip().lower()
-```
+For stricter policies: `email = self.normalize_email(email).strip().lower()`
 
 Use a consistent rule across:
 
@@ -1329,25 +1250,13 @@ A simple model update may not be enough for production applications.
 
 Email addresses can change.
 
-Use:
-
-```python
-user.pk
-```
+Use: `user.pk`
 
 for relationships and permanent references.
 
-Good:
+Good: `order.created_by_id`
 
-```python
-order.created_by_id
-```
-
-Risky:
-
-```python
-order.created_by_email
-```
+Risky: `order.created_by_email`
 
 Email may be copied for historical display, but it should not replace the actual foreign key.
 

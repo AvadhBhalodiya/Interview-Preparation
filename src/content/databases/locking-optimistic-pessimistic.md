@@ -2,14 +2,38 @@
 title: "Locking"
 group: "Transactions & Concurrency"
 order: 6
+updated: "July 2026"
 ---
 
 # Locking: Optimistic vs Pessimistic
 
-> **Topic:** Databases & SQL  
-> **Level:** Intermediate developer  
-> **Purpose:** Understand how applications protect shared data when multiple transactions try to update it concurrently.  
-> **Last reviewed:** July 2026
+> Understand how applications protect shared data when multiple transactions try to update it concurrently.
+
+## In short
+
+- Two concurrent read-modify-write sequences overwrite each other; this **lost update** is the problem both strategies exist to prevent.
+- **Optimistic locking**: read normally, then `UPDATE ... WHERE id = ? AND version = ?`; zero affected rows means another transaction got there first.
+- **Pessimistic locking**: `SELECT ... FOR UPDATE` reserves the row before the business decision, so other transactions wait, fail with `NOWAIT`, or move on with `SKIP LOCKED`.
+- Optimistic fits read-heavy edits, long-open forms, and APIs that carry a version; pessimistic fits scarce resources, ledger balances, and job queues.
+- One conditional statement — `UPDATE ... SET stock = stock - :quantity WHERE id = :id AND stock >= :quantity` — often replaces both strategies and removes the separate read.
+- A pessimistic transaction must stay short: no external API calls, no user think time, no long computation while a row lock is held.
+- Version conflicts, deadlocks, lock timeouts, and serialization failures are all retryable — retry the whole transaction, bounded, with idempotency for external side effects.
+
+```mermaid
+flowchart TD
+    A[Concurrent update possible?] -->|No| B[Use a normal atomic transaction]
+    A -->|Yes| C{Is conflict frequency low?}
+    C -->|Yes| D{Can the operation safely retry or reject stale data?}
+    D -->|Yes| E[Prefer optimistic locking]
+    D -->|No| F[Consider pessimistic locking]
+    C -->|No| G{Must one transaction reserve the row before deciding?}
+    G -->|Yes| H[Prefer pessimistic locking]
+    G -->|No| I[Redesign with atomic SQL, partitioning, or serialization]
+```
+
+**Interview answer:** Optimistic locking assumes conflicts are rare, so it reads the row with its version, does the business logic, and commits with `UPDATE ... WHERE id = :id AND version = :expected_version`, treating zero affected rows as a conflict to reject, merge, or retry. Pessimistic locking assumes a conflict is likely or expensive, so it takes the row lock up front with `SELECT ... FOR UPDATE` and other transactions wait behind it. I reach for optimistic on read-heavy, form- or API-driven edits where a transaction cannot stay open across the user interaction, and for pessimistic where the row is a scarce resource — wallet balances, inventory allocation, job-queue claiming — and repeating the work is expensive.
+
+**Gotcha:** Writing the conditional `UPDATE` but never checking the affected-row count — the statement "succeeds" having changed zero rows, and the lost update returns silently.
 
 ---
 
@@ -48,12 +72,7 @@ Both approaches still use normal database transactions. The difference is **when
 
 # 2. The Lost Update Problem
 
-Consider a product with five units in stock:
-
-```text
-product_id = 101
-stock      = 5
-```
+Consider product `101` with `stock = 5`.
 
 Two customers try to buy four units at nearly the same time.
 
@@ -157,13 +176,7 @@ FROM products
 WHERE id = 101;
 ```
 
-Assume the result is:
-
-```text
-id      = 101
-stock   = 5
-version = 7
-```
+Assume the result is `id = 101`, `stock = 5`, `version = 7`.
 
 ### Conditional update
 
@@ -198,12 +211,7 @@ Affected rows = 0
 
 ### Why increment the version in the same statement?
 
-The comparison and increment must be atomic:
-
-```sql
-SET version = version + 1
-WHERE version = :expected_version
-```
+The comparison and increment must be atomic: `SET version = version + 1` belongs in the same statement as `WHERE version = :expected_version`.
 
 Do not perform a separate version update after changing the business fields. Another transaction could enter between the two statements.
 
@@ -528,10 +536,8 @@ This may scan and lock many rows. In MySQL InnoDB, locking statements generally 
 
 Practical rule:
 
-```text
-The narrower and better indexed the locking query,
-the smaller and more predictable its lock footprint.
-```
+> The narrower and better indexed the locking query,  
+> the smaller and more predictable its lock footprint.
 
 ---
 
@@ -556,19 +562,7 @@ the smaller and more predictable its lock footprint.
 
 # 6. Choosing the Right Strategy
 
-Use the following decision path:
-
-```mermaid
-flowchart TD
-    A[Concurrent update possible?] -->|No| B[Use a normal atomic transaction]
-    A -->|Yes| C{Is conflict frequency low?}
-    C -->|Yes| D{Can the operation safely retry or reject stale data?}
-    D -->|Yes| E[Prefer optimistic locking]
-    D -->|No| F[Consider pessimistic locking]
-    C -->|No| G{Must one transaction reserve the row before deciding?}
-    G -->|Yes| H[Prefer pessimistic locking]
-    G -->|No| I[Redesign with atomic SQL, partitioning, or serialization]
-```
+The decision path at the top of this note narrows the choice quickly. The criteria below make it concrete.
 
 ## Prefer optimistic locking when
 
@@ -619,12 +613,7 @@ WHERE id = :id
 
 This avoids a separate read and write.
 
-Check the affected-row count:
-
-```text
-1 row affected -> stock reserved
-0 rows affected -> insufficient stock or missing product
-```
+Check the affected-row count: `1` means the stock was reserved, `0` means insufficient stock or a missing product.
 
 Atomic SQL is often simpler and faster than introducing an explicit application locking strategy.
 
@@ -831,29 +820,13 @@ Pessimistic locking
 
 ## 8.2 Isolation level is not a complete replacement
 
-Transaction isolation controls which concurrent changes a transaction can observe and which anomalies the database prevents.
+Transaction isolation controls which concurrent changes a transaction can observe and which anomalies the database prevents. The levels themselves, and how they differ per engine, are covered in [Transaction Isolation Levels](transaction-isolation-levels.md).
 
-Common levels include:
+No isolation level removes the need for a concurrency strategy in the application:
 
-- Read Committed
-- Repeatable Read
-- Serializable
-
-Behavior varies by database implementation.
-
-### Read Committed
-
-Often the default. Each statement may see a newer committed snapshot. A separate `SELECT` followed by an `UPDATE` can still require an atomic condition, version check, or explicit row lock.
-
-### Repeatable Read
-
-Provides a more stable transaction snapshot, but database-specific conflict behavior differs. It does not remove the need to understand write conflicts and business invariants.
-
-### Serializable
-
-Provides the strongest isolation semantics, but the database may abort a transaction when it detects that concurrent execution cannot be serialized.
-
-The application must retry the **entire transaction**, not only the failed SQL statement.
+- Under Read Committed, the common default, each statement may see a newer committed snapshot, so a separate `SELECT` followed by an `UPDATE` can still require an atomic condition, version check, or explicit row lock.
+- Repeatable Read provides a more stable transaction snapshot, but database-specific conflict behavior differs and business invariants still need enforcing.
+- Serializable provides the strongest semantics, but the database may abort a transaction when it detects that concurrent execution cannot be serialized. The application must then retry the **entire transaction**, not only the failed SQL statement.
 
 PostgreSQL identifies serialization failures with SQLSTATE `40001` and deadlocks with `40P01`.
 
@@ -1044,11 +1017,7 @@ Perform external work using an idempotent worker
 
 ## 11.2 Put business invariants in SQL where possible
 
-Use constraints and conditional updates as the final safety layer.
-
-```sql
-CHECK (stock >= 0)
-```
+Use constraints such as `CHECK (stock >= 0)` and conditional updates as the final safety layer.
 
 ```sql
 UPDATE inventory
@@ -1161,40 +1130,7 @@ Verify both correctness and acceptable latency.
 
 ---
 
-# 12. Key Takeaways
-
-```text
-Optimistic locking
-    Read normally.
-    Update only when the expected version still matches.
-    Handle zero affected rows as a conflict.
-    Best when conflicts are uncommon.
-
-Pessimistic locking
-    Lock the row before validating and updating.
-    Keep the transaction short.
-    Expect waiting, timeouts, and possible deadlocks.
-    Best when conflicts are common or costly.
-
-Atomic SQL
-    Prefer one conditional UPDATE when it can express the rule.
-    It is often simpler than either explicit strategy.
-```
-
-The most important implementation principles are:
-
-1. Never rely on an unsafe read-modify-write sequence.
-2. Keep validation close to the atomic database update.
-3. Check affected-row counts for optimistic writes.
-4. Keep pessimistic transactions short and narrowly scoped.
-5. Use indexes to control the lock footprint.
-6. Retry only complete, safe, idempotent operations.
-7. Enforce critical invariants with database constraints.
-8. Measure real lock waits, conflicts, deadlocks, and retries.
-
----
-
-# 13. Official References
+# 12. Official References
 
 - [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)
 - [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)

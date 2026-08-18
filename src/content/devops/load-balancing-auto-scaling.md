@@ -2,28 +2,49 @@
 title: "Load Balancing & Scaling"
 group: "AWS"
 order: 4
+updated: "July 2026"
 ---
 
 # Load Balancing and Auto Scaling — Basics
 
-> **Category:** AWS, Docker & DevOps  
-> **Level:** Intermediate developer (3+ years)  
-> **Purpose:** Build a practical understanding of how production applications distribute traffic, remain available, and adjust capacity as demand changes.  
-> **Last reviewed:** July 2026
+> Build a practical understanding of how production applications distribute traffic, remain available, and adjust capacity as demand changes.
 
----
+## In short
 
-## Learning Goals
+- **Vertical scaling** grows one machine (e.g. `t3.medium` → `m7i.2xlarge`); **horizontal scaling** adds more machines. Most cloud-native apps scale horizontally — it also improves fault tolerance, not just capacity.
+- **Layer 4** load balancers (NLB) route on IP, port, and protocol only; **Layer 7** load balancers (ALB) read HTTP details — host, path, headers, cookies — to route intelligently. Use ALB for web/API traffic, NLB for raw TCP/UDP/TLS throughput.
+- **Health checks** are what turn a load balancer into more than a round-robin dispatcher: they pull unhealthy targets out of rotation automatically and only return them once checks pass again.
+- An Auto Scaling Group runs on three numbers — **minimum**, **desired**, **maximum** capacity. Scaling policies only ever move *desired* between the other two.
+- The load balancer decides **which** healthy target gets each request; auto scaling decides **how many** targets exist. Neither does the other's job — they meet at the target group.
+- By default an ASG only reacts to EC2-level status checks, not application health — enabling **ELB health checks** on the group is what lets it replace an instance whose app has hung.
+- Start scaling policies with **target tracking** (a thermostat around one metric, e.g. 50% CPU); add scheduled or predictive scaling for known patterns, and always scale in more conservatively than you scale out.
 
-By the end of this guide, you should be able to:
+```mermaid
+flowchart TB
+    USERS[Users] --> ALB[Application Load Balancer]
 
-- Explain the difference between **load balancing** and **auto-scaling**.
-- Understand how an AWS load balancer sends traffic to healthy targets.
-- Select between **Application Load Balancer**, **Network Load Balancer**, and **Gateway Load Balancer**.
-- Understand the structure and lifecycle of an **EC2 Auto Scaling Group**.
-- Select a suitable scaling policy and metric.
-- Design a basic highly available architecture across multiple Availability Zones.
-- Understand how the same ideas apply to Docker containers and Amazon ECS.
+    ALB --> TG[Target Group]
+
+    subgraph ASG[EC2 Auto Scaling Group]
+        direction LR
+        EC21[EC2 Instance 1]
+        EC22[EC2 Instance 2]
+        EC23[EC2 Instance 3]
+    end
+
+    TG --> EC21
+    TG --> EC22
+    TG --> EC23
+
+    CW[CloudWatch Metrics] --> POLICY[Scaling Policy]
+    POLICY --> ASG
+
+    LT[Launch Template] --> ASG
+```
+
+**Interview answer:** A load balancer accepts traffic at one endpoint and forwards each request to a healthy target, using health checks to keep that pool accurate; auto scaling watches metrics like CloudWatch CPU or request count and changes how many targets exist by moving desired capacity between a minimum and maximum. They meet at the target group — the load balancer never launches instances, and the ASG never chooses which instance serves a given request — so the fleet grows and shrinks with demand while the entry point stays constant.
+
+**Gotcha:** Assuming a failed health check always gets the instance replaced. By default an ASG only reacts to EC2 status-check failures — unless ELB health checks are explicitly enabled on the group, an application that hangs but keeps the OS alive is simply pulled from rotation forever, never terminated or replaced.
 
 ---
 
@@ -31,18 +52,7 @@ By the end of this guide, you should be able to:
 
 ## 1.1 Why Applications Need Scaling
 
-A single server has limited:
-
-- CPU
-- Memory
-- Network bandwidth
-- Disk throughput
-- Maximum number of connections
-- Availability
-
-When traffic increases, one server may become slow or unavailable.
-
-A production system usually solves this by running multiple application instances and placing a load balancer in front of them.
+A single server has limited CPU, memory, network bandwidth, disk throughput, maximum connections, and availability. When traffic increases, one server may become slow or unavailable, so a production system usually runs multiple application instances behind a load balancer instead.
 
 ```mermaid
 flowchart LR
@@ -65,29 +75,7 @@ flowchart LR
 
 ## 1.2 Vertical Scaling vs Horizontal Scaling
 
-### Vertical Scaling
-
-Vertical scaling means increasing the capacity of one machine.
-
-```mermaid
-flowchart TD
-    A["2 vCPU, 4 GB RAM"] --> B["8 vCPU, 32 GB RAM"]
-```
-
-Examples:
-
-- Changing an EC2 instance from `t3.medium` to `m7i.2xlarge`
-- Increasing database memory
-- Adding more CPU to a virtual machine
-
-### Horizontal Scaling
-
-Horizontal scaling means adding more machines or containers.
-
-```mermaid
-flowchart TD
-    A[1 instance] --> B[4 instances]
-```
+**Vertical scaling** increases the capacity of one machine — for example, changing an EC2 instance from `t3.medium` to `m7i.2xlarge`, or adding CPU and memory to a database or VM. **Horizontal scaling** adds more machines or containers — for example, going from 1 instance to 4.
 
 ### Comparison
 
@@ -106,19 +94,7 @@ Most web applications use **horizontal scaling** for the application layer.
 
 ## 1.3 Scalability vs Availability vs Elasticity
 
-These terms are related but not identical.
-
-### Scalability
-
-The system can handle more load by adding resources.
-
-### Availability
-
-The system remains accessible even when some components fail.
-
-### Elasticity
-
-The system automatically adds and removes resources based on demand.
+These terms are related but not identical. **Scalability** is the system's ability to handle more load by adding resources. **Availability** is whether the system stays accessible even when some components fail. **Elasticity** is the system automatically adding and removing resources as demand changes.
 
 ```mermaid
 flowchart LR
@@ -134,17 +110,7 @@ flowchart LR
 
 ## 2.1 What Is a Load Balancer?
 
-A load balancer is a component that receives client traffic and distributes it across multiple backend targets.
-
-Targets may include:
-
-- Virtual machines
-- EC2 instances
-- Docker containers
-- ECS tasks
-- Kubernetes pods
-- IP addresses
-- Lambda functions, in supported AWS configurations
+A load balancer is a component that receives client traffic and distributes it across multiple backend targets — virtual machines, EC2 instances, Docker containers, ECS tasks, Kubernetes pods, IP addresses, or (in supported AWS configurations) Lambda functions.
 
 The client communicates with one public endpoint, while the load balancer decides which healthy backend should process each request.
 
@@ -193,14 +159,7 @@ The Open Systems Interconnection model is commonly used to describe the level at
 
 ### Layer 4 — Transport Layer
 
-Layer 4 routing uses connection information such as:
-
-- Source IP
-- Destination IP
-- TCP or UDP port
-- Protocol
-
-The load balancer does not need to understand the HTTP URL or headers.
+Layer 4 routing uses connection information only — source IP, destination IP, TCP or UDP port, and protocol — without needing to understand the HTTP URL or headers.
 
 Typical use cases:
 
@@ -213,14 +172,7 @@ Typical use cases:
 
 ### Layer 7 — Application Layer
 
-Layer 7 routing understands application-level details such as:
-
-- HTTP method
-- Host name
-- URL path
-- Headers
-- Query parameters
-- Cookies
+Layer 7 routing understands application-level details — HTTP method, host name, URL path, headers, query parameters, cookies.
 
 Typical use cases:
 
@@ -264,20 +216,11 @@ Suitable when backend servers have similar capacity and requests require similar
 
 ### Least Connections
 
-Traffic is sent to the server with the fewest active connections.
-
-Suitable when request duration varies significantly.
+Traffic is sent to the server with the fewest active connections. Suitable when request duration varies significantly.
 
 ### Weighted Distribution
 
-More traffic is sent to servers with higher assigned weights.
-
-```text
-Server A weight: 70
-Server B weight: 30
-```
-
-Useful during:
+More traffic is sent to servers with higher assigned weights (for example, `Server A: weight 70` vs `Server B: weight 30`). Useful during:
 
 - Canary releases
 - Blue/green deployments
@@ -286,26 +229,18 @@ Useful during:
 
 ### Hash-Based Routing
 
-A value such as client IP or session identifier is hashed to select a target.
-
-Useful when the same client should generally reach the same backend.
+A value such as client IP or session identifier is hashed to select a target, so the same client generally reaches the same backend.
 
 ---
 
 ## 2.6 Health Checks
 
-The load balancer periodically sends a request to each registered target.
-
-Example:
+The load balancer periodically sends a request to each registered target and expects a healthy response:
 
 ```http
 GET /health HTTP/1.1
 Host: app.internal
-```
 
-A healthy response may be:
-
-```http
 HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -329,14 +264,7 @@ A failed health check should remove the target from traffic rotation, not necess
 
 ## 2.7 Sticky Sessions
 
-Sticky sessions, also called **session affinity**, try to route a user to the same backend target for a period of time.
-
-```text
-User A → Server 1 → Server 1 → Server 1
-User B → Server 2 → Server 2 → Server 2
-```
-
-Sticky sessions can be useful for legacy applications that keep session state in process memory.
+Sticky sessions, also called **session affinity**, try to route a user back to the same backend target for a period of time (`User A → Server 1 → Server 1 → ...`), which helps legacy applications that keep session state in process memory.
 
 However, they create challenges:
 
@@ -345,32 +273,13 @@ However, they create challenges:
 - Difficult deployments
 - Reduced scaling flexibility
 
-A more scalable design stores shared session state in:
-
-- Redis
-- A database
-- A signed client-side cookie
-- An external session service
-
-The application instances should ideally remain stateless.
+A more scalable design stores shared session state in Redis, a database, a signed client-side cookie, or an external session service, keeping the application instances themselves stateless.
 
 ---
 
 ## 2.8 TLS Termination
 
-A load balancer can terminate HTTPS traffic.
-
-```text
-Client ──HTTPS──► Load Balancer ──HTTP or HTTPS──► Application
-```
-
-Benefits include:
-
-- Central certificate management
-- Reduced cryptographic work on application instances
-- Consistent TLS policy
-- Integration with AWS Certificate Manager
-- Easier certificate rotation
+A load balancer can terminate HTTPS traffic — client to load balancer over HTTPS, then load balancer to application over HTTP or HTTPS — which centralizes certificate management, reduces cryptographic work on application instances, keeps TLS policy consistent, integrates with AWS Certificate Manager, and simplifies certificate rotation.
 
 For sensitive production systems, traffic from the load balancer to the target can also use HTTPS.
 
@@ -378,7 +287,7 @@ For sensitive production systems, traffic from the load balancer to the target c
 
 # 3. AWS Elastic Load Balancing
 
-AWS Elastic Load Balancing distributes incoming traffic across healthy targets in one or more Availability Zones. The managed load balancer adjusts its own capacity as traffic changes.
+AWS Elastic Load Balancing distributes incoming traffic across healthy targets in one or more Availability Zones. The managed load balancer adjusts its own capacity as traffic changes. The surrounding AWS services these targets run on are introduced in [AWS Core Services](aws-core-services.md).
 
 AWS provides these current load-balancer families:
 
@@ -391,53 +300,14 @@ AWS provides these current load-balancer families:
 
 ## 3.1 Core AWS Components
 
-### Load Balancer
-
-The managed entry point that accepts traffic.
-
-### Listener
-
-A listener checks for incoming connections on a configured protocol and port.
-
-Examples:
-
-| Protocol | Port |
+| Component | Role |
 |---|---|
-| HTTP | 80 |
-| HTTPS | 443 |
-| TCP | 5432 |
-| TLS | 443 |
-
-### Listener Rule
-
-A rule determines where traffic should be forwarded.
-
-Example:
-
-```text
-IF path starts with /api/
-THEN forward to API target group
-```
-
-### Target Group
-
-A logical collection of backend targets.
-
-Targets may include:
-
-- EC2 instances
-- IP addresses
-- ECS tasks
-- Lambda functions for supported ALB use cases
-- Another ALB as an NLB target in a supported architecture
-
-### Target
-
-The actual backend application endpoint.
-
-### Health Check
-
-The mechanism used to determine whether a target can receive traffic.
+| Load Balancer | The managed entry point that accepts traffic |
+| Listener | Checks for incoming connections on a configured protocol and port (for example HTTP:80, HTTPS:443, TCP:5432, TLS:443) |
+| Listener Rule | Determines where traffic should be forwarded — e.g. `IF path starts with /api/ THEN forward to API target group` |
+| Target Group | A logical collection of backend targets: EC2 instances, IP addresses, ECS tasks, Lambda functions for supported ALB use cases, or another ALB as an NLB target |
+| Target | The actual backend application endpoint |
+| Health Check | The mechanism used to determine whether a target can receive traffic |
 
 ---
 
@@ -559,15 +429,7 @@ It is not normally used as the public HTTP entry point for a web application.
 
 ## 3.6 Classic Load Balancer
 
-Classic Load Balancer is the previous-generation AWS load balancer.
-
-For new applications, prefer:
-
-- ALB for HTTP/HTTPS application traffic
-- NLB for TCP/UDP/TLS traffic
-- GWLB for network appliances
-
-Use Classic Load Balancer mainly when maintaining a legacy architecture that specifically depends on it.
+Classic Load Balancer is the previous-generation AWS load balancer. For new applications, prefer ALB, NLB or GWLB as appropriate (see the selection guide below); use Classic Load Balancer mainly when maintaining a legacy architecture that specifically depends on it.
 
 ---
 
@@ -590,58 +452,13 @@ Use Classic Load Balancer mainly when maintaining a legacy architecture that spe
 
 ## 3.8 Internet-Facing vs Internal Load Balancer
 
-### Internet-Facing
-
-Receives requests from clients over the internet.
-
-```text
-Internet → Public Load Balancer → Private Application Instances
-```
-
-The application targets do not need public IP addresses.
-
-### Internal
-
-Receives traffic only through private networking.
-
-```text
-Frontend Service → Internal Load Balancer → Backend Service
-```
-
-Typical uses:
-
-- Internal APIs
-- Service-to-service communication
-- Administrative applications
-- Private enterprise systems
+An **internet-facing** load balancer receives requests from clients over the internet (Internet → Public Load Balancer → Private Application Instances), so the application targets themselves do not need public IP addresses. An **internal** load balancer receives traffic only through private networking (Frontend Service → Internal Load Balancer → Backend Service) — typical uses include internal APIs, service-to-service communication, administrative applications, and private enterprise systems.
 
 ---
 
 ## 3.9 Multi-AZ Deployment
 
-A highly available load balancer should use subnets in at least two Availability Zones.
-
-```mermaid
-flowchart TB
-    ALB[Application Load Balancer]
-
-    subgraph AZA[Availability Zone A]
-        A1[App Instance A1]
-        A2[App Instance A2]
-    end
-
-    subgraph AZB[Availability Zone B]
-        B1[App Instance B1]
-        B2[App Instance B2]
-    end
-
-    ALB --> A1
-    ALB --> A2
-    ALB --> B1
-    ALB --> B2
-```
-
-If one target or Availability Zone has a problem, healthy capacity in another zone can continue processing requests.
+A highly available load balancer should use subnets in at least two Availability Zones, so that if one target or Availability Zone has a problem, healthy capacity in another zone can continue processing requests.
 
 ---
 
@@ -667,15 +484,7 @@ Auto-scaling has two major goals:
 
 ## 4.2 Scale Out and Scale In
 
-### Scale Out
-
-Add more instances or containers.
-
-```text
-2 instances → 4 instances
-```
-
-Scale out when:
+**Scale out** adds more instances or containers (2 instances → 4 instances). Scale out when:
 
 - CPU is consistently high
 - Requests per target increase
@@ -683,15 +492,7 @@ Scale out when:
 - Latency rises due to capacity pressure
 - A predictable traffic event is approaching
 
-### Scale In
-
-Remove instances or containers.
-
-```text
-4 instances → 2 instances
-```
-
-Scale in when:
+**Scale in** removes instances or containers (4 instances → 2 instances). Scale in when:
 
 - Traffic decreases
 - Utilization remains below the target
@@ -704,27 +505,7 @@ Scale-in decisions should be more conservative than scale-out decisions because 
 
 ## 4.3 Reactive vs Proactive Scaling
 
-### Reactive Scaling
-
-Capacity changes after a metric shows that demand has changed.
-
-Example:
-
-```text
-Average CPU > 65% → add instances
-```
-
-### Proactive Scaling
-
-Capacity is added before expected demand arrives.
-
-Example:
-
-```text
-Every weekday at 8:45 AM → increase desired capacity to 10
-```
-
-Predictive scaling also uses historical patterns to forecast future capacity requirements.
+**Reactive scaling** changes capacity after a metric shows demand has changed (`Average CPU > 65% → add instances`). **Proactive scaling** adds capacity before expected demand arrives (`Every weekday at 8:45 AM → increase desired capacity to 10`). Predictive scaling also uses historical patterns to forecast future capacity requirements.
 
 ---
 
@@ -800,44 +581,11 @@ Defines:
 - Instance maintenance behavior
 - Termination policies
 
-### Scaling Policy
-
-Defines when and how desired capacity should change.
-
-### CloudWatch Metric
-
-Provides the data used for scaling decisions.
+**Scaling Policy** defines when and how desired capacity should change. **CloudWatch Metric** provides the data used for scaling decisions.
 
 ---
 
-## 5.3 Basic EC2 Auto Scaling Architecture
-
-```mermaid
-flowchart TB
-    USERS[Users] --> ALB[Application Load Balancer]
-
-    ALB --> TG[Target Group]
-
-    subgraph ASG[EC2 Auto Scaling Group]
-        direction LR
-        EC21[EC2 Instance 1]
-        EC22[EC2 Instance 2]
-        EC23[EC2 Instance 3]
-    end
-
-    TG --> EC21
-    TG --> EC22
-    TG --> EC23
-
-    CW[CloudWatch Metrics] --> POLICY[Scaling Policy]
-    POLICY --> ASG
-
-    LT[Launch Template] --> ASG
-```
-
----
-
-## 5.4 Instance Lifecycle
+## 5.3 Instance Lifecycle
 
 A simplified instance lifecycle is:
 
@@ -854,68 +602,23 @@ flowchart TD
     T --> TE[Terminated]
 ```
 
-Lifecycle hooks can pause selected transitions so that custom work can run.
-
-Examples:
-
-- Install or warm application data before serving traffic
-- Download configuration
-- Register with an external monitoring system
-- Finish in-progress work before termination
-- Upload final logs
+Lifecycle hooks can pause selected transitions so that custom work can run — for example, installing or warming application data before serving traffic, downloading configuration, registering with an external monitoring system, finishing in-progress work before termination, or uploading final logs.
 
 ---
 
-## 5.5 Health-Check Types
+## 5.4 Health-Check Types
 
-### EC2 Health Check
+**EC2 Health Check** detects infrastructure-level problems reported by EC2, such as host failure, instance failure, or a system status-check failure.
 
-Detects infrastructure-level problems reported by EC2.
-
-Examples:
-
-- Host failure
-- Instance failure
-- System status-check failure
-
-### Elastic Load Balancing Health Check
-
-Detects whether the application target is healthy from the load balancer's perspective.
-
-Examples:
-
-- Application process stopped
-- Health endpoint returns `500`
-- Application port is not accepting traffic
-- Dependency check fails
+**Elastic Load Balancing Health Check** detects whether the application target is healthy from the load balancer's perspective — for example, the application process stopped, the health endpoint returns `500`, the application port stops accepting traffic, or a dependency check fails.
 
 For an ASG behind a load balancer, enabling load-balancer health checks allows unhealthy application instances to be replaced, not merely removed from traffic.
 
 ---
 
-## 5.6 Automatic Replacement
+## 5.5 Automatic Replacement
 
-Suppose the desired capacity is three.
-
-```text
-Desired capacity: 3
-Running healthy:  3
-```
-
-One instance becomes unhealthy.
-
-```text
-Running healthy:  2
-Unhealthy:        1
-```
-
-The ASG can terminate the unhealthy instance and launch a replacement.
-
-```text
-Running healthy:  3
-```
-
-This is self-healing behavior, even when no traffic-based scale-out is required.
+Suppose the desired capacity is three and all three instances are running healthy. One instance becomes unhealthy (`Running healthy: 2, Unhealthy: 1`); the ASG can terminate it and launch a replacement, bringing the group back to three running healthy instances. This is self-healing behavior, even when no traffic-based scale-out is required.
 
 ---
 
@@ -1048,20 +751,12 @@ flowchart TB
 
 ## 7.2 Network Placement
 
-A common setup is:
+A common setup places the load balancer in public subnets and application resources in private subnets:
 
-### Public Subnets
-
-- Internet-facing load balancer
-- NAT Gateway, when private instances require outbound internet access
-
-### Private Subnets
-
-- Application EC2 instances
-- ECS tasks
-- Internal services
-- Databases
-- Caches
+| Subnet Type | Typical Contents |
+|---|---|
+| Public | Internet-facing load balancer; NAT Gateway (when private instances need outbound internet access) |
+| Private | Application EC2 instances, ECS tasks, internal services, databases, caches |
 
 The application instances usually do not need public IP addresses.
 
@@ -1127,7 +822,6 @@ from fastapi import FastAPI, Response, status
 
 app = FastAPI()
 
-
 @app.get("/health")
 async def health_check(response: Response) -> dict[str, str]:
     application_ready = True
@@ -1144,7 +838,6 @@ A Django example:
 ```python
 from django.http import JsonResponse
 
-
 def health_check(request):
     return JsonResponse({"status": "healthy"}, status=200)
 ```
@@ -1157,15 +850,7 @@ The endpoint should be fast and predictable. Do not perform a large business wor
 
 ## 8.1 Target Tracking Scaling
 
-Target tracking tries to keep a selected metric near a target value.
-
-Example:
-
-```text
-Keep average ASG CPU utilization near 50%.
-```
-
-Behavior:
+Target tracking tries to keep a selected metric near a target value — for example, "keep average ASG CPU utilization near 50%":
 
 ```mermaid
 flowchart LR
@@ -1174,15 +859,7 @@ flowchart LR
     C3["Current CPU = 51%"] --> A3[Maintain capacity]
 ```
 
-This is usually the best starting point because it behaves similarly to a thermostat.
-
-### Common Target Metrics
-
-- Average CPU utilization
-- Application Load Balancer request count per target
-- Custom CloudWatch metric
-- Average ECS service CPU
-- Average ECS service memory
+This is usually the best starting point because it behaves similarly to a thermostat. Common target metrics: average CPU utilization, ALB request count per target, a custom CloudWatch metric, average ECS service CPU, or average ECS service memory.
 
 ---
 
@@ -1214,9 +891,7 @@ For most modern EC2 Auto Scaling use cases, begin with target tracking unless a 
 
 ## 8.4 Scheduled Scaling
 
-Scheduled scaling changes capacity at known times.
-
-Example:
+Scheduled scaling changes capacity at known times, for example:
 
 | Time Window | Minimum | Desired |
 |---|---|---|
@@ -1232,27 +907,13 @@ Suitable for:
 - Known sale events
 - Scheduled examinations or registrations
 
-Scheduled scaling does not react to unexpected traffic by itself. It is often combined with dynamic scaling.
+Scheduled scaling does not react to unexpected traffic by itself — it is often combined with dynamic scaling.
 
 ---
 
 ## 8.5 Predictive Scaling
 
-Predictive scaling analyzes historical patterns and forecasts required capacity.
-
-Suitable when traffic has repeatable patterns such as:
-
-- Daily peaks
-- Weekly business cycles
-- Regular media events
-- Repeated batch workloads
-
-Predictive and dynamic scaling can be combined:
-
-```text
-Predictive scaling → prepare capacity before demand
-Dynamic scaling    → respond to unexpected changes
-```
+Predictive scaling analyzes historical patterns and forecasts required capacity — suitable when traffic has repeatable patterns such as daily peaks, weekly business cycles, regular media events, or repeated batch workloads. It is often combined with dynamic scaling: predictive scaling prepares capacity ahead of expected demand, while dynamic scaling responds to whatever is unexpected.
 
 ---
 
@@ -1283,26 +944,11 @@ Good when:
 - Application runs behind an ALB
 - You know approximately how many requests one target can process
 
-Example:
-
-```text
-Safe capacity per target: 1,000 requests/minute
-Target value:             700 requests/minute
-```
-
-This leaves operational headroom.
+For example, with a safe capacity of 1,000 requests/minute per target, a target value of 700 requests/minute leaves operational headroom.
 
 ### Queue Depth
 
-Good for asynchronous workers.
-
-Example metric:
-
-```text
-Messages available / active workers
-```
-
-If 10,000 messages exist but only two workers are running, CPU may not immediately show the true backlog. Queue depth is more directly connected to the work waiting to be processed.
+Good for asynchronous workers — the example metric is messages available divided by active workers. If 10,000 messages exist but only two workers are running, CPU may not immediately show the true backlog; queue depth is more directly connected to the work waiting to be processed.
 
 ### Latency
 
@@ -1360,25 +1006,13 @@ New instances require time to:
 - Warm caches
 - Pass health checks
 
-During warmup, the scaling system should avoid treating partially initialized capacity as fully available.
-
-Measure actual startup time. Do not guess.
-
-For container workloads, image size and image-pull time can materially affect scale-out speed.
+During warmup, the scaling system should avoid treating partially initialized capacity as fully available — measure actual startup time, don't guess. For container workloads, image size and image-pull time can materially affect scale-out speed.
 
 ---
 
 ## 8.9 Cooldown and Stabilization
 
-Scaling systems need protection from rapid repeated changes.
-
-Without stabilization:
-
-```text
-Scale out → metric falls → scale in → metric rises → scale out
-```
-
-This is called **thrashing** or **flapping**.
+Scaling systems need protection from rapid repeated changes. Without stabilization, the system can thrash: scale out → metric falls → scale in → metric rises → scale out again (called **thrashing** or **flapping**).
 
 Useful controls include:
 
@@ -1389,7 +1023,7 @@ Useful controls include:
 - Minimum capacity
 - Appropriate health thresholds
 - ECS scaling stabilization behavior
-- Kubernetes stabilization windows in Kubernetes environments
+- Kubernetes stabilization windows
 
 Scale out quickly enough to protect users, but scale in carefully.
 
@@ -1399,29 +1033,7 @@ Scale out quickly enough to protect users, but scale in carefully.
 
 ## 9.1 A Good Health Check
 
-A production health endpoint should answer a clear question:
-
-> Can this target safely receive traffic?
-
-A useful design separates:
-
-### Liveness
-
-Is the process running?
-
-```text
-/live
-```
-
-### Readiness
-
-Is the application ready to serve requests?
-
-```text
-/ready
-```
-
-The load balancer should normally use a readiness-style check.
+A production health endpoint should answer a clear question: can this target safely receive traffic? A useful design separates **liveness** (is the process running? — typically `/live`) from **readiness** (is the application ready to serve requests? — typically `/ready`). The load balancer should normally use a readiness-style check.
 
 ---
 
@@ -1454,13 +1066,7 @@ flowchart LR
     TT[Target termination] --> ADP[After drain period]
 ```
 
-This is important for:
-
-- File uploads
-- Report generation requests
-- Long API calls
-- Streaming responses
-- Graceful deployments
+This matters for file uploads, report generation requests, long API calls, streaming responses, and graceful deployments.
 
 The application shutdown timeout should align with the load balancer's deregistration behavior and the orchestrator's termination grace period.
 
@@ -1468,9 +1074,7 @@ The application shutdown timeout should align with the load balancer's deregistr
 
 ## 9.4 Slow Start
 
-A newly healthy target may not immediately be ready for full traffic.
-
-It may still be:
+A newly healthy target may not immediately be ready for full traffic. It may still be:
 
 - Warming application caches
 - Establishing database pools
@@ -1491,14 +1095,7 @@ A gradual traffic ramp can protect such targets where the selected load-balancer
 | Healthy threshold | 2 checks |
 | Unhealthy threshold | 3 checks |
 
-Approximate detection behavior:
-
-```text
-Healthy registration: around 30 seconds after successful checks
-Unhealthy detection: up to around 45 seconds, plus timing variation
-```
-
-Choose values based on application recovery behavior and tolerance for false failures.
+With these values, healthy registration takes around 30 seconds after successful checks, and unhealthy detection takes up to around 45 seconds (plus timing variation). Choose values based on application recovery behavior and tolerance for false failures.
 
 ---
 
@@ -1506,15 +1103,7 @@ Choose values based on application recovery behavior and tolerance for false fai
 
 ## 10.1 Docker Does Not Automatically Mean Auto-Scaling
 
-Docker packages and runs an application in containers.
-
-Docker alone does not automatically provide:
-
-- Multi-host scheduling
-- Automatic scaling from metrics
-- Cloud load balancing
-- Cross-host service discovery
-- Automatic node provisioning
+Docker packages and runs an application in containers, but it does not by itself provide multi-host scheduling, automatic scaling from metrics, cloud load balancing, cross-host service discovery, or automatic node provisioning.
 
 Those capabilities come from an orchestrator or cloud platform such as:
 
@@ -1529,11 +1118,7 @@ Those capabilities come from an orchestrator or cloud platform such as:
 
 ## 10.2 Manual Docker Compose Scaling
 
-A service can be scaled manually:
-
-```bash
-docker compose up -d --scale web=3
-```
+A service can be scaled manually: `docker compose up -d --scale web=3`
 
 Example Compose service:
 
@@ -1607,11 +1192,7 @@ docker service create \
   my-web-image:latest
 ```
 
-Manual scaling:
-
-```bash
-docker service scale web=6
-```
+Manual scaling: `docker service scale web=6`
 
 Swarm distributes service tasks across nodes and can route published traffic to active service containers. An external load balancer can also be placed in front of the Swarm nodes.
 
@@ -1642,13 +1223,7 @@ flowchart LR
     AAS --> ECS
 ```
 
-The ECS service:
-
-- Maintains the desired task count
-- Replaces failed tasks
-- Registers tasks with the load balancer
-- Deregisters stopped tasks
-- Can scale task count automatically
+The ECS service maintains the desired task count, replaces failed tasks, registers tasks with the load balancer, deregisters stopped tasks, and can scale task count automatically.
 
 ---
 
@@ -1691,13 +1266,7 @@ Conceptual policy:
 | Target metric | ECSServiceAverageCPUUtilization |
 | Target value | 50% |
 
-Another useful metric for an ALB-backed service is:
-
-```text
-ALBRequestCountPerTarget
-```
-
-This scales based on the average request load handled by each target.
+Another useful metric for an ALB-backed service is `ALBRequestCountPerTarget`, which scales based on the average request load handled by each target.
 
 ---
 
@@ -1759,29 +1328,11 @@ Useful signals include:
 
 ## 11.3 Logs to Collect
 
-### Application Load Balancer
-
-- Access logs
-- Connection logs where applicable
-- AWS WAF logs if WAF is enabled
-- CloudTrail management events
-
-### Application
-
-- Request logs
-- Error logs
-- Startup logs
-- Shutdown logs
-- Health-check logs
-- Correlation or request IDs
-
-### Auto Scaling
-
-- Scaling activity history
-- Lifecycle hook status
-- EC2 system logs
-- User-data or cloud-init logs
-- CloudWatch alarms
+| Source | What to Collect |
+|---|---|
+| Application Load Balancer | Access logs, connection logs where applicable, AWS WAF logs if WAF is enabled, CloudTrail management events |
+| Application | Request logs, error logs, startup logs, shutdown logs, health-check logs, correlation or request IDs |
+| Auto Scaling | Scaling activity history, lifecycle hook status, EC2 system logs, user-data or cloud-init logs, CloudWatch alarms |
 
 ---
 
@@ -1873,20 +1424,13 @@ Setting minimum capacity to zero or one may save money, but can increase:
 - Impact of Availability Zone problems
 - Recovery time
 
-For a production multi-AZ web application, minimum capacity is commonly at least two, with capacity distributed across zones. The exact value depends on the workload's availability objective.
+For a production multi-AZ web application, minimum capacity is commonly at least two, with capacity distributed across zones — the exact value depends on the workload's availability objective.
 
 ---
 
 ## 12.2 Maximum Capacity Is a Safety Boundary
 
-Maximum capacity protects against:
-
-- Unexpected cost growth
-- Runaway scaling
-- Downstream overload
-- Account quota pressure
-
-However, a maximum that is too low prevents the system from handling legitimate traffic.
+Maximum capacity protects against unexpected cost growth, runaway scaling, downstream overload, and account quota pressure — but a maximum that is too low prevents the system from handling legitimate traffic.
 
 Choose it using:
 
@@ -1918,13 +1462,7 @@ Example:
 | Safe capacity per instance | 300 requests/second |
 | Required baseline capacity | 2,400 / 300 = 8 instances |
 
-Add headroom:
-
-```text
-8 × 1.25 = 10 instances
-```
-
-This formula is only useful when validated with realistic load testing.
+Add headroom — for example, 8 × 1.25 = 10 instances. This formula is only useful when validated with realistic load testing.
 
 ---
 
@@ -1947,21 +1485,7 @@ Confirm that dependencies can support the maximum application capacity.
 
 ## 12.5 EC2 Purchase Options
 
-An ASG can be designed around:
-
-- On-Demand Instances
-- Reserved capacity or Savings Plans for predictable baseline usage
-- Spot Instances for interruptible capacity
-- Mixed instance types
-
-A common pattern is:
-
-```text
-Stable baseline → On-Demand or covered usage
-Burst capacity  → mixture that may include Spot
-```
-
-Use Spot only when the application can tolerate interruptions and the scaling design maintains sufficient reliable capacity.
+An ASG can mix On-Demand Instances, Reserved capacity or Savings Plans for predictable baseline usage, Spot Instances for interruptible capacity, and mixed instance types — typically a stable baseline on On-Demand or covered usage, with burst capacity drawing from a mixture that may include Spot. Use Spot only when the application can tolerate interruptions and the scaling design maintains sufficient reliable capacity.
 
 ---
 
@@ -1969,15 +1493,7 @@ Use Spot only when the application can tolerate interruptions and the scaling de
 
 ## 13.1 Public REST API
 
-### Requirements
-
-- HTTPS
-- Multiple API instances
-- Path routing
-- Automatic scale-out
-- No server-side local sessions
-
-### Design
+**Requirements:** HTTPS, multiple API instances, path routing, automatic scale-out, no server-side local sessions.
 
 ```mermaid
 flowchart TD
@@ -1987,51 +1503,25 @@ flowchart TD
     ASG --> DEP["RDS / ElastiCache / S3"]
 ```
 
-### Scaling Metric
-
-Start with:
-
-- ALB request count per target, or
-- Average CPU if CPU strongly represents request load
+**Scaling metric:** ALB request count per target, or average CPU if CPU strongly represents request load.
 
 ---
 
 ## 13.2 Background OCR Workers
 
-### Requirements
+**Requirements:** documents enter a queue, workers process them asynchronously, traffic is not direct HTTP traffic.
 
-- Documents enter a queue
-- Workers process documents asynchronously
-- Traffic is not direct HTTP traffic
+**Design:** API → S3 + Queue → Worker Auto Scaling Group → Database. A load balancer may not be needed for the worker tier.
 
-### Design
-
-```text
-API → S3 + Queue → Worker Auto Scaling Group → Database
-```
-
-### Scaling Metric
-
-Use queue backlog per worker instead of ALB request count.
-
-```text
-Backlog per worker =
-Visible queue messages / running workers
-```
-
-A load balancer may not be needed for the worker tier.
+**Scaling metric:** queue backlog per worker (visible queue messages ÷ running workers) instead of ALB request count.
 
 ---
 
 ## 13.3 WebSocket Application
 
-### Requirements
+**Requirements:** long-lived connections, many concurrent users, graceful connection handling.
 
-- Long-lived connections
-- Many concurrent users
-- Graceful connection handling
-
-### Design Considerations
+**Design considerations:**
 
 - Choose an LB that supports the protocol and required behavior
 - Scale on active connections or another workload-specific metric
@@ -2044,14 +1534,7 @@ A load balancer may not be needed for the worker tier.
 
 ## 13.4 Predictable Office-Hour Application
 
-### Traffic Pattern
-
-```text
-Low usage: 8 PM–8 AM
-High usage: 9 AM–6 PM
-```
-
-### Policy Combination
+**Traffic pattern:** low usage 8 PM–8 AM, high usage 9 AM–6 PM.
 
 | Policy | Behavior |
 |---|---|
@@ -2062,13 +1545,9 @@ High usage: 9 AM–6 PM
 
 ## 13.5 Flash Sale
 
-### Requirements
+**Requirements:** a large, known traffic event with a sudden burst and high business impact.
 
-- Large, known traffic event
-- Sudden burst
-- High business impact
-
-### Approach
+**Approach:**
 
 - Load test before the event
 - Increase minimum capacity in advance
@@ -2149,71 +1628,7 @@ Do not rely only on reactive scaling when instances require several minutes to b
 
 ---
 
-# 15. Quick Revision Summary
-
-## Load Balancing
-
-**Purpose:** Distribute traffic across healthy targets.
-
-**Key concepts:**
-
-```mermaid
-flowchart LR
-    L[Listener] --> R[Rule]
-    R --> TG[Target Group]
-    TG --> T[Target]
-    T --> HC[Health Check]
-```
-
-## Auto-Scaling
-
-**Purpose:** Adjust compute capacity and replace unhealthy resources.
-
-**Key concepts:**
-
-```mermaid
-flowchart LR
-    LT[Launch Template] --> ASG[Auto Scaling Group]
-    ASG --> SP[Scaling Policy]
-    SP --> M[Metric]
-```
-
-## Combined Flow
-
-```mermaid
-flowchart TD
-    U[Users] --> LB[Load Balancer]
-    LB --> HT[Healthy Targets]
-    HT --> ASG["Auto Scaling Group adds/removes capacity"]
-    CW[CloudWatch metrics and scaling policies] --> ASG
-```
-
-## AWS Selection
-
-```mermaid
-flowchart LR
-    A[ALB] --> A1["HTTP/HTTPS, Layer 7, path and host routing"]
-    N[NLB] --> N1["TCP/UDP/TLS, Layer 4, high throughput, static IP needs"]
-    G[GWLB] --> G1["Firewalls and virtual network appliances"]
-```
-
-## Scaling Policies
-
-```mermaid
-flowchart LR
-    TT[Target tracking] --> TT1[Keep a metric near a target]
-    SS[Step scaling] --> SS1[Different actions for different threshold ranges]
-    SCH[Scheduled] --> SCH1[Scale at known times]
-    PRED[Predictive] --> PRED1[Forecast repeating demand patterns]
-```
-
-## Most Important Design Principle
-
-> A load balancer distributes work among available targets. Auto-scaling changes how many targets are available. Reliable systems combine both with health checks, monitoring, multi-AZ deployment and stateless application design.
-
----
-
-# 16. Official References
+# 15. Official References
 
 The following official documentation was used to verify the current AWS and Docker concepts in this guide:
 

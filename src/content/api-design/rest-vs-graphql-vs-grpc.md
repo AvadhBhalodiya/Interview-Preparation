@@ -2,14 +2,41 @@
 title: "REST / GraphQL / gRPC"
 group: "Security & Integration"
 order: 8
+updated: "July 2026"
 ---
 
 # REST vs GraphQL vs gRPC: Trade-offs and Selection Guide
 
-> **Topic:** API Design & REST  
-> **Audience:** Developers with 3+ years of experience  
-> **Last reviewed:** July 2026  
-> **Goal:** Understand how REST, GraphQL, and gRPC differ, where each fits, and how to choose between them in production systems.
+> Understand how REST, GraphQL, and gRPC differ, where each fits, and how to choose between them in production systems.
+
+## In short
+
+- They are not the same kind of technology: REST is an architectural style, GraphQL is a query language and runtime, gRPC is an RPC framework.
+- REST returns server-defined resource representations, so clients over-fetch fields they do not need and under-fetch across several round trips.
+- GraphQL lets the client select exact fields from a typed schema, at the cost of resolver complexity and N+1 fan-out that needs DataLoader-style batching.
+- GraphQL caching is weak by default because one `POST /graphql` endpoint hides resource semantics from standard HTTP caches.
+- gRPC uses binary Protocol Buffers over HTTP/2 with generated clients, first-class streaming, and deadlines, but native browser support is indirect and payloads are not human-readable.
+- REST keeps the ecosystem advantage: browsers, proxies, CDNs, gateways, and `Cache-Control` plus `ETag` caching all work with no extra machinery.
+- Hybrid architectures are normal: REST at the public edge, GraphQL as a BFF, gRPC between internal services.
+
+```mermaid
+flowchart TD
+    A[Who directly consumes the API?] --> B{Mainly browsers or external partners?}
+
+    B -->|Yes| C{Do clients need very different nested data shapes?}
+    C -->|No| R[Choose REST]
+    C -->|Yes| G[Consider GraphQL]
+
+    B -->|No, mainly internal services| D{Is streaming, compact binary transport, or generated RPC code important?}
+    D -->|Yes| P[Choose gRPC]
+    D -->|No| E{Does the domain map cleanly to HTTP resources?}
+    E -->|Yes| R2[Choose REST]
+    E -->|No, client-driven graph is valuable| G2[Consider GraphQL]
+```
+
+**Interview answer:** Pick REST by default for public, partner-facing, or CRUD-shaped HTTP APIs, where standard caching and broad client compatibility carry real value. Pick GraphQL when several clients need different graph-shaped selections of the same data and the team can operate query-cost limits, batching, and field-level authorization. Pick gRPC for internal service-to-service traffic that benefits from strict contracts, generated cross-language clients, streaming, and deadlines.
+
+**Gotcha:** Choosing on payload speed alone. A cached REST response served from an edge location beats an uncached GraphQL operation or a chain of fast RPCs, and GraphQL's single request can still fan out into dozens of backend calls.
 
 ---
 
@@ -133,11 +160,7 @@ GET /api/products/101/reviews?limit=5
 
 The API is predictable, but the client may need several requests unless the server provides a purpose-built endpoint or supports field expansion.
 
-For example:
-
-```http
-GET /api/products/101?include=seller,reviews
-```
+For example: `GET /api/products/101?include=seller,reviews`
 
 ---
 
@@ -149,47 +172,15 @@ REST maps naturally to HTTP and is familiar to frontend, backend, mobile, QA, De
 
 ### Strong web ecosystem compatibility
 
-REST works naturally with:
-
-- Browsers
-- Reverse proxies
-- CDNs
-- API gateways
-- Load balancers
-- HTTP monitoring tools
-- Standard authentication mechanisms
-- OpenAPI-based documentation and client generation
+REST works out of the box with browsers, reverse proxies, CDNs, API gateways, load balancers, HTTP monitoring tools, standard authentication mechanisms, and OpenAPI-based documentation and client generation.
 
 ### Straightforward caching
 
-A resource response can use standard HTTP caching:
-
-```http
-Cache-Control: public, max-age=300
-ETag: "product-101-v7"
-```
-
-The client can later make a conditional request:
-
-```http
-If-None-Match: "product-101-v7"
-```
-
-The server may return:
-
-```http
-304 Not Modified
-```
+A resource response can use standard HTTP caching with `Cache-Control: public, max-age=300` and `ETag: "product-101-v7"`. The client later makes a conditional request with `If-None-Match: "product-101-v7"`, and the server may answer `304 Not Modified` without sending the body again.
 
 ### Clear operational visibility
 
-Routes such as these are easy to identify in logs and metrics:
-
-```text
-GET /products/{id}
-POST /orders
-PATCH /users/{id}
-```
+Templated routes such as `GET /products/{id}`, `POST /orders`, and `PATCH /users/{id}` are easy to identify and group in logs and metrics.
 
 ### Good public API experience
 
@@ -464,17 +455,9 @@ A batching mechanism such as DataLoader can reduce this to:
 
 ### HTTP caching is less natural
 
-Many GraphQL APIs use one HTTP endpoint:
+Many GraphQL APIs use one HTTP endpoint: `POST /graphql`
 
-```http
-POST /graphql
-```
-
-Standard caches cannot identify resource semantics as directly as they can with:
-
-```http
-GET /products/101
-```
+Standard caches cannot identify resource semantics as directly as they can with: `GET /products/101`
 
 GraphQL clients often use normalized client-side caching, persisted operations, or application-aware edge caching instead.
 
@@ -495,11 +478,7 @@ The user may be allowed to view `name` but not `salary`. Authorization must be a
 
 ### Monitoring requires operation awareness
 
-A dashboard that only shows:
-
-```text
-POST /graphql
-```
+A dashboard that only shows: `POST /graphql`
 
 is not very useful. Metrics should include:
 
@@ -699,15 +678,7 @@ The `.proto` file acts as an interface definition. Code generation reduces manua
 
 ### Excellent service-to-service communication
 
-gRPC is well suited for:
-
-- Microservice calls
-- Internal platform APIs
-- Polyglot systems
-- Low-latency communication
-- High request volume
-- Streaming data
-- Long-lived connections
+gRPC suits microservice calls and internal platform APIs, especially in polyglot systems with low-latency requirements, high request volume, streaming data, or long-lived connections.
 
 ### Streaming is built into the API model
 
@@ -715,13 +686,7 @@ Streaming is not an additional convention layered on top of the basic API design
 
 ### Explicit deadlines and cancellation
 
-A client can define how long it is willing to wait.
-
-```python
-response = stub.GetProduct(request, timeout=0.5)
-```
-
-This is especially important in microservice call chains.
+A client defines how long it is willing to wait — `stub.GetProduct(request, timeout=0.5)` — which matters most in microservice call chains, where the budget must be split across hops.
 
 ```mermaid
 flowchart TB
@@ -738,23 +703,11 @@ Without deadlines, slow downstream calls can consume threads, connections, memor
 
 ### Native browser usage is less direct
 
-Browsers do not generally consume native gRPC in the same simple way they consume JSON over HTTP. Browser-facing systems commonly use:
-
-- gRPC-Web
-- A compatible proxy
-- An API gateway
-- HTTP/JSON transcoding
-- A REST or GraphQL edge layer
+Browsers do not generally consume native gRPC in the same simple way they consume JSON over HTTP. Browser-facing systems commonly reach it through gRPC-Web, a compatible proxy, an API gateway, HTTP/JSON transcoding, or a REST or GraphQL edge layer.
 
 ### Payloads are not easily human-readable
 
-A JSON response is easy to inspect:
-
-```json
-{"id": 101, "name": "Keyboard"}
-```
-
-A binary Protocol Buffer message normally requires the schema and tooling to decode.
+A JSON response such as `{"id": 101, "name": "Keyboard"}` is easy to inspect in a log or a browser. A binary Protocol Buffer message normally requires the schema and tooling to decode.
 
 ### Generated-code workflow
 
@@ -762,13 +715,7 @@ Consumers generally need the contract and generated client code. This is excelle
 
 ### Tighter schema discipline
 
-Protobuf evolution requires rules such as:
-
-- Never change an existing field number
-- Never reuse a deleted field number
-- Reserve deleted field numbers and names
-- Prefer additive changes
-- Coordinate semantic changes carefully
+Protobuf evolution has hard rules: never change an existing field number, never reuse a deleted one, reserve deleted numbers and names, prefer additive changes, and coordinate semantic changes carefully. The gRPC evolution section below shows the mechanics.
 
 ### Infrastructure awareness
 
@@ -800,11 +747,7 @@ GET /sellers/8
 GET /products/101/reviews?limit=5
 ```
 
-Or a purpose-built expanded resource:
-
-```http
-GET /products/101?include=seller,reviews&review_limit=5
-```
+Or a purpose-built expanded resource: `GET /products/101?include=seller,reviews&review_limit=5`
 
 ### Control
 
@@ -946,11 +889,7 @@ flowchart LR
     Q --> RS[Review Service]
 ```
 
-Therefore:
-
-```text
-Fewer HTTP requests ≠ automatically less backend work
-```
+Therefore: `Fewer HTTP requests ≠ automatically less backend work`
 
 Use:
 
@@ -975,11 +914,7 @@ gRPC can perform well because of:
 - Streaming support
 - Smaller message overhead in many workloads
 
-However, poor service boundaries can still create a slow system:
-
-```text
-Service A → Service B → Service C → Service D → Database
-```
+However, poor service boundaries can still create a slow system: `Service A → Service B → Service C → Service D → Database`
 
 A chain of fast individual RPCs may still have high total latency and a larger failure surface.
 
@@ -1055,28 +990,9 @@ Avoid hiding incorrect caching behind RPC methods. Cache keys must include every
 
 ## REST Evolution
 
-Common strategies:
+REST versions the API surface itself: a URL prefix such as `/api/v1/products/101`, a custom header, or a media type. Good evolution prefers additive, backward-compatible changes — adding a `currency` field is safer than renaming or removing `name` — and OpenAPI carries the published contract.
 
-```text
-/api/v1/products/101
-/api/v2/products/101
-```
-
-Or versioning through headers or media types.
-
-Good REST evolution prefers additive, backward-compatible changes:
-
-```json
-{
-  "id": 101,
-  "name": "Keyboard",
-  "currency": "INR"
-}
-```
-
-Adding `currency` is usually safer than renaming or removing `name`.
-
-OpenAPI can define and communicate the HTTP API contract. As of July 2026, the OpenAPI Initiative lists OpenAPI Specification 3.2.0 as a published version.
+Full mechanics, migration process, and deprecation policy: [API Versioning](api-versioning.md).
 
 ---
 
@@ -1104,17 +1020,9 @@ flowchart TD
     D --> E[Remove only after<br/>consumers are ready]
 ```
 
-Be careful when changing nullability:
+Be careful when changing nullability: `name: String`
 
-```graphql
-name: String
-```
-
-to:
-
-```graphql
-name: String!
-```
+to: `name: String!`
 
 or the reverse. Nullability is part of the contract and can affect generated clients and runtime behavior.
 
@@ -1148,17 +1056,9 @@ message Product {
 
 Never reuse field number `3` for a different meaning.
 
-For major API generations, packages can make the version explicit:
+For major API generations, packages can make the version explicit: `package catalog.v1;`
 
-```protobuf
-package catalog.v1;
-```
-
-Later:
-
-```protobuf
-package catalog.v2;
-```
+Later: `package catalog.v2;`
 
 ---
 
@@ -1166,22 +1066,9 @@ package catalog.v2;
 
 ## REST
 
-Authorization is often attached to routes and resources.
+Authorization attaches to routes and resources: authenticate the caller, then check ownership, the required role or permission, and whether the operation is allowed for the resource's current state. Route-level roles alone are not enough — object-level authorization is still required on every request that touches a specific record.
 
-```text
-GET /users/{id}
-PATCH /users/{id}
-DELETE /users/{id}
-```
-
-Checks may include:
-
-- Is the requester authenticated?
-- Does the requester own the resource?
-- Does the requester have the required role or permission?
-- Is the operation allowed for the resource's current state?
-
-Do not rely only on route-level roles. Object-level authorization is still required.
+Token formats, OAuth flows, and JWT handling: [AuthN vs AuthZ](authn-authz-oauth-jwt.md).
 
 ---
 
@@ -1246,36 +1133,9 @@ Internal traffic should not be considered trusted merely because it is inside a 
 
 ## REST
 
-REST normally combines an HTTP status code with a structured body.
+REST combines an HTTP status code with a structured body, commonly `application/problem+json` carrying `type`, `title`, `status`, `detail`, and `instance`. The status code carries the machine-readable meaning: `400` invalid request, `401` unauthenticated, `403` not permitted, `404` not found, `409` conflict, `422` semantically invalid, `429` rate-limited, `500` and `503` server-side failures.
 
-```http
-HTTP/1.1 404 Not Found
-Content-Type: application/problem+json
-```
-
-```json
-{
-  "type": "https://example.com/problems/product-not-found",
-  "title": "Product not found",
-  "status": 404,
-  "detail": "Product 101 does not exist",
-  "instance": "/products/101"
-}
-```
-
-Useful status examples:
-
-| Status | Meaning |
-|---|---|
-| `400` | Invalid request |
-| `401` | Authentication required or invalid |
-| `403` | Authenticated but not permitted |
-| `404` | Resource not found |
-| `409` | State or uniqueness conflict |
-| `422` | Semantically invalid input |
-| `429` | Rate limit exceeded |
-| `500` | Unexpected server failure |
-| `503` | Service temporarily unavailable |
+Full status-code semantics and method behaviour: [REST & HTTP Methods](rest-http-methods-status-codes.md).
 
 ---
 
@@ -1500,24 +1360,9 @@ Avoid exposing native gRPC directly as the only interface for broad third-party 
 
 ---
 
-# 15. Decision Tree
+# 15. Decision Checklist
 
-```mermaid
-flowchart TD
-    A[Who directly consumes the API?] --> B{Mainly browsers or external partners?}
-
-    B -->|Yes| C{Do clients need very different nested data shapes?}
-    C -->|No| R[Choose REST]
-    C -->|Yes| G[Consider GraphQL]
-
-    B -->|No, mainly internal services| D{Is streaming, compact binary transport, or generated RPC code important?}
-    D -->|Yes| P[Choose gRPC]
-    D -->|No| E{Does the domain map cleanly to HTTP resources?}
-    E -->|Yes| R2[Choose REST]
-    E -->|No, client-driven graph is valuable| G2[Consider GraphQL]
-```
-
-A compact decision checklist:
+The decision tree at the top of this note covers the main branch points: who consumes the API, whether clients need very different nested data shapes, and whether streaming or generated RPC code matters. This checklist maps individual requirements straight to a choice:
 
 | Requirement | Choice |
 |---|---|
@@ -1649,48 +1494,7 @@ The protocol does not fix poor domain boundaries, slow database queries, missing
 
 ---
 
-# 18. Interview-Ready Summary
-
-## REST
-
-REST is a resource-oriented architectural style that usually uses standard HTTP methods, status codes, headers, and JSON representations. It is the strongest general-purpose default for public APIs, resource-based business services, standard caching, and broad client compatibility.
-
-## GraphQL
-
-GraphQL lets clients request exact fields from a typed schema. It is effective for applications with multiple clients and complex nested data requirements, but it shifts complexity to schema governance, resolver performance, query-cost control, caching strategy, and field-level authorization.
-
-## gRPC
-
-gRPC is a contract-first RPC framework commonly using Protocol Buffers and HTTP/2. It is especially effective for internal service-to-service communication, compact messages, generated clients, deadlines, and streaming, but it is less convenient for direct browser and broad third-party consumption.
-
-## Final Selection Principle
-
-```text
-REST:
-Optimize for simplicity, HTTP compatibility, caching, and public consumption.
-
-GraphQL:
-Optimize for client data flexibility and graph-shaped aggregation.
-
-gRPC:
-Optimize for internal contracts, streaming, and efficient service communication.
-```
-
-Do not select only by payload speed. Select based on:
-
-- Consumer type
-- Data access pattern
-- Caching requirements
-- Streaming requirements
-- Contract ownership
-- Browser compatibility
-- Operational maturity
-- Debugging and observability needs
-- Compatibility and versioning strategy
-
----
-
-# 19. Official References
+# 18. Official References
 
 The following official and standards-based sources were reviewed for this guide:
 

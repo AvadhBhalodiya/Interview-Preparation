@@ -2,15 +2,46 @@
 title: "Message Brokers"
 group: "Architecture & Brokers"
 order: 2
+updated: "30 July 2026"
 ---
 
 # Message Brokers: Redis vs RabbitMQ vs AWS SQS
 
-> **Category:** Async & Task Processing  
-> **Audience:** Developers with 3+ years of experience  
-> **Purpose:** Understand how Redis, RabbitMQ, and Amazon SQS behave as message brokers and how to select the right broker for production task processing.  
-> **Last verified:** 30 July 2026  
+> Understand how Redis, RabbitMQ, and Amazon SQS behave as message brokers and how to select the right broker for production task processing.
+>
 > **Relevant current documentation:** Redis Open Source 8.8, RabbitMQ 4.3.4, Celery 5.6.x
+
+## In short
+
+- A broker moves non-immediate work out of the request-response path and provides storage, decoupling, buffering, retry, and acknowledgment — it is not the worker.
+- Redis is an in-memory data platform with messaging features: Lists give a simple FIFO queue, Pub/Sub is fire-and-forget at-most-once fan-out, Streams give a durable log with consumer groups, acknowledgments, and replay.
+- RabbitMQ is a dedicated broker: exchanges (direct, topic, fanout, headers) plus bindings for routing, manual ACK/NACK, publisher confirms, prefetch, dead-letter exchanges, and quorum queues.
+- Amazon SQS is a fully managed poll-based queue: visibility timeout (30 seconds default, 12 hours maximum), at-least-once Standard queues, FIFO ordering within a `MessageGroupId`, and a DLQ driven by `maxReceiveCount`.
+- Delivery is at-most-once, at-least-once, or exactly-once; production task processing runs at-least-once, so every consumer must be idempotent.
+- Acknowledge only after the work is committed (`Receive -> Process -> Commit -> ACK/Delete`), and bound every retry policy with backoff, jitter, a maximum attempt count, and a dead-letter queue.
+- Choose on operating model, not benchmark: Redis if you already run it and tasks are short, RabbitMQ if routing and broker control are core requirements, SQS if you are AWS-native and want no broker administration.
+
+```mermaid
+flowchart LR
+    subgraph REDIS[Redis]
+        P1[Producer] --> Q1[[Redis queue]]
+        Q1 --> W1[Worker]
+    end
+    subgraph RABBIT[RabbitMQ]
+        P2[Publisher] --> EX{Exchange}
+        EX --> BN[Binding]
+        BN --> Q2[[Queue]]
+        Q2 --> C2[Consumer]
+    end
+    subgraph AWSSQS[SQS]
+        P3[Producer] --> Q3[[SQS queue]]
+        C3[Polling consumer] --> Q3
+    end
+```
+
+**Interview answer:** Redis when it is already in the stack and the tasks are simple and short — very low latency and one technology for broker and result backend, but reliable queue behavior depends on the structure chosen and Pub/Sub is not durable. RabbitMQ when messaging itself is a core capability: exchange-based routing, publisher confirms, manual acknowledgments, DLX retry topologies, and quorum queues, at the cost of operating a broker. SQS when the system is AWS-native and bursty and managed durability and scaling matter more than routing, accepting polling latency, basic routing, and at-least-once delivery.
+
+**Gotcha:** Assuming a reliable broker gives exactly-once processing. A broker can confirm that a message was delivered and acknowledged, but a worker that crashes after committing the database change and before the ACK will receive the same message again — so at-least-once delivery plus idempotent consumers, not a broker feature, is what stops a payment being charged twice.
 
 ---
 
@@ -140,16 +171,7 @@ def generate_invoice(invoice_id: int) -> None:
     create_invoice_pdf(invoice)
 ```
 
-Multiple workers can consume from the same queue.
-
-```mermaid
-flowchart LR
-    Q[["Queue: invoices"]] --> W1[Worker 1]
-    Q --> W2[Worker 2]
-    Q --> W3[Worker 3]
-```
-
-This is called the **competing consumers** pattern. Each task is normally processed by one worker.
+Multiple workers can consume from the same queue. This is called the **competing consumers** pattern. Each task is normally processed by one worker.
 
 ---
 
@@ -193,13 +215,7 @@ Before comparing the brokers, understand the dimensions that matter in productio
 
 ### Push-based delivery
 
-The broker sends messages to connected consumers.
-
-RabbitMQ commonly uses this model.
-
-```text
-RabbitMQ ----pushes----> Consumer
-```
+The broker sends messages to connected consumers. RabbitMQ commonly uses this model.
 
 Benefits:
 
@@ -209,14 +225,7 @@ Benefits:
 
 ### Poll-based delivery
 
-Consumers request available messages.
-
-Amazon SQS uses this model.
-
-```text
-Consumer ----ReceiveMessage----> SQS
-Consumer <------messages--------- SQS
-```
+Consumers request available messages with `ReceiveMessage`. Amazon SQS uses this model.
 
 SQS supports long polling, where the receive request waits for messages instead of immediately returning an empty response.
 
@@ -226,18 +235,7 @@ Redis clients may use blocking operations, so practical behavior can appear push
 
 ## 3.2 Acknowledgment
 
-An acknowledgment tells the broker that processing succeeded.
-
-```mermaid
-sequenceDiagram
-    participant B as Broker
-    participant W as Worker
-
-    B->>W: Deliver message
-    W->>W: Process task
-    W->>B: ACK
-    B->>B: Remove or complete message
-```
+An acknowledgment tells the broker that processing succeeded, after which the broker removes or completes the message.
 
 When the worker fails before acknowledgment, the broker or transport can make the message available again.
 
@@ -284,23 +282,7 @@ Durability is not enabled by selecting a durable queue alone. Depending on the b
 
 ## 3.5 Routing
 
-Routing determines where a message goes.
-
-Simple routing:
-
-```text
-Producer -> Queue -> Worker
-```
-
-Advanced routing:
-
-```mermaid
-flowchart LR
-    P[Producer] --> E{Exchange}
-    E -->|billing.*| BQ[Billing Queue]
-    E -->|email.*| EQ[Email Queue]
-    E -->|analytics.*| AQ[Analytics Queue]
-```
+Routing determines where a message goes. Simple routing is `Producer -> Queue -> Worker`; advanced routing sends a message through an intermediate component that selects queues by pattern.
 
 RabbitMQ provides the richest native routing model through exchanges, routing keys, and bindings.
 
@@ -308,14 +290,7 @@ RabbitMQ provides the richest native routing model through exchanges, routing ke
 
 ## 3.6 Backpressure
 
-Backpressure occurs when producers create messages faster than workers can process them.
-
-```text
-Producer rate: 5,000 messages/sec
-Consumer rate: 3,000 messages/sec
-
-Backlog growth: 2,000 messages/sec
-```
+Backpressure occurs when producers create messages faster than workers can process them: a producer rate of 5,000 messages/sec against a consumer rate of 3,000 messages/sec grows the backlog by 2,000 messages/sec.
 
 A broker buffers the difference, but no queue should be allowed to grow forever. Monitor queue depth and the age of the oldest message.
 
@@ -356,12 +331,7 @@ However, the phrase **Redis messaging** can refer to different Redis data struct
 
 ## 4.1 Redis Lists
 
-Redis Lists can implement a simple queue.
-
-```text
-Producer --LPUSH/RPUSH--> Redis List
-Worker   --BRPOP/BLPOP--> Redis List
-```
+Redis Lists can implement a simple queue: the producer pushes with `LPUSH`/`RPUSH` and the worker pops with `BRPOP`/`BLPOP`.
 
 A basic queue may look like this:
 
@@ -390,14 +360,7 @@ while True:
 
 ### Problem with a basic pop operation
 
-A normal pop removes the message before processing.
-
-```text
-1. Worker pops message.
-2. Message is removed.
-3. Worker crashes.
-4. Message is lost.
-```
+A normal pop removes the message before processing, so a worker that crashes after popping loses the message.
 
 A reliable Redis queue therefore requires a processing list, acknowledgment logic, or a library such as Celery/Kombu that implements redelivery behavior.
 
@@ -602,11 +565,9 @@ Using a single Redis instance for all three roles creates a larger failure domai
 
 - Very low latency for simple operations
 - Simple local setup
-- Good Celery support
 - Can also serve as a result backend
 - Familiar data structures
 - Useful for lightweight queues and moderate event streams
-- Redis Streams support replay and consumer groups
 - Managed Redis services reduce some operational work
 
 ---
@@ -616,10 +577,8 @@ Using a single Redis instance for all three roles creates a larger failure domai
 - Redis is not only a broker; messaging reliability depends on the selected structure and configuration.
 - Pub/Sub is non-durable.
 - Memory capacity and eviction policies require attention.
-- Complex routing is limited compared with RabbitMQ.
 - Broker and cache workloads can compete for memory.
 - Long-running or long-delay Celery tasks require careful visibility-timeout configuration.
-- Native dead-letter behavior is not as complete or automatic as RabbitMQ DLX or SQS DLQ.
 - Self-managed high availability requires operational knowledge.
 
 ---
@@ -878,13 +837,7 @@ For important messages, commonly combine:
 - Manual consumer acknowledgments
 - Replicated queue where high availability is needed
 
-```text
-Durable queue only
-    !=
-Guaranteed message safety
-```
-
-A complete reliability design is required.
+A durable queue alone does not guarantee message safety. A complete reliability design is required.
 
 ---
 
@@ -948,13 +901,7 @@ RabbitMQ 4.x quorum queues support delivery limits and can provide safer at-leas
 
 ## 5.9 Prefetch and Fair Distribution
 
-Prefetch limits the number of unacknowledged messages RabbitMQ sends to a consumer.
-
-```text
-prefetch = 1
-```
-
-This means a consumer receives one unacknowledged message at a time.
+Prefetch limits the number of unacknowledged messages RabbitMQ sends to a consumer. `prefetch = 1` means a consumer receives one unacknowledged message at a time.
 
 Low prefetch:
 
@@ -976,14 +923,10 @@ Choose prefetch based on task duration and variability.
 ## 5.10 RabbitMQ Strengths
 
 - Purpose-built messaging broker
-- Rich exchange and routing model
-- Push-based low-latency delivery
 - Manual acknowledgment
 - Publisher confirms
-- Strong dead-lettering features
 - Message TTL and queue policies
 - Priority support
-- Good Celery integration
 - Quorum queues for replicated, highly available workloads
 - Strong management UI and monitoring ecosystem
 - Multiple messaging protocols
@@ -997,7 +940,6 @@ Choose prefetch based on task duration and variability.
 - Incorrect prefetch or acknowledgment settings can create reliability problems.
 - Rich features add configuration complexity.
 - Large backlogs must be planned carefully.
-- Scaling is not as operationally transparent as a fully managed service such as SQS.
 - Cross-region architecture requires deliberate design.
 
 ---
@@ -1098,15 +1040,7 @@ sequenceDiagram
     Q->>Q: Permanently remove message
 ```
 
-Receiving a message does not delete it.
-
-After receiving:
-
-1. The message remains in SQS.
-2. It becomes invisible for the visibility-timeout period.
-3. The worker processes it.
-4. The worker calls `DeleteMessage`.
-5. SQS removes it.
+Receiving a message does not delete it. The message stays in SQS, becomes invisible for the visibility-timeout period, and is removed only when the worker calls `DeleteMessage`.
 
 If the worker does not delete it, the message becomes visible again.
 
@@ -1114,14 +1048,7 @@ If the worker does not delete it, the message becomes visible again.
 
 ## 6.3 Visibility Timeout
 
-The AWS queue default is 30 seconds.
-
-The documented allowed range is:
-
-```text
-Minimum: 0 seconds
-Maximum: 12 hours
-```
+The AWS queue default is 30 seconds. The documented allowed range is 0 seconds minimum to 12 hours maximum.
 
 The timeout should cover normal processing time plus a safety margin.
 
@@ -1180,15 +1107,7 @@ Use Standard queues when:
 
 FIFO means First-In-First-Out.
 
-SQS FIFO queues support ordered processing within a message group.
-
-Required concept:
-
-```text
-MessageGroupId
-```
-
-Messages with the same group ID are processed sequentially.
+SQS FIFO queues support ordered processing within a message group. Messages with the same `MessageGroupId` are processed sequentially.
 
 ```text
 Group: customer-101
@@ -1269,19 +1188,7 @@ flowchart LR
     Q -->|Receive count exceeds limit| DLQ[Dead-Letter Queue]
 ```
 
-The important setting is:
-
-```text
-maxReceiveCount
-```
-
-Example:
-
-```text
-maxReceiveCount = 5
-```
-
-A permanently failing message is isolated after five receives rather than retrying forever.
+The important setting is `maxReceiveCount`. With `maxReceiveCount = 5`, a permanently failing message is isolated after five receives rather than retrying forever.
 
 A DLQ should have:
 
@@ -1343,13 +1250,10 @@ SQS alone does not provide RabbitMQ-style exchange routing. SNS or EventBridge i
 ## 6.10 SQS Strengths
 
 - Fully managed
-- Automatically scalable
 - Durable service
-- No broker servers to operate
 - Strong AWS IAM integration
 - CloudWatch metrics
 - Standard and FIFO queue options
-- Native DLQ support
 - Long polling
 - Good fit for Lambda, ECS, EKS, and EC2 workloads
 - Pay-per-request model
@@ -1362,8 +1266,6 @@ SQS alone does not provide RabbitMQ-style exchange routing. SNS or EventBridge i
 - AWS-specific service
 - Polling introduces more latency than a local push-based broker in many workloads.
 - API requests create usage cost.
-- Routing is simple compared with RabbitMQ exchanges.
-- Standard queues do not guarantee strict ordering.
 - At-least-once delivery requires idempotent consumers.
 - Delay is limited to 15 minutes.
 - Visibility timeout requires careful configuration.
@@ -1426,40 +1328,7 @@ Example workloads:
 
 ---
 
-## 7.2 Simple Mental Model
-
-```text
-Redis
-  = "We already use Redis and need a fast, simple task queue."
-
-RabbitMQ
-  = "Messaging behavior, routing, acknowledgments, and control are core requirements."
-
-Amazon SQS
-  = "We want a durable AWS queue without operating broker infrastructure."
-```
-
----
-
-## 7.3 Architecture Complexity
-
-```mermaid
-flowchart LR
-    subgraph REDIS[Redis]
-        P1[Producer] --> Q1[[Redis queue]]
-        Q1 --> W1[Worker]
-    end
-    subgraph RABBIT[RabbitMQ]
-        P2[Publisher] --> EX{Exchange}
-        EX --> BN[Binding]
-        BN --> Q2[[Queue]]
-        Q2 --> C2[Consumer]
-    end
-    subgraph AWSSQS[SQS]
-        P3[Producer] --> Q3[[SQS queue]]
-        C3[Polling consumer] --> Q3
-    end
-```
+## 7.2 Architecture Complexity
 
 RabbitMQ has more concepts, but those concepts provide more control.
 
@@ -1469,7 +1338,7 @@ Redis appears simple, but reliable queue behavior depends heavily on the chosen 
 
 ---
 
-## 7.4 Cost Model
+## 7.3 Cost Model
 
 ### Redis
 
@@ -1517,9 +1386,7 @@ Messaging systems are commonly described with three delivery models.
 
 ## 8.1 At-Most-Once
 
-```text
-Message is processed zero or one time.
-```
+> Message is processed zero or one time.
 
 A message may be lost, but it is not intentionally retried.
 
@@ -1537,9 +1404,7 @@ Suitable for:
 
 ## 8.2 At-Least-Once
 
-```text
-Message is processed one or more times.
-```
+> Message is processed one or more times.
 
 The system prefers duplicate delivery over message loss.
 
@@ -1573,17 +1438,7 @@ sequenceDiagram
 
 A broker may provide deduplication or exactly-once-like delivery within a defined boundary, but it cannot automatically make an external API call, payment, email, and database update globally exactly once.
 
-The practical solution is:
-
-```text
-At-least-once delivery
-+
-Idempotent processing
-+
-Transactional state
-+
-Deduplication key
-```
+The practical solution is at-least-once delivery plus idempotent processing, transactional state, and a deduplication key.
 
 ---
 
@@ -1593,13 +1448,7 @@ Ordering is often misunderstood.
 
 ## 9.1 Queue Order vs Completion Order
 
-Suppose tasks enter in this order:
-
-```text
-A -> B -> C
-```
-
-Three workers receive one task each.
+Suppose tasks enter in the order `A -> B -> C` and three workers receive one task each.
 
 ```text
 Worker 1: A takes 10 seconds
@@ -1607,11 +1456,7 @@ Worker 2: B takes 1 second
 Worker 3: C takes 2 seconds
 ```
 
-Completion order becomes:
-
-```text
-B -> C -> A
-```
+Completion order becomes `B -> C -> A`.
 
 The queue may deliver in FIFO order, but parallel processing changes completion order.
 
@@ -1651,19 +1496,7 @@ Observed order can be affected by:
 - Priorities
 - Consumer prefetch
 
-Strict sequential processing normally requires:
-
-```text
-One queue
-+
-One active consumer
-+
-No priority reordering
-+
-Controlled retry behavior
-```
-
-This reduces throughput.
+Strict sequential processing normally requires one queue, one active consumer, no priority reordering, and controlled retry behavior. This reduces throughput.
 
 ---
 
@@ -1681,14 +1514,7 @@ This reduces throughput.
 - Different groups can run in parallel
 - One group can become a throughput bottleneck
 
-Good group IDs:
-
-```text
-customer_id
-account_id
-order_id
-tenant_id
-```
+Good group IDs are `customer_id`, `account_id`, `order_id`, or `tenant_id`.
 
 Choose the grouping key based on the business entity that requires sequential processing.
 
@@ -1731,11 +1557,7 @@ Attempt 4 -> wait 10 minutes
 Attempt 5 -> dead-letter
 ```
 
-A common formula is:
-
-```text
-delay = min(base * 2^attempt, maximum_delay) + jitter
-```
+A common formula is `delay = min(base * 2^attempt, maximum_delay) + jitter`.
 
 Jitter prevents many failed messages from retrying at exactly the same time.
 
@@ -1798,15 +1620,7 @@ Define the production retry policy explicitly instead of relying only on a defau
 
 ## 10.4 SQS Retry Approach
 
-SQS naturally retries when a message is not deleted.
-
-```mermaid
-flowchart TD
-    R[Receive] -->|Success| D[Delete]
-    R -->|Failure| N[Do not delete]
-    N --> V[Visibility expires]
-    V --> RT[Retry]
-```
+SQS naturally retries when a message is not deleted: the visibility timeout expires and the message becomes available again.
 
 Use:
 
@@ -1847,15 +1661,7 @@ Do not expose secrets or unnecessary personal data in broker messages or DLQs.
 
 # 11. Idempotent Task Processing
 
-An idempotent operation produces the same final result when executed multiple times.
-
-```text
-process(message)
-process(message)
-process(message)
-
-Final business state remains correct.
-```
+An idempotent operation produces the same final result when executed multiple times: running `process(message)` three times leaves the business state correct.
 
 ---
 
@@ -1997,7 +1803,6 @@ The examples below use current Celery 5.6-style configuration.
 # tasks.py
 
 from celery import shared_task
-
 
 @shared_task(
     bind=True,
@@ -2241,11 +2046,7 @@ flowchart LR
     C2 --> E[Email Provider]
 ```
 
-Recommended starting point:
-
-```text
-Redis + Celery
-```
+Recommended starting point: Redis + Celery.
 
 Important controls:
 
@@ -2282,11 +2083,7 @@ flowchart LR
     NQ --> N[Notification Worker]
 ```
 
-Recommended:
-
-```text
-RabbitMQ
-```
+Recommended: RabbitMQ.
 
 Important controls:
 
@@ -2322,11 +2119,7 @@ flowchart LR
     Q --> DLQ[(SQS DLQ)]
 ```
 
-Recommended:
-
-```text
-Amazon SQS
-```
+Recommended: Amazon SQS.
 
 Message:
 
@@ -2346,12 +2139,7 @@ Do not place the PDF itself in the queue.
 
 ## 13.4 Hybrid Celery Architecture
 
-A common production design uses:
-
-```text
-RabbitMQ = broker
-Redis    = result backend
-```
+A common production design uses RabbitMQ as the broker and Redis as the result backend.
 
 ```mermaid
 flowchart LR
@@ -2432,19 +2220,7 @@ Benefits:
 
 ## 14.2 Scale Consumers Based on Backlog
 
-A useful scaling signal is not only queue length.
-
-Use:
-
-```text
-Queue depth
-Oldest message age
-Incoming message rate
-Completion rate
-Average and P95 task duration
-Worker utilization
-Failure rate
-```
+A useful scaling signal is not only queue length. Use queue depth, oldest message age, incoming message rate, completion rate, average and P95 task duration, worker utilization, and failure rate.
 
 Example:
 
@@ -2489,19 +2265,7 @@ Benefits:
 
 A broker should absorb temporary spikes, not replace capacity planning.
 
-Estimate backlog growth:
-
-```text
-backlog_growth_per_second =
-    producer_rate - consumer_rate
-```
-
-Estimate time to drain:
-
-```text
-drain_time =
-    backlog_size / (consumer_rate - producer_rate)
-```
+Estimate backlog growth as `backlog_growth_per_second = producer_rate - consumer_rate`, and time to drain as `drain_time = backlog_size / (consumer_rate - producer_rate)`.
 
 The drain formula applies only when consumer rate is greater than producer rate.
 
@@ -2621,14 +2385,7 @@ The producer normally does not need receive or delete permissions.
 
 ## 15.4 Environment Isolation
 
-Use separate broker resources for:
-
-```text
-development
-testing
-staging
-production
-```
+Use separate broker resources for development, testing, staging, and production.
 
 Do not rely only on queue-name prefixes when stronger account, cluster, vhost, or network isolation is available.
 
@@ -2684,11 +2441,7 @@ A queue of 100,000 messages may be normal if it drains in seconds.
 
 A queue of 50 messages may be critical if the oldest message is two hours old.
 
-The most useful operational signal is often:
-
-```text
-Age of the oldest unprocessed message
-```
+The most useful operational signal is often the age of the oldest unprocessed message.
 
 ---
 
@@ -2794,47 +2547,7 @@ flowchart TD
 
 ---
 
-## 17.2 Choose Redis When
-
-- You already operate Redis.
-- Tasks are short and straightforward.
-- Low latency and simple setup matter.
-- Advanced routing is unnecessary.
-- The team accepts memory and persistence planning.
-- The system is early-stage or moderate scale.
-- Redis Streams meet event-processing needs.
-
-Do not choose Redis Pub/Sub for tasks that must survive subscriber downtime.
-
----
-
-## 17.3 Choose RabbitMQ When
-
-- Routing is a first-class requirement.
-- Messaging patterns are complex.
-- Push delivery and low latency matter.
-- Publisher confirms and manual acknowledgments are required.
-- Broker-level retry and dead-lettering need fine control.
-- Celery monitoring and remote worker control matter.
-- The system must be cloud-neutral or on-premises.
-- The team can operate the broker reliably.
-
----
-
-## 17.4 Choose SQS When
-
-- The system is AWS-native.
-- Minimal operations are a high priority.
-- Traffic is bursty or unpredictable.
-- Simple queue semantics are sufficient.
-- Automatic scaling and managed durability matter.
-- Lambda, ECS, or EKS workers consume messages.
-- Polling latency is acceptable.
-- Vendor-specific integration is acceptable.
-
----
-
-## 17.5 Practical Recommendation Matrix
+## 17.2 Practical Recommendation Matrix
 
 | Scenario | Recommended starting choice | Reason |
 |---|---|---|
@@ -2870,19 +2583,9 @@ Use:
 
 ## 18.2 Acknowledge Only After Success
 
-Incorrect:
+Incorrect: `Receive -> ACK -> Process`. A crash after ACK loses the task.
 
-```text
-Receive -> ACK -> Process
-```
-
-A crash after ACK loses the task.
-
-Preferred for important tasks:
-
-```text
-Receive -> Process -> Commit -> ACK/Delete
-```
+Preferred for important tasks: `Receive -> Process -> Commit -> ACK/Delete`.
 
 The task must be idempotent because a crash can occur after commit but before ACK.
 
@@ -3031,76 +2734,7 @@ Avoid manually creating production queues without version-controlled configurati
 
 ---
 
-# 19. Final Summary
-
-## Redis
-
-```text
-Best for:
-Simple, fast, short background tasks
-Existing Redis-based applications
-Celery development and moderate workloads
-Redis Streams event processing
-
-Remember:
-Pub/Sub is not a durable task queue.
-Memory, eviction, persistence, and visibility timeout matter.
-```
-
-## RabbitMQ
-
-```text
-Best for:
-Advanced routing
-Low-latency push delivery
-Strong acknowledgment and confirmation controls
-Dead-letter and retry topologies
-Cloud-neutral or on-premises systems
-
-Remember:
-Reliable operation requires correct queue type, durability,
-publisher confirms, acknowledgments, retry policy, and monitoring.
-```
-
-## Amazon SQS
-
-```text
-Best for:
-AWS-native architectures
-Managed durability and scaling
-Bursty workloads
-Lambda/ECS/EKS processing
-Simple Standard or FIFO queue semantics
-
-Remember:
-It is poll-based, uses visibility timeout, and delivers at least once.
-Use idempotent consumers and DLQs.
-```
-
-## Final Selection Rule
-
-```text
-Use Redis for simplicity and speed.
-
-Use RabbitMQ for messaging features and routing control.
-
-Use SQS for AWS-managed scale and minimal broker operations.
-```
-
-The broker choice matters, but task correctness depends more on:
-
-- Idempotency
-- Acknowledgment timing
-- Retry design
-- Dead-letter handling
-- Small versioned messages
-- Monitoring
-- Capacity planning
-- Failure testing
-
----
-
-# 20. Official References
+# 19. Official References
 
 The guide was checked against the following official documentation:
 

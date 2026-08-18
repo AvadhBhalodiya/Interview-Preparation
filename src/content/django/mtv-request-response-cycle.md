@@ -6,18 +6,66 @@ order: 1
 
 # Django: MTV Architecture & the Request/Response Cycle
 
-> Django follows the **MTV pattern: Model, Template, and View**.  
+> Django follows the **MTV pattern: Model, Template, and View**.
+>
 > A request enters Django, passes through middleware, is matched to a URL, reaches a view, may interact with models and templates, and finally returns an HTTP response.
+
+## In short
+
+- MTV splits an application three ways: **Model** owns data and domain behavior, **Template** owns presentation, **View** handles the request and decides what comes back.
+- Django's **View** is MVC's Controller and Django's **Template** is MVC's View — the framework itself does the remaining controller work (middleware, URL resolution, response handling).
+- The ordered path is WSGI/ASGI server → `HttpRequest` → request middleware → URL resolver → view → model/service → template → response middleware → client.
+- Middleware is an onion: requests travel top-to-bottom through `MIDDLEWARE`, responses come back bottom-to-top through the same list.
+- A middleware can short-circuit the cycle by returning a response without calling `get_response()` — the view never runs.
+- Views should stay thin — read input, check access, call a service, choose a response format. Business logic belongs in a service layer.
+- `HttpRequest` and `HttpResponse` are the two objects that carry everything: method, path, query, body, user and session inbound; status, headers, cookies and body outbound.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Web Server
+    participant D as Django Handler
+    participant MW as Middleware
+    participant URL as URL Resolver
+    participant V as View
+    participant M as Model / ORM
+    participant DB as Database
+    participant T as Template Engine
+
+    C->>S: HTTP request
+    S->>D: WSGI/ASGI request
+    D->>MW: Create HttpRequest
+    MW->>URL: Pass request inward
+    URL->>V: Call matched view
+    V->>M: Query application data
+    M->>DB: Execute SQL
+    DB-->>M: Return rows
+    M-->>V: Return model objects
+    V->>T: Render template with context
+    T-->>V: Rendered HTML
+    V-->>MW: HttpResponse
+    MW-->>D: Process response outward
+    D-->>S: HTTP response
+    S-->>C: Status, headers, body
+```
+
+**Interview answer:** The WSGI or ASGI server hands the raw request to Django's handler, which builds an `HttpRequest` and passes it down through `MIDDLEWARE` top-to-bottom; the URL resolver then walks `ROOT_URLCONF` in order and calls the first matching view with the captured arguments. The view coordinates the work — querying models or calling a service, then rendering a template or building a `JsonResponse` — and returns an `HttpResponse`, which travels back out through the same middleware in reverse order before the server writes status, headers and body to the client. Model and template are both optional: a redirect or a health check may use neither.
+
+**Gotcha:** Assuming every request reaches a view. Middleware can return a response before the resolver ever runs — a failed CSRF check, an HTTPS redirect, a cached response, a rejected host — so a bug that looks like it lives in the view often lives earlier in the onion.
 
 ---
 
 # 1. What Is Django's MTV Architecture?
 
-Django organizes a web application using the **MTV architectural pattern**:
+Django organizes a web application using the **MTV architectural pattern**. Think of an online store:
 
-- **Model** manages application data and database behavior.
-- **Template** controls how data is presented, usually as HTML.
-- **View** receives a request, coordinates application logic, and returns a response.
+| MTV Part | Responsibility | Store Example |
+|---|---|---|
+| Model | Manages application data and database behavior | Product name, price, stock |
+| Template | Controls how data is presented, usually as HTML | Product-list HTML page |
+| View | Receives a request, coordinates application logic, and returns a response | Fetch available products |
+
+The **view is the coordinator**. It does not usually store data or define page styling itself.
 
 Django itself handles much of the controller-like work:
 
@@ -43,23 +91,11 @@ flowchart LR
     D -->|HTTP Response| U
 ```
 
-## 1.2 Simple Mental Model
-
-Think of an online store:
-
-| MTV Part | Responsibility | Store Example |
-|---|---|---|
-| Model | Stores and retrieves data | Product name, price, stock |
-| View | Decides what should happen | Fetch available products |
-| Template | Displays the result | Product-list HTML page |
-
-The **view is the coordinator**. It does not usually store data or define page styling itself.
-
 ---
 
 # 2. MTV Components
 
-# 2.1 Model
+## 2.1 Model
 
 A model represents application data and database-related behavior.
 
@@ -67,7 +103,6 @@ A model represents application data and database-related behavior.
 # products/models.py
 
 from django.db import models
-
 
 class Product(models.Model):
     name = models.CharField(max_length=150)
@@ -87,9 +122,7 @@ active_products = Product.objects.filter(is_active=True)
 
 This QuerySet does not normally execute immediately. It is evaluated when Django actually needs its data, such as during iteration or template rendering.
 
-## Model Responsibilities
-
-A model commonly contains:
+**A model commonly contains:**
 
 - Database fields
 - Relationships
@@ -102,7 +135,6 @@ class ProductQuerySet(models.QuerySet):
     def active(self):
         return self.filter(is_active=True)
 
-
 class Product(models.Model):
     name = models.CharField(max_length=150)
     is_active = models.BooleanField(default=True)
@@ -110,17 +142,13 @@ class Product(models.Model):
     objects = ProductQuerySet.as_manager()
 ```
 
-Usage:
-
-```python
-products = Product.objects.active()
-```
+Usage: `products = Product.objects.active()`
 
 > A model should represent more than a database table. It can also protect domain rules that belong to that entity.
 
 ---
 
-# 2.2 Template
+## 2.2 Template
 
 A template defines the presentation layer.
 
@@ -171,7 +199,7 @@ Avoid placing complicated pricing, authorization, or workflow decisions inside t
 
 ---
 
-# 2.3 View
+## 2.3 View
 
 A view is a callable that:
 
@@ -179,7 +207,7 @@ A view is a callable that:
 2. Performs application work
 3. Returns an `HttpResponse`
 
-## Function-Based View
+**A function-based view** is a plain function that receives the request as its first argument.
 
 ```python
 # products/views.py
@@ -187,7 +215,6 @@ A view is a callable that:
 from django.shortcuts import render
 
 from .models import Product
-
 
 def product_list(request):
     products = Product.objects.filter(is_active=True)
@@ -199,7 +226,7 @@ def product_list(request):
     )
 ```
 
-## Class-Based View
+**A class-based view** groups the per-method handlers on a class.
 
 ```python
 # products/views.py
@@ -207,7 +234,6 @@ def product_list(request):
 from django.views.generic import ListView
 
 from .models import Product
-
 
 class ProductListView(ListView):
     model = Product
@@ -230,7 +256,6 @@ A view may return:
 
 ```python
 from django.http import JsonResponse
-
 
 def product_status(request):
     return JsonResponse({"status": "available"})
@@ -318,37 +343,6 @@ flowchart TD
     J --> K[Client]
 ```
 
-## 4.1 Complete Flow Diagram
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Web Server
-    participant D as Django Handler
-    participant MW as Middleware
-    participant URL as URL Resolver
-    participant V as View
-    participant M as Model / ORM
-    participant DB as Database
-    participant T as Template Engine
-
-    C->>S: HTTP request
-    S->>D: WSGI/ASGI request
-    D->>MW: Create HttpRequest
-    MW->>URL: Pass request inward
-    URL->>V: Call matched view
-    V->>M: Query application data
-    M->>DB: Execute SQL
-    DB-->>M: Return rows
-    M-->>V: Return model objects
-    V->>T: Render template with context
-    T-->>V: Rendered HTML
-    V-->>MW: HttpResponse
-    MW-->>D: Process response outward
-    D-->>S: HTTP response
-    S-->>C: Status, headers, body
-```
-
 The model and template are optional:
 
 - A redirect may not use either.
@@ -359,7 +353,7 @@ The model and template are optional:
 
 # 5. Detailed Request Processing
 
-# 5.1 Step 1: The Client Sends an HTTP Request
+## 5.1 Step 1: The Client Sends an HTTP Request
 
 A browser, mobile app, frontend, or another server sends a request.
 
@@ -382,7 +376,7 @@ Important request information includes:
 
 ---
 
-# 5.2 Step 2: The Web Server Passes the Request to Django
+## 5.2 Step 2: The Web Server Passes the Request to Django
 
 In production, Django is normally behind a server or platform such as:
 
@@ -402,9 +396,7 @@ project/
 └── wsgi.py
 ```
 
-## WSGI
-
-WSGI is traditionally used for synchronous request processing.
+**WSGI** is traditionally used for synchronous request processing.
 
 ```python
 # project/wsgi.py
@@ -418,9 +410,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
 application = get_wsgi_application()
 ```
 
-## ASGI
-
-ASGI supports asynchronous request handling and long-lived connections.
+**ASGI** supports asynchronous request handling and long-lived connections.
 
 ```python
 # project/asgi.py
@@ -438,7 +428,7 @@ Django converts the incoming server data into an `HttpRequest`.
 
 ---
 
-# 5.3 Step 3: Django Creates an HttpRequest
+## 5.3 Step 3: Django Creates an HttpRequest
 
 The request object carries state through the application.
 
@@ -463,7 +453,7 @@ Some request attributes, such as `request.user` or `request.session`, are attach
 
 ---
 
-# 5.4 Step 4: Request Middleware Runs
+## 5.4 Step 4: Request Middleware Runs
 
 Middleware wraps the request/response process.
 
@@ -514,7 +504,7 @@ Examples:
 
 ---
 
-# 5.5 Step 5: Django Resolves the URL
+## 5.5 Step 5: Django Resolves the URL
 
 Django uses the root URL configuration from `ROOT_URLCONF`.
 
@@ -555,27 +545,13 @@ urlpatterns = [
 ]
 ```
 
-For this request:
+For this request: `GET /products/42/`
 
-```http
-GET /products/42/
-```
+Django matches: `path("<int:product_id>/", views.product_detail, name="detail")`
 
-Django matches:
+It calls: `views.product_detail(request, product_id=42)`
 
-```python
-path("<int:product_id>/", views.product_detail, name="detail")
-```
-
-It calls:
-
-```python
-views.product_detail(request, product_id=42)
-```
-
-## URL Resolution Rules
-
-Django:
+**URL resolution follows a fixed order.** Django:
 
 1. Loads the root URL configuration.
 2. Reads `urlpatterns`.
@@ -588,7 +564,7 @@ Django:
 
 ---
 
-# 5.6 Step 6: Django Calls the View
+## 5.6 Step 6: Django Calls the View
 
 A function-based view receives the request as its first parameter.
 
@@ -596,7 +572,6 @@ A function-based view receives the request as its first parameter.
 from django.shortcuts import get_object_or_404, render
 
 from .models import Product
-
 
 def product_detail(request, product_id):
     product = get_object_or_404(
@@ -643,13 +618,9 @@ flowchart TD
 
 ---
 
-# 5.7 Step 7: The View Interacts with Models or Services
+## 5.7 Step 7: The View Interacts with Models or Services
 
-The view may query the database:
-
-```python
-product = Product.objects.get(id=product_id)
-```
+The view may query the database: `product = Product.objects.get(id=product_id)`
 
 Conceptually:
 
@@ -683,7 +654,6 @@ For larger applications, views should often delegate business workflows to servi
 
 from .models import Product
 
-
 def get_visible_product(*, product_id: int) -> Product:
     return Product.objects.get(
         id=product_id,
@@ -700,7 +670,6 @@ from django.shortcuts import render
 from .models import Product
 from .services import get_visible_product
 
-
 def product_detail(request, product_id):
     try:
         product = get_visible_product(product_id=product_id)
@@ -716,11 +685,13 @@ def product_detail(request, product_id):
 
 ---
 
-# 5.8 Step 8: The View Builds a Response
+## 5.8 Step 8: The View Builds a Response
 
 The view must return an `HttpResponse` or a compatible response object.
 
-## HTML Response
+### Response Types
+
+For an HTML page, `render()` loads a template, renders it with the context, and wraps the result in an `HttpResponse`.
 
 ```python
 return render(request, "products/list.html", context)
@@ -734,11 +705,10 @@ html = template.render(context, request)
 return HttpResponse(html)
 ```
 
-## JSON Response
+For JSON, return a `JsonResponse`, which serializes the payload and sets the content type.
 
 ```python
 from django.http import JsonResponse
-
 
 def product_api(request, product_id):
     return JsonResponse(
@@ -749,22 +719,20 @@ def product_api(request, product_id):
     )
 ```
 
-## Redirect Response
+For a redirect, `redirect()` builds an `HttpResponseRedirect` from a view name, a model, or a URL.
 
 ```python
 from django.shortcuts import redirect
-
 
 def create_product(request):
     # Save product...
     return redirect("products:list")
 ```
 
-## Custom Status Code
+To control the status code, pass `status=` to the response class.
 
 ```python
 from django.http import JsonResponse
-
 
 def protected_endpoint(request):
     if not request.user.is_authenticated:
@@ -778,7 +746,7 @@ def protected_endpoint(request):
 
 ---
 
-# 5.9 Step 9: Response Middleware Runs
+## 5.9 Step 9: Response Middleware Runs
 
 The generated response moves outward through middleware in reverse order.
 
@@ -799,7 +767,6 @@ Example custom middleware:
 # core/middleware.py
 
 from time import perf_counter
-
 
 class RequestTimingMiddleware:
     def __init__(self, get_response):
@@ -827,7 +794,7 @@ MIDDLEWARE = [
 
 ---
 
-# 5.10 Step 10: The Response Returns to the Client
+## 5.10 Step 10: The Response Returns to the Client
 
 A final HTTP response may look like this:
 
@@ -884,7 +851,6 @@ shop/
 # products/models.py
 
 from django.db import models
-
 
 class Product(models.Model):
     name = models.CharField(max_length=150)
@@ -947,7 +913,6 @@ urlpatterns = [
 from django.shortcuts import render
 
 from .models import Product
-
 
 def product_list(request):
     search_term = request.GET.get("q", "").strip()
@@ -1019,11 +984,7 @@ def product_list(request):
 
 ## 6.7 Runtime Flow
 
-Request:
-
-```http
-GET /products/?q=keyboard
-```
+Request: `GET /products/?q=keyboard`
 
 Processing:
 
@@ -1113,7 +1074,7 @@ Do not use middleware for domain logic that belongs to one feature only.
 
 # 8. Request and Response Objects
 
-# 8.1 Important HttpRequest Attributes
+## 8.1 Important HttpRequest Attributes
 
 | Attribute | Purpose |
 |---|---|
@@ -1144,11 +1105,10 @@ selected_tags = request.GET.getlist("tag")
 
 ---
 
-# 8.2 Important HttpResponse Features
+## 8.2 Important HttpResponse Features
 
 ```python
 from django.http import HttpResponse
-
 
 def plain_text(request):
     response = HttpResponse(
@@ -1254,7 +1214,7 @@ Use context processors for small, broadly required presentation data. Avoid data
 
 # 10. Error Handling During the Cycle
 
-Errors can occur in middleware, URL resolution, views, models, or template rendering.
+Errors can occur in middleware, URL resolution, views, models, or template rendering. **An unhandled exception normally becomes a 500 response.** With `DEBUG=True`, Django shows a technical error page. In production, `DEBUG` must be `False`.
 
 ## 10.1 No URL Match
 
@@ -1273,7 +1233,6 @@ flowchart TD
 ```python
 from django.shortcuts import get_object_or_404
 
-
 def product_detail(request, product_id):
     product = get_object_or_404(Product, id=product_id)
 ```
@@ -1285,7 +1244,6 @@ This raises `Http404` when the object does not exist. Django converts it into a 
 ```python
 from django.core.exceptions import PermissionDenied
 
-
 def admin_report(request):
     if not request.user.is_staff:
         raise PermissionDenied
@@ -1295,13 +1253,7 @@ def admin_report(request):
 
 Django converts `PermissionDenied` into a 403 response.
 
-## 10.4 Unhandled Exception
-
-An unhandled exception normally becomes a 500 response.
-
-With `DEBUG=True`, Django shows a technical error page. In production, `DEBUG` must be `False`.
-
-## 10.5 Custom Error Views
+## 10.4 Custom Error Views
 
 ```python
 # project/urls.py
@@ -1317,7 +1269,6 @@ handler500 = "core.views.server_error"
 
 from django.shortcuts import render
 
-
 def page_not_found(request, exception):
     return render(
         request,
@@ -1330,7 +1281,7 @@ def page_not_found(request, exception):
 
 # 11. WSGI, ASGI, Sync, and Async Requests
 
-# 11.1 WSGI Flow
+## 11.1 WSGI Flow
 
 ```mermaid
 flowchart TD
@@ -1345,7 +1296,7 @@ WSGI is suitable for standard synchronous Django applications.
 
 ---
 
-# 11.2 ASGI Flow
+## 11.2 ASGI Flow
 
 ```mermaid
 flowchart TD
@@ -1365,13 +1316,12 @@ ASGI is useful when an application needs:
 - Integration with async libraries
 - WebSocket support through compatible ecosystem components
 
-## Async View Example
+**An async view is declared with `async def`** and returns the same response objects.
 
 ```python
 import asyncio
 
 from django.http import JsonResponse
-
 
 async def availability(request):
     await asyncio.sleep(0.1)
@@ -1380,8 +1330,6 @@ async def availability(request):
         {"status": "available"}
     )
 ```
-
-## Important Async Principle
 
 A fully asynchronous request stack requires async-compatible middleware throughout the stack. If synchronous middleware sits in the path, Django may adapt execution, which introduces overhead.
 
@@ -1421,7 +1369,6 @@ from django.shortcuts import redirect, render
 from .forms import CheckoutForm
 from .services import place_order
 
-
 def checkout(request):
     if request.method == "POST":
         form = CheckoutForm(request.POST)
@@ -1455,7 +1402,6 @@ from django.db import transaction
 
 from .models import Order
 
-
 @transaction.atomic
 def place_order(*, customer, cleaned_data):
     order = Order.objects.create(
@@ -1488,13 +1434,9 @@ This separation is not a strict Django requirement. It is a practical structure 
 
 # 13. Performance and Design Considerations
 
-# 13.1 QuerySets Are Lazy
+## 13.1 QuerySets Are Lazy
 
-This code creates a QuerySet:
-
-```python
-products = Product.objects.filter(is_active=True)
-```
+This code creates a QuerySet: `products = Product.objects.filter(is_active=True)`
 
 The database is normally queried only when the data is evaluated.
 
@@ -1515,13 +1457,9 @@ This means database work may happen during template rendering, not necessarily o
 
 ---
 
-# 13.2 Avoid N+1 Queries
+## 13.2 Avoid N+1 Queries
 
-Suppose every product has a category:
-
-```python
-products = Product.objects.all()
-```
+Suppose every product has a category: `products = Product.objects.all()`
 
 Template:
 
@@ -1533,21 +1471,13 @@ Template:
 
 This can cause one query for products plus additional queries for categories.
 
-Use `select_related()` for single-valued relationships:
+Use `select_related()` for single-valued relationships: `products = Product.objects.select_related("category")`
 
-```python
-products = Product.objects.select_related("category")
-```
-
-Use `prefetch_related()` for many-valued relationships:
-
-```python
-products = Product.objects.prefetch_related("tags")
-```
+Use `prefetch_related()` for many-valued relationships: `products = Product.objects.prefetch_related("tags")`
 
 ---
 
-# 13.3 Do Not Perform Heavy Work in the Request
+## 13.3 Do Not Perform Heavy Work in the Request
 
 Avoid keeping the user waiting while a request performs:
 
@@ -1569,7 +1499,7 @@ flowchart TD
 
 ---
 
-# 13.4 Use Correct HTTP Methods
+## 13.4 Use Correct HTTP Methods
 
 | Method | Typical Meaning |
 |---|---|
@@ -1583,7 +1513,7 @@ Do not change data using a simple `GET` request.
 
 ---
 
-# 13.5 Return Correct Status Codes
+## 13.5 Return Correct Status Codes
 
 Common status codes:
 
@@ -1603,13 +1533,9 @@ Common status codes:
 
 ---
 
-# 13.6 Keep Templates Presentation-Oriented
+## 13.6 Keep Templates Presentation-Oriented
 
-Prefer:
-
-```django
-{{ product.price|floatformat:2 }}
-```
+Prefer: `{{ product.price|floatformat:2 }}`
 
 Avoid complicated data fetching or domain decisions in templates.
 
@@ -1624,7 +1550,7 @@ context = {
 
 ---
 
-# 13.7 Understand Short-Circuit Responses
+## 13.7 Understand Short-Circuit Responses
 
 Not every request reaches a view.
 
@@ -1656,7 +1582,6 @@ from django.test import TestCase
 from django.urls import reverse
 
 from products.models import Product
-
 
 class ProductListViewTests(TestCase):
     def test_active_products_are_displayed(self):
@@ -1741,7 +1666,7 @@ Query-count tests help detect performance regressions in the request cycle.
 
 # 15. Key Takeaways
 
-## Architecture Summary
+Each layer owns one responsibility:
 
 | Layer | Responsibility |
 | --- | --- |
@@ -1750,7 +1675,7 @@ Query-count tests help detect performance regressions in the request cycle.
 | View | Request coordination and response creation |
 | Django | Framework-level controller responsibilities |
 
-## Request/Response Summary
+The full cycle, in order:
 
 ```text
 1. Client sends an HTTP request.
@@ -1764,8 +1689,6 @@ Query-count tests help detect performance regressions in the request cycle.
 9. Response middleware runs in reverse order.
 10. The server sends the final response to the client.
 ```
-
-## Final Diagram
 
 ```mermaid
 flowchart LR
@@ -1789,7 +1712,7 @@ flowchart LR
 
 ---
 
-# Official References
+## Official References
 
 This guide is aligned with the Django 6.0 documentation available in July 2026.
 

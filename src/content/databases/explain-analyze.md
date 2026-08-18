@@ -6,10 +6,35 @@ order: 3
 
 # EXPLAIN and EXPLAIN ANALYZE for Query Optimization
 
-> **Topic:** Databases & SQL  
-> **Primary examples:** PostgreSQL 18  
-> **Also covered:** MySQL 8.4, SQL Server, and SQLite  
-> **Goal:** Understand how a database executes a query, locate expensive work, and validate optimizations with evidence.
+> Understand how a database executes a query, locate expensive work, and validate optimizations with evidence.
+>
+> **Primary examples:** PostgreSQL 18
+> **Also covered:** MySQL 8.4, SQL Server, and SQLite
+
+## In short
+
+- `EXPLAIN` shows the optimizer's estimated plan; `EXPLAIN ANALYZE` runs the statement and adds actual time, rows, and loops.
+- Read the plan tree from the leaves upward — a parent's time already includes the work of its children, so never sum every node.
+- `cost=0.43..12.47` is startup..total in internal planner units, not milliseconds; only `actual time` is measured in ms.
+- The first thing to check is estimated `rows` against actual `rows`: a large mismatch is usually why a bad scan or join was chosen.
+- Multiply per-loop cost by `loops` — a 0.020 ms inner node executed 5,000 times is 100 ms of real work.
+- A `Seq Scan` is not automatically wrong; it is suspicious when a large table is scanned to return very few rows.
+- Add `BUFFERS` to see `shared hit` versus `read` and temp-file I/O, because elapsed time alone hides cache and I/O pressure.
+
+```mermaid
+flowchart TD
+    A[Slow query] --> B[Capture baseline]
+    B --> C["EXPLAIN ANALYZE + BUFFERS"]
+    C --> D["Find high work / bad estimates"]
+    D --> E[Change one relevant thing]
+    E --> F[Run the same test again]
+    F --> G["Compare time, rows, loops, I/O"]
+    G --> D
+```
+
+**Interview answer:** `EXPLAIN` tells you what the optimizer expects to do; `EXPLAIN ANALYZE` tells you what actually happened, because it executes the statement and reports real time, rows, and loops for every node. To debug a slow query I capture it with real parameter values, run `EXPLAIN (ANALYZE, BUFFERS)`, and look for the node with the highest time × loops, the biggest estimated-vs-actual row gap, or a sort spilling to disk. Then I make one focused change — an index, a sargable predicate, fresh statistics — and rerun the same plan to compare time, rows, loops, and I/O.
+
+**Gotcha:** `EXPLAIN ANALYZE` really executes the statement, so an analyzed `UPDATE`, `DELETE`, `INSERT`, or `MERGE` will modify data unless you wrap it in `BEGIN ... ROLLBACK`.
 
 ---
 
@@ -281,11 +306,7 @@ Index Scan using idx_orders_customer_id on orders
 cost=0.43..12.47
 ```
 
-The two numbers are:
-
-```text
-startup cost .. total cost
-```
+The two numbers are `startup cost .. total cost`.
 
 - **Startup cost:** estimated work before the node can return its first row.
 - **Total cost:** estimated work if the node runs to completion.
@@ -331,13 +352,7 @@ Wide rows increase:
 actual time=0.031..0.045
 ```
 
-The two values are approximately:
-
-```text
-first-row time .. all-rows time
-```
-
-They are measured in milliseconds for each execution of the node.
+The two values are approximately `first-row time .. all-rows time`. They are measured in milliseconds for each execution of the node.
 
 ## 6.5 Actual Rows
 
@@ -355,17 +370,9 @@ loops=1
 
 This is the number of times the node was executed.
 
-For repeated nodes:
+For repeated nodes: `actual time=0.010..0.020 rows=1 loops=5000`
 
-```text
-actual time=0.010..0.020 rows=1 loops=5000
-```
-
-Approximate total work for that node is related to:
-
-```text
-0.020 ms × 5000 loops ≈ 100 ms
-```
+Approximate total work for that node is related to `0.020 ms × 5000 loops ≈ 100 ms`.
 
 The single execution looks cheap, but thousands of repetitions can make the node expensive.
 
@@ -387,17 +394,9 @@ This does not fully represent application-perceived latency because network tran
 
 ## 7.1 Sequential Scan / Table Scan
 
-PostgreSQL:
+PostgreSQL: `Seq Scan on orders`
 
-```text
-Seq Scan on orders
-```
-
-MySQL:
-
-```text
-Table scan on orders
-```
+MySQL: `Table scan on orders`
 
 The database reads a large portion or all of the table.
 
@@ -617,11 +616,7 @@ Sort
 
 An in-memory sort is usually manageable.
 
-A disk spill may look similar to:
-
-```text
-Sort Method: external merge  Disk: 128000kB
-```
+A disk spill may look similar to: `Sort Method: external merge  Disk: 128000kB`
 
 A disk-based sort is not automatically wrong, but it is a signal to inspect:
 
@@ -703,11 +698,7 @@ FROM orders
 WHERE customer_id = 42;
 ```
 
-Possible output:
-
-```text
-Buffers: shared hit=120 read=8
-```
+Possible output: `Buffers: shared hit=120 read=8`
 
 ## 10.1 Main Buffer Values
 
@@ -770,11 +761,7 @@ That mismatch can lead to a poor plan because the optimizer may select:
 
 ## 11.1 Estimate Error Ratio
 
-A simple diagnostic ratio is:
-
-```text
-larger row count ÷ smaller row count
-```
+A simple diagnostic ratio is `larger row count ÷ smaller row count`.
 
 Example:
 
@@ -801,29 +788,13 @@ Common causes include:
 
 ## 11.3 Refreshing Statistics
 
-PostgreSQL:
+PostgreSQL: `ANALYZE orders;`
 
-```sql
-ANALYZE orders;
-```
+For selected columns: `ANALYZE orders (customer_id, status, created_at);`
 
-For selected columns:
+MySQL: `ANALYZE TABLE orders;`
 
-```sql
-ANALYZE orders (customer_id, status, created_at);
-```
-
-MySQL:
-
-```sql
-ANALYZE TABLE orders;
-```
-
-SQL Server:
-
-```sql
-UPDATE STATISTICS dbo.orders;
-```
+SQL Server: `UPDATE STATISTICS dbo.orders;`
 
 Refreshing statistics may help the optimizer choose a better plan, but it does not replace proper indexing or query design.
 
@@ -1052,18 +1023,7 @@ Possible improvements:
 
 # 13. A Reliable Query-Tuning Workflow
 
-Use a measured process rather than guessing.
-
-```mermaid
-flowchart TD
-    A[Slow query] --> B[Capture baseline]
-    B --> C["EXPLAIN ANALYZE + BUFFERS"]
-    C --> D["Find high work / bad estimates"]
-    D --> E[Change one relevant thing]
-    E --> F[Run the same test again]
-    F --> G["Compare time, rows, loops, I/O"]
-    G --> D
-```
+Use a measured process rather than guessing. The seven steps below are the measure-change-measure loop sketched at the top of this note, written out in detail.
 
 ## Step 1: Capture the Exact Query
 
@@ -1290,17 +1250,9 @@ FROM orders
 WHERE customer_id = 42;
 ```
 
-Possible output without an index:
+Possible output without an index: `SCAN orders`
 
-```text
-SCAN orders
-```
-
-Possible output with an index:
-
-```text
-SEARCH orders USING INDEX idx_orders_customer_id (customer_id=?)
-```
+Possible output with an index: `SEARCH orders USING INDEX idx_orders_customer_id (customer_id=?)`
 
 SQLite terminology:
 
@@ -1427,13 +1379,7 @@ Use these questions while inspecting the plan:
 - Are statistics close enough to actual data?
 - Is the expensive behavior caused by query shape, indexing, statistics, or memory?
 
----
-
-# 18. Interview-Ready Summary
-
-`EXPLAIN` shows the optimizer's estimated execution plan without running a normal `SELECT`. `EXPLAIN ANALYZE` executes the statement and adds actual runtime statistics.
-
-A strong plan analysis focuses on four relationships:
+Every one of those questions reduces to four relationships:
 
 ```text
 Estimated rows  ↔ Actual rows
@@ -1442,26 +1388,9 @@ Rows per loop   × Loop count
 Rows processed  ↔ Rows returned
 ```
 
-The most important practical ideas are:
-
-1. Read plan trees from child nodes upward.
-2. Do not assume every sequential scan is bad.
-3. Compare estimated and actual row counts before blaming the join algorithm.
-4. Multiply per-loop behavior mentally when a node runs many times.
-5. Use buffer and temporary-file information to understand I/O, not only elapsed time.
-6. Design indexes around complete access patterns: filtering, joining, ordering, and limiting.
-7. Make one focused change, rerun the same plan, and compare measurable results.
-8. Treat `EXPLAIN ANALYZE` as a real execution, especially for write statements.
-9. Test with realistic data volume, distribution, parameters, and cache conditions.
-10. Optimize high-impact workload queries, not merely visually complex SQL.
-
-A useful one-line explanation is:
-
-> `EXPLAIN` tells you what the optimizer expects to do; `EXPLAIN ANALYZE` tells you what actually happened.
-
 ---
 
-# 19. Official References
+# 18. Official References
 
 - PostgreSQL 18 — EXPLAIN:  
   <https://www.postgresql.org/docs/current/sql-explain.html>

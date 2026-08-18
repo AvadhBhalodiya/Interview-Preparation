@@ -2,24 +2,41 @@
 title: "Caching Layers & Stampede"
 group: "Design Fundamentals"
 order: 3
+updated: "3 August 2026"
 ---
 
 # Caching Layers and the Stampede Problem
 
-> **Category:** System Design  
-> **Level:** Intermediate developer (3+ years)  
-> **Last reviewed:** 3 August 2026
+> Where caching actually lives — browser, CDN, application, database — and how a cache stampede takes a system down the moment a hot key expires.
 
-Caching is not a single Redis server placed in front of a database. In a production system, caching usually exists at several layers: the browser, CDN, API gateway, application process, distributed cache, and database engine.
+## In short
 
-A good caching design answers four questions:
+- Caching is layered: browser → CDN/edge → gateway → in-process L1 → distributed L2 such as Redis → database buffer and OS page cache, and each layer exists to absorb the misses of the one in front of it.
+- Cache-aside is the default application pattern — check the cache, on a miss read the database and store the result; on a write, update the database and delete the key rather than rewriting it.
+- A TTL is a correctness decision, not a performance knob: it bounds how stale the system may become when explicit invalidation does not happen, and eviction can remove an entry earlier, so every read must handle a miss.
+- A cache stampede is many requests missing the *same hot key* at the same instant and all repeating the same expensive load — 10,000 requests/second against a 200 ms rebuild is roughly 2,000 concurrent recomputations.
+- The three mitigations that matter: single-flight plus a leased distributed lock so one caller rebuilds while the rest wait or take stale data; stale-while-revalidate so a soft-expired value is served during a background refresh; TTL jitter so groups of keys stop expiring together.
+- Jitter fixes the avalanche (many keys expiring at once), not the single hot key — coalescing, locking, or stale serving is what protects one key.
+- Design for the cache being gone: an outage sends full traffic to the database, so concurrency limits, deadlines, backoff, and circuit breakers belong on the fallback path.
 
-1. **What data should be cached?**
-2. **At which layer should it be cached?**
-3. **How long can the cached value remain stale?**
-4. **What happens when the cache entry expires under heavy traffic?**
+```mermaid
+flowchart TD
+    U["GET /products/42"] --> B{Browser cache?}
+    B -->|Hit| R[Return response]
+    B -->|Miss| C{CDN edge cache?}
+    C -->|Hit| R
+    C -->|Miss| L1{In-process L1?}
+    L1 -->|Hit| R
+    L1 -->|Miss| L2{Redis L2?}
+    L2 -->|Hit| R
+    L2 -->|Miss| DB[(Database)]
+    DB --> W[Populate L2, L1, CDN, browser]
+    W --> R
+```
 
-The fourth question leads to one of the most important caching failures in system design: the **cache stampede**, also called the **thundering herd problem**.
+**Interview answer:** A request falls through browser, CDN, in-process L1, and Redis L2 before it reaches the database, and each layer protects the layer behind it. A stampede happens when one hot key expires and every concurrent request misses at the same moment, so they all run the same expensive query — the fix is to let exactly one caller rebuild the value, using in-process single-flight plus a leased Redis lock, while the others either wait within a bounded budget or receive the stale value under stale-while-revalidate. Add TTL jitter so unrelated keys stop expiring in lockstep, and cap concurrent database loads so a cache outage cannot turn into a database outage.
+
+**Gotcha:** Treating TTL jitter as stampede protection. Jitter only spreads out a *group* of keys that would expire together; one extremely hot key still collapses onto the database at its single expiry moment unless coalescing, a lock, or stale serving is in place.
 
 ---
 
@@ -102,18 +119,9 @@ Important directives include:
 
 ### Best use cases
 
-Browser caching works especially well for versioned static assets:
+Browser caching works especially well for versioned static assets such as `/app.94f3a8.js` and `/styles.18ac21.css`.
 
-```text
-/app.94f3a8.js
-/styles.18ac21.css
-```
-
-Because the filename changes when the content changes, the asset can safely use a long TTL:
-
-```http
-Cache-Control: public, max-age=31536000, immutable
-```
+Because the filename changes when the content changes, the asset can safely use a long TTL: `Cache-Control: public, max-age=31536000, immutable`
 
 ### Security consideration
 
@@ -369,58 +377,9 @@ Application caching can avoid query parsing, joins, row processing, network tran
 
 # 3. How Requests Move Through Multiple Cache Layers
 
-Consider a public product-detail request:
+Consider a public product-detail request `GET /products/42`.
 
-```text
-GET /products/42
-```
-
-The full request path may look like this:
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant B as Browser
-    participant C as CDN
-    participant A as Application
-    participant L as Local L1 Cache
-    participant R as Redis L2 Cache
-    participant D as Database
-
-    U->>B: Open product page
-    B->>B: Check browser cache
-    alt Browser hit
-        B-->>U: Return cached response
-    else Browser miss
-        B->>C: GET /products/42
-        C->>C: Check edge cache
-        alt CDN hit
-            C-->>B: Return cached response
-        else CDN miss
-            C->>A: Forward request
-            A->>L: Get product:42
-            alt L1 hit
-                L-->>A: Product
-            else L1 miss
-                A->>R: GET product:42
-                alt L2 hit
-                    R-->>A: Product
-                    A->>L: Store short-lived copy
-                else L2 miss
-                    A->>D: SELECT product
-                    D-->>A: Product
-                    A->>R: SET product:42
-                    A->>L: Store product
-                end
-            end
-            A-->>C: HTTP response
-            C->>C: Store public response
-            C-->>B: HTTP response
-        end
-        B->>B: Store response if permitted
-        B-->>U: Render page
-    end
-```
+The browser checks its own cache first. On a miss it asks the CDN, which checks its edge cache. On a CDN miss the request is forwarded to the application, which checks its in-process L1 cache, then Redis as the shared L2, and only then queries the database. On the way back, every layer stores what it is permitted to store: the application writes the value into Redis and keeps a short-lived local copy, the CDN stores the public response, and the browser keeps it if the response directives allow. The condensed form of that path is the flow diagram in **In short** above.
 
 Each layer protects the layer behind it.
 
@@ -509,11 +468,7 @@ Deleting is often safer than directly rewriting because the database remains the
 
 ## 4.2 Read-Through
 
-With read-through caching, the application asks the cache for data, and the cache abstraction loads the value from the data source when required.
-
-```text
-Application → Cache Provider → Database
-```
+With read-through caching, the application asks the cache for data, and the cache abstraction loads the value from the data source when required: `Application → Cache Provider → Database`.
 
 The application does not directly implement the miss-loading logic.
 
@@ -613,19 +568,7 @@ Refresh-ahead reduces user-facing misses, but it may waste work refreshing value
 
 ## 5.1 Cache-key design
 
-A cache key should represent every input that changes the returned value.
-
-Example:
-
-```text
-product:v3:{product_id}:{currency}:{language}
-```
-
-For product 42 in INR and English:
-
-```text
-product:v3:42:INR:en
-```
+A cache key should represent every input that changes the returned value, for example `product:v3:{product_id}:{currency}:{language}` — which for product 42 in INR and English becomes `product:v3:42:INR:en`.
 
 The version component is useful when the serialized schema or business logic changes.
 
@@ -641,12 +584,7 @@ The version component is useful when the serialized schema or business logic cha
 
 ### Avoid accidental collisions
 
-These two requests should not use the same cache entry:
-
-```text
-GET /prices/42?currency=INR
-GET /prices/42?currency=USD
-```
+These two requests should not use the same cache entry: `GET /prices/42?currency=INR` and `GET /prices/42?currency=USD`.
 
 If currency is not part of the key, one user may receive the wrong price.
 
@@ -690,11 +628,7 @@ Common invalidation approaches include:
 
 ### TTL-only invalidation
 
-The entry expires automatically.
-
-```text
-SET product:42 <value> EX 300
-```
+The entry expires automatically: `SET product:42 <value> EX 300`.
 
 Simple, but stale data can remain until expiry.
 
@@ -728,11 +662,7 @@ This scales better across services, but delivery must be reliable and idempotent
 
 ### Versioned keys
 
-Instead of deleting old entries, change the key version:
-
-```text
-catalog:v17:category:7
-```
+Instead of deleting old entries, change the key version, for example `catalog:v17:category:7`.
 
 Old entries naturally expire later. This is useful for deployments and bulk data refreshes.
 
@@ -830,11 +760,7 @@ Suppose:
 - Database recomputation time: `200 ms`
 - No stampede protection
 
-The number of overlapping recomputations can approach:
-
-```text
-10,000 × 0.2 = 2,000 concurrent recomputations
-```
+The number of overlapping recomputations can approach: `10,000 × 0.2 = 2,000 concurrent recomputations`
 
 With request coalescing, the system may perform approximately one recomputation per cache scope while the other callers wait or receive stale data.
 
@@ -848,29 +774,17 @@ The terms below are related but describe different problems.
 
 ## 7.1 Cache stampede
 
-Many requests miss the **same hot key** and recompute it concurrently.
-
-```text
-One hot key → many duplicate loads
-```
+Many requests miss the **same hot key** and recompute it concurrently: `one hot key → many duplicate loads`.
 
 ## 7.2 Cache avalanche
 
-Many keys expire or become unavailable around the same time.
-
-```text
-Many keys → broad backend traffic spike
-```
+Many keys expire or become unavailable around the same time: `many keys → broad backend traffic spike`.
 
 TTL jitter and staged warming are especially helpful here.
 
 ## 7.3 Cache penetration
 
-Requests repeatedly ask for data that does not exist, so every request reaches the database.
-
-```text
-Missing key → cache miss → database miss → repeat
-```
+Requests repeatedly ask for data that does not exist, so every request reaches the database: `missing key → cache miss → database miss → repeat`.
 
 Negative caching, input validation, Bloom filters, and abuse controls may help.
 
@@ -927,7 +841,6 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 T = TypeVar("T")
-
 
 class SingleFlight:
     def __init__(self) -> None:
@@ -1144,11 +1057,7 @@ Expensive recompute   → refresh earlier
 
 This spreads refresh attempts over time instead of concentrating them at one exact expiry moment.
 
-A simplified conceptual rule is:
-
-```python
-should_refresh = random_probability_increases_as_ttl_decreases()
-```
+A simplified conceptual rule is: `should_refresh = random_probability_increases_as_ttl_decreases()`
 
 A production implementation should follow a tested algorithm rather than inventing an arbitrary probability function.
 
@@ -1174,11 +1083,7 @@ The XFetch family of approaches is based on research into optimal probabilistic 
 
 TTL jitter adds randomness to expiry times.
 
-Instead of assigning every key exactly 300 seconds:
-
-```python
-ttl = 300
-```
+Instead of assigning every key exactly 300 seconds: `ttl = 300`
 
 Use:
 
@@ -1263,11 +1168,7 @@ Database miss
 Repeat for every request
 ```
 
-With negative caching:
-
-```text
-user:999999 → NOT_FOUND, TTL 30 seconds
-```
+With negative caching, the absence itself is stored: `user:999999 → NOT_FOUND, TTL 30 seconds`.
 
 Example:
 
@@ -1366,10 +1267,8 @@ end
 return 0
 """
 
-
 class CacheLoadTimeout(RuntimeError):
     pass
-
 
 def get_or_load(
     redis: Redis,
@@ -1475,11 +1374,7 @@ This is why the lock owner should check the cache again after acquiring the lock
 
 If the lock owner crashes, a lock without expiry may remain forever.
 
-The lease ensures eventual recovery:
-
-```text
-SET lock:product:42 <token> NX PX 10000
-```
+The lease ensures eventual recovery: `SET lock:product:42 <token> NX PX 10000`.
 
 However, the lease creates another challenge. If recomputation takes longer than the lease, another process may acquire the lock and begin a duplicate load.
 
@@ -1566,11 +1461,7 @@ A cache should be observable as part of the request path.
 - Cache lookup latency
 - Value serialization and deserialization time
 
-Basic formula:
-
-```text
-Hit Ratio = Cache Hits / (Cache Hits + Cache Misses)
-```
+Basic formula: `Hit Ratio = Cache Hits / (Cache Hits + Cache Misses)`.
 
 A high global hit ratio can hide a serious problem. For example, the system may have a 98% hit ratio while one business-critical hot key repeatedly stampedes.
 
@@ -1707,12 +1598,7 @@ flowchart LR
 
 ## 12.5 Inventory reservation
 
-The cached display value is not used as the final reservation decision.
-
-```text
-Displayed inventory: cached approximation
-Checkout reservation: authoritative inventory command
-```
+The cached display value is not used as the final reservation decision: displayed inventory is a cached approximation, while the checkout reservation issues an authoritative inventory command.
 
 This separation gives a fast browsing experience without weakening correctness for the irreversible operation.
 
@@ -1735,6 +1621,7 @@ Before a planned sale:
 ## Cache placement
 
 - Cache as close to the consumer as correctness allows.
+- Remember that the fastest layer is not automatically the correct layer: sensitivity, authorization, consistency, and invalidation decide where an item may safely live.
 - Use browser and CDN caching for public, reusable HTTP responses.
 - Use a bounded local L1 cache for extremely hot, safe-to-stale values.
 - Use a distributed L2 cache for shared application state and computed results.
@@ -1752,7 +1639,7 @@ Before a planned sale:
 ## Expiry and invalidation
 
 - Treat TTL as a correctness decision.
-- Add TTL jitter when many keys may expire together.
+- Add TTL jitter when many keys may expire together, but do not treat it as protection for one extremely hot key.
 - Use explicit or event-driven invalidation for important updates.
 - Expect entries to disappear before TTL because of eviction.
 - Use short negative caching for repeated not-found results.
@@ -1778,30 +1665,11 @@ Before a planned sale:
 - Use request deadlines and circuit breakers.
 - Load-test cold-cache and cache-outage scenarios.
 - Monitor hit ratio together with database load, not in isolation.
+- Design correctness, invalidation, failure handling, and observability together; caching improves performance only when all four are in place.
 
 ---
 
-# 14. Key Takeaways
-
-1. **Caching is usually layered.** Browser, CDN, gateway, local memory, distributed cache, and database buffers protect different parts of the system.
-
-2. **The fastest layer is not automatically the correct layer.** Data sensitivity, authorization, consistency, and invalidation determine where an item may safely be cached.
-
-3. **A cache stampede occurs when many callers miss the same hot entry and repeat the same backend work.**
-
-4. **TTL jitter helps with synchronized groups of keys, but it does not fully protect one extremely hot key.**
-
-5. **Request coalescing and distributed locks reduce duplicate recomputation.**
-
-6. **Stale-while-revalidate is often the best user experience when bounded staleness is acceptable.**
-
-7. **Cache outages and cold starts must be designed explicitly.** The database should not receive unlimited fallback traffic.
-
-8. **Caching improves performance only when correctness, invalidation, failure handling, and observability are designed together.**
-
----
-
-# 15. References
+# 14. References
 
 The following sources were used to verify terminology and current implementation guidance:
 

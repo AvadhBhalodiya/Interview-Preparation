@@ -2,25 +2,49 @@
 title: "HTTPS / TLS"
 group: "Access & Data Protection"
 order: 8
+updated: "August 2026"
 ---
 
 # HTTPS / TLS Basics
 
-> **Category:** Security  
-> **Level:** Intermediate developer (3+ years)  
-> **Last updated:** August 2026  
-> **Goal:** Understand how HTTPS and TLS protect web traffic, how the TLS handshake works, how certificates establish server identity, and how to configure and debug HTTPS safely.
+> Understand how HTTPS and TLS protect web traffic, how the TLS handshake works, how certificates establish server identity, and how to configure and debug HTTPS safely.
+
+## In short
+
+- HTTPS is HTTP carried inside a TLS tunnel; TLS itself supplies three guarantees — confidentiality (symmetric encryption), integrity (AEAD authentication tags), and server authentication (certificate plus digital signature) — but not client authentication or protection of the data once it leaves the connection.
+- The TLS 1.3 handshake negotiates the version and cipher, authenticates the server via its certificate, and derives shared traffic keys through an ephemeral (EC)DHE key exchange; that ephemeral exchange is what gives forward secrecy, so a later compromise of the server’s long-term private key cannot decrypt previously captured sessions.
+- Certificate trust requires three independent checks to all pass: the chain resolves to a trusted root, the requested hostname matches a SAN on the leaf certificate, and the current time falls inside the validity window — a cryptographically valid certificate for the wrong hostname is still a failed authentication.
+- TLS almost always terminates before it reaches application code — at a CDN, load balancer, or reverse proxy — so “HTTPS is enabled” does not mean the proxy-to-app hop is encrypted; every termination point needs to be documented and secured according to the threat model.
+- TLS 1.2 is now in feature freeze and TLS 1.0, TLS 1.1, and SSL are formally deprecated (BCP 195); a modern service enables TLS 1.3, keeps TLS 1.2 only where client compatibility requires it, and disables everything older.
+- HTTPS does not encrypt data at rest and does not stop application-layer flaws such as SQL injection, XSS, or broken access control — the padlock only proves the certificate matches the domain, not that the site or the code behind it is safe.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: ClientHello<br/>TLS versions, cipher suites,<br/>key share, SNI, ALPN
+    S->>C: ServerHello<br/>selected version, cipher,<br/>server key share
+    S->>C: EncryptedExtensions
+    S->>C: Certificate
+    S->>C: CertificateVerify
+    S->>C: Finished
+    Note over C,S: Client validates certificate and derives keys
+    C->>S: Finished
+    Note over C,S: Secure connection established
+    C->>S: Encrypted HTTP request
+    S->>C: Encrypted HTTP response
+```
+
+**Interview answer:** Connecting over HTTPS runs a TLS handshake before any HTTP bytes travel: client and server agree on a version and cipher, the server proves its identity with a certificate chained to a trusted CA, and both sides derive symmetric traffic keys through an ephemeral key exchange — only then does the actual HTTP request leave the machine, and it leaves as ciphertext. What TLS guarantees is confidentiality, integrity, and server authentication; it says nothing about the client’s identity, what happens to the data after it is decrypted, or whether the application itself is secure.
+
+**Gotcha:** Assuming “encrypted” means “safe.” A client that accepts any certificate or any hostname — or one simply run with certificate verification disabled — still gets a perfectly encrypted TLS connection; it is just encrypted to whoever answered, including an attacker performing a machine-in-the-middle attack. Encryption without authentication protects nothing.
 
 ---
 
 # 1. Why HTTPS Is Needed
 
-Normal HTTP sends data over the network without transport encryption.
-
-```text
-Client  ------------------- HTTP ------------------->  Server
-         username=alice&password=secret
-```
+Normal HTTP sends data over the network without transport encryption — a login request travels as plain text, for example `username=alice&password=secret`, readable by anyone who can observe the connection.
 
 Anyone who can observe or modify the network path may be able to:
 
@@ -31,16 +55,7 @@ Anyone who can observe or modify the network path may be able to:
 - Inject advertisements or malware.
 - Impersonate the destination server.
 
-HTTPS solves this by sending HTTP through a secure TLS connection.
-
-```text
-HTTPS = HTTP over TLS
-```
-
-```text
-Client  =============== Encrypted TLS tunnel ===============>  Server
-                         unreadable ciphertext
-```
+HTTPS solves this by sending HTTP through a secure TLS connection — in short, `HTTPS = HTTP over TLS`. Where plain HTTP exposes the request on the wire, HTTPS wraps the same traffic in an encrypted tunnel so an observer sees only unreadable ciphertext.
 
 The application still sends ordinary HTTP concepts such as methods, headers, cookies, and JSON. TLS protects those bytes while they travel between TLS endpoints.
 
@@ -86,11 +101,7 @@ Common default ports:
 | HTTP | 80 |
 | HTTPS | 443 |
 
-A custom port can also use HTTPS, for example:
-
-```text
-https://example.com:8443
-```
+A custom port can also use HTTPS, for example `https://example.com:8443`.
 
 The port does not create security. TLS does.
 
@@ -98,11 +109,7 @@ The port does not create security. TLS does.
 
 SSL was the older protocol family. SSL 2.0 and SSL 3.0 are obsolete and insecure.
 
-TLS replaced SSL:
-
-```text
-SSL 2.0 → SSL 3.0 → TLS 1.0 → TLS 1.1 → TLS 1.2 → TLS 1.3
-```
+TLS replaced SSL: `SSL 2.0 → SSL 3.0 → TLS 1.0 → TLS 1.1 → TLS 1.2 → TLS 1.3`.
 
 People still commonly say:
 
@@ -122,15 +129,7 @@ TLS mainly provides three security properties.
 
 ## 3.1 Confidentiality
 
-Traffic is encrypted, so an observer cannot directly read it.
-
-```text
-Plaintext:
-Authorization: Bearer abc123
-
-Encrypted on the network:
-17 03 03 00 f1 62 9a 31 ...
-```
+Traffic is encrypted, so an observer cannot directly read it. A header that starts as plaintext, such as `Authorization: Bearer abc123`, appears on the network only as ciphertext bytes such as `17 03 03 00 f1 62 9a 31 ...`.
 
 ## 3.2 Integrity
 
@@ -142,13 +141,9 @@ If an attacker changes ciphertext in transit, authentication checks fail and the
 
 The client validates that it is communicating with the intended server.
 
-For a public website, the server normally proves its identity using a certificate issued by a trusted Certificate Authority.
+For a public website, the server normally proves its identity using a certificate issued by a trusted Certificate Authority — in effect, the browser asks:
 
-```text
-Browser:
-“Does this certificate belong to api.example.com,
-is it valid now, and does it chain to a trusted CA?”
-```
+> “Does this certificate belong to api.example.com, is it valid now, and does it chain to a trusted CA?”
 
 Client identity is not automatically verified by ordinary HTTPS. Applications usually authenticate users with:
 
@@ -193,17 +188,7 @@ A simplified HTTPS stack looks like this:
 └──────────────────────────────────────────────┘
 ```
 
-For HTTP/1.1 and HTTP/2:
-
-```text
-HTTP → TLS → TCP → IP
-```
-
-For HTTP/3:
-
-```text
-HTTP/3 → QUIC, which integrates TLS 1.3 → UDP → IP
-```
+For HTTP/1.1 and HTTP/2, the stack is `HTTP → TLS → TCP → IP`. For HTTP/3, it is `HTTP/3 → QUIC, which integrates TLS 1.3 → UDP → IP`.
 
 TLS does not replace HTTP. It protects the connection used to carry HTTP.
 
@@ -215,12 +200,7 @@ TLS combines different cryptographic techniques because each solves a different 
 
 ## 5.1 Asymmetric cryptography
 
-Asymmetric cryptography uses a key pair:
-
-```text
-Public key  → may be shared
-Private key → must remain secret
-```
+Asymmetric cryptography uses a key pair: a public key that may be shared, and a private key that must remain secret.
 
 It is used mainly for:
 
@@ -309,27 +289,9 @@ Its goals are to:
 3. Establish shared traffic keys.
 4. Confirm that the handshake was not modified.
 
-## 6.1 Simplified TLS 1.3 flow
+## 6.1 TLS 1.3 Handshake Flow
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server
-
-    C->>S: ClientHello<br/>TLS versions, cipher suites,<br/>key share, SNI, ALPN
-    S->>C: ServerHello<br/>selected version, cipher,<br/>server key share
-    S->>C: EncryptedExtensions
-    S->>C: Certificate
-    S->>C: CertificateVerify
-    S->>C: Finished
-    Note over C,S: Client validates certificate and derives keys
-    C->>S: Finished
-    Note over C,S: Secure connection established
-    C->>S: Encrypted HTTP request
-    S->>C: Encrypted HTTP response
-```
-
-Message-by-message view:
+The handshake shown message by message:
 
 ```mermaid
 sequenceDiagram
@@ -458,34 +420,20 @@ Certificate
 
 ## 7.2 Subject Alternative Name
 
-Modern hostname validation uses the Subject Alternative Name extension.
-
-Example:
-
-```text
-DNS:example.com
-DNS:www.example.com
-DNS:api.example.com
-```
+Modern hostname validation uses the Subject Alternative Name extension, for example `DNS:example.com`, `DNS:www.example.com`, and `DNS:api.example.com`.
 
 A certificate for `example.com` does not automatically cover `api.example.com`.
 
 ## 7.3 Wildcard certificates
 
-A wildcard certificate such as:
+A wildcard certificate such as `*.example.com` normally covers one label level:
 
-```text
-*.example.com
-```
-
-normally covers one label level:
-
-```text
-api.example.com       ✓
-admin.example.com     ✓
-v2.api.example.com    ✗
-example.com           ✗ unless separately included
-```
+| Hostname | Covered by `*.example.com` |
+|---|---|
+| `api.example.com` | Yes |
+| `admin.example.com` | Yes |
+| `v2.api.example.com` | No |
+| `example.com` | No, unless separately included |
 
 Wildcard certificates are convenient but expand the effect of a private-key compromise. Use them only when they fit the trust boundary.
 
@@ -518,12 +466,7 @@ Why use intermediates?
 
 ## 7.6 Private key
 
-The certificate contains the public key. The private key remains on the server or a secure key service.
-
-```text
-Certificate/public key → share with clients
-Private key            → never expose
-```
+The certificate contains the public key. The private key remains on the server or a secure key service — the certificate and public key can be shared with clients, but the private key must never be exposed.
 
 Protect private keys with:
 
@@ -542,11 +485,7 @@ The client performs multiple checks.
 
 ## 8.1 Chain validation
 
-The certificate chain must lead to a trusted root.
-
-```text
-Leaf → Intermediate → Trusted root
-```
+The certificate chain must lead to a trusted root: `Leaf → Intermediate → Trusted root`.
 
 A server should send its leaf certificate and necessary intermediate certificates.
 
@@ -556,27 +495,16 @@ A common deployment failure is sending only the leaf certificate. Some clients m
 
 The requested hostname must match the certificate’s identity.
 
-```text
-Requested: api.example.com
-Certificate SAN: api.example.com
-Result: valid
-```
-
-```text
-Requested: api.example.com
-Certificate SAN: www.example.com
-Result: hostname mismatch
-```
+| Requested | Certificate SAN | Result |
+|---|---|---|
+| `api.example.com` | `api.example.com` | Valid |
+| `api.example.com` | `www.example.com` | Hostname mismatch |
 
 Trusting the CA chain without verifying the hostname is insecure. It proves that the certificate is valid, but not that it belongs to the destination the application intended to reach.
 
 ## 8.3 Validity period
 
-The current time must be within:
-
-```text
-Not Before <= current time <= Not After
-```
+The current time must be within the certificate’s window: `Not Before <= current time <= Not After`.
 
 Clock errors can make valid certificates appear expired or not yet valid.
 
@@ -633,18 +561,7 @@ As of July 2026:
 
 ## 9.2 Recommended practical policy
 
-For a typical public web application:
-
-```text
-Minimum: TLS 1.2
-Preferred: TLS 1.3
-```
-
-For a controlled environment where every client supports TLS 1.3:
-
-```text
-Minimum: TLS 1.3
-```
+For a typical public web application, the minimum should be TLS 1.2 with TLS 1.3 preferred. For a controlled environment where every client supports TLS 1.3, the minimum can be raised to TLS 1.3.
 
 Do not enable old protocol versions merely to make an obsolete client connect without understanding the risk.
 
@@ -689,13 +606,7 @@ Meaning:
 
 ## 10.2 TLS 1.3 naming
 
-TLS 1.3 cipher suites only identify the symmetric AEAD algorithm and hash.
-
-```text
-TLS_AES_128_GCM_SHA256
-TLS_AES_256_GCM_SHA384
-TLS_CHACHA20_POLY1305_SHA256
-```
+TLS 1.3 cipher suites only identify the symmetric AEAD algorithm and hash, for example `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, and `TLS_CHACHA20_POLY1305_SHA256`.
 
 Key exchange and signature algorithms are negotiated separately.
 
@@ -721,12 +632,7 @@ TLS configuration changes over time as client compatibility and cryptographic gu
 
 Many HTTPS sites can share one IP address.
 
-SNI lets the client tell the server which hostname it wants during the TLS handshake.
-
-```text
-ClientHello:
-server_name = api.example.com
-```
+SNI lets the client tell the server which hostname it wants during the TLS handshake — the `ClientHello` carries `server_name = api.example.com`.
 
 The server can then choose the correct certificate.
 
@@ -744,14 +650,7 @@ Without correct SNI, the server may return a default certificate and cause a hos
 
 ## 11.2 ALPN
 
-Application-Layer Protocol Negotiation lets the client and server select the application protocol during the TLS handshake.
-
-Example:
-
-```text
-Client offers: h2, http/1.1
-Server selects: h2
-```
+Application-Layer Protocol Negotiation lets the client and server select the application protocol during the TLS handshake. For example, a client might offer `h2, http/1.1` and the server selects `h2`.
 
 Common values:
 
@@ -763,13 +662,7 @@ Common values:
 
 ## 11.3 HTTP/2 and HTTP/3
 
-HTTPS and the HTTP version are related but separate concerns.
-
-```text
-HTTPS over HTTP/1.1
-HTTPS over HTTP/2
-HTTPS over HTTP/3
-```
+HTTPS and the HTTP version are related but separate concerns — HTTPS can carry HTTP/1.1, HTTP/2, or HTTP/3.
 
 HTTP/2 commonly runs over TLS on the public web.
 
@@ -783,11 +676,7 @@ The application process does not always manage the public certificate.
 
 ## 12.1 Termination at the application
 
-```text
-Client ── HTTPS ──> Application server
-```
-
-The application directly handles:
+The client connects directly over HTTPS to the application server. The application directly handles:
 
 - Certificates.
 - Private keys.
@@ -798,11 +687,7 @@ This may be suitable for smaller services or direct service-to-service communica
 
 ## 12.2 Termination at a reverse proxy
 
-```text
-Client ── HTTPS ──> Nginx / Envoy / Apache ── HTTP or HTTPS ──> Application
-```
-
-The proxy handles public TLS and forwards requests to the application.
+The client connects over HTTPS to a reverse proxy such as Nginx, Envoy, or Apache. The proxy handles public TLS and forwards the request to the application over HTTP or HTTPS.
 
 Benefits:
 
@@ -825,17 +710,7 @@ flowchart TD
 
 Examples include managed application load balancers, API gateways, CDNs, and ingress controllers.
 
-Possible backend patterns:
-
-```text
-Client ── HTTPS ──> Load balancer ── HTTP ──> App
-```
-
-or:
-
-```text
-Client ── HTTPS ──> Load balancer ── HTTPS ──> App
-```
+Two backend patterns are common: the load balancer can forward to the app over plain HTTP once its own HTTPS listener has terminated TLS, or it can re-encrypt and carry HTTPS (or mTLS) all the way to the app.
 
 Use TLS on the backend when required by:
 
@@ -848,14 +723,7 @@ Use TLS on the backend when required by:
 
 ## 12.4 End-to-end encryption vs TLS termination
 
-“HTTPS enabled” does not always mean the application server receives encrypted traffic.
-
-```text
-Encrypted                 Unencrypted
-Client ── HTTPS ──> Proxy ── HTTP ──> App
-```
-
-The public connection is protected, but the proxy-to-application hop is not.
+“HTTPS enabled” does not always mean the application server receives encrypted traffic: the public leg from client to proxy is encrypted, but the proxy-to-application hop can be plain HTTP.
 
 Document every TLS boundary.
 
@@ -985,12 +853,7 @@ Do not use 0-RTT for non-idempotent or sensitive operations such as:
 - Creating unique resources.
 - One-time token consumption.
 
-Safer candidates are carefully designed read-only operations that tolerate replay.
-
-```text
-GET /public/catalog     potentially suitable
-POST /payments          not suitable
-```
+Safer candidates are carefully designed read-only operations that tolerate replay — `GET /public/catalog` is potentially suitable, `POST /payments` is not.
 
 0-RTT must be evaluated at the application layer. TLS cannot determine whether a business action is safe to replay.
 
@@ -1044,11 +907,7 @@ Never send credentials, tokens, or sensitive request bodies over HTTP expecting 
 
 ## 15.3 Secure cookies
 
-Sensitive cookies should include:
-
-```http
-Set-Cookie: session=...; Secure; HttpOnly; SameSite=Lax
-```
+Sensitive cookies should include: `Set-Cookie: session=...; Secure; HttpOnly; SameSite=Lax`
 
 - `Secure`: browser sends the cookie only over secure connections.
 - `HttpOnly`: JavaScript cannot directly read the cookie.
@@ -1060,17 +919,9 @@ HTTPS alone does not automatically add these attributes.
 
 A page loaded over HTTPS should not load scripts, images, styles, fonts, or API calls over HTTP.
 
-Bad:
+Bad: `<script src="http://cdn.example.com/app.js"></script>`
 
-```html
-<script src="http://cdn.example.com/app.js"></script>
-```
-
-Good:
-
-```html
-<script src="https://cdn.example.com/app.js"></script>
-```
+Good: `<script src="https://cdn.example.com/app.js"></script>`
 
 Mixed active content may be blocked because an attacker could modify the HTTP resource and compromise the HTTPS page.
 
@@ -1214,11 +1065,7 @@ Use:
 - Kubernetes certificate controllers.
 - Central certificate-management services.
 
-Automation should cover:
-
-```text
-Issue → deploy → verify → renew → rotate → alert
-```
+Automation should cover the full cycle: `issue → deploy → verify → renew → rotate → alert`.
 
 Do not wait until the expiry date to discover that renewal is broken.
 
@@ -1265,14 +1112,7 @@ response = requests.get(
 
 ## 17.2 Do not create permissive trust managers
 
-A custom client that accepts every certificate or every hostname effectively removes TLS authentication.
-
-Bad logic:
-
-```text
-Trust any certificate
-Accept any hostname
-```
+A custom client that accepts every certificate or every hostname effectively removes TLS authentication — bad logic looks like “trust any certificate” combined with “accept any hostname.”
 
 This still produces encrypted traffic, but it may be encrypted to the attacker.
 
@@ -1288,11 +1128,7 @@ HTTPS encrypts the URL while in transit, but URLs can still appear in:
 - Referrer information, depending on policy.
 - Screenshots and copied links.
 
-Bad:
-
-```text
-https://example.com/reset?token=very-secret-token
-```
+Bad: a token placed directly in the URL, such as `https://example.com/reset?token=very-secret-token`.
 
 Sometimes a one-time token in a URL is unavoidable, but it should be:
 
@@ -1306,17 +1142,9 @@ Do not put passwords, long-lived API keys, or bearer tokens in URLs.
 
 ## 17.4 Mark cookies correctly
 
-For an HTTPS production service:
+For an HTTPS production service: `Set-Cookie: session=abc; Secure; HttpOnly; SameSite=Lax; Path=/`
 
-```http
-Set-Cookie: session=abc; Secure; HttpOnly; SameSite=Lax; Path=/
-```
-
-For cross-site cookie use, browsers commonly require:
-
-```http
-SameSite=None; Secure
-```
+For cross-site cookie use, browsers commonly require: `SameSite=None; Secure`
 
 Cross-site cookies increase security complexity and should be used intentionally.
 
@@ -1354,14 +1182,7 @@ Risks include:
 - Lateral movement.
 - Traffic crossing regions or providers.
 
-Common choices:
-
-```text
-Public edge: HTTPS
-Internal service traffic: HTTPS or mTLS
-Database traffic: TLS
-Message broker traffic: TLS
-```
+Common choices are HTTPS at the public edge, HTTPS or mTLS for internal service traffic, and TLS for both database and message-broker traffic.
 
 The exact design should follow the system’s threat model and operational capabilities.
 
@@ -1371,41 +1192,15 @@ The exact design should follow the system’s threat model and operational capab
 
 ## 18.1 curl
 
-Show connection and TLS details:
+Show connection and TLS details: `curl -v https://example.com/`
 
-```bash
-curl -v https://example.com/
-```
+Useful output may include the TLS version, selected cipher, certificate subject and issuer, ALPN result, HTTP version, and response headers.
 
-Useful output may include:
+Fetch only response headers: `curl -I https://example.com/`
 
-```text
-TLS version
-Selected cipher
-Certificate subject
-Certificate issuer
-ALPN result
-HTTP version
-Response headers
-```
+Check HTTP redirect behavior: `curl -I http://example.com/`
 
-Fetch only response headers:
-
-```bash
-curl -I https://example.com/
-```
-
-Check HTTP redirect behavior:
-
-```bash
-curl -I http://example.com/
-```
-
-Follow redirects:
-
-```bash
-curl -IL http://example.com/
-```
+Follow redirects: `curl -IL http://example.com/`
 
 Do not use `curl -k` as a normal fix. It disables certificate verification.
 
@@ -1446,12 +1241,7 @@ openssl s_client \
   -showcerts
 ```
 
-Important:
-
-```text
--connect   chooses the IP/port connection
--servername sends the SNI hostname
-```
+Important: `-connect` chooses the IP/port to connect to, while `-servername` sends the SNI hostname.
 
 Without `-servername`, a multi-domain server may return the wrong certificate.
 
@@ -1540,9 +1330,7 @@ Scanning should be part of deployment validation, not a one-time activity.
 
 ## 19.1 Certificate expired
 
-```text
-Current time > certificate Not After
-```
+The failure condition: `current time > certificate Not After`.
 
 Typical causes:
 
@@ -1566,10 +1354,7 @@ Use reliable time synchronization.
 
 ## 19.3 Hostname mismatch
 
-```text
-Requested: api.example.com
-Certificate: www.example.com
-```
+For example, a request to `api.example.com` is served a certificate issued for `www.example.com`.
 
 Typical causes:
 
@@ -1583,12 +1368,7 @@ Typical causes:
 
 Some clients work while others fail.
 
-Cause:
-
-```text
-Server sends leaf certificate
-Server omits required intermediate
-```
+Cause: the server sends its leaf certificate but omits the required intermediate.
 
 Fix: configure the full chain, not only the leaf certificate.
 
@@ -1606,17 +1386,7 @@ Do not solve this by disabling verification. Install the intended CA or fix the 
 
 ## 19.6 Protocol version mismatch
 
-```text
-Client supports TLS 1.2
-Server allows only TLS 1.3
-```
-
-or:
-
-```text
-Legacy server supports only TLS 1.0
-Modern client refuses it
-```
+This can happen either way: a client that supports only up to TLS 1.2 meeting a server that allows only TLS 1.3, or the reverse — a legacy server that supports only TLS 1.0 being refused by a modern client.
 
 Decide whether compatibility is required. Do not lower the security baseline without a documented reason.
 
@@ -1644,13 +1414,7 @@ Fix trusted forwarded-protocol configuration.
 
 ## 19.9 Mixed content
 
-The HTML page is HTTPS, but a resource uses HTTP.
-
-```text
-https://app.example.com
-        loads
-http://api.example.com
-```
+The HTML page is HTTPS, but a resource uses HTTP — for example, a page served from `https://app.example.com` loads a resource from `http://api.example.com`.
 
 Fix the resource URL and ensure the resource supports HTTPS.
 
@@ -1707,12 +1471,7 @@ Use separate at-rest controls.
 
 ## 20.2 Compromised endpoints
 
-If the client or server is compromised, the attacker may see plaintext before encryption or after decryption.
-
-```text
-Client app → plaintext → TLS encryption
-TLS decryption → plaintext → server app
-```
+If the client or server is compromised, the attacker may see plaintext before encryption or after decryption: plaintext exists on the client side before TLS encryption, and again on the server side right after TLS decryption.
 
 ## 20.3 Application vulnerabilities
 
@@ -1741,11 +1500,7 @@ The HTTP body and protected headers are encrypted, but network-level metadata is
 
 ## 20.5 Data after TLS termination
 
-If TLS terminates at a proxy, plaintext may exist on the next hop.
-
-```text
-Internet client ─ HTTPS ─> Proxy ─ HTTP ─> Application
-```
+If TLS terminates at a proxy, plaintext may exist on the next hop — an internet client connects over HTTPS to the proxy, which then forwards to the application over plain HTTP.
 
 Secure each hop according to the threat model.
 
@@ -1755,18 +1510,10 @@ A phishing site can have a valid HTTPS certificate.
 
 The padlock means:
 
-```text
-The connection to this domain is encrypted,
-and the certificate matches this domain.
-```
+> The connection to this domain is encrypted,  
+> and the certificate matches this domain.
 
-It does not mean:
-
-```text
-The business is honest.
-The content is safe.
-The site is approved by the browser.
-```
+It does not mean the business is honest, that the content is safe, or that the site has been approved by the browser.
 
 ---
 
@@ -1817,25 +1564,16 @@ Each boundary should answer:
 
 ## 21.2 Request flow
 
-```text
-1. Browser resolves app.example.com.
+1. Browser resolves `app.example.com`.
 2. Browser connects to the CDN on port 443.
-3. TLS handshake authenticates app.example.com.
+3. TLS handshake authenticates `app.example.com`.
 4. CDN decrypts and inspects the HTTP request.
 5. CDN opens a separate TLS connection to the origin.
 6. Load balancer forwards through HTTPS or mTLS to the API.
 7. API uses TLS when connecting to the database and broker.
 8. Each connection has its own TLS session and trust policy.
-```
 
-A single user request may cross several independent TLS connections.
-
-```text
-TLS session A: Browser ↔ CDN
-TLS session B: CDN ↔ Load balancer
-TLS session C: Load balancer ↔ API
-TLS session D: API ↔ Database
-```
+A single user request may cross several independent TLS connections: browser to CDN, CDN to load balancer, load balancer to API, and API to database.
 
 ---
 
@@ -1902,43 +1640,7 @@ TLS session D: API ↔ Database
 
 ---
 
-# 23. Key Takeaways
-
-```text
-HTTPS = HTTP protected by TLS
-```
-
-TLS provides:
-
-```text
-Confidentiality + Integrity + Authentication
-```
-
-The most important practical points are:
-
-1. Prefer TLS 1.3.
-2. Keep TLS 1.2 only when client compatibility requires it.
-3. Disable SSL, TLS 1.0, and TLS 1.1.
-4. Validate the certificate chain and hostname.
-5. Never disable certificate verification in production.
-6. Protect and rotate private keys.
-7. Automate certificate renewal.
-8. Understand exactly where TLS terminates.
-9. Use HSTS carefully.
-10. Remember that HTTPS does not replace authorization, secure coding, or encryption at rest.
-
-A simple mental model:
-
-```mermaid
-flowchart TD
-    A[Certificate authenticates the server] --> B[Handshake establishes shared keys]
-    B --> C[Symmetric encryption<br/>protects HTTP traffic]
-    C --> D[Application security still controls<br/>who may do what]
-```
-
----
-
-# 24. References
+# 23. References
 
 Standards and best-practice references used for this guide:
 

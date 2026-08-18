@@ -2,14 +2,35 @@
 title: "Double-Entry Ledger"
 group: "Money Movement"
 order: 2
+updated: "3 August 2026"
 ---
 
 # Double-Entry Ledger in Payments & Fintech
 
 > A practical, developer-focused guide to designing reliable money movement systems.
->
-> **Audience:** Backend developers with 3+ years of experience  
-> **Last reviewed:** 3 August 2026
+
+## In short
+
+- Every transaction posts two or more entries where total debits equal total credits — that is what makes it "balanced."
+- Journal entries are the source of truth, not a `balance` column — a stored balance is a derived or cached optimisation and must always be re-derivable from entries.
+- Debit/credit direction depends on account type: debits increase assets and expenses, credits increase liabilities, revenue, and equity.
+- A user's wallet balance looks like an asset to the user but is normally a liability on the platform's books, since the platform owes that money to the user.
+- Posting must be atomic (all entries for a transaction commit or none do) and idempotent (a unique idempotency key stops retries and duplicate webhooks from posting the same movement twice).
+- Concurrent requests against the same account need row locks, optimistic version checks, or serializable transactions, or two simultaneous withdrawals can both read the same starting balance and overdraw it.
+- Posted entries are immutable — corrections are new reversal or compensating transactions, never edits or deletes — and reconciliation against processor and bank records is what actually proves the money moved.
+
+```mermaid
+flowchart LR
+    U[User pays ₹500] --> P[Payment processor]
+    P --> A[Debit: Processor clearing asset ₹500]
+    P --> L[Credit: User wallet liability ₹500]
+    A --> B{Debits = Credits}
+    L --> B
+```
+
+**Interview answer:** A double-entry ledger records every financial event as two or more balanced entries — debits and credits that must sum to zero — so the system of record can prove where money came from, where it went, and why every balance is correct. Payment platforms need this because requests get retried, webhooks arrive more than once, and a single payment can be split across fees, taxes, and multiple parties; a `balance` column can't explain any of that or survive an audit. The ledger of immutable journal entries is the source of truth — a stored balance is just a derived, cached view of it.
+
+**Gotcha:** Treating a user's wallet balance as the platform's asset. From the user's side it looks like money they own, but on the platform's books the platform owes that balance to the user, so it is a liability — getting the account type backwards breaks the accounting equation and every debit/credit rule that follows from it.
 
 ---
 
@@ -22,11 +43,7 @@ In a **double-entry ledger**, every financial transaction creates at least two e
 - One or more **debit entries**
 - One or more **credit entries**
 
-For every posted transaction:
-
-```text
-Total debits = Total credits
-```
+For every posted transaction, `Total debits = Total credits`.
 
 Example: a user adds ₹500 to a wallet.
 
@@ -37,15 +54,6 @@ Example: a user adds ₹500 to a wallet.
 | **Total** | **₹500** | **₹500** |
 
 The platform has received or expects to receive ₹500, so its asset increases. At the same time, the platform owes ₹500 to the user, so its liability increases.
-
-```mermaid
-flowchart LR
-    U[User pays ₹500] --> P[Payment processor]
-    P --> A[Debit: Processor clearing asset ₹500]
-    P --> L[Credit: User wallet liability ₹500]
-    A --> B{Debits = Credits}
-    L --> B
-```
 
 A ledger is different from a simple `balance` column. A balance tells you **what the amount is now**. A ledger tells you:
 
@@ -126,22 +134,13 @@ Entry 2: Credit Merchant payable           ₹980
 Entry 3: Credit Platform fee revenue        ₹20
 ```
 
-The transaction is balanced because:
-
-```text
-Debits  = ₹1,000
-Credits = ₹980 + ₹20 = ₹1,000
-```
+The transaction is balanced because debits (`₹1,000`) equal credits (`₹980 + ₹20 = ₹1,000`).
 
 ## 2.5 Balance
 
 A balance is derived from entries.
 
-Conceptually:
-
-```text
-Balance = opening balance + posted debits - posted credits
-```
+Conceptually, `Balance = opening balance + posted debits - posted credits`.
 
 The exact sign depends on the account type and the balance representation chosen by the application.
 
@@ -163,12 +162,7 @@ A robust ledger treats journal entries as the source of truth. A stored balance 
 | Expense | Debit | Credit | Processor fee expense, chargeback expense |
 | Equity | Credit | Debit | Retained earnings, contributed capital |
 
-A useful memory aid is:
-
-```text
-DEAD: Debits increase Expenses, Assets, and Drawings
-CLIC: Credits increase Liabilities, Income, and Capital
-```
+A useful memory aid: `DEAD` — Debits increase Expenses, Assets, and Drawings; `CLIC` — Credits increase Liabilities, Income, and Capital.
 
 For payment systems, assets and liabilities are the most frequently used categories.
 
@@ -189,11 +183,7 @@ This perspective difference is one of the most important concepts in fintech led
 
 ## 3.3 Accounting Equation
 
-The traditional accounting equation is:
-
-```text
-Assets = Liabilities + Equity
-```
+The traditional accounting equation is `Assets = Liabilities + Equity`.
 
 Revenue increases equity, while expenses reduce equity. A double-entry system preserves this equation when transactions are modelled correctly.
 
@@ -352,13 +342,7 @@ The processor clearing account is now zero for this payment.
 | Bank cash | — | ₹980 |
 | **Total** | **₹980** | **₹980** |
 
-Final economic result:
-
-```text
-Platform revenue          ₹20
-Less processor expense   (₹10)
-Platform net contribution ₹10
-```
+Final economic result: platform revenue `₹20` less processor expense `₹10` leaves a net contribution of `₹10`.
 
 ```mermaid
 sequenceDiagram
@@ -503,10 +487,6 @@ Payment state and ledger state should be related, but they are not always identi
 ## 8.1 Posted Balance
 
 The sum of finalized ledger entries.
-
-```text
-Posted balance = entries that are financially recognized
-```
 
 ## 8.2 Pending Balance
 
@@ -769,7 +749,6 @@ from typing import Literal
 
 Direction = Literal["debit", "credit"]
 
-
 @dataclass(frozen=True)
 class EntryInput:
     account_id: str
@@ -777,7 +756,6 @@ class EntryInput:
     amount_minor: int
     currency: str
     entry_type: str
-
 
 def post_transaction(
     db,
@@ -882,6 +860,8 @@ The code illustrates the flow, but production integrity should not depend only o
 
 Distributed payment systems operate with **at-least-once delivery** in many places. A client may retry after a timeout even though the first request succeeded.
 
+Full detail: [Idempotency Keys](idempotency-keys.md)
+
 Without idempotency:
 
 ```text
@@ -908,22 +888,13 @@ payout:po_77331
 webhook:evt_99882
 ```
 
-Store a uniqueness constraint such as:
-
-```sql
-UNIQUE (ledger_id, idempotency_key)
-```
+Store a uniqueness constraint such as `UNIQUE (ledger_id, idempotency_key)`.
 
 ## 12.2 Same Key, Same Intent
 
 A retry using the same key should represent the same logical operation.
 
-Store a request hash or important parameters so the system can reject this dangerous case:
-
-```text
-First request:  key=transfer-100, amount=₹500
-Second request: key=transfer-100, amount=₹5,000
-```
+Store a request hash or important parameters so the system can reject this dangerous case — for example, a first request with `key=transfer-100, amount=₹500` followed by a second request reusing the same key with `amount=₹5,000`.
 
 ## 12.3 Idempotency Must Be End-to-End
 
@@ -996,33 +967,17 @@ If zero rows are updated, reload and retry.
 
 ### Serializable Transactions
 
-Use the database’s serializable isolation level and retry serialization failures.
-
-```text
-BEGIN ISOLATION LEVEL SERIALIZABLE;
-...
-COMMIT;
-```
+Use the database’s serializable isolation level (`BEGIN ISOLATION LEVEL SERIALIZABLE`) and retry serialization failures.
 
 ### Single-Writer Partition
 
-Route all commands for the same account to one ordered partition or actor.
-
-```text
-partition key = account_id
-```
+Route all commands for the same account to one ordered partition or actor (`partition key = account_id`).
 
 This can simplify ordering at high scale but still requires idempotency and durable storage.
 
 ## 13.2 Deterministic Lock Ordering
 
-When one transfer touches multiple accounts, lock accounts in a consistent order, such as ascending `account_id`, to reduce deadlocks.
-
-```text
-Lock account A, then account B
-```
-
-All code paths must use the same ordering rule.
+When one transfer touches multiple accounts, lock accounts in a consistent order, such as ascending `account_id`, to reduce deadlocks. All code paths must use the same ordering rule.
 
 ## 13.3 Ledger Balance vs Spendable Balance
 
@@ -1034,16 +989,7 @@ Do not check a user-facing balance from a stale read replica before approving a 
 
 ## 14.1 Never Edit Posted Entries
 
-Posted journal entries should be immutable.
-
-Do not:
-
-```sql
-UPDATE journal_entries SET amount_minor = 5000 WHERE id = ...;
-DELETE FROM journal_entries WHERE id = ...;
-```
-
-Instead, create a reversal transaction.
+Posted journal entries should be immutable. Do not `UPDATE journal_entries SET amount_minor = 5000 WHERE id = ...` or `DELETE FROM journal_entries WHERE id = ...` on them directly — instead, create a reversal transaction.
 
 ## 14.2 Reversal Pattern
 
@@ -1061,11 +1007,7 @@ Reversal:
 | User B wallet liability | ₹200 | — |
 | User A wallet liability | — | ₹200 |
 
-Link the reversal to the original transaction:
-
-```text
-reversal_of = original_transaction_id
-```
+Link the reversal to the original transaction via `reversal_of = original_transaction_id`.
 
 ## 14.3 Refund Is Not Always a Reversal
 
@@ -1175,31 +1117,15 @@ Suspense accounts must be monitored and cleared promptly.
 
 # 16. Multi-Currency Ledgers
 
-Do not combine different currencies in one balance.
-
-```text
-₹100 + $100 is not a meaningful balance
-```
+Do not combine different currencies in one balance (`₹100 + $100` is not meaningful).
 
 ## 16.1 One Currency per Account
 
-Use separate accounts:
-
-```text
-User 42 INR wallet
-User 42 USD wallet
-User 42 EUR wallet
-```
+Use separate accounts — e.g. `User 42 INR wallet`, `User 42 USD wallet`, `User 42 EUR wallet`.
 
 ## 16.2 Smallest Currency Unit
 
-Store amounts as integers in the currency’s smallest supported unit.
-
-```text
-INR ₹10.50  -> 1050 paise
-USD $10.50  -> 1050 cents
-JPY ¥10     -> 10
-```
+Store amounts as integers in the currency’s smallest supported unit — for example `₹10.50` is `1050` paise, `$10.50` is `1050` cents, and `¥10` is just `10`.
 
 Do not assume every currency has two decimal places. Maintain currency exponent or scale metadata.
 
@@ -1232,11 +1158,7 @@ The two legs should be linked by:
 
 ## 16.4 Rounding
 
-Define a deterministic rounding policy.
-
-```text
-Converted minor amount = round(source amount × exchange rate)
-```
+Define a deterministic rounding policy, e.g. `Converted minor amount = round(source amount × exchange rate)`.
 
 Any rounding difference must be recorded in a rounding gain/loss account, not silently discarded.
 
@@ -1453,12 +1375,7 @@ Do not combine an entire day’s unrelated payments into one journal transaction
 
 ## 19.5 Business Time vs System Time
 
-Store both:
-
-```text
-effective_at = when the transaction financially applies
-created_at   = when the system recorded it
-```
+Store both: `effective_at` (when the transaction financially applies) and `created_at` (when the system recorded it).
 
 These differ during delayed webhooks, backfills, reconciliation adjustments, and late bank files.
 
@@ -1584,11 +1501,7 @@ Idempotency key is new or matches the original request
 
 The same request with the same idempotency key returns the original result.
 
-A request with the same key but a different amount returns a conflict.
-
-```http
-409 Conflict
-```
+A request with the same key but a different amount returns `409 Conflict`:
 
 ```json
 {
@@ -1631,11 +1544,7 @@ A strong explanation of a double-entry ledger should cover these ideas:
 
 ## 22.1 Core Principle
 
-Every posted financial event contains balanced debit and credit entries.
-
-```text
-Total debit amount = Total credit amount
-```
+Every posted financial event contains balanced debit and credit entries: `Total debit amount = Total credit amount`.
 
 ## 22.2 Ledger Is the Source of Truth
 
@@ -1681,6 +1590,8 @@ How would it be reversed?
 Has it been reconciled?
 ```
 
+> A payment record says that a payment happened. A double-entry ledger explains exactly where the money came from, where it went, who owns it, and why every balance is correct.
+
 ---
 
 # 23. References
@@ -1722,24 +1633,3 @@ The following official documentation was reviewed while preparing this guide:
 
 12. PostgreSQL — Serialization Failure Handling  
     https://www.postgresql.org/docs/current/mvcc-serialization-failure-handling.html
-
----
-
-## Final Mental Model
-
-```mermaid
-flowchart TD
-    E[Business event] --> V[Validate intent and idempotency]
-    V --> T[Create one atomic journal transaction]
-    T --> D[Write debit entries]
-    T --> C[Write credit entries]
-    D --> B{Debits equal credits?}
-    C --> B
-    B -- No --> R[Reject and roll back]
-    B -- Yes --> P[Post immutable transaction]
-    P --> BAL[Update or derive balances]
-    P --> O[Publish outbox event]
-    P --> REC[Reconcile with processor and bank]
-```
-
-> A payment record says that a payment happened. A double-entry ledger explains exactly where the money came from, where it went, who owns it, and why every balance is correct.

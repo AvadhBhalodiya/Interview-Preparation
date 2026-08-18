@@ -2,75 +2,22 @@
 title: "AWS Core Services"
 group: "AWS"
 order: 3
+updated: "July 30, 2026"
 ---
 
 # AWS Core Services: EC2, S3, RDS, ECS, ECR, SQS and CloudWatch
 
-> **Category:** AWS, Docker & DevOps  
-> **Level:** Intermediate developer (3+ years)  
-> **Last reviewed:** July 30, 2026  
-> **Purpose:** Build a practical understanding of commonly used AWS services and how they work together in production systems.
+> Build a practical understanding of commonly used AWS services and how they work together in production systems.
 
----
+## In short
 
-# 1. AWS Core Services at a Glance
-
-These services solve different parts of a production application.
-
-| Service | Main Responsibility | Simple Meaning | Common Use |
-|---|---|---|---|
-| **EC2** | Compute | A virtual server | Run APIs, workers, databases or custom software |
-| **S3** | Object storage | A highly durable file store | Images, videos, documents, backups and static assets |
-| **RDS** | Relational database | A managed SQL database | PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and Db2 |
-| **ECR** | Container registry | Private storage for Docker/OCI images | Store versioned application images |
-| **ECS** | Container orchestration | Runs and manages containers | Deploy web APIs, workers and scheduled jobs |
-| **SQS** | Asynchronous messaging | A managed message queue | Decouple APIs from background processing |
-| **CloudWatch** | Monitoring | Metrics, logs, alarms and dashboards | Observe application and infrastructure health |
-
-## 1.1 A Simple Mental Model
-
-```text
-EC2       = Where a virtual machine runs
-S3        = Where files and objects are stored
-RDS       = Where relational application data is stored
-ECR       = Where container images are stored
-ECS       = How containers are deployed and maintained
-SQS       = How components communicate asynchronously
-CloudWatch = How the system is observed
-```
-
-## 1.2 Compute, Storage, Database and Operations
-
-```mermaid
-flowchart LR
-    Client[Client Application] --> Compute[Compute Layer]
-    Compute --> Database[Database Layer]
-    Compute --> Storage[Object Storage]
-    Compute --> Queue[Async Queue]
-    Queue --> Worker[Background Worker]
-    Registry[Container Registry] --> Compute
-    Compute --> Monitoring[Monitoring]
-    Database --> Monitoring
-    Queue --> Monitoring
-```
-
-AWS service mapping:
-
-```mermaid
-flowchart LR
-    Compute[Compute Layer] --> EC2[EC2 or ECS]
-    Database[Database Layer] --> RDS[RDS]
-    Storage[Object Storage] --> S3[S3]
-    Queue[Async Queue] --> SQS[SQS]
-    Registry[Container Registry] --> ECR[ECR]
-    Monitoring[Monitoring] --> CW[CloudWatch]
-```
-
----
-
-# 2. How the Services Work Together
-
-A common production architecture uses the services as follows:
+- **EC2** gives you a virtual machine with full OS control; **ECS** (on **Fargate** or on EC2) orchestrates containers instead — default to Fargate unless you specifically need host-level access.
+- **S3** is object storage (bucket → key → object, not a filesystem) with strong read-after-write consistency; **RDS** is a managed relational database — large files belong in S3, not in RDS.
+- **ECR** is the private registry ECS pulls images from; deploy by immutable tag or digest, and never rely on `:latest` alone.
+- **SQS** decouples the API from slow work: the API enqueues a job and returns immediately, a worker consumes it, and a message stays on the queue until explicitly deleted (at-least-once delivery, so consumers must be idempotent).
+- **CloudWatch** ties every service together with metrics, logs, alarms and dashboards; alarm on user-impact signals (SQS oldest-message age, DLQ depth, 5xx rate), not only CPU.
+- Two distinctions interviewers love: **Multi-AZ** is for failover while a **read replica** is for read scaling; an ECS **task role** is for application permissions while the **task execution role** is for ECS's own pull-image/push-logs actions.
+- Everything sits behind private subnets and security groups that reference each other (ALB → app → database), with IAM roles used instead of long-lived access keys.
 
 ```mermaid
 flowchart TB
@@ -93,6 +40,47 @@ flowchart TB
     RDS --> CW
     SQS --> CW
 ```
+
+**Interview answer:** A typical production setup puts an ALB in front of an ECS API service running an image pulled from ECR; the API writes files to S3, relational data to RDS, and pushes slow work onto SQS instead of handling it inline. A separate ECS worker service drains that queue, doing the heavy lifting against S3 and RDS while the API stays fast and responsive. CloudWatch collects metrics and logs from every one of those services, which is what lets you alarm on signals that actually indicate user impact rather than only infrastructure CPU.
+
+**Gotcha:** Confusing the ECS **task role** with the **task execution role**. The execution role is what ECS itself uses to pull the image from ECR and ship logs to CloudWatch; application code that reads S3 or sends to SQS needs permissions on the task role instead — granting them on the execution role "works" until someone locks it down and the app silently loses access.
+
+---
+
+# 1. AWS Core Services at a Glance
+
+These services solve different parts of a production application.
+
+| Service | Main Responsibility | Simple Meaning | Common Use |
+|---|---|---|---|
+| **EC2** | Compute | A virtual server | Run APIs, workers, databases or custom software |
+| **S3** | Object storage | A highly durable file store | Images, videos, documents, backups and static assets |
+| **RDS** | Relational database | A managed SQL database | PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and Db2 |
+| **ECR** | Container registry | Private storage for Docker/OCI images | Store versioned application images |
+| **ECS** | Container orchestration | Runs and manages containers | Deploy web APIs, workers and scheduled jobs |
+| **SQS** | Asynchronous messaging | A managed message queue | Decouple APIs from background processing |
+| **CloudWatch** | Monitoring | Metrics, logs, alarms and dashboards | Observe application and infrastructure health |
+
+## 1.1 A Simple Mental Model
+
+```mermaid
+flowchart LR
+    Client[Client Application] --> Compute["Compute Layer (EC2 or ECS)"]
+    Compute --> Database["Database Layer (RDS)"]
+    Compute --> Storage["Object Storage (S3)"]
+    Compute --> Queue["Async Queue (SQS)"]
+    Queue --> Worker[Background Worker]
+    Registry["Container Registry (ECR)"] --> Compute
+    Compute --> Monitoring["Monitoring (CloudWatch)"]
+    Database --> Monitoring
+    Queue --> Monitoring
+```
+
+---
+
+# 2. How the Services Work Together
+
+The diagram in **In short** at the top of this note shows a common production architecture: client traffic hits an ALB in front of an ECS API service, ECR supplies the image both the API and worker services run, the API writes to RDS and S3 and pushes jobs onto SQS, a worker service drains that queue into RDS and S3, and CloudWatch collects metrics from every component.
 
 ### Example Request Flow
 
@@ -192,12 +180,7 @@ Select an instance based on actual application measurements rather than only CPU
 | **Spot Instances** | Fault-tolerant workloads that can handle interruption |
 | **Dedicated Hosts/Instances** | Compliance, licensing or physical-isolation requirements |
 
-### Practical Choice
-
-- Use **On-Demand** when workload usage is uncertain.
-- Use **Savings Plans** after measuring a stable usage baseline.
-- Use **Spot** for retryable workers, CI runners and batch processing.
-- Avoid using Spot as the only capacity for a critical API unless the architecture handles interruption.
+Choose On-Demand while usage is still uncertain, move to Savings Plans once a stable baseline is measured, and reserve Spot for retryable workers, CI runners and batch processing. Avoid using Spot as the only capacity for a critical API unless the architecture is built to handle interruption.
 
 ## 3.6 Security Groups
 
@@ -220,7 +203,7 @@ Avoid opening application and database ports to the whole internet.
 
 ## 3.7 EC2 Auto Scaling
 
-An **Auto Scaling Group (ASG)** helps maintain the desired number of instances and can add or remove instances according to load.
+An **Auto Scaling Group (ASG)** helps maintain the desired number of instances and can add or remove instances according to load. This is a summary; scaling policies, health-check types and the load-balancer relationship are covered in depth in [Load Balancing & Scaling](load-balancing-auto-scaling.md).
 
 ```mermaid
 flowchart LR
@@ -331,12 +314,7 @@ Bucket
     └── Metadata
 ```
 
-Example:
-
-```text
-Bucket: restaurant-assets-prod
-Object key: menus/restaurant-101/menu-2026-07.pdf
-```
+For example, bucket `restaurant-assets-prod`, object key `menus/restaurant-101/menu-2026-07.pdf`.
 
 S3 is not a normal attached disk and should not be treated like a traditional filesystem. Applications interact with it through AWS APIs, SDKs, CLI commands or HTTP-based access.
 
@@ -591,11 +569,7 @@ You still manage:
 
 ### Single-AZ
 
-```text
-Application → One RDS DB instance
-```
-
-Suitable for:
+A single-AZ deployment is simply `Application → One RDS DB instance`. Suitable for:
 
 - Development
 - Testing
@@ -674,42 +648,20 @@ Do not describe a read replica as a replacement for Multi-AZ high availability.
 
 A snapshot restores to a new database resource; it is not an in-place rollback of the current instance.
 
-## 5.6 RDS Connection Flow
+## 5.6 Connection Pooling
 
-```mermaid
-flowchart LR
-    API[ECS/EC2 Application] --> Pool[Connection Pool]
-    Pool --> Endpoint[RDS Endpoint]
-    Endpoint --> DB[(RDS Database)]
-```
-
-Applications should use the DNS endpoint instead of a fixed database IP address because failover can change the underlying host.
-
-## 5.7 Connection Pooling
-
-Creating a new database connection for every request is expensive.
-
-Use:
+Applications should connect through the RDS DNS endpoint rather than a fixed database IP address, since failover can change the underlying host — a connection pool sits between the application and that endpoint. Creating a new database connection for every request is expensive, so use:
 
 - Application-level connection pooling
 - Framework-supported persistent connections
 - A managed proxy when appropriate
 - Safe pool sizes based on database capacity
 
-Example calculation:
+For example, 10 application tasks × 20 connections per task adds up to 200 database connections. Scaling application containers without controlling pool size can overload the database.
 
-```text
-10 application tasks × 20 connections per task
-= up to 200 database connections
-```
+## 5.7 Practical PostgreSQL Connection Example
 
-Scaling application containers without controlling pool size can overload the database.
-
-## 5.8 Practical PostgreSQL Connection Example
-
-```text
-postgresql://app_user:<password>@mydb.cluster-or-instance-endpoint:5432/app_db
-```
+A typical connection string looks like `postgresql://app_user:<password>@mydb.cluster-or-instance-endpoint:5432/app_db`.
 
 Production recommendations:
 
@@ -719,7 +671,7 @@ Production recommendations:
 - Restrict the RDS security group to application security groups.
 - Use separate users for application, migrations and reporting where appropriate.
 
-## 5.9 RDS Performance Practices
+## 5.8 RDS Performance Practices
 
 - Create indexes based on real query patterns.
 - Use `EXPLAIN` or `EXPLAIN ANALYZE` carefully.
@@ -733,7 +685,7 @@ Production recommendations:
 - Archive large binary files to S3 instead of storing them directly in the relational database.
 - Test database changes against production-like data volumes.
 
-## 5.10 RDS Security Best Practices
+## 5.9 RDS Security Best Practices
 
 - Put databases in private subnets.
 - Set public accessibility to false unless there is a justified requirement.
@@ -746,7 +698,7 @@ Production recommendations:
 - Use Multi-AZ for important production databases.
 - Monitor failed connections, resource saturation and suspicious patterns.
 
-## 5.11 When RDS Is a Good Choice
+## 5.10 When RDS Is a Good Choice
 
 Use RDS when:
 
@@ -777,31 +729,9 @@ Understand:
 
 ## 6.1 What Is ECR?
 
-Amazon Elastic Container Registry, or **ECR**, is a managed registry for Docker and Open Container Initiative images and artifacts.
+Amazon Elastic Container Registry, or **ECR**, is a managed registry for Docker and Open Container Initiative images and artifacts. The build-to-deploy flow it sits in is detailed as a sequence diagram in 6.3. For how the images themselves are built, layered and cached, see [Docker Images & Builds](docker-images-builds.md).
 
-```mermaid
-flowchart TD
-    Source[Source Code] --> Build[Docker Build]
-    Build --> Image[Container Image]
-    Image --> ECR[Amazon ECR Repository]
-    ECR --> Deploy[ECS Deployment]
-```
-
-Each AWS account has a private ECR registry in supported Regions. Inside the registry, teams create repositories for their applications.
-
-Example repository URI:
-
-```text
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api
-```
-
-Example image references:
-
-```text
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:1.4.2
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api:git-a1b2c3d
-123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api@sha256:<digest>
-```
+Each AWS account has a private ECR registry in supported Regions. Inside the registry, teams create repositories for their applications — for example, a repository URI of `123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders-api`, referenced by tag (`:1.4.2`), by a Git-SHA tag (`:git-a1b2c3d`), or by digest (`@sha256:<digest>`).
 
 ## 6.2 Core ECR Concepts
 
@@ -864,17 +794,7 @@ docker push \
 
 ## 6.5 Tags vs Digests
 
-A tag is convenient but can be mutable.
-
-```text
-orders-api:latest
-```
-
-A digest identifies exact image content.
-
-```text
-orders-api@sha256:abcd...
-```
+A tag is convenient but can be mutable, e.g. `orders-api:latest`. A digest identifies exact image content, e.g. `orders-api@sha256:abcd...`.
 
 Production practices:
 
@@ -904,20 +824,7 @@ flowchart TD
 
 ## 6.7 Lifecycle Policies
 
-Without cleanup, every build can remain in ECR and increase storage cost.
-
-Example strategy:
-
-```text
-Keep:
-- All production release images
-- Last 20 development images
-- Images currently referenced by active deployments
-
-Expire:
-- Untagged images older than 7 days
-- Old branch images after 30 days
-```
+Without cleanup, every build can remain in ECR and increase storage cost. A typical strategy keeps all production release images, the last 20 development images, and images currently referenced by active deployments — and expires untagged images older than 7 days and old branch images after 30 days.
 
 Always preview lifecycle-policy effects before enabling deletion or archival rules.
 
@@ -1053,15 +960,7 @@ Simplified example:
 }
 ```
 
-A task definition is revisioned:
-
-```text
-orders-api:1
-orders-api:2
-orders-api:3
-```
-
-A new application deployment normally registers a new revision and updates the ECS service to use it.
+A task definition is revisioned (`orders-api:1`, `orders-api:2`, `orders-api:3`, …). A new application deployment normally registers a new revision and updates the ECS service to use it.
 
 ## 7.5 ECS Service
 
@@ -1084,47 +983,11 @@ If a service task stops unexpectedly, the ECS scheduler starts another task base
 
 ### AWS Fargate
 
-AWS manages the server infrastructure.
-
-You define:
-
-- Container image
-- CPU
-- Memory
-- Network
-- IAM permissions
-- Desired task count
-
-Advantages:
-
-- No EC2 host management
-- Strong workload isolation
-- Simple scaling
-- Good default for many containerized services
-
-Trade-offs:
-
-- Less host-level control
-- Cost can be higher than well-utilized EC2 capacity
-- Available CPU/memory combinations and platform constraints must be considered
+AWS manages the server infrastructure; you define the container image, CPU, memory, network, IAM permissions and desired task count. Beyond the comparison in 7.7, its main caveats are reduced host-level control and CPU/memory combinations and platform-version constraints that are worth checking for unusual workloads.
 
 ### ECS on EC2
 
-Containers run on EC2 instances registered with the ECS cluster.
-
-Advantages:
-
-- Host-level control
-- Access to broader instance choices and specialized hardware
-- Potentially lower cost at stable, high utilization
-- Supports certain daemon and host-integrated workloads
-
-Trade-offs:
-
-- You manage instance patching and capacity
-- You must ensure enough cluster capacity exists
-- Bin-packing and host utilization matter
-- Instance scaling and task scaling must work together
+Containers run on EC2 instances registered with the ECS cluster. Beyond the comparison in 7.7, this model also needs active bin-packing and host-utilization management, and instance scaling must be kept in step with task scaling — in exchange, it supports certain daemon and host-integrated workloads that Fargate cannot run.
 
 ### ECS Managed Instances
 
@@ -1156,14 +1019,7 @@ Used by ECS infrastructure for actions such as:
 
 ### Task Role
 
-Used by application code inside the container.
-
-Examples:
-
-- Read objects from an S3 prefix
-- Send messages to SQS
-- Write custom metrics
-- Access another AWS service
+Used by application code inside the container — for example reading from S3, sending to SQS, writing custom metrics, or reaching another AWS service:
 
 ```text
 ECS Platform
@@ -1183,16 +1039,7 @@ Do not grant application permissions through the execution role when the task ro
 
 ## 7.9 ECS Networking
 
-With `awsvpc` network mode, each task receives an elastic network interface and can have security-group rules.
-
-Typical flow:
-
-```mermaid
-flowchart TD
-    Internet[Internet] --> ALB[Application Load Balancer]
-    ALB --> ECS[ECS Task Security Group]
-    ECS --> RDS[RDS Security Group]
-```
+With `awsvpc` network mode, each task receives an elastic network interface and can have security-group rules. ECS tasks reuse the same chained security-group pattern shown in 3.6: only the ALB's security group may reach the task's port, and only the task's security group may reach the database's port.
 
 For a public API:
 
@@ -1227,13 +1074,7 @@ Common scaling metrics:
 - Custom application metric
 - SQS backlog per worker task
 
-For queue workers:
-
-```text
-Backlog per task = Number of visible SQS messages / Running worker tasks
-```
-
-Scaling only on CPU can be ineffective for I/O-heavy workers. Queue depth may represent workload more accurately.
+For queue workers, `Backlog per task = Number of visible SQS messages / Running worker tasks`. Scaling only on CPU can be ineffective for I/O-heavy workers — queue depth may represent workload more accurately.
 
 ## 7.12 ECS Best Practices
 
@@ -1274,18 +1115,7 @@ Understand:
 
 Amazon Simple Queue Service, or **SQS**, is a managed message queue used to decouple system components.
 
-Without a queue:
-
-```text
-API → Calls OCR service directly → User waits
-```
-
-With SQS:
-
-```text
-API → Adds job to queue → Returns quickly
-Queue → Worker processes job independently
-```
+Without a queue: `API → Calls OCR service directly → User waits`. With SQS: `API → Adds job to queue → Returns quickly`, then `Queue → Worker processes job independently`.
 
 ## 8.2 Core SQS Concepts
 
@@ -1341,14 +1171,7 @@ Even with FIFO, make the consumer idempotent. A worker can complete an external 
 
 ## 8.5 Visibility Timeout
 
-Suppose:
-
-```text
-Visibility timeout = 30 seconds
-Actual processing time = 2 minutes
-```
-
-At 30 seconds, the message may become visible and another worker can receive it while the first worker is still processing.
+Suppose the visibility timeout is 30 seconds but actual processing takes 2 minutes. At 30 seconds, the message may become visible and another worker can receive it while the first worker is still processing.
 
 Solutions:
 
@@ -1393,24 +1216,13 @@ Benefits:
 - Lower request cost
 - Better consumer efficiency
 
-Example:
-
-```bash
-aws sqs receive-message \
-  --queue-url "<queue-url>" \
-  --wait-time-seconds 20 \
-  --max-number-of-messages 10
-```
+The `receive-message` example in 8.9 uses `--wait-time-seconds 20` to enable it.
 
 ## 8.8 Idempotent Consumer Pattern
 
 An idempotent consumer produces the same final result when the same message is processed more than once.
 
-```text
-Message ID: payment-job-101
-```
-
-Possible implementation:
+Given message ID `payment-job-101`, a possible implementation:
 
 1. Start a database transaction.
 2. Check whether `payment-job-101` was completed.
@@ -1508,7 +1320,7 @@ Understand:
 
 ## 9.1 What Is CloudWatch?
 
-Amazon CloudWatch provides observability for AWS resources and applications.
+Amazon CloudWatch provides observability for AWS resources and applications. This section covers the AWS-service view; log structure, alert design, structured application logging and Sentry are covered in [Monitoring & Logging](monitoring-logging.md).
 
 Its major capabilities include:
 
@@ -1525,21 +1337,7 @@ Its major capabilities include:
 
 ## 9.2 Metrics, Logs and Alarms
 
-```text
-Metrics    = Numeric measurements over time
-Logs       = Detailed event records
-Alarms     = Automated evaluation of metric or log conditions
-Dashboards = Visual operational views
-```
-
-Example:
-
-```text
-Metric: CPUUtilization = 92%
-Log:    "Database connection timeout"
-Alarm:  CPU > 80% for 5 minutes
-Action: Notify operations or trigger automation
-```
+CloudWatch's core building blocks are **metrics** (numeric measurements over time, e.g. `CPUUtilization = 92%`), **logs** (detailed event records, e.g. a `"Database connection timeout"` line), **alarms** (an automated rule such as *CPU > 80% for 5 minutes* that triggers a notification or automation), and **dashboards** (visual operational views) — each covered in more detail below.
 
 ## 9.3 CloudWatch Metrics
 
@@ -1553,15 +1351,7 @@ A metric has:
 - Unit
 - Statistic
 
-Example:
-
-```text
-Namespace: AWS/EC2
-Metric: CPUUtilization
-Dimension: InstanceId=i-0123456789
-Statistic: Average
-Period: 300 seconds
-```
+For example, `CPUUtilization` under namespace `AWS/EC2`, dimension `InstanceId=i-0123456789`, averaged over a 300-second period.
 
 Many AWS services publish metrics automatically.
 
@@ -1627,12 +1417,7 @@ Log Group
     └── Log Event
 ```
 
-Example:
-
-```text
-Log group: /ecs/orders-api
-Log stream: api/orders-api-task-id
-```
+For example, log group `/ecs/orders-api` with log stream `api/orders-api-task-id`.
 
 A good structured log:
 
@@ -1677,26 +1462,9 @@ fields @timestamp, request_id, duration_ms
 
 ## 9.7 CloudWatch Alarms
 
-An alarm evaluates a metric or supported query result against a condition.
+An alarm evaluates a metric or supported query result against a condition, and is always in one of three states: `OK`, `ALARM`, or `INSUFFICIENT_DATA`.
 
-Alarm states:
-
-```text
-OK
-ALARM
-INSUFFICIENT_DATA
-```
-
-Example:
-
-```text
-Metric: CPUUtilization
-Condition: Greater than 80%
-Period: 5 minutes
-Evaluation: 3 out of 3 periods
-```
-
-This is usually safer than alarming on one temporary spike.
+For example, an alarm on `CPUUtilization` greater than 80% evaluated over 3 out of 3 five-minute periods is usually safer than alarming on one temporary spike.
 
 Useful production alarms:
 
@@ -1823,32 +1591,19 @@ flowchart LR
 
 ### Step 1: Build
 
-```bash
-docker build -t orders-api:"$GIT_SHA" .
-```
+`docker build -t orders-api:"$GIT_SHA" .`
 
 ### Step 2: Test
 
-```bash
-docker run --rm orders-api:"$GIT_SHA" pytest
-```
+`docker run --rm orders-api:"$GIT_SHA" pytest`
 
 ### Step 3: Push to ECR
 
-```bash
-docker push \
-  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/orders-api:$GIT_SHA"
-```
+`docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/orders-api:$GIT_SHA"`
 
 ### Step 4: Register a New ECS Task Revision
 
-Update the task definition image:
-
-```text
-...amazonaws.com/orders-api:<git-sha>
-```
-
-Then register a new revision.
+Update the task definition image to `...amazonaws.com/orders-api:<git-sha>`, then register a new revision.
 
 ### Step 5: Update the ECS Service
 
@@ -1883,14 +1638,7 @@ Check:
 
 ### Step 8: Roll Back
 
-A practical rollback updates the service to a previous known-good task-definition revision or image.
-
-```bash
-aws ecs update-service \
-  --cluster production \
-  --service orders-api \
-  --task-definition orders-api:<previous-revision>
-```
+A practical rollback reruns the same `aws ecs update-service` command from Step 5 with `--task-definition orders-api:<previous-revision>`, pointing the service back at a previous known-good revision or image.
 
 Database migrations must be designed so that application rollback remains possible. Backward-compatible migrations are safer than destructive changes deployed together with application code.
 
@@ -1999,11 +1747,7 @@ The exact boundary depends on the service. Fargate removes more host-management 
 
 ## 12.1 Remove Single Points of Failure
 
-Weak design:
-
-```text
-Internet → One EC2 instance → One Single-AZ database
-```
+A weak design puts everything behind a single point of failure: `Internet → One EC2 instance → One Single-AZ database`.
 
 Improved design:
 
@@ -2186,29 +1930,13 @@ A complete recovery strategy defines:
 | Metrics vs logs | Metrics are numeric time series; logs are detailed events |
 | CloudWatch vs CloudTrail | CloudWatch monitors health; CloudTrail records AWS API activity |
 
----
+## 14.5 Evaluate Against the Well-Architected Framework
 
-# 15. Key Takeaways
-
-1. **EC2** provides virtual machines and maximum server control.
-2. **S3** stores durable objects such as files, backups and static assets.
-3. **RDS** operates managed relational databases and supports backups, high availability and read scaling.
-4. **ECR** stores versioned container images.
-5. **ECS** deploys and maintains containers using Fargate, EC2 or other supported capacity options.
-6. **SQS** decouples application components and absorbs workload spikes.
-7. **CloudWatch** provides metrics, logs, alarms and dashboards.
-8. Use **IAM roles**, private networking and least privilege.
-9. Use **Multi-AZ**, multiple application tasks and queues to improve resilience.
-10. Use **immutable deployments**, health checks, monitoring and rollback plans.
-11. Keep application containers stateless.
-12. Store large files in S3, relational data in RDS and job messages in SQS.
-13. Make queue consumers idempotent.
-14. Scale each layer using a metric that represents its real bottleneck.
-15. Evaluate architecture against the AWS Well-Architected pillars: operational excellence, security, reliability, performance efficiency, cost optimization and sustainability.
+Beyond individual service choices, weigh a proposed architecture against the AWS Well-Architected pillars: **operational excellence**, **security**, **reliability**, **performance efficiency**, **cost optimization** and **sustainability**.
 
 ---
 
-# 16. Official AWS References
+# 15. Official AWS References
 
 The following official AWS documentation was used to review the service behavior described in this guide:
 

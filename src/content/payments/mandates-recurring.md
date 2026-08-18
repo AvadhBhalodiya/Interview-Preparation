@@ -2,13 +2,37 @@
 title: "Mandates & Recurring Payments"
 group: "Compliance"
 order: 6
+updated: "3 August 2026"
 ---
 
 # Mandates and Recurring Payments
 
-> **Category:** Payments & Fintech  
-> **Audience:** Backend developers with 3+ years of experience  
-> **Last reviewed:** 3 August 2026
+> How a customer's one-time approval becomes a mandate that authorizes future payments, and what a reliable recurring-billing system has to get right.
+
+## In short
+
+- A **mandate** is standing permission to attempt a debit, not proof a payment succeeded; a **subscription** is the commercial agreement, an **invoice** is the amount owed for one cycle, and a **payment** (one or more **payment attempts**) is the collection itself — model them as separate entities, not one `subscriptions` table.
+- Recurring charges are merchant-initiated and off-session: an authenticated customer-initiated transaction (CIT) establishes the mandate, and later merchant-initiated transactions (MITs) reference it without repeated authentication.
+- Validate the mandate's status and amount limit before every attempt, execute with a deterministic idempotency key backed by a database unique constraint — application checks alone aren't safe under concurrent retries.
+- The synchronous API response is provisional; the webhook is the source of truth for the final state, and events can arrive out of order, so apply an allow-listed state-transition check rather than trusting delivery order.
+- Classify failures before retrying: transient issuer declines follow a dunning schedule (grace period, notifications, then suspension), but a revoked mandate or an amount above the mandate's cap must never be retried blindly.
+- Generate invoices with row-locked claims (`FOR UPDATE SKIP LOCKED`) and a unique constraint per billing period, not one large midnight cron job that times out and duplicates work on restart.
+- In India, transactions above the RBI AFA threshold (₹15,000 general; ₹1,00,000 for insurance, mutual funds, and credit-card bills) require fresh authentication, and the threshold must be versioned config, not hardcoded.
+
+```mermaid
+erDiagram
+    CUSTOMER ||--o{ SUBSCRIPTION : owns
+    CUSTOMER ||--o{ MANDATE : authorizes
+    SUBSCRIPTION ||--o{ INVOICE : generates
+    INVOICE ||--o{ PAYMENT : collected_by
+    PAYMENT ||--o{ PAYMENT_ATTEMPT : attempted_through
+    MANDATE ||--o{ PAYMENT_ATTEMPT : authorizes
+    PAYMENT_ATTEMPT ||--o| SETTLEMENT : produces
+```
+
+**Interview answer:** A mandate is the customer's standing permission to be charged; a subscription is the commercial agreement describing what and when to bill; an invoice states what is owed for one billing cycle; and a payment, made up of one or more payment attempts, is the actual attempt to collect it — model these as separate entities rather than one `subscriptions` table. Because recurring charges are merchant-initiated and off-session, each attempt must validate the mandate's status and limit, execute with a deterministic idempotency key backed by a database unique constraint, and treat the webhook rather than the synchronous API response as the source of truth for the final state. Classify failures before retrying: a transient issuer decline goes back into a dunning schedule, but a revoked mandate or an amount above the mandate's limit must never be retried blindly.
+
+**Gotcha:** A lost or timed-out response after the provider call is not proof the payment failed — the provider may have already succeeded. Retrying with a fresh idempotency key instead of reusing the same attempt's key is what turns that ambiguity into a duplicate charge.
 
 ---
 
@@ -161,19 +185,6 @@ A production system should track payment status and settlement status separately
 | Payment attempt | Records one execution attempt | Seconds to days |
 | Settlement | Records movement of funds to merchant | Days |
 
-## Relationship Diagram
-
-```mermaid
-erDiagram
-    CUSTOMER ||--o{ SUBSCRIPTION : owns
-    CUSTOMER ||--o{ MANDATE : authorizes
-    SUBSCRIPTION ||--o{ INVOICE : generates
-    INVOICE ||--o{ PAYMENT : collected_by
-    PAYMENT ||--o{ PAYMENT_ATTEMPT : attempted_through
-    MANDATE ||--o{ PAYMENT_ATTEMPT : authorizes
-    PAYMENT_ATTEMPT ||--o| SETTLEMENT : produces
-```
-
 A common design error is to store everything in a single `subscriptions` table. That makes retries, multiple payment methods, refunds, reconciliation, and auditing difficult.
 
 ---
@@ -184,11 +195,7 @@ Recurring arrangements can be classified by amount and timing.
 
 ## 4.1 Fixed Amount and Fixed Schedule
 
-Example:
-
-```text
-₹499 on the first day of every month
-```
+For example, ₹499 on the first day of every month.
 
 Typical use cases:
 
@@ -202,13 +209,7 @@ This is the simplest model.
 
 ## 4.2 Variable Amount and Fixed Schedule
 
-Example:
-
-```text
-Electricity bill collected monthly, up to ₹10,000
-```
-
-The date is predictable, but the amount changes.
+For example, an electricity bill collected monthly, up to ₹10,000: the date is predictable, but the amount changes.
 
 The mandate should usually contain a maximum amount.
 
@@ -216,13 +217,7 @@ The mandate should usually contain a maximum amount.
 
 ## 4.3 Fixed Amount and Variable Schedule
 
-Example:
-
-```text
-Top up ₹500 whenever FASTag balance falls below ₹200
-```
-
-The amount is known, but the execution date depends on an event.
+For example, topping up ₹500 whenever a FASTag balance falls below ₹200: the amount is known, but the execution date depends on an event.
 
 This is sometimes called:
 
@@ -234,13 +229,7 @@ This is sometimes called:
 
 ## 4.4 Variable Amount and Variable Schedule
 
-Example:
-
-```text
-Charge actual cloud usage whenever outstanding usage reaches ₹5,000
-```
-
-This model needs the strongest controls because neither date nor amount is completely fixed.
+For example, charging actual cloud usage whenever outstanding usage reaches ₹5,000. This model needs the strongest controls because neither date nor amount is completely fixed.
 
 The consent text should clearly explain:
 
@@ -254,14 +243,7 @@ The consent text should clearly explain:
 
 ## 4.5 Installment Payments
 
-Installments have a known total and usually a fixed number of debits.
-
-Example:
-
-```text
-Purchase total: ₹60,000
-Schedule: 6 monthly payments of ₹10,000
-```
+Installments have a known total and usually a fixed number of debits — for example, a ₹60,000 purchase paid as 6 monthly installments of ₹10,000.
 
 Installments differ from open-ended subscriptions:
 
@@ -623,25 +605,7 @@ CREATE TABLE payment_attempts (
 
 ## 10.3 Store Money in Minor Units
 
-Use integer minor units rather than floating-point numbers.
-
-```text
-₹499.50 → 49950 paise
-$12.99  → 1299 cents
-```
-
-Avoid:
-
-```python
-amount = 499.50
-```
-
-Prefer:
-
-```python
-amount_minor = 49_950
-currency = "INR"
-```
+Use integer minor units rather than floating-point numbers — `₹499.50` is `49950` paise, `$12.99` is `1299` cents. Avoid `amount = 499.50`; prefer `amount_minor = 49_950` with an explicit `currency = "INR"`.
 
 The number of minor units depends on the currency, so maintain currency metadata.
 
@@ -651,13 +615,7 @@ The number of minor units depends on the currency, so maintain currency metadata
 
 ## 11.1 Do Not Use a Single Large Cron Job
 
-A simple implementation may begin as:
-
-```text
-Every midnight:
-Find all due subscriptions
-Charge all customers
-```
+A simple implementation may begin as one midnight job that finds all due subscriptions and charges every customer.
 
 This becomes risky at scale because:
 
@@ -724,14 +682,7 @@ Even if the scheduler runs twice, only one invoice can be created for the same p
 
 ## 11.5 Time-Zone Rules
 
-Store timestamps in UTC but retain the customer's billing time zone.
-
-Example:
-
-```text
-Customer billing rule: 09:00 Asia/Kolkata on the 5th
-Stored execution timestamp: calculated UTC instant
-```
+Store timestamps in UTC but retain the customer's billing time zone — for example, a billing rule of 09:00 Asia/Kolkata on the 5th maps to a calculated UTC execution instant.
 
 Be explicit about:
 
@@ -745,38 +696,16 @@ Be explicit about:
 
 # 12. Idempotency and Duplicate Prevention
 
-Recurring systems run in distributed environments where timeouts and retries are normal.
+Recurring systems run in distributed environments where timeouts and retries are normal — a request can succeed at the provider even if your application never receives the response.
 
-A request can succeed at the provider even if your application never receives the response.
+> Idempotency keys let a client safely retry a request without creating a second
+> charge. The key is stored with a request fingerprint and the saved response, so
+> a replay returns the original result.
+> Full detail: [HTTP Idempotency](../api-design/idempotency-http-methods.md)
 
-## 12.1 Failure Scenario
+## 12.1 Idempotency Key Design
 
-```mermaid
-sequenceDiagram
-    participant Backend
-    participant Provider
-
-    Backend->>Provider: Charge ₹999
-    Provider->>Provider: Payment succeeds
-    Provider--xBackend: Response lost
-    Backend->>Backend: Assumes failure
-    Backend->>Provider: Retry without the same idempotency key
-    Note over Backend,Provider: Customer may be charged twice
-```
-
-## 12.2 Idempotency Key Design
-
-Use a deterministic key for one logical operation.
-
-```text
-recurring-payment:{payment_id}:attempt:{attempt_number}
-```
-
-Example:
-
-```text
-recurring-payment:pay_7d19:attempt:1
-```
+Use a deterministic key for one logical operation, such as `recurring-payment:{payment_id}:attempt:{attempt_number}` (for example, `recurring-payment:pay_7d19:attempt:1`).
 
 The same attempt must always reuse the same key.
 
@@ -786,7 +715,7 @@ A new deliberate retry should normally have:
 - A new attempt number
 - A new idempotency key
 
-## 12.3 Database Protection
+## 12.2 Database Protection
 
 Use unique constraints as the final safety layer:
 
@@ -797,7 +726,7 @@ ON payment_attempts(idempotency_key);
 
 Application checks alone are insufficient because concurrent requests can pass the check at the same time.
 
-## 12.4 Idempotent Event Handling
+## 12.3 Idempotent Event Handling
 
 Webhook events may be delivered more than once.
 
@@ -822,18 +751,7 @@ Insert the provider event ID before processing. If the insert conflicts, the eve
 
 ## 13.1 Why Webhooks Matter
 
-The synchronous API response is not always the final payment result.
-
-A provider can respond:
-
-```text
-processing
-pending
-requires_action
-submitted
-```
-
-The final state may arrive later through a webhook.
+The synchronous API response is not always the final payment result. A provider can respond `processing`, `pending`, `requires_action`, or `submitted` — the final state may arrive later through a webhook.
 
 ## 13.2 Safe Webhook Flow
 
@@ -862,27 +780,17 @@ sequenceDiagram
 
 ## 13.3 Webhook Endpoint Responsibilities
 
-The HTTP endpoint should:
+Signature verification (raw body, HMAC, timestamp tolerance) happens first — see [Webhooks](../api-design/webhooks.md). After that, the endpoint should:
 
-1. Read the raw request body.
-2. Verify the provider signature.
-3. Reject invalid timestamps or signatures.
-4. Store the event durably.
-5. Return quickly.
-6. Process business logic asynchronously.
+1. Store the event durably.
+2. Return quickly.
+3. Process business logic asynchronously.
 
 Avoid making slow external calls before returning the HTTP response.
 
 ## 13.4 Events Can Arrive Out of Order
 
-Example:
-
-```text
-payment.succeeded received at 10:00:02
-payment.processing received at 10:00:04
-```
-
-Blindly applying the second event would move the payment backward.
+For example, `payment.succeeded` might arrive at 10:00:02 and `payment.processing` two seconds later — blindly applying the second event would move the payment backward.
 
 Use one or more of:
 
@@ -925,6 +833,8 @@ Classify failures.
 | Duplicate request | Existing idempotent operation | Retrieve original result |
 
 ## 14.2 Retry Schedule Example
+
+This is a dunning cadence measured in days, not the seconds-scale exponential backoff used for a single transient technical failure — see [Retries and Dead-Letter Queues](../task-processing/retries-dead-letter-queues.md) for that mechanic.
 
 ```text
 Attempt 1: Due date
@@ -1085,13 +995,7 @@ flowchart TD
     PERM --> AUDIT[Record who performed<br/>the action and when]
 ```
 
-Use effective timestamps rather than only a Boolean:
-
-```text
-cancel_requested_at
-cancel_effective_at
-mandate_revoked_at
-```
+Use effective timestamps rather than only a Boolean, such as `cancel_requested_at`, `cancel_effective_at`, and `mandate_revoked_at`.
 
 ---
 
@@ -1262,15 +1166,10 @@ Use:
 
 ## 19.4 Webhook Security
 
-Always verify:
-
-- Signature
-- Timestamp tolerance
-- Correct provider endpoint secret
-- Raw request body
-- Event ID uniqueness
-
-Do not trust a payment ID sent by an unauthenticated request.
+> Verify the signature over the raw request body, honor timestamp tolerance,
+> and confirm event-ID uniqueness before trusting a payload — never trust a
+> payment ID sent by an unauthenticated request.
+> Full detail: [Webhooks](../api-design/webhooks.md)
 
 ## 19.5 Consent Evidence
 
@@ -1496,12 +1395,7 @@ AFA_LIMITS = {
 }
 ```
 
-For INR:
-
-```text
-₹15,000   = 1,500,000 paise
-₹1,00,000 = 10,000,000 paise
-```
+For INR, ₹15,000 is 1,500,000 paise and ₹1,00,000 is 10,000,000 paise.
 
 Regulatory rules should be configurable and versioned because limits and categories can change.
 
@@ -1606,7 +1500,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import UUID
 
-
 class MandateStatus(str, Enum):
     PENDING = "pending"
     ACTIVE = "active"
@@ -1614,7 +1507,6 @@ class MandateStatus(str, Enum):
     REVOKED = "revoked"
     EXPIRED = "expired"
     SUSPENDED = "suspended"
-
 
 class PaymentStatus(str, Enum):
     CREATED = "created"
@@ -1624,7 +1516,6 @@ class PaymentStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
-
 @dataclass(frozen=True)
 class Mandate:
     id: UUID
@@ -1633,7 +1524,6 @@ class Mandate:
     maximum_amount_minor: int | None
     valid_from: datetime
     valid_until: datetime | None
-
 
 def validate_mandate(
     mandate: Mandate,
@@ -1668,14 +1558,12 @@ def validate_mandate(
 from dataclasses import dataclass
 from typing import Protocol
 
-
 @dataclass(frozen=True)
 class ProviderPaymentResult:
     provider_payment_id: str
     status: PaymentStatus
     failure_code: str | None = None
     action_url: str | None = None
-
 
 class PaymentProvider(Protocol):
     def create_recurring_payment(
@@ -1688,7 +1576,6 @@ class PaymentProvider(Protocol):
         invoice_reference: str,
     ) -> ProviderPaymentResult:
         ...
-
 
 class RecurringPaymentService:
     def __init__(
@@ -1902,12 +1789,7 @@ Refund and reconciliation
 
 ## 25.5 Time-Based Tests
 
-Use a controllable clock rather than real sleeping.
-
-```python
-clock.freeze("2026-08-03T00:00:00Z")
-run_billing_scheduler()
-```
+Use a controllable clock rather than real sleeping, for example `clock.freeze("2026-08-03T00:00:00Z")` before calling `run_billing_scheduler()`.
 
 This makes tests deterministic for:
 
@@ -1924,19 +1806,7 @@ This makes tests deterministic for:
 
 ## 26.1 Separate Billing from Collection
 
-The billing service should determine what is owed.
-
-The payment service should determine how to collect it.
-
-```text
-Billing:
-"Customer owes ₹999 for August."
-
-Payments:
-"Collect ₹999 through mandate man_123."
-```
-
-This supports manual payments, multiple providers, credits, and payment-method fallback.
+The billing service should determine what is owed; the payment service should determine how to collect it. This supports manual payments, multiple providers, credits, and payment-method fallback.
 
 ## 26.2 Treat Provider Responses as External State
 
@@ -1985,12 +1855,7 @@ Store rules by:
 - Currency
 - Transaction limit
 
-Avoid scattered conditions such as:
-
-```python
-if amount <= 15000:
-    ...
-```
+Avoid scattered conditions such as a bare `if amount <= 15000:` repeated throughout the codebase.
 
 ## 26.5 Build Manual Operations
 
@@ -2019,11 +1884,7 @@ mark_payment_succeeded()
 schedule_retry()
 ```
 
-Avoid arbitrary status updates:
-
-```python
-record.status = request.data["status"]
-```
+Avoid arbitrary status updates such as `record.status = request.data["status"]`.
 
 ## 26.7 Preserve History
 
@@ -2049,31 +1910,7 @@ Failing over to another provider may require compatible payment tokens and manda
 
 ---
 
-# 27. Key Takeaways
-
-1. A **mandate** is customer permission; a **subscription** is the commercial agreement; an **invoice** is the amount owed; a **payment** is the collection attempt.
-
-2. Model mandates, invoices, payments, payment attempts, and settlements as separate entities.
-
-3. Recurring payments are usually off-session and must use previously approved customer consent.
-
-4. Treat provider calls, webhooks, and settlement as asynchronous and potentially duplicated.
-
-5. Use deterministic idempotency keys and database unique constraints to prevent duplicate charges.
-
-6. Classify failures before retrying. Revoked mandates and invalid payment methods should not be retried blindly.
-
-7. Keep billing status, subscription status, payment status, and settlement status separate.
-
-8. Make mandate limits, authentication rules, and regulatory conditions configurable and versioned.
-
-9. Reconcile internal records against provider reports and bank settlements.
-
-10. For India, implement the RBI Digital Payments – E-mandate Framework, 2026 requirements, including AFA, mandate validity, notification, opt-out, revocation, and transaction limits.
-
----
-
-# 28. References
+# 27. References
 
 The following official resources were used to validate the current concepts and India-specific rules:
 

@@ -6,60 +6,40 @@ order: 7
 
 # OOP: Inheritance, MRO, `super()`
 
-> **Core idea:** Inheritance lets a class reuse and extend another class.  
-> The **MRO** defines the exact order Python follows while searching for attributes and methods.  
+> Inheritance lets a class reuse and extend another class.
+>
+> The **MRO** defines the exact order Python follows while searching for attributes and methods.
 > `super()` continues that search from the **next class in the MRO**—not necessarily from the direct parent.
+
+## In short
+
+- Attribute lookup walks the MRO of the instance's class in order and stops at the first match, which is why a subclass method overrides the inherited one and why the same call dispatches to different implementations at runtime.
+- `super()` returns a proxy that continues lookup from the class immediately **after** the current class in that MRO — in multiple inheritance the next class can be a sibling, not an ancestor.
+- `Child.mro()` and `Child.__mro__` give the exact ordered list Python searches; inspect it whenever an override does not run or a framework mixin takes precedence unexpectedly.
+- C3 linearization builds that list: child before parent, declared base-class order preserved, each class exactly once, and monotonic — Python raises `TypeError` when no consistent order exists.
+- A diamond therefore collapses to one order in which the shared base appears once, which is what makes cooperative `__init__` work: each class consumes only its own keyword arguments, calls `super().__init__(**kwargs)`, and the final class terminates the chain.
+- A mixin is a small class that contributes one focused capability, is not instantiated on its own, and cooperates through `super()` rather than owning the object lifecycle.
+- Prefer composition when the relationship is “has-a”, when behaviours must change dynamically, or when inheritance exists only to reuse a few methods.
+
+```mermaid
+classDiagram
+    Base <|-- Logger
+    Base <|-- Validator
+    Logger <|-- Service
+    Validator <|-- Service
+```
+
+**Interview answer:** `super()` does not mean “call the parent class”. It returns a proxy that continues attribute lookup from the class immediately after the current class in the MRO of the instance's type. Because that MRO belongs to the object rather than to the class the code was written in, the next implementation may be a sibling class the author never named — which is exactly what makes cooperative multiple inheritance work.
+
+**Gotcha:** Reading `super()` as “my direct parent”, or hard-coding `Parent.__init__(self, ...)` instead of it, breaks the cooperative chain: the normal MRO order is skipped, a class in a diamond can be visited twice or not at all, and renaming the base class means editing method bodies.
 
 ---
 
 # 1. Mental Model
 
-Consider the following class hierarchy:
+Inheritance is a lookup chain. `Animal` is the **base class**, **parent class**, or **superclass**; `Dog` is a **derived class**, **child class**, or **subclass**, and it automatically receives the accessible attributes and methods of its base. A subclass can use inherited behaviour as-is, override it, extend it, or add new behaviour. Whatever the subclass does not define, Python keeps looking for further along the chain — in a real hierarchy, along the class's complete **MRO**.
 
-```mermaid
-classDiagram
-    Animal <|-- Dog
-    Animal <|-- Cat
-
-    class Animal {
-        +name: str
-        +eat()
-    }
-
-    class Dog {
-        +bark()
-    }
-
-    class Cat {
-        +meow()
-    }
-```
-
-- `Animal` is the **base class**, **parent class**, or **superclass**.
-- `Dog` and `Cat` are **derived classes**, **child classes**, or **subclasses**.
-- A subclass automatically receives accessible attributes and methods from its base class.
-- A subclass can:
-  - use inherited behaviour as-is,
-  - override inherited behaviour,
-  - extend inherited behaviour,
-  - add new behaviour.
-
-A useful relationship test is:
-
-> **Inheritance models an “is-a” relationship.**
-
-Examples:
-
-- A `Dog` **is an** `Animal`.
-- An `AdminUser` **is a** `User`.
-- A `CreditCardPayment` **is a** `PaymentMethod`.
-
-Inheritance is usually inappropriate for a “has-a” relationship:
-
-- An `Order` **has a** `PaymentMethod`.
-- A `Car` **has an** `Engine`.
-
-A “has-a” relationship is normally modelled with **composition**.
+Inheritance models an **“is-a”** relationship: a `Dog` **is an** `Animal`, an `AdminUser` **is a** `User`, a `CreditCardPayment` **is a** `PaymentMethod`. It is usually inappropriate for a “has-a” relationship — an `Order` **has a** `PaymentMethod`, a `Car` **has an** `Engine` — which is normally modelled with **composition** instead.
 
 ---
 
@@ -77,11 +57,9 @@ class User:
     def get_permissions(self) -> list[str]:
         return ["read"]
 
-
 class AdminUser(User):
     def delete_user(self, user_id: int) -> str:
         return f"User {user_id} deleted"
-
 
 admin = AdminUser("avadh")
 
@@ -102,13 +80,7 @@ User 101 deleted
 
 ### Attribute lookup
 
-When Python evaluates:
-
-```python
-admin.get_permissions()
-```
-
-it searches approximately like this:
+When Python evaluates `admin.get_permissions()`, it searches approximately like this:
 
 ```mermaid
 flowchart TD
@@ -129,21 +101,15 @@ class Notification:
     def send(self, message: str) -> str:
         return f"Sending generic notification: {message}"
 
-
 class EmailNotification(Notification):
     def send(self, message: str) -> str:
         return f"Sending email: {message}"
-
 
 notification = EmailNotification()
 print(notification.send("Deployment completed"))
 ```
 
-Output:
-
-```text
-Sending email: Deployment completed
-```
+Output: `Sending email: Deployment completed`
 
 Python finds `EmailNotification.send()` before `Notification.send()`, so the subclass implementation is used.
 
@@ -156,10 +122,8 @@ class SMSNotification(Notification):
     def send(self, message: str) -> str:
         return f"Sending SMS: {message}"
 
-
 def notify(channel: Notification, message: str) -> None:
     print(channel.send(message))
-
 
 notify(EmailNotification(), "Build passed")
 notify(SMSNotification(), "Server restarted")
@@ -185,13 +149,11 @@ class APIClient:
     def request(self, endpoint: str) -> str:
         return f"Request sent to {endpoint}"
 
-
 class AuthenticatedAPIClient(APIClient):
     def request(self, endpoint: str) -> str:
         print("Adding authentication header")
         response = super().request(endpoint)
         return response
-
 
 client = AuthenticatedAPIClient()
 print(client.request("/users"))
@@ -222,13 +184,7 @@ The more accurate definition is:
 
 > `super()` returns a proxy that continues attribute lookup from the class immediately after the current class in the object's MRO.
 
-Therefore:
-
-```python
-super().method()
-```
-
-means:
+Therefore `super().method()` means:
 
 ```mermaid
 flowchart TD
@@ -236,29 +192,13 @@ flowchart TD
     B --> C[Search for method from there]
 ```
 
-It does **not** mean:
-
-```text
-Always call my direct parent
-```
+It does **not** mean: `Always call my direct parent`
 
 This difference becomes important in multiple inheritance, where the next class may be a sibling class.
 
 ### Simplified equivalence
 
-Inside an ordinary instance method:
-
-```python
-super().process()
-```
-
-is conceptually similar to:
-
-```python
-super(CurrentClass, self).process()
-```
-
-The zero-argument form is preferred in modern Python because it is shorter and easier to maintain.
+Inside an ordinary instance method, `super().process()` is conceptually similar to `super(CurrentClass, self).process()`. The zero-argument form is preferred in modern Python because it is shorter and easier to maintain.
 
 ---
 
@@ -272,7 +212,6 @@ class Employee:
         self.employee_id = employee_id
         self.name = name
 
-
 class Developer(Employee):
     def __init__(
         self,
@@ -282,7 +221,6 @@ class Developer(Employee):
     ) -> None:
         super().__init__(employee_id, name)
         self.primary_language = primary_language
-
 
 developer = Developer(
     employee_id=101,
@@ -342,11 +280,7 @@ Problems include:
 3. A class may be called more than once in a diamond hierarchy.
 4. The normal MRO chain can be skipped.
 
-Prefer:
-
-```python
-super().__init__(employee_id, name)
-```
+Prefer `super().__init__(employee_id, name)`.
 
 Direct base-class calls are occasionally useful when deliberately bypassing cooperative dispatch, but that should be an explicit design decision.
 
@@ -370,21 +304,15 @@ class Base:
     def execute(self) -> str:
         return "Base.execute"
 
-
 class Child(Base):
     pass
-
 
 child = Child()
 print(child.execute())
 print(child.role)
 ```
 
-Python searches:
-
-```text
-Child → Base → object
-```
+Python searches: `Child → Base → object`
 
 Because `Child` does not define `execute` or `role`, Python finds them in `Base`.
 
@@ -394,38 +322,13 @@ The MRO includes the class itself and normally ends with `object`.
 
 ## 4.2 Inspecting the MRO
 
-Python provides two common ways to inspect it:
+Python provides two common ways to inspect it — `Child.mro()` and `Child.__mro__`.
 
-```python
-print(Child.mro())
-print(Child.__mro__)
-```
+Example result: `[<class '__main__.Child'>, <class '__main__.Base'>, <class 'object'>]`
 
-Example result:
+A cleaner display: `print(" -> ".join(cls.__name__ for cls in Child.mro()))`
 
-```text
-[<class '__main__.Child'>, <class '__main__.Base'>, <class 'object'>]
-```
-
-A cleaner display:
-
-```python
-print(" -> ".join(cls.__name__ for cls in Child.mro()))
-```
-
-Output:
-
-```text
-Child -> Base -> object
-```
-
-Use MRO inspection when:
-
-- debugging an unexpected overridden method,
-- working with framework base classes,
-- using multiple inheritance,
-- building or reviewing mixins,
-- understanding where `super()` will continue.
+Output: `Child -> Base -> object`
 
 ---
 
@@ -437,7 +340,7 @@ For normal development, you rarely calculate C3 manually. What matters is unders
 
 ### C3 preserves these rules
 
-#### 1. Child before parent
+#### Child before parent
 
 A subclass is searched before its base classes.
 
@@ -445,26 +348,15 @@ A subclass is searched before its base classes.
 Child → Parent
 ```
 
-#### 2. Declared base-class order
+#### Declared base-class order
 
-For:
+For `class Service(Logger, Validator)`, Python attempts to preserve: `Logger before Validator`
 
-```python
-class Service(Logger, Validator):
-    ...
-```
-
-Python attempts to preserve:
-
-```text
-Logger before Validator
-```
-
-#### 3. Each class appears once
+#### Each class appears once
 
 Even when several paths reach the same ancestor, that ancestor appears only once in the final MRO.
 
-#### 4. Monotonicity
+#### Monotonicity
 
 If one class precedes another in a parent class's MRO, subclassing it does not reverse that established order.
 
@@ -483,17 +375,14 @@ class JSONSerializer:
     def serialize(self, data: dict) -> str:
         return f"JSON: {data}"
 
-
 class AuditLogger:
     def log(self, action: str) -> None:
         print(f"AUDIT: {action}")
-
 
 class UserService(JSONSerializer, AuditLogger):
     def create_user(self, user: dict) -> str:
         self.log("Creating user")
         return self.serialize(user)
-
 
 service = UserService()
 print(service.create_user({"id": 1, "name": "Aarav"}))
@@ -506,31 +395,9 @@ AUDIT: Creating user
 JSON: {'id': 1, 'name': 'Aarav'}
 ```
 
-MRO:
+MRO — `UserService.mro()`: `UserService -> JSONSerializer -> AuditLogger -> object`
 
-```python
-print(" -> ".join(cls.__name__ for cls in UserService.mro()))
-```
-
-```text
-UserService -> JSONSerializer -> AuditLogger -> object
-```
-
-The order of base classes matters:
-
-```python
-class UserService(JSONSerializer, AuditLogger):
-    ...
-```
-
-and:
-
-```python
-class UserService(AuditLogger, JSONSerializer):
-    ...
-```
-
-produce different MROs.
+The order of base classes matters: `class UserService(JSONSerializer, AuditLogger)` and `class UserService(AuditLogger, JSONSerializer)` produce different MROs.
 
 ### Method conflict example
 
@@ -539,15 +406,12 @@ class JSONFormatter:
     def format(self) -> str:
         return "JSON"
 
-
 class XMLFormatter:
     def format(self) -> str:
         return "XML"
 
-
 class Report(JSONFormatter, XMLFormatter):
     pass
-
 
 print(Report().format())
 print(" -> ".join(cls.__name__ for cls in Report.mro()))
@@ -566,30 +430,17 @@ Report -> JSONFormatter -> XMLFormatter -> object
 
 # 6. Diamond Inheritance
 
-Diamond inheritance occurs when two classes inherit from the same base class and another class inherits from both.
-
-```mermaid
-classDiagram
-    Base <|-- Logger
-    Base <|-- Validator
-    Logger <|-- Service
-    Validator <|-- Service
-```
-
-Equivalent Python structure:
+Diamond inheritance occurs when two classes inherit from the same base class and another class inherits from both — the shape diagrammed in **In short** above:
 
 ```python
 class Base:
     pass
 
-
 class Logger(Base):
     pass
 
-
 class Validator(Base):
     pass
-
 
 class Service(Logger, Validator):
     pass
@@ -602,17 +453,7 @@ Service → Logger → Base
 Service → Validator → Base
 ```
 
-Python's C3 MRO merges those paths into one predictable order:
-
-```python
-print(" -> ".join(cls.__name__ for cls in Service.mro()))
-```
-
-Output:
-
-```text
-Service -> Logger -> Validator -> Base -> object
-```
+Python's C3 MRO merges those paths into one predictable order — `Service.mro()`: `Service -> Logger -> Validator -> Base -> object`
 
 Notice that `Base` appears only once.
 
@@ -644,24 +485,20 @@ class BaseService:
     def process(self, order_id: int) -> None:
         print(f"BaseService: processing order {order_id}")
 
-
 class ValidationMixin(BaseService):
     def process(self, order_id: int) -> None:
         print("ValidationMixin: validating order")
         super().process(order_id)
-
 
 class LoggingMixin(BaseService):
     def process(self, order_id: int) -> None:
         print("LoggingMixin: writing audit log")
         super().process(order_id)
 
-
 class OrderService(LoggingMixin, ValidationMixin):
     def process(self, order_id: int) -> None:
         print("OrderService: starting")
         super().process(order_id)
-
 
 service = OrderService()
 
@@ -688,15 +525,7 @@ flowchart TD
     C -->|"super()"| D["BaseService.process()"]
 ```
 
-Inside `LoggingMixin`, this call:
-
-```python
-super().process(order_id)
-```
-
-does not jump directly to `BaseService`.
-
-It goes to `ValidationMixin`, because `ValidationMixin` is next after `LoggingMixin` in `OrderService`'s MRO.
+Inside `LoggingMixin`, the call `super().process(order_id)` does not jump directly to `BaseService`. It goes to `ValidationMixin`, because `ValidationMixin` is next after `LoggingMixin` in `OrderService`'s MRO.
 
 That is the most important idea behind Python's `super()`.
 
@@ -713,18 +542,15 @@ class BaseComponent:
             unexpected = ", ".join(kwargs)
             raise TypeError(f"Unexpected arguments: {unexpected}")
 
-
 class NamedComponent(BaseComponent):
     def __init__(self, *, name: str, **kwargs: object) -> None:
         self.name = name
         super().__init__(**kwargs)
 
-
 class CachedComponent(BaseComponent):
     def __init__(self, *, cache_enabled: bool = True, **kwargs: object) -> None:
         self.cache_enabled = cache_enabled
         super().__init__(**kwargs)
-
 
 class Repository(NamedComponent, CachedComponent):
     def __init__(
@@ -735,7 +561,6 @@ class Repository(NamedComponent, CachedComponent):
     ) -> None:
         self.table_name = table_name
         super().__init__(**kwargs)
-
 
 repository = Repository(
     table_name="users",
@@ -799,23 +624,19 @@ Example:
 ```python
 from datetime import datetime, timezone
 
-
 class TimestampMixin:
     def set_created_at(self) -> None:
         self.created_at = datetime.now(timezone.utc)
 
-
 class DictExportMixin:
     def to_dict(self) -> dict[str, object]:
         return self.__dict__.copy()
-
 
 class Product(TimestampMixin, DictExportMixin):
     def __init__(self, product_id: int, name: str) -> None:
         self.product_id = product_id
         self.name = name
         self.set_created_at()
-
 
 product = Product(101, "Keyboard")
 print(product.to_dict())
@@ -860,7 +681,7 @@ For example, Django and Django REST Framework use inheritance and mixin-style co
 
 # 9. Practical Design Guidance
 
-## Prefer inheritance when
+## Choosing between inheritance and composition
 
 Inheritance is suitable when:
 
@@ -870,16 +691,12 @@ Inheritance is suitable when:
 - overriding is intentional and meaningful,
 - shared behaviour belongs naturally in the hierarchy.
 
-Example:
-
 ```mermaid
 flowchart TD
     PM[PaymentMethod] --> CARD[CardPayment]
     PM --> BANK[BankTransferPayment]
     PM --> WALLET[WalletPayment]
 ```
-
-## Prefer composition when
 
 Composition is usually clearer when:
 
@@ -889,13 +706,10 @@ Composition is usually clearer when:
 - inheritance exists only to reuse a few methods,
 - the hierarchy would become deep or tightly coupled.
 
-Example:
-
 ```python
 class PaymentGateway:
     def charge(self, amount: float) -> None:
         print(f"Charging {amount}")
-
 
 class CheckoutService:
     def __init__(self, gateway: PaymentGateway) -> None:
@@ -919,11 +733,7 @@ flowchart TD
     B --> C[UserListView]
 ```
 
-Be cautious with:
-
-```text
-A → B → C → D → E → F
-```
+Be cautious with: `A → B → C → D → E → F`
 
 Deep hierarchies make it harder to determine:
 
@@ -940,10 +750,8 @@ Deep hierarchies make it harder to determine:
 class Animal:
     pass
 
-
 class Dog(Animal):
     pass
-
 
 dog = Dog()
 
@@ -952,31 +760,13 @@ print(isinstance(dog, Animal))   # True
 print(issubclass(Dog, Animal))   # True
 ```
 
-Prefer:
-
-```python
-isinstance(value, ExpectedType)
-```
-
-over:
-
-```python
-type(value) is ExpectedType
-```
-
-when subclasses should also be accepted.
+Prefer `isinstance(value, ExpectedType)` over `type(value) is ExpectedType` when subclasses should also be accepted.
 
 ---
 
 ## Inspect framework MROs
 
-When working with a framework class:
-
-```python
-print(MyView.mro())
-```
-
-or:
+When working with a framework class, print `MyView.mro()`, or walk it to see where each class comes from:
 
 ```python
 for cls in MyView.mro():
@@ -1003,7 +793,6 @@ class A:
     def process(self, request: object) -> None:
         super().process(request)
 
-
 class B:
     def process(self, request: object) -> None:
         super().process(request)
@@ -1015,7 +804,6 @@ Risky:
 class A:
     def process(self, request: object, user_id: int) -> None:
         ...
-
 
 class B:
     def process(self, payload: dict) -> None:
@@ -1067,15 +855,12 @@ The single most important statement to remember is:
 class Child(Parent):
     pass
 
-
 # Call the next implementation in the MRO
 super().method()
-
 
 # Inspect the MRO
 Child.mro()
 Child.__mro__
-
 
 # Runtime relationship checks
 isinstance(obj, Parent)

@@ -6,33 +6,50 @@ order: 4
 
 # API Gateway and the Backend for Frontend (BFF) Pattern
 
-> **Category:** System Design  
-> **Audience:** Backend and full-stack developers with 3+ years of experience  
-> **Goal:** Understand where an API Gateway and a Backend for Frontend fit in a modern system, how they differ, and how to use them together.
+> Understand where an API Gateway and a Backend for Frontend fit in a modern system, how they differ, and how to use them together.
+
+## In short
+
+- An **API Gateway** is the shared public entry point in front of many services: route selection, TLS termination, token validation, rate limiting, edge protection, and central logging.
+- A **BFF** is one backend per client type — web, mobile, admin — that aggregates several services into a single screen-shaped response for that client.
+- The gateway is platform-owned and shared, so an outage is broad; a BFF is frontend-owned and client-specific, so its blast radius is one client experience.
+- Edge authentication does not replace service authorization: the gateway answers "is this token valid?", the Order Service still answers "can `U123` read `ORD-101`?".
+- A browser BFF can act as a confidential OAuth client, keeping tokens server-side and handing the browser only an `HttpOnly` session cookie — which then needs CSRF protection.
+- Aggregation runs independent calls in parallel under a nested timeout budget (client > gateway > BFF > service), with dependencies split into required and optional so an optional failure degrades the page instead of failing it.
+- Neither layer owns domain rules: pricing, stock reservation, and order state stay in the domain services.
+
+```mermaid
+sequenceDiagram
+    participant W as Web App
+    participant G as API Gateway
+    participant B as Web BFF
+    participant P as Product Service
+    participant I as Inventory Service
+
+    W->>G: GET /web/product-page/P100
+    G->>G: Authenticate and rate-limit
+    G->>B: Forward request
+    par Fetch product
+        B->>P: GET /products/P100
+    and Fetch inventory
+        B->>I: GET /inventory/P100
+    end
+    B->>B: Compose frontend response
+    B-->>G: Product page model
+    G-->>W: 200 OK
+```
+
+**Interview answer:** An API Gateway is a shared traffic-control layer — one public endpoint that routes to internal services and enforces cross-cutting policy such as TLS, token validation, rate limiting, and request size limits. A BFF sits behind it and is client-specific: it calls several domain services in parallel and composes exactly the response one frontend's screen needs, so mobile and web are not squeezed through the same generic contract. Neither holds business rules — the gateway manages traffic, the BFF manages shape, and domain services stay the source of truth.
+
+**Gotcha:** Treating gateway authentication as authorization. Validating a JWT at the edge proves who the caller is, not that they may read this particular order — the gateway usually does not own the domain data needed for that decision, so every service must still enforce object-level access itself.
 
 ---
 
 # 1. The Problem They Solve
 
-A frontend in a microservice-based system rarely talks to only one backend service.
+A frontend in a microservice-based system rarely talks to only one backend service. A single product screen may need the Product, Pricing, Inventory, Review, Recommendation, and User services.
 
-A product screen may require data from:
-
-- Product Service
-- Pricing Service
-- Inventory Service
-- Review Service
-- Recommendation Service
-- User Service
-
-Without an intermediate layer, the frontend may need to:
-
-- Know the address and contract of every service.
-- Make many network calls.
-- Combine different response formats.
-- Handle authentication for every service.
-- Implement retries and failure handling.
-- Change whenever internal services change.
+Without an intermediate layer, the frontend has to know the address and contract of every service, make many network calls, combine different response formats, handle authentication for each service, implement its own retries and failure handling, and change whenever an internal service changes.
 
 ```mermaid
 flowchart LR
@@ -76,13 +93,7 @@ flowchart LR
     GW --> CATALOG[Catalog Service]
 ```
 
-The client sees one public API domain:
-
-```text
-https://api.example.com
-```
-
-The gateway maps public routes to internal services:
+The client sees one public API domain, `https://api.example.com`, and the gateway maps public routes to internal services:
 
 ```text
 GET  /users/42          -> User Service
@@ -95,32 +106,11 @@ GET  /products          -> Catalog Service
 
 ### Request Routing
 
-The gateway selects the correct backend based on:
-
-- URL path
-- HTTP method
-- Hostname
-- Header
-- API version
-- Tenant
-- Geographic region
-
-Example:
-
-```text
-/api/v1/orders/*  -> Order Service v1
-/api/v2/orders/*  -> Order Service v2
-```
+The gateway selects the correct backend from the URL path, HTTP method, hostname, headers, API version, tenant, or geographic region. For example, `/api/v1/orders/*` routes to Order Service v1 while `/api/v2/orders/*` routes to v2.
 
 ### Authentication at the Edge
 
-The gateway can validate:
-
-- API keys
-- OAuth access tokens
-- JWT signatures and standard claims
-- mTLS client certificates
-- Signed requests
+The gateway can validate API keys, OAuth access tokens, JWT signatures and standard claims, mTLS client certificates, and signed requests.
 
 This rejects obviously invalid requests before they reach internal services.
 
@@ -130,13 +120,7 @@ A service must still verify whether the authenticated user is allowed to access 
 
 ### Rate Limiting and Quotas
 
-Rate limiting protects the backend from:
-
-- Accidental request bursts
-- Abusive clients
-- Brute-force attempts
-- Denial-of-service pressure
-- Expensive API usage
+Rate limiting protects the backend from accidental request bursts, abusive clients, brute-force attempts, denial-of-service pressure, and expensive API usage. Limits are usually keyed by IP address, user ID, API key, tenant ID, route, or subscription plan.
 
 Example policy:
 
@@ -146,77 +130,27 @@ Authenticated customer: 300 requests/minute
 Internal partner:       5,000 requests/minute
 ```
 
-Useful limit dimensions include:
-
-- IP address
-- User ID
-- API key
-- Tenant ID
-- Route
-- Subscription plan
-
 ### TLS Termination
 
-The gateway commonly terminates external HTTPS connections and may create a new encrypted connection to internal services.
-
-```text
-Client -- HTTPS --> Gateway -- HTTPS/mTLS --> Backend
-```
+The gateway commonly terminates external HTTPS connections and may create a new encrypted connection to internal services: `Client -- HTTPS --> Gateway -- HTTPS/mTLS --> Backend`.
 
 ### Request and Response Transformation
 
-A gateway may perform small protocol-level transformations:
-
-- Add a correlation ID.
-- Normalize headers.
-- Remove internal headers.
-- Rewrite paths.
-- Convert a public hostname to an internal route.
-- Apply basic schema validation.
+A gateway may perform small protocol-level transformations: adding a correlation ID, normalizing headers, removing internal headers, rewriting paths, converting a public hostname to an internal route, and applying basic schema validation.
 
 Transformation should stay lightweight. Complex business-specific transformation normally belongs in a BFF or application service.
 
 ### Load Balancing and Traffic Management
 
-A gateway may distribute requests across healthy service instances and support:
-
-- Weighted routing
-- Canary releases
-- Blue-green deployments
-- Region-based routing
-- Header-based routing
-- Failover
-
-Example canary rule:
-
-```text
-95% traffic -> Checkout v1
-5% traffic  -> Checkout v2
-```
+A gateway may distribute requests across healthy service instances and support weighted routing, canary releases, blue-green deployments, region-based routing, header-based routing, and failover. A canary rule might send `95% traffic -> Checkout v1` and `5% traffic -> Checkout v2`.
 
 ### API Protection
 
-A gateway can enforce edge controls such as:
-
-- Maximum request body size
-- Allowed HTTP methods
-- CORS policy
-- WAF rules
-- Request schema validation
-- IP allowlists or blocklists
-- Bot and abuse protection
+A gateway can enforce edge controls such as a maximum request body size, an allowed HTTP method list, CORS policy, WAF rules, request schema validation, IP allowlists or blocklists, and bot and abuse protection.
 
 ### Logging and Metrics
 
-The gateway provides a central place to measure:
-
-- Request count
-- Status codes
-- Request latency
-- Rejected requests
-- Rate-limit events
-- Backend response time
-- Route-level error rate
+The gateway provides a central place to measure request count, status codes, request latency, rejected requests, rate-limit events, backend response time, and route-level error rate.
 
 ## 2.2 API Gateway Request Flow
 
@@ -240,18 +174,7 @@ In many deployments, JWT validation uses locally cached public keys, so the gate
 
 ## 2.3 What Should Not Live in the Gateway
 
-The gateway should not become a central business application.
-
-Avoid placing the following in it:
-
-- Pricing calculations
-- Order state transitions
-- Commission rules
-- Inventory reservation logic
-- Complex data aggregation
-- Long-running workflows
-- Database-backed domain logic
-- Client-specific screen composition
+The gateway should not become a central business application. Keep out of it: pricing calculations, order state transitions, commission rules, inventory reservation logic, complex data aggregation, long-running workflows, database-backed domain logic, and client-specific screen composition.
 
 A good rule is:
 
@@ -263,13 +186,7 @@ A good rule is:
 
 A **Backend for Frontend** is a backend built for the needs of one frontend type or user experience.
 
-Typical BFFs include:
-
-- Web BFF
-- Mobile BFF
-- Admin Portal BFF
-- Partner BFF
-- Smart TV BFF
+Typical BFFs include a Web BFF, a Mobile BFF, an Admin Portal BFF, a Partner BFF, and a Smart TV BFF.
 
 ```mermaid
 flowchart LR
@@ -294,43 +211,13 @@ flowchart LR
 
 Different clients often have different requirements.
 
-### Web Application
+| Client | What it typically needs |
+|---|---|
+| Desktop web | Detailed product information, large images, reviews, recommendations, multiple dashboard widgets |
+| Mobile application | Smaller payloads, fewer round trips, compressed images, offline-friendly responses, backward compatibility for older app versions |
+| Admin portal | Internal operational fields, audit data, search and filtering, bulk actions, elevated permissions |
 
-A desktop web page may need:
-
-- Detailed product information
-- Large images
-- Reviews
-- Recommendations
-- Multiple dashboard widgets
-
-### Mobile Application
-
-A mobile client may prefer:
-
-- Smaller payloads
-- Fewer round trips
-- Compressed images
-- Offline-friendly responses
-- Backward compatibility for older app versions
-
-### Admin Portal
-
-An admin portal may require:
-
-- Internal operational fields
-- Audit data
-- Search and filtering
-- Bulk actions
-- Elevated permissions
-
-Trying to serve every client through one general-purpose endpoint often produces:
-
-- Large responses with unused fields
-- Too many client-side API calls
-- Conditional logic based on client type
-- Slow frontend development
-- Coupling between unrelated frontend teams
+Trying to serve every client through one general-purpose endpoint often produces large responses full of unused fields, too many client-side API calls, conditional logic based on client type, slow frontend development, and coupling between unrelated frontend teams.
 
 A BFF lets each frontend evolve around its own use cases.
 
@@ -338,13 +225,7 @@ A BFF lets each frontend evolve around its own use cases.
 
 ### Response Aggregation
 
-The BFF can combine data from several services into one screen-oriented response.
-
-```text
-GET /bff/product-page/P100
-```
-
-Internally:
+The BFF can combine data from several services into one screen-oriented response. A single call to `GET /bff/product-page/P100` fans out internally:
 
 ```text
 Product Service        -> product details
@@ -380,33 +261,11 @@ The frontend receives exactly what the screen needs.
 
 ### Client-Specific Data Shaping
 
-The BFF can:
-
-- Rename fields.
-- Remove unnecessary fields.
-- Combine nested structures.
-- Format dates and currencies.
-- Convert service-oriented responses into view-oriented responses.
-- Return mobile-friendly payloads.
+The BFF can rename fields, remove unnecessary ones, combine nested structures, format dates and currencies, convert service-oriented responses into view-oriented responses, and return mobile-friendly payloads.
 
 ### Reducing Network Round Trips
 
-Without a BFF:
-
-```text
-Frontend -> Product Service
-Frontend -> Price Service
-Frontend -> Inventory Service
-Frontend -> Review Service
-```
-
-With a BFF:
-
-```text
-Frontend -> BFF
-BFF -> services in parallel
-BFF -> combined response
-```
+Without a BFF the frontend calls the Product, Price, Inventory, and Review services itself. With a BFF it makes one call, and the BFF fans out to those services in parallel and returns a combined response.
 
 This is especially useful on high-latency mobile networks.
 
@@ -434,36 +293,13 @@ The core rules still remain in domain services. The BFF coordinates calls but do
 
 ### Client Compatibility
 
-A mobile BFF can support older app versions while backend services continue evolving.
-
-Example:
-
-```text
-X-App-Version: 4.2.0
-```
-
-The BFF may map a newer internal response to the older mobile contract.
+A mobile BFF can support older app versions while backend services continue evolving. Keyed on a header such as `X-App-Version: 4.2.0`, the BFF may map a newer internal response to the older mobile contract.
 
 ## 3.3 What Should Not Live in a BFF
 
-A BFF should not own reusable domain behavior such as:
+A BFF should not own reusable domain behavior such as final price calculation, ledger posting, payment settlement, stock reservation, eligibility decisions, order status rules, or customer master data. These rules belong in the relevant domain service.
 
-- Final price calculation
-- Ledger posting
-- Payment settlement
-- Stock reservation
-- Eligibility decisions
-- Order status rules
-- Customer master data
-
-These rules belong in the relevant domain service.
-
-A useful boundary is:
-
-```text
-BFF: "What data does this screen need?"
-Domain service: "What is valid in the business?"
-```
+A useful boundary: the BFF asks *what data does this screen need?*, the domain service asks *what is valid in the business?*
 
 ---
 
@@ -518,121 +354,27 @@ flowchart LR
     ABFF --> AUDIT[Audit Service]
 ```
 
-### API Gateway Responsibilities
+Each layer owns a distinct set of responsibilities:
 
-```text
-- Public endpoint
-- TLS termination
-- Authentication checks
-- Rate limiting
-- WAF integration
-- Route selection
-- Request size limits
-- Access logging
-- Canary routing
-```
-
-### BFF Responsibilities
-
-```text
-- Client-specific endpoints
-- API aggregation
-- Response shaping
-- Session handling
-- Frontend compatibility
-- Client-oriented orchestration
-```
-
-### Domain Service Responsibilities
-
-```text
-- Business validation
-- Domain rules
-- Data ownership
-- Transactions
-- Authorization for protected resources
-- Event publication
-```
-
-## End-to-End Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant W as Web App
-    participant G as API Gateway
-    participant B as Web BFF
-    participant P as Product Service
-    participant I as Inventory Service
-    participant R as Review Service
-
-    U->>W: Open product page
-    W->>G: GET /web/product-page/P100
-    G->>G: Authenticate and rate-limit
-    G->>B: Forward request
-
-    par Fetch product
-        B->>P: GET /products/P100
-        P-->>B: Product details
-    and Fetch inventory
-        B->>I: GET /inventory/P100
-        I-->>B: Stock level
-    and Fetch review summary
-        B->>R: GET /reviews/P100/summary
-        R-->>B: Rating summary
-    end
-
-    B->>B: Compose frontend response
-    B-->>G: Product page model
-    G-->>W: 200 OK
-    W-->>U: Render page
-```
+| Layer | Responsibilities |
+|---|---|
+| API Gateway | Public endpoint, TLS termination, authentication checks, rate limiting, WAF integration, route selection, request size limits, access logging, canary routing |
+| BFF | Client-specific endpoints, API aggregation, response shaping, session handling, frontend compatibility, client-oriented orchestration |
+| Domain service | Business validation, domain rules, data ownership, transactions, authorization for protected resources, event publication |
 
 ---
 
 # 6. Practical E-Commerce Example
 
-Consider an e-commerce platform with:
-
-- React web application
-- Android and iOS applications
-- Internal operations portal
-- Catalog Service
-- Pricing Service
-- Inventory Service
-- Order Service
-- Payment Service
-- Customer Service
+Consider an e-commerce platform with a React web application, Android and iOS applications, and an internal operations portal in front of the Catalog, Pricing, Inventory, Order, Payment, and Customer services.
 
 ## Web Product Page
 
-The web page displays:
-
-- Product description
-- Full image gallery
-- Price and discount
-- Delivery estimate
-- Inventory
-- Review summary
-- Recommendations
-
-```text
-GET /web-bff/products/P100/page
-```
+`GET /web-bff/products/P100/page` returns everything the desktop page displays: product description, full image gallery, price and discount, delivery estimate, inventory, review summary, and recommendations.
 
 ## Mobile Product Page
 
-The mobile application needs:
-
-- Compact product details
-- One optimized image
-- Price
-- Basic stock status
-- A small recommendation list
-
-```text
-GET /mobile-bff/products/P100/page
-```
+`GET /mobile-bff/products/P100/page` returns only what the mobile screen needs: compact product details, one optimized image, price, basic stock status, and a small recommendation list.
 
 Possible mobile response:
 
@@ -656,20 +398,7 @@ The internal services remain the same. Only the client-facing composition change
 
 ## Admin Order View
 
-The admin portal needs operational data not suitable for customers:
-
-```text
-GET /admin-bff/orders/ORD-101/details
-```
-
-Response may include:
-
-- Payment attempt history
-- Fraud review state
-- Inventory reservation
-- Shipment events
-- Customer support notes
-- Audit trail
+The admin portal needs operational data not suitable for customers. `GET /admin-bff/orders/ORD-101/details` may return payment attempt history, fraud review state, inventory reservation, shipment events, customer support notes, and the audit trail.
 
 These fields should not accidentally appear in customer-facing APIs. A separate admin BFF creates a clearer security and contract boundary.
 
@@ -679,16 +408,7 @@ These fields should not accidentally appear in customer-facing APIs. A separate 
 
 ## 7.1 Gateway Authentication
 
-The gateway should commonly handle:
-
-- TLS
-- Token signature validation
-- Standard claim checks
-- API key validation
-- Rate limiting
-- IP policies
-- Request size limits
-- Basic schema validation
+The gateway should commonly handle TLS, token signature validation, standard claim checks, API key validation, rate limiting, IP policies, request size limits, and basic schema validation.
 
 Example JWT checks:
 
@@ -705,9 +425,7 @@ required scope is present
 
 The Order Service must still enforce:
 
-```text
-Can user U123 read order ORD-101?
-```
+> Can user U123 read order ORD-101?
 
 The gateway cannot safely make every object-level authorization decision because it may not own the required domain data.
 
@@ -745,28 +463,13 @@ sequenceDiagram
     F-->>B: Frontend response
 ```
 
-Recommended cookie properties normally include:
-
-```text
-HttpOnly
-Secure
-SameSite=Lax or SameSite=Strict where compatible
-Narrow Path and Domain
-Appropriate expiration
-```
+Recommended cookie properties normally include `HttpOnly`, `Secure`, `SameSite=Lax` or `SameSite=Strict` where compatible, a narrow `Path` and `Domain`, and an appropriate expiration.
 
 Because cookies are automatically sent by the browser, the BFF must include CSRF protection where required.
 
 ## 7.4 Trust Between Internal Components
 
-Common options include:
-
-- mTLS
-- Workload identity
-- Short-lived service tokens
-- Private networks
-- Signed internal requests
-- Service mesh identity
+Common options include mTLS, workload identity, short-lived service tokens, private networks, signed internal requests, and service mesh identity.
 
 Do not assume traffic is trusted only because it is inside a private network.
 
@@ -781,13 +484,7 @@ Authorization: Bearer <downstream-access-token>
 X-Correlation-ID: 8fbeb8ef-9b38-4dc9-a1af-8e9d1f6ce82d
 ```
 
-Avoid trusting user-supplied identity headers such as:
-
-```http
-X-User-ID: admin
-```
-
-The gateway should remove or overwrite protected internal headers.
+Avoid trusting user-supplied identity headers such as `X-User-ID: admin`. The gateway should remove or overwrite protected internal headers.
 
 ---
 
@@ -834,7 +531,6 @@ PRODUCT_URL = "http://product-service"
 PRICE_URL = "http://pricing-service"
 INVENTORY_URL = "http://inventory-service"
 
-
 async def fetch_json(
     client: httpx.AsyncClient,
     url: str,
@@ -849,7 +545,6 @@ async def fetch_json(
         if required:
             raise
         return None
-
 
 @app.get("/web/products/{product_id}/page")
 async def product_page(product_id: str) -> dict[str, Any]:
@@ -950,44 +645,17 @@ flowchart LR
 
 ## Gateway or CDN Cache
 
-Useful for:
-
-- Public product catalog responses
-- Static reference data
-- Public configuration
-- Anonymous content
-
-Cache key may include:
-
-```text
-HTTP method
-path
-query parameters
-selected headers
-tenant
-locale
-```
+Useful for public product catalog responses, static reference data, public configuration, and anonymous content. The cache key may include the HTTP method, path, query parameters, selected headers, tenant, and locale.
 
 Be careful with personalized responses. A shared cache must not serve one user's data to another user.
 
 ## BFF Cache
 
-Useful for client-composed data such as:
-
-- Home-page sections
-- Navigation configuration
-- Feature flags
-- Short-lived product summaries
-- Aggregated read models
+Useful for client-composed data such as home-page sections, navigation configuration, feature flags, short-lived product summaries, and aggregated read models.
 
 ## Service Cache
 
-The domain service is usually the best place to cache reusable business data because it understands:
-
-- Data freshness requirements
-- Invalidation rules
-- Authorization boundaries
-- Domain events
+The domain service is usually the best place to cache reusable business data, because it understands data freshness requirements, invalidation rules, authorization boundaries, and domain events.
 
 ## Cache-Control Example
 
@@ -995,11 +663,7 @@ The domain service is usually the best place to cache reusable business data bec
 Cache-Control: public, max-age=60, stale-while-revalidate=30
 ```
 
-For sensitive or user-specific responses:
-
-```http
-Cache-Control: private, no-store
-```
+For sensitive or user-specific responses: `Cache-Control: private, no-store`
 
 ---
 
@@ -1007,11 +671,7 @@ Cache-Control: private, no-store
 
 ## 10.1 Timeouts
 
-Every outbound call needs a timeout.
-
-```text
-Client timeout > Gateway timeout > BFF total timeout > Individual service timeout
-```
+Every outbound call needs a timeout, and the budgets must nest: `Client timeout > Gateway timeout > BFF total timeout > Individual service timeout`.
 
 Example budget:
 
@@ -1027,29 +687,11 @@ Timeouts should leave enough time to return a controlled error.
 
 ## 10.2 Retries
 
-Retry only when the operation is safe.
-
-Suitable cases:
-
-- Temporary connection failure
-- `502 Bad Gateway`
-- `503 Service Unavailable`
-- `429 Too Many Requests`, when `Retry-After` is respected
-
-Use:
-
-- Small retry count
-- Exponential backoff
-- Jitter
-- Overall deadline
+Retry only when the operation is safe: a temporary connection failure, `502 Bad Gateway`, `503 Service Unavailable`, or `429 Too Many Requests` when `Retry-After` is respected. Use a small retry count, exponential backoff, jitter, and an overall deadline.
 
 Do not blindly retry non-idempotent operations such as payment or order creation.
 
-For retriable writes, use an idempotency key:
-
-```http
-Idempotency-Key: 32ae3958-85ab-4e32-8404-28ef8a73b3c4
-```
+For retriable writes, use an idempotency key: `Idempotency-Key: 32ae3958-85ab-4e32-8404-28ef8a73b3c4`
 
 ## 10.3 Circuit Breaker
 
@@ -1081,24 +723,11 @@ A slow recommendation service should not exhaust all connections needed for chec
 
 ## 10.5 Load Shedding
 
-Under heavy traffic, protect core functionality by rejecting or reducing lower-priority work.
-
-Examples:
-
-- Disable recommendations.
-- Return cached reviews.
-- Reject expensive report generation.
-- Preserve login, checkout, and payment capacity.
+Under heavy traffic, protect core functionality by rejecting or reducing lower-priority work: disable recommendations, return cached reviews, reject expensive report generation, and preserve login, checkout, and payment capacity.
 
 ## 10.6 Payload Optimization
 
-A BFF can reduce:
-
-- Unused fields
-- Image size
-- Nested response depth
-- Duplicate data
-- Number of requests
+A BFF can reduce unused fields, image size, nested response depth, duplicate data, and the number of requests.
 
 Compression such as Brotli or gzip is useful for text responses, but smaller response contracts are still important.
 
@@ -1151,13 +780,7 @@ The BFF should usually be deployed with or closely coordinated with its frontend
 
 ## 11.4 Multi-Region Design
 
-A global system may deploy:
-
-- CDN and WAF globally
-- Regional API gateways
-- Regional BFF instances
-- Regional service clusters
-- Replicated data stores where the domain permits
+A global system may deploy CDN and WAF globally, with regional API gateways, regional BFF instances, regional service clusters, and replicated data stores where the domain permits.
 
 ```mermaid
 flowchart TB
@@ -1190,48 +813,18 @@ X-Request-ID: 8fbeb8ef-9b38-4dc9-a1af-8e9d1f6ce82d
 traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 ```
 
-Use the same trace across:
-
-```text
-Client -> Gateway -> BFF -> Product Service -> Database
-```
+Use the same trace across `Client -> Gateway -> BFF -> Product Service -> Database`.
 
 ## 12.2 Important Metrics
 
-### Gateway Metrics
-
-- Requests per route
-- Authentication failures
-- Rate-limit rejections
-- `4xx` and `5xx` rate
-- Upstream connection failures
-- Gateway latency
-- Backend latency
-
-### BFF Metrics
-
-- Endpoint latency
-- Upstream latency by service
-- Aggregation failure rate
-- Partial-response rate
-- Timeout count
-- Retry count
-- Circuit-breaker state
-- Cache hit ratio
-- Active requests
-- Connection-pool saturation
+| Layer | Metrics worth alerting on |
+|---|---|
+| Gateway | Requests per route, authentication failures, rate-limit rejections, `4xx` and `5xx` rate, upstream connection failures, gateway latency, backend latency |
+| BFF | Endpoint latency, upstream latency by service, aggregation failure rate, partial-response rate, timeout count, retry count, circuit-breaker state, cache hit ratio, active requests, connection-pool saturation |
 
 ## 12.3 Latency Percentiles
 
-Do not rely only on average latency.
-
-Track:
-
-```text
-p50: typical request
-p95: slower user experience
-p99: tail latency and dependency issues
-```
+Do not rely only on average latency. Track `p50` for the typical request, `p95` for the slower user experience, and `p99` for tail latency and dependency issues.
 
 For aggregated endpoints, one slow downstream dependency can dominate tail latency.
 
@@ -1257,14 +850,7 @@ Example:
 }
 ```
 
-Avoid logging:
-
-- Access tokens
-- Session cookies
-- Passwords
-- Payment details
-- Sensitive personal data
-- Full request bodies by default
+Never log access tokens, session cookies, passwords, payment details, sensitive personal data, or full request bodies by default.
 
 ---
 
@@ -1272,64 +858,23 @@ Avoid logging:
 
 ## Public Gateway Contract
 
-The API Gateway exposes stable public routes.
-
-Examples:
-
-```text
-/api/v1/orders
-/api/v2/orders
-```
+The API Gateway exposes stable public routes such as `/api/v1/orders` and `/api/v2/orders`.
 
 ## BFF Contract
 
-The BFF contract is owned by a specific frontend experience.
+The BFF contract is owned by a specific frontend experience: `/web/v2/home`, `/mobile/v5/home`, `/admin/v1/order-search`.
 
-Examples:
-
-```text
-/web/v2/home
-/mobile/v5/home
-/admin/v1/order-search
-```
-
-A BFF contract can be screen-oriented, but avoid coupling it to minor UI component names that change frequently.
-
-Prefer:
-
-```text
-GET /mobile/v2/product-details/P100
-```
-
-Over:
-
-```text
-GET /mobile/v2/right-side-card/P100
-```
+A BFF contract can be screen-oriented, but avoid coupling it to minor UI component names that change frequently. Prefer `GET /mobile/v2/product-details/P100` over `GET /mobile/v2/right-side-card/P100`.
 
 ## Backward Compatibility
 
-Mobile clients cannot always be upgraded immediately.
-
-A mobile BFF may need to support several active app versions:
-
-```text
-Mobile 8.x -> BFF contract v3
-Mobile 7.x -> BFF contract v2
-Mobile 6.x -> limited support
-```
+Mobile clients cannot always be upgraded immediately, so a mobile BFF may need to support several active app versions at once — for example Mobile 8.x on BFF contract v3, Mobile 7.x on v2, and Mobile 6.x with limited support.
 
 Track usage before removing older contracts.
 
 ## Contract Validation
 
-Use:
-
-- OpenAPI specifications
-- JSON Schema
-- Consumer-driven contract tests
-- Compatibility checks in CI/CD
-- Deprecation headers and documentation
+Use OpenAPI specifications, JSON Schema, consumer-driven contract tests, compatibility checks in CI/CD, and deprecation headers with documentation.
 
 ---
 
@@ -1337,64 +882,23 @@ Use:
 
 ## Unit Tests
 
-Test BFF composition logic:
-
-- Field mapping
-- Optional service fallback
-- Error translation
-- Version-specific response shaping
+Test BFF composition logic: field mapping, optional service fallback, error translation, and version-specific response shaping.
 
 ## Integration Tests
 
-Run the BFF against:
-
-- Real test services
-- Service emulators
-- Containers
-- Test identity provider
-- Test gateway policies
-
-Verify timeouts, headers, authentication context, and response contracts.
+Run the BFF against real test services, service emulators, containers, a test identity provider, and test gateway policies. Verify timeouts, headers, authentication context, and response contracts.
 
 ## Contract Tests
 
-A BFF is a consumer of several services.
-
-Contract tests help detect changes such as:
-
-```text
-Pricing Service renamed "amount" to "value"
-Inventory Service removed "availableQuantity"
-```
+A BFF is a consumer of several services. Contract tests catch upstream changes such as the Pricing Service renaming `amount` to `value`, or the Inventory Service removing `availableQuantity`.
 
 ## End-to-End Tests
 
-Test important flows through the real entry path:
-
-```text
-Client -> Gateway -> BFF -> Services
-```
-
-Important examples:
-
-- Login
-- Product page
-- Checkout
-- Order history
-- Admin order search
+Test important flows through the real entry path (`Client -> Gateway -> BFF -> Services`): login, product page, checkout, order history, and admin order search.
 
 ## Resilience Tests
 
-Test:
-
-- Slow downstream service
-- `503` response
-- Timeout
-- Malformed response
-- Partial dependency failure
-- Circuit-breaker transition
-- Cache failure
-- Gateway rate limiting
+Test a slow downstream service, a `503` response, a timeout, a malformed response, partial dependency failure, circuit-breaker transitions, cache failure, and gateway rate limiting.
 
 ---
 
@@ -1474,33 +978,15 @@ Patterns should reduce complexity, not add components without a clear need.
 - [ ] Are trace IDs propagated?
 - [ ] Can the BFF scale horizontally?
 
----
+## Before Adding Either Layer
 
-# 17. Key Takeaways
-
-1. **An API Gateway is a shared traffic-management and policy-enforcement layer.**
-
-2. **A BFF is a client-specific adaptation and aggregation layer.**
-
-3. **The gateway should manage routing, authentication checks, rate limits, TLS, and edge policies.**
-
-4. **The BFF should manage client-specific response composition, orchestration, compatibility, and optionally browser session handling.**
-
-5. **Core domain rules must remain inside domain services.**
-
-6. **A service must still perform resource-level authorization even when the gateway validates the caller's token.**
-
-7. **BFF aggregation needs strict timeouts, parallel calls, partial-failure decisions, and distributed tracing.**
-
-8. **Separate BFFs are valuable when client requirements differ meaningfully, not merely because several frontend technologies exist.**
-
-9. **Using an API Gateway and BFF together creates a clean separation between edge concerns, client experience, and domain logic.**
-
-10. **For small systems, a single backend may remain the clearest and most maintainable design.**
+- [ ] Do the clients differ *meaningfully* in the data they need, rather than merely being built with different frontend technologies?
+- [ ] Would a single backend still be the clearest and most maintainable design at this system's size?
+- [ ] Is there operational capacity to run, monitor, and release the extra components?
 
 ---
 
-# 18. References
+# 17. References
 
 The following primary and official references were reviewed for current terminology and guidance:
 

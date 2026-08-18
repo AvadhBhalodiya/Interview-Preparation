@@ -2,26 +2,43 @@
 title: "Secrets Management"
 group: "Access & Data Protection"
 order: 6
+updated: "August 2026"
 ---
 
 # Secrets Management: Environment Variables and Secret Managers
 
-> **Category:** Security  
-> **Level:** Intermediate developer  
-> **Last reviewed:** August 2026
+> How secrets travel from a developer laptop to a running process, why environment variables alone are not enough, and what a dedicated secret manager adds.
 
-Secrets such as database passwords, API keys, signing keys, access tokens, and private certificates are required by most applications. The security problem is not simply **where to save a secret**. A complete solution must control the secret throughout its lifecycle:
+## In short
 
-- creation
-- storage
-- distribution
-- usage
-- rotation
-- auditing
-- revocation
-- deletion
+- A **secret** is anything that grants access or proves identity — a database password, API key, private key, or signing key — while a log level, port number, or region name is configuration, not a secret, even sitting in the same `.env` file.
+- A hardcoded secret isn't neutralized by deleting it later: it persists in Git history and a private repo can still be forked, mirrored, or made public — and once a secret does leak, revoke or rotate it first, since cleaning up the file or log doesn't invalidate a copy an attacker already took.
+- An environment variable is a **delivery mechanism, not a management system** — by itself it gives no encrypted storage, no rotation, no access audit trail, and no expiration; something still has to protect the value before it becomes `os.environ["DATABASE_PASSWORD"]`.
+- A dedicated secret manager (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, Google Cloud Secret Manager) adds what an env var alone can't: centralized encrypted storage, identity-based access, auditing, versioning, and rotation.
+- Prefer workload identity — an IAM role, a managed identity, a Kubernetes service account — over an embedded cloud access key: the app authenticates as itself and receives a short-lived token, so there is no standing credential to leak.
+- Dynamic, short-lived credentials beat static ones: a leaked static API key can be replayed for months, while a database credential minted per lease and auto-revoked has a bounded blast radius.
+- Rotation must update both sides — the target system and every consuming application, plus any caches — not just the value in the secret manager; overlap old and new credentials instead of cutting over instantly.
 
-This guide explains how environment variables and dedicated secret managers fit into that lifecycle, when each approach is appropriate, and how secrets should be handled in real development and production systems.
+```mermaid
+flowchart TD
+    DEV[Developer] -->|Pushes code without secrets| GIT[Git Repository]
+    GIT --> CI[CI/CD Pipeline]
+    CI -->|OIDC federation| IAM[Cloud IAM]
+    IAM -->|Temporary deployment permission| PLATFORM[Container Platform]
+
+    APP[Application Container] -->|Workload identity| IAM
+    APP -->|Read allowed secret| SM[Secret Manager]
+    SM -->|Encrypted secret value| APP
+    APP --> DB[(Database)]
+
+    SM --> AUDIT[Audit Logs]
+    IAM --> AUDIT
+    APP --> OBS[Redacted App Logs and Metrics]
+```
+
+**Interview answer:** In production nothing is hardcoded or committed — the CI/CD pipeline deploys using a short-lived, identity-federated credential instead of a stored cloud key, and the running application proves its own identity to the platform (an IAM role or managed identity) rather than embedding one. That identity is exchanged for a short-lived token used to read secrets from a dedicated secret manager over TLS, which enforces least-privilege access per secret and audits every read. Rotation then updates the credential everywhere it is consumed, and if a secret ever leaks, the response is to revoke or rotate it immediately, not just delete the copy that was found.
+
+**Gotcha:** Assuming a Kubernetes `Secret` is encrypted because of its name. The value is only Base64-encoded — anyone who can `kubectl get` it, or merely `list`/`watch` Secrets in that namespace, can trivially decode it, so RBAC and encryption-at-rest in `etcd` are what actually protect it, not the resource kind.
 
 ---
 
@@ -466,11 +483,7 @@ flowchart LR
 
 ## 7.2 Mounted Secret File
 
-The platform mounts a secret as a file, often in an in-memory or restricted filesystem.
-
-```text
-/run/secrets/database_password
-```
+The platform mounts a secret as a file, often in an in-memory or restricted filesystem, typically at a path such as `/run/secrets/database_password`.
 
 Application code:
 
@@ -550,11 +563,7 @@ Examples:
 - a database password created manually
 - a webhook signing secret
 
-```text
-Application -> reads fixed credential -> database
-```
-
-The risk is that a leaked static secret may remain usable for weeks or months.
+The flow is simple and static: `Application -> reads fixed credential -> database`. The risk is that a leaked static secret may remain usable for weeks or months.
 
 ## 8.2 Dynamic Secret
 
@@ -675,19 +684,7 @@ Avoid embedding cloud access keys inside the application.
 
 ## 10.2 Least Privilege
 
-A payment service may need:
-
-```text
-read: production/payment-provider
-read: production/payment-database
-```
-
-It should not receive:
-
-```text
-read: production/*
-admin: secret-manager
-```
+A payment service may need `read: production/payment-provider` and `read: production/payment-database` — never a broad grant such as `read: production/*` or `admin: secret-manager`.
 
 ## 10.3 Separate Environments
 
@@ -702,15 +699,7 @@ A development workload must not be able to read production secrets.
 
 ## 10.4 Separate Secrets by Consumer
 
-Avoid sharing one database password across many services.
-
-Prefer:
-
-```text
-orders-service-db-user
-billing-service-db-user
-reporting-service-readonly-user
-```
+Avoid sharing one database password across many services. Prefer a credential per consumer, such as `orders-service-db-user`, `billing-service-db-user`, or `reporting-service-readonly-user`.
 
 This improves:
 
@@ -763,14 +752,7 @@ Application developers usually use the managed service rather than implementing 
 
 ## 11.3 Do Not Invent Custom Encryption
 
-Encrypting a `.env` file with a key stored beside it does not meaningfully protect the secret.
-
-```text
-config.env.enc
-config-decryption-key.txt
-```
-
-An attacker who gets both files gets the secret.
+Encrypting a `.env` file with a key stored beside it does not meaningfully protect the secret — if `config.env.enc` sits next to `config-decryption-key.txt`, an attacker who gets both files gets the secret.
 
 Key storage, identity, authorization, auditing, and rotation must be designed together.
 
@@ -878,13 +860,7 @@ secrets:
     file: ./secrets/database_password.txt
 ```
 
-The application reads:
-
-```text
-/run/secrets/database_password
-```
-
-The source file must still be protected and must not be committed.
+The application reads the value from `/run/secrets/database_password`. The source file must still be protected and must not be committed.
 
 ## 13.4 `_FILE` Convention
 
@@ -920,11 +896,7 @@ data:
   password: cGFzc3dvcmQ=
 ```
 
-Anyone who can read the value can decode it:
-
-```bash
-echo 'cGFzc3dvcmQ=' | base64 --decode
-```
+Anyone who can read the value can decode it: `echo 'cGFzc3dvcmQ=' | base64 --decode`
 
 ## 14.1 Kubernetes Security Controls
 
@@ -1003,21 +975,11 @@ CI/CD systems often have broad access to source code, cloud deployments, registr
 
 ## 15.2 Prefer Workload Identity Federation
 
-Instead of storing a permanent cloud access key in the CI/CD platform:
-
-```text
-CI job -> short-lived OIDC token -> cloud IAM -> temporary deployment access
-```
-
-This removes a long-lived cloud credential from the pipeline secret store.
+Instead of storing a permanent cloud access key in the CI/CD platform, use identity federation: `CI job -> short-lived OIDC token -> cloud IAM -> temporary deployment access`. This removes a long-lived cloud credential from the pipeline secret store.
 
 ## 15.3 Avoid Command-Line Exposure
 
-Potentially unsafe:
-
-```bash
-deploy-tool --password "$PRODUCTION_PASSWORD"
-```
+Potentially unsafe: `deploy-tool --password "$PRODUCTION_PASSWORD"`
 
 Command arguments may appear in process listings or logs.
 
@@ -1054,13 +1016,11 @@ Read and validate configuration in one place.
 from dataclasses import dataclass
 import os
 
-
 def required(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Missing required configuration: {name}")
     return value
-
 
 @dataclass(frozen=True)
 class Settings:
@@ -1092,7 +1052,6 @@ Do not allow settings objects to expose secrets accidentally.
 ```python
 from dataclasses import dataclass, field
 
-
 @dataclass
 class DatabaseConfig:
     host: str
@@ -1114,7 +1073,6 @@ import json
 import time
 from threading import Lock
 from typing import Any
-
 
 class CachedSecretProvider:
     def __init__(self, client: Any, ttl_seconds: int = 300) -> None:
@@ -1149,11 +1107,7 @@ A real implementation should additionally handle:
 
 ## 16.4 Fail Open vs Fail Closed
 
-For authentication and encryption secrets, failing closed is normally correct.
-
-```text
-Secret unavailable -> reject protected operation
-```
+For authentication and encryption secrets, failing closed is normally correct: `secret unavailable -> reject protected operation`.
 
 Using an old cached database password for a short controlled period may be acceptable if the application already has a valid connection. Silently switching to a default credential is not acceptable.
 
@@ -1211,11 +1165,7 @@ Never log:
 - complete tokens
 - decrypted configuration objects
 
-Unsafe:
-
-```python
-logger.info("Connecting with URL: %s", database_url)
-```
+Unsafe: `logger.info("Connecting with URL: %s", database_url)`
 
 Safer:
 
@@ -1318,26 +1268,7 @@ Add:
 
 Consider a Django or FastAPI service running in a cloud container platform.
 
-## 19.1 Recommended Production Design
-
-```mermaid
-flowchart TD
-    DEV[Developer] -->|Pushes code without secrets| GIT[Git Repository]
-    GIT --> CI[CI/CD Pipeline]
-    CI -->|OIDC federation| IAM[Cloud IAM]
-    IAM -->|Temporary deployment permission| PLATFORM[Container Platform]
-
-    APP[Application Container] -->|Workload identity| IAM
-    APP -->|Read allowed secret| SM[Secret Manager]
-    SM -->|Encrypted secret value| APP
-    APP --> DB[(Database)]
-
-    SM --> AUDIT[Audit Logs]
-    IAM --> AUDIT
-    APP --> OBS[Redacted App Logs and Metrics]
-```
-
-## 19.2 Security Properties
+## 19.1 Security Properties
 
 - no secret is committed to Git
 - the CI pipeline uses temporary cloud access
@@ -1349,7 +1280,7 @@ flowchart TD
 - logs exclude sensitive values
 - rotation can occur without changing source code
 
-## 19.3 Example Secret Naming
+## 19.2 Example Secret Naming
 
 ```text
 /prod/orders/database
@@ -1362,7 +1293,7 @@ flowchart TD
 
 Names should reveal enough operational context but should not contain the secret value itself.
 
-## 19.4 Ownership Metadata
+## 19.3 Ownership Metadata
 
 Track metadata such as:
 
@@ -1402,6 +1333,7 @@ This avoids “orphaned” secrets that nobody knows how to rotate.
 - [ ] Secrets are injected only at runtime.
 - [ ] Mounted files have restrictive permissions.
 - [ ] Environment variables are not dumped into logs.
+- [ ] Debug endpoints, error reports, and support bundles are checked for accidental secret exposure.
 - [ ] Applications fail safely when required secrets are missing.
 - [ ] Temporary secret files are removed.
 
@@ -1410,6 +1342,7 @@ This avoids “orphaned” secrets that nobody knows how to rotate.
 - [ ] Every secret has an owner.
 - [ ] High-risk secrets have an automated rotation strategy.
 - [ ] Applications can reload or refresh rotated values.
+- [ ] Rotation updates the target system, every consuming application, and any caches — not only the value stored in the secret manager.
 - [ ] Old versions are revoked after verification.
 - [ ] Emergency rotation is documented and tested.
 
@@ -1428,30 +1361,6 @@ This avoids “orphaned” secrets that nobody knows how to rotate.
 - [ ] Unusual access patterns generate alerts.
 - [ ] Logs redact sensitive fields.
 - [ ] Secret scanning runs before and after code reaches the repository.
-
----
-
-# 21. Key Takeaways
-
-1. **Never hardcode secrets.** Source code, Dockerfiles, scripts, and committed configuration are not secret stores.
-
-2. **Environment variables are useful but limited.** They separate values from code, but they do not provide storage, rotation, auditing, or lifecycle management.
-
-3. **Use a dedicated secret manager in production.** It provides encrypted storage, access control, versions, audit logs, and rotation capabilities.
-
-4. **Prefer workload identity over embedded cloud credentials.** The application should prove its identity through the platform and receive short-lived access.
-
-5. **Use least privilege and separate credentials.** Each service and environment should receive only the secrets it needs.
-
-6. **Prefer short-lived or dynamic credentials.** A credential that expires quickly has a smaller leakage window.
-
-7. **Design rotation before an incident happens.** Rotation must update the provider, applications, caches, and old credential versions safely.
-
-8. **Treat logs, CI/CD, containers, and debugging tools as possible exposure paths.** Secret handling must cover the whole delivery pipeline.
-
-9. **A leaked secret must be revoked, not merely deleted from a file.** Cleanup does not invalidate copies already obtained by an attacker.
-
-10. **Secret management is a lifecycle, not a file format.** Secure storage is only one part of the solution.
 
 ---
 

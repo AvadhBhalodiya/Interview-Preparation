@@ -6,10 +6,37 @@ order: 3
 
 # Redis TTL and Eviction Policies (LRU, LFU)
 
-> **Topic:** Caching with Redis  
-> **Level:** Intermediate developer  
-> **Focus:** Practical understanding of TTL, memory limits, LRU/LFU eviction, configuration, monitoring, and production usage  
+> Practical understanding of TTL, memory limits, LRU/LFU eviction, configuration, monitoring, and production usage
+>
 > **Documentation baseline:** Redis 8.x documentation, reviewed in July 2026
+
+## In short
+
+- TTL and eviction both delete keys but answer different questions. TTL asks "is this key still valid?" — per key, triggered by time. Eviction asks "which key is least valuable?" — server-wide, triggered only by memory pressure.
+- Set the value and its expiry in one command (`SET key value EX 600`). With a separate `SET` then `EXPIRE`, a crash between the two leaves a key that never expires.
+- A plain `SET` on an existing key replaces its TTL; `KEEPTTL` and in-place updates such as `HSET`, `INCR`, and `APPEND` preserve it. This is the most common accidental cache leak.
+- Redis expires keys lazily, on access, plus a background sampling loop — so an expired key can still occupy memory for a short time after its TTL passes.
+- Eviction runs only at `maxmemory`. Under `noeviction`, Redis rejects memory-consuming writes with an error instead of making room; reads keep working.
+- `allkeys-*` policies may evict anything; `volatile-*` policies may evict only keys that carry a TTL — and if no eligible key has one, a volatile policy behaves like `noeviction`.
+- LRU tracks recency, LFU tracks frequency with decay. Both are approximate in Redis (sampled via `maxmemory-samples`), not exact orderings.
+
+```mermaid
+flowchart TD
+    A[Choose eviction policy] --> B{Can Redis discard cached keys?}
+    B -->|No| C[noeviction]
+    B -->|Yes| D{Dedicated cache instance?}
+    D -->|Yes| E{Access pattern}
+    E -->|Recent data stays hot| F[allkeys-lru]
+    E -->|Stable popular data stays hot| G[allkeys-lfu]
+    E -->|Uniform access| H[allkeys-random]
+    D -->|No, mixed cache and protected keys| I{Can every disposable key have TTL?}
+    I -->|Yes| J[Consider volatile-lru or volatile-lfu]
+    I -->|No| K[Separate workloads into different Redis instances]
+```
+
+**Interview answer:** TTL is per-key freshness control and fires on time; eviction is instance-wide capacity control and fires only when memory reaches `maxmemory`. A dedicated cache should start at `allkeys-lru`, and move to `allkeys-lfu` when popularity is stable — LRU will discard a genuinely popular key that merely went untouched while some scan pushed newer keys through. Use a `volatile-*` policy only when the same instance also holds keys that must never be evicted, and remember it silently degrades to `noeviction` when none of the candidates carry a TTL.
+
+**Gotcha:** Assuming a TTL survives a write. `SET key newvalue` drops the existing expiry, so a key refreshed on every write becomes immortal. Combined with `noeviction`, that slow leak turns into hard write failures rather than a quietly shrinking cache.
 
 ---
 
@@ -96,11 +123,7 @@ EXPIRE session:user:42 1800
 
 The session will expire after 1,800 seconds, which is 30 minutes.
 
-A more compact and usually preferred form is:
-
-```bash
-SET session:user:42 "active" EX 1800
-```
+A more compact and usually preferred form is: `SET session:user:42 "active" EX 1800`
 
 This sets the value and expiration atomically in one command.
 
@@ -115,11 +138,7 @@ EXPIRE session:user:42 1800
 
 If the application crashes after `SET` but before `EXPIRE`, the key remains without a TTL.
 
-This is safer:
-
-```bash
-SET session:user:42 "active" EX 1800
-```
+This is safer: `SET session:user:42 "active" EX 1800`
 
 The value and TTL are applied together.
 
@@ -129,59 +148,32 @@ The value and TTL are applied together.
 
 ## 4.1 Set Expiration in Seconds
 
-```bash
-EXPIRE key seconds
-```
-
-Example:
+`EXPIRE key seconds` attaches an expiry to a key that already exists.
 
 ```bash
 SET otp:user:1001 "483921"
-EXPIRE otp:user:1001 300
+EXPIRE otp:user:1001 300          # the OTP expires after five minutes
 ```
-
-The OTP expires after five minutes.
 
 ---
 
 ## 4.2 Set Expiration in Milliseconds
 
-```bash
-PEXPIRE key milliseconds
-```
-
-Example:
+`PEXPIRE key milliseconds` does the same at millisecond resolution, which matters for short-lived locks.
 
 ```bash
 SET lock:payment:812 "worker-7"
-PEXPIRE lock:payment:812 1500
+PEXPIRE lock:payment:812 1500     # the lock expires after 1.5 seconds
 ```
-
-The lock expires after 1.5 seconds.
 
 ---
 
 ## 4.3 Set Value with Expiration
 
-### Seconds
-
-```bash
-SET key value EX seconds
-```
-
-### Milliseconds
-
-```bash
-SET key value PX milliseconds
-```
-
-Examples:
+`SET key value EX seconds` and `SET key value PX milliseconds` apply the value and its expiry in one atomic command, which is the preferred form.
 
 ```bash
 SET cache:product:501 '{"name":"Keyboard","price":2999}' EX 600
-```
-
-```bash
 SET rate-limit:user:42 "1" PX 1000
 ```
 
@@ -215,38 +207,20 @@ Example use cases:
 
 ## 4.5 Check Remaining TTL
 
-### Seconds
+`TTL key` returns the remaining lifetime in seconds, `PTTL key` in milliseconds.
 
 ```bash
-TTL key
+SET cache:user:42 "data" EX 120
+TTL cache:user:42                 # => (integer) 118
 ```
 
-### Milliseconds
-
-```bash
-PTTL key
-```
-
-Possible `TTL` results:
+The two negative return values are the ones worth remembering, because they distinguish "no expiry" from "no key":
 
 | Result | Meaning |
 |---:|---|
 | Positive number | Remaining lifetime in seconds |
 | `-1` | Key exists but has no expiration |
 | `-2` | Key does not exist |
-
-Example:
-
-```bash
-SET cache:user:42 "data" EX 120
-TTL cache:user:42
-```
-
-Possible output:
-
-```text
-(integer) 118
-```
 
 ---
 
@@ -265,18 +239,12 @@ Use them when an application needs an absolute deadline instead of a remaining d
 
 ## 4.7 Remove a TTL
 
-```bash
-PERSIST key
-```
-
-Example:
+`PERSIST key` keeps the key but removes its expiration, making it permanent again.
 
 ```bash
 SET config:feature-x "enabled" EX 3600
 PERSIST config:feature-x
 ```
-
-The key remains, but its expiration is removed.
 
 ---
 
@@ -291,11 +259,7 @@ The key remains, but its expiration is removed.
 | `GT` | Set expiration only when the new TTL is greater than the current TTL |
 | `LT` | Set expiration only when the new TTL is less than the current TTL |
 
-Examples:
-
-```bash
-EXPIRE session:user:42 1800 NX
-```
+Examples: `EXPIRE session:user:42 1800 NX`
 
 Add an expiry only when one is not already present.
 
@@ -336,11 +300,7 @@ TTL user:42
 
 The second `TTL` returns `-1` because the new `SET` replaced the key without preserving its expiration.
 
-Use `KEEPTTL` to retain the existing TTL:
-
-```bash
-SET user:42 "new-value" KEEPTTL
-```
+Use `KEEPTTL` to retain the existing TTL: `SET user:42 "new-value" KEEPTTL`
 
 ## 5.2 In-Place Updates Usually Preserve TTL
 
@@ -686,35 +646,19 @@ flowchart LR
     D --> E[Evict approximate LRU key]
 ```
 
-The number of sampled keys is controlled by:
-
-```conf
-maxmemory-samples 5
-```
+The number of sampled keys is controlled by: `maxmemory-samples 5`
 
 A larger sample can make eviction closer to true LRU, but increases CPU work.
 
-Example:
-
-```conf
-maxmemory-samples 10
-```
+Example: `maxmemory-samples 10`
 
 Use benchmarking before changing the default.
 
 ## Inspecting Idle Time
 
-When the selected policy is not LFU-based, Redis can expose idle time:
+When the selected policy is not LFU-based, Redis can expose idle time: `OBJECT IDLETIME cache:product:501`
 
-```bash
-OBJECT IDLETIME cache:product:501
-```
-
-Example result:
-
-```text
-(integer) 84
-```
+Example result: `(integer) 84`
 
 The key has been idle for approximately 84 seconds.
 
@@ -841,17 +785,9 @@ Choose based on how quickly your hot set changes.
 
 ## Inspecting Frequency
 
-When an LFU policy is active:
+When an LFU policy is active: `OBJECT FREQ cache:product:501`
 
-```bash
-OBJECT FREQ cache:product:501
-```
-
-Example:
-
-```text
-(integer) 17
-```
+Example: `(integer) 17`
 
 This value is a logarithmic frequency counter, not an exact request count.
 
@@ -888,19 +824,15 @@ Assume these keys exist:
 
 LRU mainly sees recency.
 
-```text
-D is the oldest recently used key.
-D is a strong eviction candidate.
-```
+> D is the oldest recently used key.  
+> D is a strong eviction candidate.
 
 ### LFU View
 
 LFU mainly sees frequency after accounting for decay.
 
-```text
-A or D may have the lowest frequency.
-B is strongly protected because it is frequently used.
-```
+> A or D may have the lowest frequency.  
+> B is strongly protected because it is frequently used.
 
 ## Simple Decision Rule
 
@@ -916,21 +848,7 @@ When uncertain, begin with `allkeys-lru`, observe hit rate and evictions, and co
 
 # 12. Choosing the Right Policy
 
-## Decision Flow
-
-```mermaid
-flowchart TD
-    A[Choose eviction policy] --> B{Can Redis discard cached keys?}
-    B -->|No| C[noeviction]
-    B -->|Yes| D{Dedicated cache instance?}
-    D -->|Yes| E{Access pattern}
-    E -->|Recent data stays hot| F[allkeys-lru]
-    E -->|Stable popular data stays hot| G[allkeys-lfu]
-    E -->|Uniform access| H[allkeys-random]
-    D -->|No, mixed cache and protected keys| I{Can every disposable key have TTL?}
-    I -->|Yes| J[Consider volatile-lru or volatile-lfu]
-    I -->|No| K[Separate workloads into different Redis instances]
-```
+The decision flow is the diagram in **In short** at the top of this note. This section gives the conditions behind each of its outcomes.
 
 ## Policy Guidance
 
@@ -1054,9 +972,7 @@ Only keys with expiration are eviction candidates.
 
 This requires strict application discipline:
 
-```text
-Every disposable cache key must have a TTL.
-```
+> Every disposable cache key must have a TTL.
 
 ---
 
@@ -1138,7 +1054,6 @@ from typing import Any
 from redis import Redis
 from redis.exceptions import RedisError
 
-
 redis_client = Redis(
     host="localhost",
     port=6379,
@@ -1147,7 +1062,6 @@ redis_client = Redis(
     socket_timeout=2,
 )
 
-
 def load_product_from_database(product_id: int) -> dict[str, Any]:
     """Example database lookup."""
     return {
@@ -1155,7 +1069,6 @@ def load_product_from_database(product_id: int) -> dict[str, Any]:
         "name": "Mechanical Keyboard",
         "price": 2999,
     }
-
 
 def get_product(product_id: int) -> dict[str, Any]:
     cache_key = f"cache:product:{product_id}"
@@ -1225,7 +1138,6 @@ redis_client = Redis(decode_responses=True)
 
 SESSION_TTL_SECONDS = 1800
 
-
 def read_session(session_id: str) -> str | None:
     key = f"session:{session_id}"
 
@@ -1237,11 +1149,7 @@ def read_session(session_id: str) -> str | None:
     )
 ```
 
-Equivalent Redis command:
-
-```bash
-GETEX session:abc123 EX 1800
-```
+Equivalent Redis command: `GETEX session:abc123 EX 1800`
 
 This avoids a race between separate `GET` and `EXPIRE` commands.
 
@@ -1254,7 +1162,6 @@ import secrets
 from redis import Redis
 
 redis_client = Redis(decode_responses=True)
-
 
 def acquire_lock(resource_id: str, ttl_ms: int = 5000) -> str | None:
     lock_key = f"lock:{resource_id}"
@@ -1270,11 +1177,7 @@ def acquire_lock(resource_id: str, ttl_ms: int = 5000) -> str | None:
     return token if acquired else None
 ```
 
-Redis command:
-
-```bash
-SET lock:payment:812 random-token NX PX 5000
-```
+Redis command: `SET lock:payment:812 random-token NX PX 5000`
 
 The TTL prevents a crashed worker from holding the lock forever.
 
@@ -1376,11 +1279,7 @@ TTL cache:product:501
 PTTL cache:product:501
 ```
 
-For debugging a small controlled dataset:
-
-```bash
-SCAN 0 MATCH "cache:product:*" COUNT 100
-```
+For debugging a small controlled dataset: `SCAN 0 MATCH "cache:product:*" COUNT 100`
 
 Avoid using `KEYS *` in production on a large database because it scans the keyspace synchronously.
 
@@ -1410,11 +1309,7 @@ CONFIG GET lfu-decay-time
 OBJECT FREQ cache:product:501
 ```
 
-For non-LFU policies:
-
-```bash
-OBJECT IDLETIME cache:product:501
-```
+For non-LFU policies: `OBJECT IDLETIME cache:product:501`
 
 ---
 
@@ -1485,17 +1380,9 @@ This can cause:
 - Higher latency
 - Cache stampede
 
-Instead of:
+Instead of: `TTL = 600 seconds for every key`
 
-```text
-TTL = 600 seconds for every key
-```
-
-Use:
-
-```text
-TTL = 600 + random(0, 60) seconds
-```
+Use: `TTL = 600 + random(0, 60) seconds`
 
 ```mermaid
 flowchart LR
@@ -1510,11 +1397,7 @@ flowchart LR
 
 ## 16.3 Use Atomic Commands
 
-Prefer:
-
-```bash
-SET key value EX 600
-```
+Prefer: `SET key value EX 600`
 
 over:
 
@@ -1523,11 +1406,7 @@ SET key value
 EXPIRE key 600
 ```
 
-Prefer:
-
-```bash
-GETEX key EX 1800
-```
+Prefer: `GETEX key EX 1800`
 
 over:
 
@@ -1611,37 +1490,13 @@ flowchart TD
 
 Do not let a non-critical cache become a mandatory dependency unless the business design intentionally requires it.
 
-Also protect the database using:
-
-- Timeouts
-- Circuit breakers
-- Request coalescing
-- Rate limiting
-- Stale-while-revalidate
-- Cache warming
-- Backpressure
+Also protect the database with timeouts, circuit breakers, request coalescing, rate limiting, stale-while-revalidate, cache warming, and backpressure — these are covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
 ---
 
 ## 16.8 Use Namespaced Keys
 
-Examples:
-
-```text
-cache:product:501
-cache:user-profile:42
-session:abc123
-lock:invoice:9901
-rate-limit:user:42:2026073016
-```
-
-Benefits:
-
-- Easier debugging
-- Easier scanning
-- Clear ownership
-- Safer invalidation
-- Better observability
+Prefix keys by purpose — `cache:product:501`, `session:abc123`, `lock:invoice:9901`, `rate-limit:user:42:2026073016`. For TTL work specifically, the payoff is that a namespace makes TTL coverage auditable: you can sample one prefix and see whether every key in it actually carries an expiry. Broader key-design rules are in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
 
 ---
 
@@ -1720,17 +1575,9 @@ lfu-log-factor 10
 lfu-decay-time 1
 ```
 
-Application write:
+Application write: `SET cache:product:501 product-json EX 600`
 
-```bash
-SET cache:product:501 product-json EX 600
-```
-
-With jitter:
-
-```text
-TTL = 600 to 660 seconds
-```
+With jitter: `TTL = 600 to 660 seconds`
 
 ## Runtime Behavior
 
@@ -1777,73 +1624,7 @@ Track:
 
 ---
 
-# 18. Quick Revision
-
-## Core Formula
-
-```text
-TTL        = when a key becomes invalid
-maxmemory  = how much cache memory Redis may use
-policy     = which key Redis removes under memory pressure
-```
-
-## LRU
-
-```text
-Evict keys not used recently.
-Best when recent access predicts future access.
-```
-
-## LFU
-
-```text
-Evict keys used less frequently.
-Best when a stable popularity pattern exists.
-```
-
-## Allkeys
-
-```text
-Every key can be evicted.
-Usually appropriate for a dedicated cache.
-```
-
-## Volatile
-
-```text
-Only keys with TTL can be evicted.
-Requires every disposable key to have expiration.
-```
-
-## Recommended Starting Points
-
-```text
-General dedicated cache:
-    allkeys-lru
-
-Stable popularity-based cache:
-    allkeys-lfu
-
-Non-discardable data:
-    noeviction, with strict capacity management
-
-Mixed critical and disposable data:
-    Prefer separate Redis instances
-```
-
-## Final Mental Model
-
-```mermaid
-flowchart LR
-    A[Cached key] --> B[TTL controls freshness]
-    A --> C[Eviction policy controls capacity]
-    B --> D[Expired key removed]
-    C --> E[Low-value key removed under memory pressure]
-```
-
----
-
-# 19. Official References
+# 18. Official References
 
 - [Redis Key Eviction](https://redis.io/docs/latest/develop/reference/eviction/)
 - [Redis EXPIRE Command](https://redis.io/docs/latest/commands/expire/)

@@ -6,12 +6,32 @@ order: 3
 
 # Django Signals — and When NOT to Use Them
 
-> **Core idea:** A Django signal allows one part of an application to announce that an event happened, while one or more receiver functions react to that event.
+> A Django signal allows one part of an application to announce that an event happened, while one or more receiver functions react to that event.
 >
 > Signals are helpful when the sender should not know who is listening. However, they create an **implicit execution path**, so normal function calls or a service layer are usually better for important business workflows.
-
 > [!NOTE]
 > This guide was verified against the Django 6.0 documentation. As of July 25, 2026, the latest official Django release is **6.0.7**, while **5.2** is the currently supported LTS series.
+
+## In short
+
+- A signal is publish/subscribe inside one process: a sender announces that an event happened, receivers react, and neither side knows the other exists.
+- The built-ins that matter are `pre_save`/`post_save`, `pre_delete`/`post_delete`, `m2m_changed`, `request_started`/`request_finished`, and `pre_migrate`/`post_migrate`.
+- Receivers are connected in `AppConfig.ready()` by importing a `signals` module, using `@receiver(post_save, sender=Model)` plus a `dispatch_uid` so a re-import cannot register the same handler twice.
+- Receivers run **synchronously**, inside the sender's transaction, so a slow receiver blocks the save and a failing one breaks it — defer external side effects with `transaction.on_commit()`.
+- `QuerySet.update()`, `bulk_create()` and `bulk_update()` bypass `Model.save()`, so they do **not** fire `pre_save` or `post_save`.
+- Signals hide the execution path from whoever called `save()`, so important business workflows belong in an explicit service layer, not in a receiver.
+
+```mermaid
+flowchart LR
+    A[Sender performs an action] --> B[Signal is dispatched]
+    B --> C[Receiver A runs]
+    B --> D[Receiver B runs]
+    B --> E[Receiver C runs]
+```
+
+**Interview answer:** Signals are Django's in-process observer hook — `post_save`, `post_delete`, `m2m_changed` and the auth/request signals let an independent app react to a lifecycle event without the sender importing it, with receivers wired up by importing a `signals` module from `AppConfig.ready()`. I reach for them at extension boundaries: auditing, metrics, cache invalidation, or reacting to a model owned by a third-party app. I avoid them for core business workflows, for anything where receiver order matters, for slow or external work, and for behavior that must also happen under `bulk_create()` or `QuerySet.update()` — those belong in an explicit service function where the sequence is visible and testable.
+
+**Gotcha:** `post_save` fires while the surrounding transaction is still open, so a receiver that sends the email or enqueues the Celery task can fire for an order that is about to roll back — and the worker may pick the job up before the row is even visible. Wrap every external side effect in `transaction.on_commit()`.
 
 ---
 
@@ -45,11 +65,7 @@ This creates loose coupling between the sender and receivers, but it also hides 
 
 ## 2. The Signal Mental Model
 
-Think of a signal as an internal announcement:
-
-```text
-"An Order was created. Anyone interested may react now."
-```
+Think of a signal as an internal announcement: `"An Order was created. Anyone interested may react now."`
 
 The sender does not know:
 
@@ -57,14 +73,6 @@ The sender does not know:
 - which modules contain them;
 - what order-dependent business behavior they perform;
 - whether a receiver will make database queries or call an external service.
-
-```mermaid
-flowchart LR
-    A[Sender performs an action] --> B[Signal is dispatched]
-    B --> C[Receiver A runs]
-    B --> D[Receiver B runs]
-    B --> E[Receiver C runs]
-```
 
 That independence is the main benefit of signals. It is also their main risk.
 
@@ -114,9 +122,7 @@ Django signals may add keyword arguments over time, so receivers should accept `
 
 ### 3.4 Connection
 
-A receiver can be connected in two common ways.
-
-#### Using the `@receiver` decorator
+A receiver can be connected in two common ways. Using the `@receiver` decorator:
 
 ```python
 from django.db.models.signals import post_save
@@ -127,11 +133,7 @@ def handle_order_save(sender, instance, **kwargs):
     ...
 ```
 
-#### Using `connect()` manually
-
-```python
-post_save.connect(handle_order_save, sender=Order)
-```
+Or by calling `connect()` manually: `post_save.connect(handle_order_save, sender=Order)`
 
 The decorator is usually easier to read for application-level receivers.
 
@@ -196,7 +198,6 @@ accounts/
 
 from django.apps import AppConfig
 
-
 class AccountsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "accounts"
@@ -234,7 +235,6 @@ Suppose the `accounts` app owns a profile model that should exist for each user.
 from django.conf import settings
 from django.db import models
 
-
 class Profile(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -257,7 +257,6 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 from .models import Profile
-
 
 @receiver(
     post_save,
@@ -387,7 +386,6 @@ A normal `post_save` receiver does not describe changes made to a many-to-many r
 from django.conf import settings
 from django.db import models
 
-
 class Team(models.Model):
     name = models.CharField(max_length=120)
     members = models.ManyToManyField(
@@ -403,7 +401,6 @@ from django.db.models.signals import m2m_changed
 from django.dispatch import receiver
 
 from .models import Team
-
 
 @receiver(
     m2m_changed,
@@ -519,11 +516,9 @@ from django.db import transaction
 from .models import Order
 from .tasks import send_order_confirmation
 
-
 @dataclass(frozen=True)
 class PlaceOrderResult:
     order: Order
-
 
 @transaction.atomic
 def place_order(*, customer, items) -> PlaceOrderResult:
@@ -595,11 +590,7 @@ def update_document(sender, instance, **kwargs):
 
 Even with a condition, this pattern can create extra queries and fragile behavior.
 
-Prefer setting the value before the original save or using an explicit service. A direct queryset update may avoid recursion, but remember that it bypasses model `save()` and save signals:
-
-```python
-Document.objects.filter(pk=instance.pk).update(processed=True)
-```
+Prefer setting the value before the original save or using an explicit service. A direct queryset update may avoid recursion, but remember that it bypasses model `save()` and save signals: `Document.objects.filter(pk=instance.pk).update(processed=True)`
 
 Use that deliberately, not as a hidden workaround.
 
@@ -679,7 +670,6 @@ from django.dispatch import receiver
 from .models import Order
 from .tasks import send_order_confirmation
 
-
 @receiver(
     post_save,
     sender=Order,
@@ -754,7 +744,6 @@ Send it from the code that owns the event:
 
 from .signals import payment_captured
 
-
 def capture_payment(*, payment):
     gateway_result = payment_gateway.capture(payment.gateway_id)
 
@@ -775,7 +764,6 @@ Receive it:
 from django.dispatch import receiver
 
 from payments.signals import payment_captured
-
 
 @receiver(payment_captured)
 def record_payment_metric(sender, payment, **kwargs):
@@ -890,11 +878,7 @@ That means an unrelated analytics receiver can fail an otherwise valid request u
 
 Django stores signal handlers as weak references by default.
 
-Module-level functions normally remain available. A locally defined receiver may be garbage-collected unless connected with `weak=False`:
-
-```python
-my_signal.connect(local_receiver, weak=False)
-```
+Module-level functions normally remain available. A locally defined receiver may be garbage-collected unless connected with `weak=False`: `my_signal.connect(local_receiver, weak=False)`
 
 Prefer module-level receiver functions in normal Django applications.
 
@@ -954,7 +938,6 @@ import pytest
 from django.contrib.auth import get_user_model
 
 from accounts.models import Profile
-
 
 @pytest.mark.django_db
 def test_profile_is_created_for_new_user():
@@ -1095,14 +1078,19 @@ For each receiver, make clear:
 
 A useful rule:
 
-```text
-If the system would be incorrect when the receiver does not run,
-consider making the operation an explicit workflow step.
-```
+> If the system would be incorrect when the receiver does not run,  
+> consider making the operation an explicit workflow step.
 
 ### 17.10 Treat Signals as an Architectural Boundary
 
-Signals are most valuable at extension boundaries, not as a way to avoid organizing normal application code.
+Signals are most valuable at extension boundaries, not as a way to avoid organizing normal application code. The practical default order of preference is:
+
+```mermaid
+flowchart TD
+    A[Explicit service first] --> B["transaction.on_commit() for post-commit work"]
+    B --> C[Background task for slow or external work]
+    C --> D[Signal only for genuinely independent observers]
+```
 
 ---
 
@@ -1133,42 +1121,6 @@ Before adding a signal, ask:
 8. Is this really an in-process event, or do I need durable messaging?
 
 If several answers indicate hidden coupling or reliability concerns, do not use a signal.
-
----
-
-## 19. Final Summary
-
-Django signals provide a clean mechanism for notifying independent receivers that an event occurred.
-
-They work well for:
-
-- reusable-app extension points;
-- optional observers;
-- authentication auditing;
-- lightweight cross-cutting reactions;
-- independent modules that should not be directly imported by the sender.
-
-They are usually the wrong choice for:
-
-- core business workflows;
-- ordered multi-step processes;
-- long-running work;
-- database invariants;
-- logic that must run during bulk updates;
-- durable cross-service events;
-- behavior that would be clearer as a direct function call.
-
-The practical default is:
-
-```mermaid
-flowchart TD
-    A[Explicit service first] --> B["transaction.on_commit() for post-commit work"]
-    B --> C[Background task for slow or external work]
-    C --> D[Signal only for genuinely independent observers]
-```
-
-> [!IMPORTANT]
-> A signal should announce an event—not secretly control the entire application workflow.
 
 ---
 

@@ -7,9 +7,40 @@ order: 2
 # Django Middleware
 
 > Middleware is a lightweight layer that runs around Django's view processing. It can inspect or modify every incoming request and outgoing response from one central place.
-
+>
 > [!NOTE]
 > This guide is aligned with **Django 6.0.7**, the current stable patch release at the time of verification. Most core middleware concepts also apply to Django 4.2 and 5.x projects.
+
+## In short
+
+- Middleware wraps Django's view processing, so one registered component applies to every request and every response from a single place instead of being repeated in each view.
+- Requests travel **down** the `MIDDLEWARE` list and responses come back **up** it — the onion model — so the first entry is the outermost layer on both legs.
+- The modern shape is a callable class: `__init__(get_response)` runs once at startup, `__call__(request)` runs per request. Keep request-specific state off `self`.
+- Returning a response without calling `get_response(request)` short-circuits the chain: the view and every middleware below it never run.
+- Beyond `__call__()`, the optional hooks are `process_view()`, `process_exception()`, and `process_template_response()`.
+- Order is behavior: `SessionMiddleware` must precede `AuthenticationMiddleware`, which must precede anything reading `request.user`, and `CommonMiddleware`, `GZipMiddleware`, and the cache middleware each have their own position requirements.
+- Declare `sync_capable` / `async_capable` (or use `django.utils.decorators.sync_and_async_middleware`) so Django does not wrap you in a sync/async adaptor, and remember that a streaming response has no `response.content`.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Middleware A
+    participant B as Middleware B
+    participant M as Middleware C
+    participant V as View
+    C->>A: Request phase
+    A->>B: Request phase
+    B->>M: Request phase
+    M->>V: Request phase
+    V-->>M: Creates response
+    M-->>B: Response phase
+    B-->>A: Response phase
+    A-->>C: Response phase
+```
+
+**Interview answer:** Middleware is a layer that wraps Django's view processing, so cross-cutting concerns such as sessions, authentication, CSRF, security headers, or request logging live in one component instead of in every view. Each entry in `MIDDLEWARE` is a callable that receives `get_response` once at startup and a request per call, so requests descend the list top to bottom and responses return bottom to top — the onion model — and a middleware that returns a response without calling `get_response()` stops everything below it. Ordering is therefore part of the application's behavior: `AuthenticationMiddleware` only works because `SessionMiddleware` ran before it, and anything that reads `request.user` has to sit below both.
+
+**Gotcha:** Storing request data on `self` (`self.user = request.user`) inside `__call__()`. Django builds one middleware instance at startup and reuses it for every request, so that value leaks across concurrent requests — use a local variable or attach it to the request object instead.
 
 ---
 
@@ -45,8 +76,6 @@ class SimpleMiddleware:
 
         return response
 ```
-
-### Core idea
 
 ```mermaid
 flowchart TD
@@ -134,23 +163,6 @@ MIDDLEWARE = [
 
 The request enters from top to bottom. The response returns from bottom to top.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant A as Middleware A
-    participant B as Middleware B
-    participant M as Middleware C
-    participant V as View
-    C->>A: Request phase
-    A->>B: Request phase
-    B->>M: Request phase
-    M->>V: Request phase
-    V-->>M: Creates response
-    M-->>B: Response phase
-    B-->>A: Response phase
-    A-->>C: Response phase
-```
-
 The effective execution order is:
 
 ```text
@@ -237,7 +249,6 @@ A middleware can raise `MiddlewareNotUsed` during initialization when it should 
 ```python
 from django.conf import settings
 from django.core.exceptions import MiddlewareNotUsed
-
 
 class DevelopmentOnlyMiddleware:
     def __init__(self, get_response):
@@ -382,7 +393,6 @@ It may immediately return an `HttpResponse`, preventing later middleware and the
 ```python
 from django.http import JsonResponse
 
-
 class MaintenanceModeMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -396,8 +406,6 @@ class MaintenanceModeMiddleware:
 
         return self.get_response(request)
 ```
-
-### Short-circuit flow
 
 ```mermaid
 flowchart TD
@@ -442,11 +450,7 @@ class ViewInfoMiddleware:
         return None
 ```
 
-Signature:
-
-```python
-process_view(request, view_func, view_args, view_kwargs)
-```
+Signature: `process_view(request, view_func, view_args, view_kwargs)`
 
 Return:
 
@@ -463,7 +467,6 @@ Called when the view raises an exception.
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class ViewExceptionLoggingMiddleware:
     def __init__(self, get_response):
@@ -518,7 +521,6 @@ Older middleware commonly used `MiddlewareMixin`.
 
 ```python
 from django.utils.deprecation import MiddlewareMixin
-
 
 class LegacyStyleMiddleware(MiddlewareMixin):
     def process_request(self, request):
@@ -593,7 +595,6 @@ import time
 
 logger = logging.getLogger(__name__)
 
-
 class RequestTimingMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -620,8 +621,6 @@ class RequestTimingMiddleware:
         return response
 ```
 
-#### Flow
-
 ```mermaid
 flowchart TD
     A[Request arrives] --> B[Record start time]
@@ -644,7 +643,6 @@ import re
 from uuid import uuid4
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-
 
 class RequestIdMiddleware:
     def __init__(self, get_response):
@@ -675,7 +673,6 @@ In distributed systems, propagate the same identifier—or standardized trace co
 
 ```python
 from django.http import JsonResponse
-
 
 class InternalApiMiddleware:
     INTERNAL_PREFIX = "/internal/"
@@ -708,7 +705,6 @@ This middleware requires `AuthenticationMiddleware` to run first.
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class UserAuditMiddleware:
     def __init__(self, get_response):
@@ -762,7 +758,6 @@ The following middleware supports both modes.
 from asgiref.sync import iscoroutinefunction
 from django.utils.decorators import sync_and_async_middleware
 
-
 @sync_and_async_middleware
 def request_mode_middleware(get_response):
     if iscoroutinefunction(get_response):
@@ -790,7 +785,6 @@ An asynchronous class-based middleware must correctly advertise and mark its asy
 
 ```python
 from asgiref.sync import iscoroutinefunction, markcoroutinefunction
-
 
 class AsyncOnlyMiddleware:
     sync_capable = False
@@ -834,8 +828,6 @@ def wrap_streaming_content(content):
     for chunk in content:
         yield alter_content(chunk)
 ```
-
-### Why this matters
 
 ```mermaid
 flowchart LR
@@ -913,7 +905,6 @@ from django.test import RequestFactory, SimpleTestCase
 
 from core.middleware import RequestIdMiddleware
 
-
 class RequestIdMiddlewareTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -949,7 +940,6 @@ class RequestIdMiddlewareTests(SimpleTestCase):
 
 ```python
 from django.test import TestCase, override_settings
-
 
 @override_settings(
     MIDDLEWARE=[
@@ -1129,43 +1119,6 @@ flowchart TD
 - Model-specific side effects
 - Feature-specific database queries
 - Complex workflow orchestration
-
----
-
-## 17. Summary
-
-```text
-Middleware = a layer around Django's request/response processing.
-```
-
-Key points:
-
-1. Requests move through `MIDDLEWARE` from top to bottom.
-2. Responses return through middleware from bottom to top.
-3. `__init__()` runs once; `__call__()` runs per request.
-4. Calling `get_response(request)` passes control to the next layer.
-5. Returning a response without calling `get_response()` short-circuits the chain.
-6. Ordering matters because middleware can depend on sessions, authentication, CSRF, caching, or response-body state.
-7. Custom middleware should remain lightweight, stateless between requests, and focused on cross-cutting HTTP concerns.
-8. Async middleware should correctly declare its capabilities to avoid unnecessary sync/async adaptation.
-9. Streaming responses require special handling because their complete body is not available as `response.content`.
-10. Unit tests validate middleware logic; integration tests validate ordering and full-stack behavior.
-
-### Mental model
-
-```mermaid
-flowchart TD
-    A[Request] --> B[Security]
-    B --> C[Session]
-    C --> D[Authentication]
-    D --> E[Custom Middleware]
-    E --> F[View]
-    F --> G[Custom Middleware]
-    G --> H[Authentication]
-    H --> I[Session]
-    I --> J[Security]
-    J --> K[Response]
-```
 
 ---
 
