@@ -6,712 +6,350 @@ order: 6
 
 # FastAPI Background Tasks
 
-> FastAPI's `BackgroundTasks` lets an endpoint return its HTTP response first and then run small, non-critical work inside the same application process.
+> FastAPI `BackgroundTasks` lets an endpoint return the HTTP response first and then run small, best-effort work inside the same application process.
 
-## In short
+## Index
 
-- `BackgroundTasks` runs small, non-critical work in the same FastAPI process, starting only after the HTTP response has been sent to the client.
-- Register work with `background_tasks.add_task(fn, *args, **kwargs)` — pass the function itself, never call it, or it runs immediately and blocks the response.
-- Use `def` for blocking/synchronous work (Starlette runs it via a thread pool) and `async def` only for genuinely awaitable I/O; never put blocking calls inside `async def`.
-- Registered tasks run in order; an unhandled exception in one can stop later tasks from running, and a failure can no longer change an HTTP response that was already sent.
-- Pass IDs or other stable values into a task, not request-scoped objects such as a DB session, file handle, or the `Request` itself — open what the task needs from inside the task.
-- It is not durable: no retries, persistence, or distributed workers. For long-running, CPU-heavy, retryable, or business-critical work, use a real task queue (Celery, Dramatiq, RQ, ARQ) instead.
-
-```mermaid
-flowchart TD
-    A[Work should run after response] --> B{Must it survive a crash or restart?}
-    B -- Yes --> Q[Use a durable task queue]
-    B -- No --> C{Is it long-running or CPU-heavy?}
-    C -- Yes --> Q
-    C -- No --> D{Does it need retries or job tracking?}
-    D -- Yes --> Q
-    D -- No --> F[FastAPI BackgroundTasks may be suitable]
-```
-
-**Interview answer:** FastAPI's `BackgroundTasks` schedules small, best-effort work — like sending a notification email or writing an audit log — to run in the same process after the response has already been sent. Reach for a task queue such as [Celery](../task-processing/celery-architecture.md) instead when the work must survive a restart, needs retries or job tracking, runs long, is CPU-heavy, or must be distributed across worker machines.
-
-**Gotcha:** Calling the function instead of passing it, e.g. `background_tasks.add_task(send_email())` — this calls `send_email()` immediately, blocking the response, and schedules its return value instead of the call. Pass the callable and its arguments separately: `background_tasks.add_task(send_email, recipient)`.
+1. [What Background Tasks Are](#1-what-background-tasks-are)
+2. [How `BackgroundTasks` Works](#2-how-backgroundtasks-works)
+3. [Sync vs Async Task Functions](#3-sync-vs-async-task-functions)
+4. [Dependencies and Multiple Tasks](#4-dependencies-and-multiple-tasks)
+5. [Error and Request-Lifecycle Considerations](#5-error-and-request-lifecycle-considerations)
+6. [`BackgroundTasks` vs a Task Queue](#6-backgroundtasks-vs-a-task-queue)
+7. [Practical Example](#7-practical-example)
+8. [Testing](#8-testing)
+9. [Best Practices and Key Takeaways](#9-best-practices-and-key-takeaways)
 
 ---
 
-# 1. What Is a Background Task?
+# 1. What Background Tasks Are
 
-A background task is work that starts **after FastAPI has prepared and sent the response** to the client.
+A background task is work that FastAPI runs **after the response has been sent to the client**.
 
-Consider an endpoint that creates a user:
+For example, when an order is created, the client normally needs the order result immediately but does not need to wait for a notification email.
 
 ```text
-1. Validate the request
-2. Save the user
-3. Return the response
-4. Send the welcome email
+Request
+  ↓
+Validate data
+  ↓
+Create and commit order
+  ↓
+Register background task
+  ↓
+Return HTTP response
+  ↓
+Run background task
 ```
 
-The client needs to know whether the user was created. It normally does not need to wait for the welcome email to be sent.
+Typical lightweight uses include:
 
-FastAPI provides the `BackgroundTasks` class for this type of post-response work: `from fastapi import BackgroundTasks`
-
-The task function can be either:
-
-- A normal synchronous function declared with `def`
-- An asynchronous function declared with `async def`
-
-FastAPI handles both forms.
-
-> [!IMPORTANT]
-> `BackgroundTasks` runs work inside the same application process. It is not a durable job queue and does not provide automatic retries, distributed workers, job persistence, or guaranteed execution after a server failure.
-
----
-
-# 2. Why Background Tasks Are Useful
-
-Without a background task, the client waits for every operation:
-
-```mermaid
-flowchart TD
-    C[Client] -->|"POST /users"| F[FastAPI]
-    F --> S[Save user]
-    S --> E[Send email while<br/>the client waits]
-    E --> A[Write audit log]
-    A --> R[Response]
-```
-
-With `BackgroundTasks`, FastAPI can respond earlier:
-
-```mermaid
-flowchart TD
-    C[Client] -->|"POST /users"| F[FastAPI]
-    F --> S[Save user]
-    S --> T[Register tasks]
-    T --> R[Response returned]
-    R --> E[Send email]
-    R --> A[Write audit log]
-```
-
-Typical use cases include:
-
-- Sending a non-critical email notification
+- Sending a non-critical email
 - Writing an audit or activity log
-- Updating a small cache entry
 - Sending an analytics event
 - Triggering a lightweight webhook
-- Performing small post-processing work
-- Deleting a temporary file after returning it
+- Performing small cleanup work
 
-A background task is useful when the work:
-
-1. Does not affect the immediate response.
-2. Is relatively small.
-3. Can run in the same FastAPI process.
-4. Does not require strong delivery guarantees.
-
----
-
-# 3. How FastAPI Executes Background Tasks
-
-FastAPI's `BackgroundTasks` is based on Starlette's background-task implementation.
-
-The lifecycle is approximately:
+The important idea is that `BackgroundTasks` is **in-process**. It is not a separate worker system and does not provide durable job execution.
 
 ```mermaid
-sequenceDiagram
-    participant C as Client
-    participant F as FastAPI Endpoint
-    participant R as HTTP Response
-    participant B as Background Task
-
-    C->>F: Send request
-    F->>F: Validate input
-    F->>F: Run main business logic
-    F->>F: Add background task
-    F-->>R: Build response
-    R-->>C: Send response
-    R->>B: Execute registered task
-```
-
-The important point is:
-
-```text
-The task is attached to the response
-              +
-It starts only after the response is sent
-```
-
-The task is still part of the application process. It is not automatically transferred to another server or independent worker.
-
----
-
-# 4. Basic `BackgroundTasks` Example
-
-## 4.1 Create the Task Function
-
-```python
-def write_notification(email: str, message: str) -> None:
-    with open("notifications.log", "a", encoding="utf-8") as file:
-        file.write(f"{email}: {message}\n")
-```
-
-This task uses normal blocking file I/O, so a regular `def` function is appropriate.
-
-## 4.2 Add the Task from an Endpoint
-
-```python
-from fastapi import BackgroundTasks, FastAPI, status
-
-app = FastAPI()
-
-def write_notification(email: str, message: str) -> None:
-    with open("notifications.log", "a", encoding="utf-8") as file:
-        file.write(f"{email}: {message}\n")
-
-@app.post("/notifications", status_code=status.HTTP_202_ACCEPTED)
-async def create_notification(
-    email: str,
-    background_tasks: BackgroundTasks,
-) -> dict[str, str]:
-    background_tasks.add_task(
-        write_notification,
-        email,
-        "Your notification was created.",
-    )
-
-    return {
-        "status": "accepted",
-        "message": "The notification will be processed in the background.",
-    }
-```
-
-The important line is the `add_task()` call — pass the function object, not the result of calling it:
-
-```python
-# Incorrect: this calls write_notification() immediately and blocks the response
-background_tasks.add_task(write_notification(email, "Hello"))
-
-# Correct: pass the function and its arguments separately
-background_tasks.add_task(write_notification, email, "Hello")
+flowchart LR
+    C[Client] -->|Request| A[FastAPI Endpoint]
+    A --> B[Main Business Logic]
+    B --> T[Register Background Task]
+    T --> R[Send Response]
+    R --> BG[Run Task in App Process]
 ```
 
 ---
 
-# 5. Arguments and Keyword Arguments
+# 2. How `BackgroundTasks` Works
 
-The `add_task()` method accepts:
+Import `BackgroundTasks` from FastAPI and declare it as an endpoint parameter:
+
+```python
+from fastapi import BackgroundTasks
+```
+
+FastAPI creates the `BackgroundTasks` object and injects it into the request handler.
+
+Register work with:
 
 ```python
 background_tasks.add_task(
     task_function,
-    positional_argument_1,
-    positional_argument_2,
+    argument_1,
+    argument_2,
     keyword_argument=value,
 )
 ```
 
-Example:
+The first argument is the **function itself**, followed by the arguments that FastAPI should use when calling it later.
 
 ```python
-def send_email(
-    recipient: str,
-    subject: str,
-    *,
-    template_name: str,
-) -> None:
-    print(
-        f"Sending '{subject}' to {recipient} "
-        f"using template '{template_name}'"
-    )
-
-@app.post("/users")
-async def create_user(
-    email: str,
-    background_tasks: BackgroundTasks,
-) -> dict[str, str]:
-    background_tasks.add_task(
-        send_email,
-        email,
-        "Welcome",
-        template_name="welcome.html",
-    )
-
-    return {"email": email, "status": "created"}
-```
-
-FastAPI stores the callable and its arguments, then invokes it after sending the response.
-
----
-
-# 6. Synchronous vs Asynchronous Task Functions
-
-A background task may use either `def` or `async def`, but the choice should match the library used inside the function.
-
-## 6.1 Use `def` for Blocking Libraries
-
-Use `def` when the task calls a synchronous library:
-
-```python
-def generate_report_file(report_id: int) -> None:
-    # Synchronous file or SDK operation
-    with open(f"report-{report_id}.txt", "w", encoding="utf-8") as file:
-        file.write("Report generated")
-```
-
-Common synchronous operations include:
-
-- Standard file operations
-- A synchronous email SDK
-- A synchronous database client
-- A blocking third-party library
-
-Starlette runs synchronous background tasks through its thread-pool mechanism, preventing the synchronous function from directly blocking the event loop.
-
-## 6.2 Use `async def` for Awaitable I/O
-
-Use `async def` when the libraries provide real asynchronous methods:
-
-```python
-import httpx
-
-async def notify_external_service(event_id: str) -> None:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.post(
-            "https://example.com/events",
-            json={"event_id": event_id},
-        )
-```
-
-Register it normally with `background_tasks.add_task(notify_external_service, event_id)`.
-
-## 6.3 Do Not Put Blocking Work Inside `async def`
-
-This is a common design problem:
-
-```python
-import time
-
-async def bad_task() -> None:
-    time.sleep(10)  # Blocks the event-loop thread
-```
-
-Declaring a function with `async def` does not automatically make blocking code asynchronous.
-
-A better rule is:
-
-| Kind of work | How to declare it |
-| --- | --- |
-| Async library with awaitable methods | `async def` |
-| Blocking or synchronous library | `def` |
-| CPU-heavy work | Separate worker system |
-
----
-
-# 7. Using Background Tasks with Dependencies
-
-FastAPI can inject the same `BackgroundTasks` object into dependencies and the endpoint.
-
-Tasks added at different dependency levels are collected and executed after the response.
-
-```python
-from typing import Annotated
-
-from fastapi import BackgroundTasks, Depends, FastAPI, Header
-
-app = FastAPI()
-
-def write_audit_log(message: str) -> None:
-    with open("audit.log", "a", encoding="utf-8") as file:
-        file.write(f"{message}\n")
-
-def audit_request(
-    background_tasks: BackgroundTasks,
-    x_request_id: Annotated[str | None, Header()] = None,
-) -> str | None:
-    if x_request_id:
-        background_tasks.add_task(
-            write_audit_log,
-            f"Request received: {x_request_id}",
-        )
-
-    return x_request_id
-
-@app.post("/orders")
-async def create_order(
-    background_tasks: BackgroundTasks,
-    request_id: Annotated[str | None, Depends(audit_request)],
-) -> dict[str, str | None]:
-    background_tasks.add_task(
-        write_audit_log,
-        "Order created successfully",
-    )
-
-    return {
-        "status": "created",
-        "request_id": request_id,
-    }
+background_tasks.add_task(send_email, email, subject="Welcome")
 ```
 
 Conceptually:
 
-```mermaid
-flowchart TD
-    A[Dependency adds task] --> B[Endpoint adds task]
-    B --> C[FastAPI merges them into one<br/>BackgroundTasks collection]
-    C --> D[Response is sent]
-    D --> E[Collected tasks execute]
+```text
+add_task(function, *args, **kwargs)
+              ↓
+FastAPI stores the callable
+              ↓
+Response is sent
+              ↓
+Stored callable is executed
 ```
 
-This is useful for cross-cutting operations such as:
+`BackgroundTasks` comes from Starlette's background-task implementation, which FastAPI integrates with its dependency system.
+
+---
+
+# 3. Sync vs Async Task Functions
+
+A background task can be declared with either `def` or `async def`.
+
+The correct choice depends on the library used inside the task.
+
+## 3.1 Use `def` for Blocking or Synchronous Work
+
+Use a normal function when the code uses blocking APIs:
+
+```python
+def write_audit_log(order_id: int) -> None:
+    with open("audit.log", "a", encoding="utf-8") as file:
+        file.write(f"order.created:{order_id}\n")
+```
+
+Common examples:
+
+- Standard file I/O
+- Synchronous database clients
+- Synchronous email SDKs
+- Blocking third-party libraries
+
+Starlette runs synchronous background tasks through its thread-pool mechanism instead of executing the blocking function directly on the event loop.
+
+## 3.2 Use `async def` for Real Async I/O
+
+Use `async def` when the library exposes awaitable operations:
+
+```python
+import httpx
+
+async def notify_service(order_id: int) -> None:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.post(
+            "https://example.com/events",
+            json={"order_id": order_id},
+        )
+```
+
+A useful rule is:
+
+| Work type | Recommended task |
+|---|---|
+| Awaitable network/database I/O | `async def` |
+| Blocking/synchronous library | `def` |
+| CPU-heavy processing | Separate worker system |
+
+Declaring a function as `async def` does **not** make blocking code asynchronous. A blocking call inside an async task can still block the event loop.
+
+---
+
+# 4. Dependencies and Multiple Tasks
+
+## 4.1 Using `BackgroundTasks` in Dependencies
+
+FastAPI can inject `BackgroundTasks` into both dependencies and the endpoint.
+
+When different dependency levels add tasks, FastAPI reuses the same background-task collection and runs the collected tasks after the response.
+
+```mermaid
+flowchart TD
+    D[Dependency adds task] --> E[Endpoint adds task]
+    E --> M[Same BackgroundTasks collection]
+    M --> R[Response sent]
+    R --> T[Tasks execute]
+```
+
+This is useful for cross-cutting work such as:
 
 - Audit logging
 - Request tracking
 - Analytics
-- Security event logging
-- Lightweight cleanup
+- Lightweight security-event logging
+
+## 4.2 Multiple Tasks Run in Order
+
+You can call `add_task()` multiple times:
+
+```python
+background_tasks.add_task(task_one, order_id)
+background_tasks.add_task(task_two, order_id)
+```
+
+Starlette executes registered background tasks **in order**.
+
+```text
+Task 1 → Task 2 → Task 3
+```
+
+If one task raises an unhandled exception, later tasks in that background-task collection do not get an opportunity to run.
+
+That matters when several independent operations are registered together. Business-critical work should not depend on this best-effort execution model.
 
 ---
 
-# 8. Running Multiple Background Tasks
+# 5. Error and Request-Lifecycle Considerations
 
-Call `add_task()` multiple times:
+## 5.1 A Task Failure Cannot Change an Already-Sent Response
 
-```python
-def send_customer_email(order_id: int) -> None:
-    print(f"Sending email for order {order_id}")
+Once the response has been sent, a background-task exception cannot be converted into a new client error response.
 
-def write_order_audit(order_id: int) -> None:
-    print(f"Writing audit record for order {order_id}")
+The client may already have received:
 
-@app.post("/orders/{order_id}")
-async def complete_order(
-    order_id: int,
-    background_tasks: BackgroundTasks,
-) -> dict[str, int | str]:
-    background_tasks.add_task(send_customer_email, order_id)
-    background_tasks.add_task(write_order_audit, order_id)
-
-    return {
-        "order_id": order_id,
-        "status": "completed",
-    }
+```text
+HTTP 202 Accepted
 ```
 
-Starlette executes registered tasks in order. If an earlier task raises an unhandled exception, later tasks may not execute.
+even if the background operation fails afterward.
+
+For small non-critical tasks, log failures with useful identifiers:
+
+```python
+logger.exception(
+    "Background task failed",
+    extra={"order_id": order_id},
+)
+```
+
+If work needs retries, persistence, or guaranteed delivery, use a durable queue.
+
+## 5.2 Pass Stable Values, Not Request-Scoped Resources
+
+Prefer passing IDs and immutable values:
+
+```python
+background_tasks.add_task(process_order, order_id)
+```
+
+Avoid depending on request-scoped resources such as:
+
+- Open database sessions
+- Open file handles
+- The `Request` object
+- Mutable request-scoped state
+
+A safer task opens the resources it needs itself:
+
+```python
+def process_order(order_id: int) -> None:
+    with create_database_session() as session:
+        order = session.get(Order, order_id)
+        if order is None:
+            return
+
+        # Perform the background work.
+```
+
+## 5.3 Commit Important Data Before Scheduling Follow-Up Work
+
+For database-backed operations, use this order:
+
+```text
+1. Validate request
+2. Write important data
+3. Commit transaction
+4. Register task using the saved record ID
+5. Return response
+6. Background task loads committed data
+```
+
+This keeps the background task independent from the request transaction.
+
+---
+
+# 6. `BackgroundTasks` vs a Task Queue
+
+This is the most important architecture decision.
+
+| Requirement | `BackgroundTasks` | Durable Task Queue |
+|---|---:|---:|
+| Run after response | Yes | Yes |
+| Same application process | Yes | Usually no |
+| Separate workers | No | Yes |
+| Persistent job storage | No | Usually yes |
+| Automatic retries | No | Usually yes |
+| Job status/monitoring | No | Usually yes |
+| Survive app restart/crash | No guarantee | Designed for it |
+| CPU-heavy work | Poor fit | Better fit |
+| Long-running work | Poor fit | Better fit |
+| Small local post-response work | Good fit | Often unnecessary |
+
+Common durable worker systems include Celery, Dramatiq, RQ, ARQ, and cloud-managed queue/worker services.
+
+Use this decision flow:
 
 ```mermaid
 flowchart TD
-    T1[Task 1] -->|success| T2[Task 2]
-    T2 -->|success| T3[Task 3]
-    T2 -->|exception| X[Task 3 not executed]
+    A[Work can happen after response] --> B{Must it survive restart or crash?}
+    B -- Yes --> Q[Use durable task queue]
+    B -- No --> C{Long-running or CPU-heavy?}
+    C -- Yes --> Q
+    C -- No --> D{Needs retries, tracking, or guaranteed delivery?}
+    D -- Yes --> Q
+    D -- No --> F[BackgroundTasks is suitable]
 ```
 
-Therefore, avoid placing several unrelated critical operations into one background-task chain without appropriate exception handling.
+A good mental model is:
+
+> **`BackgroundTasks` = small, local, best-effort post-response work.**  
+> **Task queue = durable, retryable, distributed, or heavy work.**
 
 ---
 
-# 9. Returning HTTP `202 Accepted`
+# 7. Practical Example
 
-`202 Accepted` means the server accepted the request, but processing has not necessarily finished.
-
-It is often suitable when the endpoint schedules work:
-
-```python
-from fastapi import BackgroundTasks, FastAPI, status
-
-app = FastAPI()
-
-def process_import(import_id: int) -> None:
-    print(f"Processing import {import_id}")
-
-@app.post(
-    "/imports/{import_id}",
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def start_import(
-    import_id: int,
-    background_tasks: BackgroundTasks,
-) -> dict[str, int | str]:
-    background_tasks.add_task(process_import, import_id)
-
-    return {
-        "import_id": import_id,
-        "status": "accepted",
-    }
-```
-
-However, returning `202` does not make `BackgroundTasks` durable. It only communicates that processing continues after the response.
-
-For long-running jobs, a stronger API design normally creates a job record:
-
-```json
-{
-  "job_id": "job_123",
-  "status": "pending",
-  "status_url": "/jobs/job_123"
-}
-```
-
-The actual work should then be handled by a durable worker queue.
-
----
-
-# 10. Error Handling and Logging
-
-An exception raised after the response has been sent cannot be converted into a new client error response.
-
-The client may already have received `HTTP/1.1 202 Accepted`, even if the background task fails a moment later.
-
-Handle expected failures inside the task and log enough context:
+Consider an order endpoint where creating the order is critical, but writing an audit event can happen after the response.
 
 ```python
 import logging
 
+from fastapi import BackgroundTasks, FastAPI, status
+from pydantic import BaseModel
+
+app = FastAPI()
 logger = logging.getLogger(__name__)
 
-def send_invoice_email(invoice_id: int, recipient: str) -> None:
-    try:
-        # Replace with the actual email integration.
-        print(f"Sending invoice {invoice_id} to {recipient}")
-    except Exception:
-        logger.exception(
-            "Failed to send invoice email",
-            extra={
-                "invoice_id": invoice_id,
-                "recipient": recipient,
-            },
-        )
-```
-
-For a non-critical task, catching and logging may be sufficient.
-
-For work requiring retries or guaranteed delivery, use a task queue that supports:
-
-- Retry policies
-- Backoff
-- Dead-letter handling
-- Job status
-- Monitoring
-- Persistence
-
-> [!NOTE]
-> A successful HTTP response means the request handler completed and the task was registered. It does not prove that the background operation completed successfully.
-
----
-
-# 11. Database and Request-Lifecycle Considerations
-
-## 11.1 Pass Stable Values, Not Request-Scoped Resources
-
-Avoid passing a request-scoped database session directly into a background task:
-
-```python
-# Risky design
-background_tasks.add_task(process_user, db_session, user_id)
-```
-
-The dependency that created the session may be cleaned up as part of request processing. The task should create the resources it needs.
-
-Prefer passing identifiers: `background_tasks.add_task(process_user, user_id)`
-
-Then open a new database session inside the task:
-
-```python
-def process_user(user_id: int) -> None:
-    with create_database_session() as session:
-        user = session.get(User, user_id)
-
-        if user is None:
-            return
-
-        # Perform the required work.
-```
-
-## 11.2 Commit Important Data Before Scheduling Follow-Up Work
-
-This order is safer:
-
-```text
-1. Validate request
-2. Write important database data
-3. Commit transaction
-4. Register background task using the saved record ID
-5. Return response
-```
-
-The task can then query committed data.
-
-## 11.3 Do Not Depend on Mutable Request Objects
-
-Prefer this:
-
-```python
-background_tasks.add_task(
-    write_audit_event,
-    user_id,
-    request_id,
-)
-```
-
-Instead of passing an entire request object or another object whose lifecycle is tied to the request.
-
-## 11.4 Temporary Files Need Careful Handling
-
-When processing an uploaded file, do not assume a request-managed file object will remain valid after the response.
-
-Safer options include:
-
-1. Copy the file to a controlled temporary location before returning.
-2. Pass the saved path or object-storage key to the task.
-3. Let the task open the resource itself.
-4. Delete the temporary resource in a `finally` block.
-
-For large or important file processing, use an external job queue and durable storage.
-
----
-
-# 12. Testing Background Tasks
-
-FastAPI's test client waits for application handling to finish, including attached background tasks. This makes task effects testable.
-
-```python
-from pathlib import Path
-
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-client = TestClient(app)
-
-def test_notification_is_written(tmp_path: Path) -> None:
-    response = client.post(
-        "/notifications",
-        params={"email": "developer@example.com"},
-    )
-
-    assert response.status_code == 202
-
-    # Assert the observable result produced by the task.
-```
-
-A cleaner unit-testing approach is to inject a service and mock the service method:
-
-```python
-from unittest.mock import Mock
-
-def test_background_email_is_scheduled() -> None:
-    email_service = Mock()
-
-    # Call the relevant service or endpoint with the mocked dependency.
-    # Assert that the email operation was invoked with expected values.
-```
-
-Useful test levels are:
-
-### Unit Test
-
-Test the task function directly:
-
-```python
-def test_build_notification_message() -> None:
-    result = build_notification_message("Ava")
-    assert result == "Hello Ava"
-```
-
-### Endpoint Test
-
-Verify:
-
-- The endpoint returns the correct status.
-- The correct background operation is scheduled or invoked.
-- Task arguments are correct.
-
-### Integration Test
-
-Verify interaction with:
-
-- The email provider
-- The database
-- Object storage
-- An external API
-
-Use test doubles or sandbox environments for external services.
-
----
-
-# 13. `BackgroundTasks` vs a Task Queue
-
-This is the most important architecture decision.
-
-| Requirement | FastAPI `BackgroundTasks` | Worker Queue |
-|---|---:|---:|
-| Executes after response | Yes | Yes |
-| Runs in the same app process | Yes | Usually no |
-| Separate worker processes | No | Yes |
-| Persistent job storage | No | Usually yes |
-| Automatic retries | No | Usually yes |
-| Multiple servers/workers | Not coordinated | Supported |
-| CPU-heavy processing | Poor fit | Better fit |
-| Long-running work | Poor fit | Better fit |
-| Small local post-response work | Good fit | May be unnecessary |
-| Operational complexity | Low | Higher |
-
-Common worker systems include:
-
-- Celery
-- Dramatiq
-- RQ
-- ARQ
-- Cloud-managed queue and worker services
-
----
-
-# 14. Practical Production Example
-
-The following example demonstrates a small, best-effort audit task.
-
-## 14.1 Project Structure
-
-```text
-app/
-├── main.py
-├── schemas.py
-├── services/
-│   ├── audit_service.py
-│   └── order_service.py
-└── tests/
-    └── test_orders.py
-```
-
-## 14.2 Request and Response Models
-
-```python
-# app/schemas.py
-
-from pydantic import BaseModel, EmailStr
 
 class OrderCreate(BaseModel):
-    customer_email: EmailStr
     product_id: int
     quantity: int
+
 
 class OrderResponse(BaseModel):
     id: int
     status: str
-```
 
-## 14.3 Audit Task
 
-```python
-# app/services/audit_service.py
+def create_order_in_db(payload: OrderCreate) -> int:
+    # Real application:
+    # 1. Start/use transaction
+    # 2. Insert order
+    # 3. Commit transaction
+    # 4. Return persisted ID
+    return 101
 
-import logging
 
-logger = logging.getLogger(__name__)
-
-def record_order_audit(order_id: int, event: str) -> None:
+def write_order_audit(order_id: int) -> None:
     try:
         logger.info(
             "Order audit event",
             extra={
                 "order_id": order_id,
-                "event": event,
+                "event": "order.created",
             },
         )
     except Exception:
@@ -719,199 +357,150 @@ def record_order_audit(order_id: int, event: str) -> None:
             "Unable to write order audit event",
             extra={"order_id": order_id},
         )
-```
 
-## 14.4 Order Service
-
-```python
-# app/services/order_service.py
-
-from dataclasses import dataclass
-
-from app.schemas import OrderCreate
-
-@dataclass(frozen=True)
-class CreatedOrder:
-    id: int
-    status: str
-
-def create_order(data: OrderCreate) -> CreatedOrder:
-    # In a real application:
-    # 1. Open/use a transaction.
-    # 2. Create the order.
-    # 3. Commit the transaction.
-    # 4. Return the persisted ID.
-    return CreatedOrder(id=101, status="created")
-```
-
-## 14.5 Endpoint
-
-```python
-# app/main.py
-
-from fastapi import BackgroundTasks, FastAPI, status
-
-from app.schemas import OrderCreate, OrderResponse
-from app.services.audit_service import record_order_audit
-from app.services.order_service import create_order
-
-app = FastAPI()
 
 @app.post(
     "/orders",
     response_model=OrderResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def place_order(
+async def create_order(
     payload: OrderCreate,
     background_tasks: BackgroundTasks,
 ) -> OrderResponse:
-    order = create_order(payload)
+    order_id = create_order_in_db(payload)
 
     background_tasks.add_task(
-        record_order_audit,
-        order.id,
-        "order.created",
+        write_order_audit,
+        order_id,
     )
 
     return OrderResponse(
-        id=order.id,
-        status=order.status,
+        id=order_id,
+        status="created",
     )
 ```
 
-Flow:
+Execution flow:
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant API as FastAPI
+    participant C as Client
+    participant A as FastAPI
     participant DB as Database
-    participant Audit as Audit Task
+    participant BG as Background Task
 
-    Client->>API: POST /orders
-    API->>DB: Insert order
-    DB-->>API: Order ID 101
-    API->>DB: Commit
-    API->>API: Register audit task
-    API-->>Client: 201 Created
-    API->>Audit: record_order_audit(101)
+    C->>A: POST /orders
+    A->>DB: Create order
+    DB-->>A: Commit order 101
+    A->>A: add_task(write_order_audit, 101)
+    A-->>C: 201 Created
+    A->>BG: write_order_audit(101)
 ```
 
-The order creation remains the critical synchronous operation. The audit entry is treated as small, post-response work.
+Why this is a reasonable use:
 
-If audit delivery is legally or operationally mandatory, it should not rely only on this mechanism. A durable event or queue design would be more appropriate.
+- Order creation finishes before success is returned.
+- The task receives only the stable `order_id`.
+- Audit writing is small and non-critical in this example.
+- The client does not wait for the audit operation.
+
+If the audit event were legally or operationally mandatory, a durable queue or transactional outbox would be a better design.
 
 ---
 
-# 15. Best Practices
+# 8. Testing
 
-## 15.1 Keep Tasks Small
+For task logic, test the background function directly whenever possible.
 
-A task should finish quickly and avoid monopolizing application resources.
+```python
+def test_write_order_audit() -> None:
+    write_order_audit(101)
 
-```text
-Good fit:
-- Small log write
-- Short notification
-- Lightweight cleanup
+    # Assert the expected observable effect.
+```
 
-Poor fit:
-- Video transcoding
+For an endpoint test, verify:
+
+- Correct HTTP status
+- Correct response body
+- Correct task/service arguments
+- Expected observable task result when appropriate
+
+Keep task logic in separate functions or services. This makes the code easier to test and easier to migrate to a worker queue later.
+
+---
+
+# 9. Best Practices and Key Takeaways
+
+## 9.1 Keep In-Process Tasks Small
+
+Good fits:
+
+- Short email notification
+- Small audit/log operation
+- Analytics event
+- Lightweight webhook
+- Temporary cleanup
+
+Poor fits:
+
+- Video processing
+- Large CSV imports
 - Large report generation
-- ML inference pipeline
-- Large CSV import
-```
+- ML pipelines
+- CPU-intensive work
+- Anything requiring guaranteed delivery
 
-## 15.2 Pass IDs and Immutable Values
-
-Prefer: `background_tasks.add_task(process_order, order_id)`
-
-Avoid passing:
-
-- Open database sessions
-- Open file handles
-- Mutable request-scoped objects
-- Large in-memory payloads
-
-## 15.3 Make Tasks Idempotent Where Possible
-
-An idempotent task can safely run more than once without creating incorrect results.
-
-Example strategy:
-
-```python
-def send_order_confirmation(order_id: int) -> None:
-    order = load_order(order_id)
-
-    if order.confirmation_sent_at is not None:
-        return
-
-    send_email(order.customer_email)
-    mark_confirmation_as_sent(order_id)
-```
-
-This is still not a substitute for a durable queue, but it makes task behavior safer.
-
-## 15.4 Add Structured Logging
-
-Include identifiers such as:
-
-- Request ID
-- User ID
-- Order ID
-- Job ID
-- Task name
-- Attempt number, when using a real worker queue
-
-## 15.5 Set Timeouts for External Calls
-
-A background task can still occupy application resources.
-
-```python
-async with httpx.AsyncClient(timeout=10.0) as client:
-    await client.post(url, json=payload)
-```
-
-## 15.6 Do Not Hide Business-Critical Work
-
-If the API must guarantee that an operation occurs, either:
-
-1. Complete it before returning success, or
-2. Persist the intent and dispatch it through a durable queue or outbox mechanism.
-
-## 15.7 Keep Task Functions Separate from Endpoints
+## 9.2 Pass IDs Instead of Live Objects
 
 Prefer:
 
 ```python
-@app.post("/orders")
-async def create_order_endpoint(...):
-    ...
-    background_tasks.add_task(send_confirmation, order_id)
+background_tasks.add_task(process_order, order_id)
 ```
 
-Instead of defining substantial task logic inside the endpoint.
+The task should create its own database session, client, or file handle when needed.
 
-This improves:
+## 9.3 Use the Correct Sync/Async Model
 
-- Readability
-- Reuse
-- Unit testing
-- Error handling
-- Migration to a real task queue later
+```text
+Async library  → async def + await
+Sync library   → def
+CPU-heavy work → worker process / task queue
+```
 
-## 15.8 Monitor Thread-Pool Usage
+## 9.4 Add Timeouts and Logging
 
-Synchronous endpoints, synchronous dependencies, file operations, and synchronous background tasks may share Starlette's thread-pool capacity.
+External calls should have explicit timeouts, and task logs should include identifiers such as:
 
-A large number of slow blocking tasks can reduce application throughput. Moving such workloads to dedicated workers is usually better than increasing in-process concurrency without understanding the resource impact.
+- Request ID
+- User ID
+- Order ID
+- Task name
+
+## 9.5 Remember the Execution Guarantee
+
+`BackgroundTasks` gives you **post-response execution inside the application process**, not durable job delivery.
+
+If the process stops before or during the task, the application has no built-in retry or persistence mechanism.
 
 ---
 
-## Official References
+## Final Summary
 
-- FastAPI — Background Tasks: <https://fastapi.tiangolo.com/tutorial/background-tasks/>
-- FastAPI — `BackgroundTasks` Reference: <https://fastapi.tiangolo.com/reference/background/>
-- Starlette — Background Tasks: <https://www.starlette.io/background/>
-- Starlette — Thread Pool: <https://www.starlette.io/threadpool/>
+```text
+FastAPI BackgroundTasks
+        │
+        ├── Executes after response
+        ├── Runs in the same app process
+        ├── Supports def and async def
+        ├── Integrates with dependencies
+        ├── Multiple tasks run in order
+        ├── No built-in retries or persistence
+        └── Best for small, non-critical work
+```
+
+For normal FastAPI development, remember the boundary:
+
+> Use `BackgroundTasks` when delaying a small operation improves response time and losing that operation would not break core business correctness. Use a durable worker queue when the job is heavy, long-running, retryable, trackable, distributed, or business-critical.

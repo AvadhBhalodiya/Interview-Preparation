@@ -6,103 +6,71 @@ order: 3
 
 # EXPLAIN and EXPLAIN ANALYZE for Query Optimization
 
-> Understand how a database executes a query, locate expensive work, and validate optimizations with evidence.
->
-> **Primary examples:** PostgreSQL 18
-> **Also covered:** MySQL 8.4, SQL Server, and SQLite
+> Understand how a database executes a query, identify expensive work, and verify optimizations with evidence.
+
+**Primary examples:** PostgreSQL 18  
+**Also covered:** MySQL 8.4, SQL Server 2025, and SQLite
 
 ## In short
 
-- `EXPLAIN` shows the optimizer's estimated plan; `EXPLAIN ANALYZE` runs the statement and adds actual time, rows, and loops.
-- Read the plan tree from the leaves upward — a parent's time already includes the work of its children, so never sum every node.
-- `cost=0.43..12.47` is startup..total in internal planner units, not milliseconds; only `actual time` is measured in ms.
-- The first thing to check is estimated `rows` against actual `rows`: a large mismatch is usually why a bad scan or join was chosen.
-- Multiply per-loop cost by `loops` — a 0.020 ms inner node executed 5,000 times is 100 ms of real work.
-- A `Seq Scan` is not automatically wrong; it is suspicious when a large table is scanned to return very few rows.
-- Add `BUFFERS` to see `shared hit` versus `read` and temp-file I/O, because elapsed time alone hides cache and I/O pressure.
+- `EXPLAIN` shows the plan the optimizer expects to use.
+- `EXPLAIN ANALYZE` executes the statement and adds actual runtime information such as time, rows, and loops.
+- PostgreSQL `cost=...` values are planner units, **not milliseconds**.
+- Compare **estimated rows vs actual rows** first. Large differences often explain poor scan or join choices.
+- For repeated nodes, PostgreSQL reports actual time and rows as averages per execution; use `loops` to understand the total work.
+- A `Seq Scan` is not automatically bad. It is suspicious when a large table is scanned to return very few rows.
+- In PostgreSQL 18, `ANALYZE` implicitly enables `BUFFERS`, so analyzed plans include buffer activity unless it is disabled.
+- Never add every node's time together because a parent node includes work done by its children.
+- `EXPLAIN ANALYZE` really executes the statement, including data-changing statements.
 
 ```mermaid
-flowchart TD
-    A[Slow query] --> B[Capture baseline]
-    B --> C["EXPLAIN ANALYZE + BUFFERS"]
-    C --> D["Find high work / bad estimates"]
-    D --> E[Change one relevant thing]
+flowchart LR
+    A[Slow query] --> B[EXPLAIN ANALYZE]
+    B --> C[Compare estimates and actuals]
+    C --> D[Find expensive branch]
+    D --> E[Make one focused change]
     E --> F[Run the same test again]
-    F --> G["Compare time, rows, loops, I/O"]
-    G --> D
 ```
-
-**Interview answer:** `EXPLAIN` tells you what the optimizer expects to do; `EXPLAIN ANALYZE` tells you what actually happened, because it executes the statement and reports real time, rows, and loops for every node. To debug a slow query I capture it with real parameter values, run `EXPLAIN (ANALYZE, BUFFERS)`, and look for the node with the highest time × loops, the biggest estimated-vs-actual row gap, or a sort spilling to disk. Then I make one focused change — an index, a sargable predicate, fresh statistics — and rerun the same plan to compare time, rows, loops, and I/O.
-
-**Gotcha:** `EXPLAIN ANALYZE` really executes the statement, so an analyzed `UPDATE`, `DELETE`, `INSERT`, or `MERGE` will modify data unless you wrap it in `BEGIN ... ROLLBACK`.
 
 ---
 
 # 1. Why Execution Plans Matter
 
-SQL is **declarative**. You describe the result you need, but normally you do not specify the exact steps the database must perform.
+SQL is **declarative**: you describe the result you want, while the database decides how to produce it.
 
 ```sql
-SELECT *
+SELECT id, customer_id, created_at
 FROM orders
 WHERE customer_id = 42;
 ```
 
-The database optimizer decides whether to:
+The optimizer may choose to:
 
-- scan every row in `orders`;
-- use an index on `customer_id`;
-- use multiple indexes together;
-- read rows in parallel;
-- join tables with a nested loop, hash join, or merge join;
-- sort rows in memory or write temporary data to disk.
+- scan the table;
+- use an index;
+- combine indexes;
+- execute work in parallel;
+- use a nested loop, hash join, or merge join;
+- sort in memory or spill temporary data to disk.
 
-`EXPLAIN` and `EXPLAIN ANALYZE` make those decisions visible.
+An execution plan makes those decisions visible.
 
-They help answer practical questions such as:
+For normal development, plans are most useful when answering:
 
-- Is the query using the intended index?
-- Is a full-table scan reasonable or expensive?
-- Is the optimizer estimating row counts correctly?
-- Which operation consumes most of the time?
-- Is a sort or hash operation spilling to disk?
-- Is a join executing thousands of repeated index lookups?
-- Did the proposed index actually improve the query?
-
----
-
-# 2. How a SQL Query Is Processed
-
-A simplified query-processing flow looks like this:
-
-```mermaid
-flowchart TD
-    Q[SQL query] --> P["Parser<br/>Checks syntax and builds a query structure"]
-    P --> R["Rewriter<br/>Expands views and applies logical rewrites"]
-    R --> O["Optimizer<br/>Evaluates possible access paths and join orders"]
-    O --> EP["Execution plan<br/>Selected tree of physical operations"]
-    EP --> EX["Executor<br/>Runs the selected plan and returns rows"]
-```
-
-The optimizer usually makes decisions using:
-
-- table and column statistics;
-- index metadata;
-- estimated selectivity of filters;
-- estimated number of rows at each step;
-- available memory and planner settings;
-- possible join orders and join algorithms;
-- expected CPU and I/O costs.
-
-The optimizer does not test every plan by executing it. It estimates the cost of candidate plans and selects a plan that appears efficient according to its cost model.
+- Is the expected index being used?
+- Is the database reading far more rows than it returns?
+- Are row-count estimates accurate?
+- Is a join repeatedly executing an inner lookup?
+- Is sorting or hashing using temporary disk space?
+- Did an index or query rewrite actually improve the workload?
 
 ---
 
-# 3. EXPLAIN vs EXPLAIN ANALYZE
+# 2. EXPLAIN vs EXPLAIN ANALYZE
 
-## 3.1 EXPLAIN
+## 2.1 `EXPLAIN`
 
-`EXPLAIN` shows the **estimated execution plan**.
+`EXPLAIN` creates the execution plan without executing a normal `SELECT`.
 
 ```sql
 EXPLAIN
@@ -111,18 +79,18 @@ FROM orders
 WHERE customer_id = 42;
 ```
 
-The query is planned but, for a normal `SELECT`, not executed.
+Use it when you want to inspect the optimizer's expected plan safely.
 
-Use it when:
+It mainly gives:
 
-- the query may be expensive or unsafe to run;
-- you first want to inspect the likely plan;
-- you are analyzing an `UPDATE` or `DELETE` and do not want to change data;
-- you want estimated costs and row counts.
+- estimated startup and total cost;
+- estimated rows;
+- estimated row width;
+- selected scan and join operations.
 
-## 3.2 EXPLAIN ANALYZE
+## 2.2 `EXPLAIN ANALYZE`
 
-`EXPLAIN ANALYZE` executes the query and adds runtime measurements.
+`EXPLAIN ANALYZE` executes the statement and measures what actually happened.
 
 ```sql
 EXPLAIN ANALYZE
@@ -131,168 +99,66 @@ FROM orders
 WHERE customer_id = 42;
 ```
 
-It reports information such as:
+For PostgreSQL 18, a practical command is:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS)
+SELECT *
+FROM orders
+WHERE customer_id = 42;
+```
+
+`ANALYZE` already enables `BUFFERS` in PostgreSQL 18, but writing it explicitly makes the intention clear.
+
+It adds information such as:
 
 - actual startup and completion time;
-- actual rows produced by each node;
-- number of times each node ran;
+- actual rows;
+- loops;
 - rows removed by filters;
-- sort or hash runtime details;
-- planning and total execution time.
+- buffer activity;
+- sort and hash details;
+- planning and execution time.
 
-## 3.3 Main Difference
+## 2.3 Main difference
 
-| Command | Executes the query? | Estimated values | Actual runtime values | Main purpose |
+| Command | Executes statement? | Estimates | Actual runtime data | Typical use |
 |---|---:|---:|---:|---|
-| `EXPLAIN` | No for a normal `SELECT` | Yes | No | Inspect the optimizer's chosen plan safely |
-| `EXPLAIN ANALYZE` | Yes | Yes | Yes | Compare estimates with real execution behavior |
+| `EXPLAIN` | No for a normal `SELECT` | Yes | No | Inspect the expected plan |
+| `EXPLAIN ANALYZE` | Yes | Yes | Yes | Diagnose and validate performance |
 
-> **Important:** `EXPLAIN ANALYZE` really runs the statement. An analyzed `UPDATE`, `DELETE`, `INSERT`, or `MERGE` can modify data.
-
----
-
-# 4. Basic Syntax
-
-## 4.1 PostgreSQL
-
-```sql
-EXPLAIN
-SELECT ...;
-```
-
-```sql
-EXPLAIN ANALYZE
-SELECT ...;
-```
-
-A useful PostgreSQL form is:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
-SELECT ...;
-```
-
-For repeatable machine-readable output:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-SELECT ...;
-```
-
-Frequently used PostgreSQL options:
-
-| Option | Purpose |
-|---|---|
-| `ANALYZE` | Executes the statement and records actual statistics |
-| `BUFFERS` | Shows buffer/cache and block I/O activity |
-| `VERBOSE` | Shows additional details such as output columns and qualified names |
-| `SETTINGS` | Displays non-default settings that affected planning |
-| `WAL` | Shows write-ahead log generation for write operations |
-| `TIMING OFF` | Records actual row counts with less node-level timing overhead |
-| `SUMMARY` | Shows planning and execution summaries |
-| `FORMAT JSON` | Produces structured output for tooling |
-
-PostgreSQL 18 automatically includes buffer information when `ANALYZE` is enabled. Writing `BUFFERS` explicitly is still useful because it makes the intention clear and remains familiar across PostgreSQL versions.
-
-## 4.2 MySQL 8.4
-
-```sql
-EXPLAIN
-SELECT ...;
-```
-
-```sql
-EXPLAIN FORMAT=TREE
-SELECT ...;
-```
-
-```sql
-EXPLAIN ANALYZE
-SELECT ...;
-```
-
-MySQL `EXPLAIN ANALYZE` executes the statement and uses tree output.
-
-## 4.3 SQLite
-
-```sql
-EXPLAIN QUERY PLAN
-SELECT ...;
-```
-
-SQLite also supports low-level `EXPLAIN`, but `EXPLAIN QUERY PLAN` is normally easier for developers because it describes scans and index usage at a higher level.
+> **Important:** `EXPLAIN ANALYZE` executes `INSERT`, `UPDATE`, `DELETE`, and `MERGE` operations too.
 
 ---
 
-# 5. How to Read an Execution Plan
+# 3. How to Read a PostgreSQL Plan
 
-Execution plans are trees.
-
-Consider this PostgreSQL-style plan:
+Execution plans are trees. Child nodes produce rows for their parent nodes.
 
 ```text
-Hash Join
-├── Seq Scan on orders
-└── Hash
-    └── Seq Scan on customers
+Limit
+└── Sort
+    └── Index Scan on orders
 ```
 
-The logical execution flow is approximately:
+Read the branch from the deepest child upward:
 
-```text
-1. Scan customers
-2. Build an in-memory hash table from customers
-3. Scan orders
-4. Probe the hash table for matching customer rows
-5. Return joined rows
+1. `Index Scan` finds rows.
+2. `Sort` orders them.
+3. `Limit` returns only the required rows.
+
+A useful mental model is:
+
+```mermaid
+flowchart BT
+    A[Index / Table Scan] --> B[Filter or Join]
+    B --> C[Sort / Aggregate]
+    C --> D[Limit / Final Result]
 ```
 
-## 5.1 Read from the Bottom Up
+## 3.1 Core plan metrics
 
-Child nodes produce rows for their parent nodes.
-
-```text
-Sort
-└── Index Scan on orders
-```
-
-Interpretation:
-
-1. The index scan retrieves rows.
-2. The sort node orders those rows.
-3. The parent returns the sorted result.
-
-## 5.2 Indentation Represents Parent–Child Relationships
-
-```text
-Nested Loop
-├── Seq Scan on customers
-└── Index Scan on orders
-```
-
-The `Nested Loop` is the parent. The customer scan and order index scan are its children.
-
-The inner child can run repeatedly—often once for every row returned by the outer child.
-
-## 5.3 Do Not Simply Add Every Node's Time
-
-Parent-node time generally includes work performed by its descendants. Adding every displayed node time can therefore double-count work.
-
-Use the plan tree to understand where time accumulates rather than treating every value as an independent duration.
-
-## 5.4 Start with the Root, Diagnose from the Leaves
-
-A practical approach is:
-
-1. Check total execution time at the bottom of the plan output.
-2. Identify nodes with high actual time, high row counts, many loops, or heavy I/O.
-3. Follow those branches downward to discover why so much work was required.
-
----
-
-# 6. Understanding PostgreSQL Plan Metrics
-
-A common PostgreSQL node looks like this:
+Example:
 
 ```text
 Index Scan using idx_orders_customer_id on orders
@@ -300,553 +166,230 @@ Index Scan using idx_orders_customer_id on orders
   (actual time=0.031..0.045 rows=4 loops=1)
 ```
 
-## 6.1 Estimated Cost
+### `cost=0.43..12.47`
 
-```text
-cost=0.43..12.47
-```
+`startup cost .. total cost`
 
-The two numbers are `startup cost .. total cost`.
+These are **internal planner cost units**, not milliseconds.
 
-- **Startup cost:** estimated work before the node can return its first row.
-- **Total cost:** estimated work if the node runs to completion.
+The optimizer compares alternative plans using these estimated costs.
 
-Cost is not milliseconds. It is an internal unit based on PostgreSQL's cost settings and estimates of CPU, sequential I/O, random I/O, and other work.
+### `rows=5`
 
-Costs are mainly useful for comparing alternative plans considered by the optimizer.
+Estimated number of rows produced by the node.
 
-## 6.2 Estimated Rows
+This estimate strongly affects:
 
-```text
-rows=5
-```
-
-This is the optimizer's estimate of how many rows the node will produce.
-
-Row estimates strongly influence:
-
-- whether an index is selected;
+- scan choice;
 - join order;
 - join algorithm;
-- memory allocation;
-- whether parallel processing is worthwhile.
+- memory decisions;
+- parallel execution.
 
-## 6.3 Estimated Row Width
+### `width=64`
 
-```text
-width=64
-```
+Estimated average output-row size in bytes.
 
-This is the estimated average row size in bytes.
+Wide rows increase memory, copying, sorting, hashing, and I/O requirements.
 
-Wide rows increase:
+### `actual time=0.031..0.045`
 
-- memory usage;
-- amount of data copied between nodes;
-- sort and hash memory requirements;
-- storage reads when many columns are fetched.
-
-## 6.4 Actual Time
+Approximate:
 
 ```text
-actual time=0.031..0.045
+time to first row .. time to finish the node
 ```
 
-The two values are approximately `first-row time .. all-rows time`. They are measured in milliseconds for each execution of the node.
+These values are measured in milliseconds.
 
-## 6.5 Actual Rows
+### `actual rows=4`
+
+Rows actually returned **per loop**.
+
+### `loops=1`
+
+Number of times the node executed.
+
+If a node shows:
 
 ```text
-rows=4
+actual time=0.010..0.020 rows=1 loops=5000
 ```
 
-This is the average number of rows returned per loop.
-
-## 6.6 Loops
+its completion time is roughly:
 
 ```text
-loops=1
+0.020 ms × 5000 = 100 ms
 ```
 
-This is the number of times the node was executed.
+This is why a tiny inner lookup can become expensive inside a large nested loop.
 
-For repeated nodes: `actual time=0.010..0.020 rows=1 loops=5000`
+## 3.2 Estimated rows vs actual rows
 
-Approximate total work for that node is related to `0.020 ms × 5000 loops ≈ 100 ms`.
-
-The single execution looks cheap, but thousands of repetitions can make the node expensive.
-
-## 6.7 Planning Time vs Execution Time
+One of the strongest signals is:
 
 ```text
-Planning Time: 0.350 ms
-Execution Time: 28.620 ms
+Estimated rows: 100
+Actual rows:    10,000
 ```
 
-- **Planning Time:** time spent parsing, rewriting, and selecting a plan.
-- **Execution Time:** time spent running the selected plan inside the server.
+The optimizer expected 100 rows but processed 10,000.
 
-This does not fully represent application-perceived latency because network transfer, connection setup, client processing, and result rendering can add more time.
+Large estimation errors can cause it to choose:
+
+- a nested loop instead of a hash join;
+- repeated index lookups instead of a scan;
+- a poor join order;
+- insufficient memory for a sort or hash;
+- no parallelism when parallel work could help.
+
+Common reasons include:
+
+- stale statistics;
+- skewed values;
+- correlated columns;
+- unusual parameter values;
+- complex expressions;
+- rapidly changing data.
+
+For PostgreSQL, refresh statistics when appropriate:
+
+```sql
+ANALYZE orders;
+```
+
+## 3.3 Do not add node times
+
+A parent's time includes work performed by its descendants.
+
+For example:
+
+```text
+Hash Join      actual time=1..20
+├── Seq Scan   actual time=0..12
+└── Hash       actual time=0..5
+```
+
+Do **not** calculate `20 + 12 + 5`.
+
+Use the tree to find which branch is responsible for the work.
 
 ---
 
-# 7. Common Scan Operations
+# 4. Important Plan Operations
 
-## 7.1 Sequential Scan / Table Scan
+## 4.1 Sequential Scan
 
-PostgreSQL: `Seq Scan on orders`
-
-MySQL: `Table scan on orders`
-
-The database reads a large portion or all of the table.
-
-A sequential scan is often reasonable when:
-
-- the table is small;
-- the query needs a large percentage of the rows;
-- no useful index exists;
-- the filter has low selectivity;
-- reading the table sequentially is cheaper than many random lookups.
-
-Example:
-
-```sql
-SELECT *
-FROM orders
-WHERE status = 'completed';
+```text
+Seq Scan on orders
 ```
 
-When most orders are completed, an index on `status` may not be selective enough to help.
+The database reads most or all of the table.
 
-> A sequential scan is not automatically a problem. It becomes suspicious when a large table is scanned to return only a very small number of rows.
+This can be correct when:
 
-## 7.2 Index Scan
+- the table is small;
+- many rows are required;
+- the filter is not selective;
+- no useful index exists;
+- sequential reading is cheaper than many index lookups.
+
+A sequential scan becomes suspicious when a very large table is scanned to return only a tiny result.
+
+## 4.2 Index Scan
 
 ```text
 Index Scan using idx_orders_customer_id on orders
 ```
 
-The database:
+The index finds matching entries, then PostgreSQL retrieves the required table rows.
 
-1. searches the index;
-2. finds matching row locations;
-3. fetches required table rows.
+Best suited to selective predicates.
 
-It works well when the predicate is selective.
-
-```sql
-SELECT *
-FROM orders
-WHERE customer_id = 42;
-```
-
-```sql
-CREATE INDEX idx_orders_customer_id
-ON orders (customer_id);
-```
-
-## 7.3 Index-Only Scan
+## 4.3 Index-Only Scan
 
 ```text
 Index Only Scan using idx_orders_customer_created on orders
 ```
 
-The query can obtain the required values from the index without reading every matching table row.
+The required values can be obtained from the index itself.
 
-```sql
-SELECT customer_id, created_at
-FROM orders
-WHERE customer_id = 42;
-```
+This can reduce heap access, although PostgreSQL may still need heap visibility checks depending on the visibility map.
 
-```sql
-CREATE INDEX idx_orders_customer_created
-ON orders (customer_id, created_at);
-```
-
-An index-only scan can reduce table I/O, but whether it avoids heap access completely depends on database-specific visibility and storage conditions.
-
-## 7.4 Bitmap Index Scan + Bitmap Heap Scan
+## 4.4 Bitmap Scan
 
 ```text
 Bitmap Heap Scan on orders
 └── Bitmap Index Scan on idx_orders_status
 ```
 
-This approach is useful when:
+Useful when more than a few rows match and PostgreSQL can group row locations before accessing table pages.
 
-- more than a few rows match;
-- an ordinary index scan would perform many scattered table reads;
-- PostgreSQL can group row locations and fetch table pages more efficiently.
-
-PostgreSQL may also combine multiple indexes using `BitmapAnd` or `BitmapOr`.
-
-## 7.5 Index Condition vs Filter
-
-```text
-Index Cond: (customer_id = 42)
-Filter: (total_amount > 1000)
-Rows Removed by Filter: 850
-```
-
-Interpretation:
-
-- `Index Cond` controls which index entries are visited.
-- `Filter` is checked after candidate rows are retrieved.
-- `Rows Removed by Filter` shows how much retrieved data was later discarded.
-
-A large number of removed rows may indicate that the current index does not match the complete filtering pattern.
-
----
-
-# 8. Common Join Algorithms
-
-Assume this query:
-
-```sql
-SELECT o.id, c.name
-FROM orders AS o
-JOIN customers AS c
-  ON c.id = o.customer_id
-WHERE o.created_at >= DATE '2026-07-01';
-```
-
-The optimizer must choose:
-
-- which table to read first;
-- how to find matching rows in the second table;
-- whether sorting or hashing is required.
-
-## 8.1 Nested Loop Join
+## 4.5 Nested Loop Join
 
 ```text
 Nested Loop
-├── Index Scan on customers
-└── Index Scan on orders
-```
-
-Conceptually:
-
-```text
-for each row from outer input:
-    search matching rows in inner input
+├── outer input
+└── inner lookup
 ```
 
 Works well when:
 
 - the outer result is small;
-- the inner lookup uses a selective index;
-- only a small number of rows are needed;
-- a `LIMIT` allows early termination.
+- the inner side has an efficient index lookup.
 
-Can become expensive when:
+Watch for a large `loops` value on the inner node.
 
-- the outer side returns many rows;
-- the inner side is scanned repeatedly;
-- the repeated node has a very high `loops` value.
-
-## 8.2 Hash Join
+## 4.6 Hash Join
 
 ```text
 Hash Join
-├── Seq Scan on orders
+├── input
 └── Hash
-    └── Seq Scan on customers
+    └── input
 ```
 
-Conceptually:
+Common for equality joins over medium or large inputs.
 
-1. Read one input and build a hash table using the join key.
-2. Read the other input.
-3. Look up matching rows in the hash table.
+Watch for multiple hash batches or temporary I/O, which can indicate that the hash work exceeded available memory.
 
-Works well when:
-
-- joining medium or large unsorted datasets;
-- the join uses equality such as `a.id = b.a_id`;
-- the hash table fits comfortably in memory.
-
-Watch for:
-
-- multiple hash batches;
-- temporary disk usage;
-- a much larger build side than estimated.
-
-## 8.3 Merge Join
+## 4.7 Merge Join
 
 ```text
 Merge Join
-├── Index Scan on orders
-└── Index Scan on customers
+├── sorted input
+└── sorted input
 ```
 
-A merge join reads both inputs in join-key order and advances through them together.
+Useful when both inputs are already ordered by the join key or can be sorted efficiently.
 
-Works well when:
+## 4.8 Sort
 
-- both inputs are already sorted through indexes;
-- large datasets are joined;
-- an equality or supported range relationship is used.
-
-If explicit sort nodes are required first, their cost must be considered as part of the strategy.
-
-## 8.4 Join Diagram
-
-```mermaid
-flowchart TD
-    S{Join strategy?}
-    S --> NL["Nested Loop<br/>Small outer<br/>Indexed inner<br/>Repeated lookup"]
-    S --> HJ["Hash Join<br/>Equality<br/>Large inputs<br/>Hash table"]
-    S --> MJ["Merge Join<br/>Sorted inputs<br/>Large inputs<br/>Ordered walk"]
-```
-
-No join type is universally best. The correct choice depends on row counts, indexes, data distribution, available memory, and query shape.
-
----
-
-# 9. Sort, Aggregate, and Other Important Nodes
-
-## 9.1 Sort
+In-memory example:
 
 ```text
-Sort
-  Sort Key: created_at DESC
-  Sort Method: quicksort  Memory: 2048kB
+Sort Method: quicksort  Memory: 2048kB
 ```
 
-An in-memory sort is usually manageable.
+Disk-spill example:
 
-A disk spill may look similar to: `Sort Method: external merge  Disk: 128000kB`
+```text
+Sort Method: external merge  Disk: 128000kB
+```
 
-A disk-based sort is not automatically wrong, but it is a signal to inspect:
+A spill is a signal to check:
 
-- number of rows being sorted;
+- how many rows are being sorted;
 - row width;
+- whether filtering can happen earlier;
 - whether an index can provide the required order;
-- whether earlier filtering can reduce the input;
-- whether memory configuration is appropriate.
-
-## 9.2 Aggregate
-
-Common strategies include:
-
-```text
-Aggregate
-HashAggregate
-GroupAggregate
-```
-
-- `HashAggregate` builds hash groups and is effective when groups fit in memory.
-- `GroupAggregate` normally consumes rows ordered by grouping keys.
-- A plain `Aggregate` may calculate a single result such as `COUNT(*)`.
-
-## 9.3 Limit
-
-```text
-Limit
-└── Index Scan on orders
-```
-
-`LIMIT` can significantly change the selected plan because the database may prefer an access path that returns the first few rows quickly rather than the lowest full-result cost.
-
-## 9.4 Materialize
-
-```text
-Materialize
-└── Index Scan on products
-```
-
-A `Materialize` node stores an intermediate result so it can be reused without rerunning its child.
-
-This can be helpful when the same result is read repeatedly, but it also consumes memory and may use temporary storage.
-
-## 9.5 Memoize
-
-In PostgreSQL, `Memoize` can cache results from repeated parameterized lookups inside nested loops.
-
-```text
-Nested Loop
-└── Memoize
-    └── Index Scan on customers
-```
-
-It is especially useful when the same lookup key appears repeatedly.
-
-## 9.6 Parallel Nodes
-
-Examples include:
-
-```text
-Gather
-Parallel Seq Scan
-Partial Aggregate
-Finalize Aggregate
-```
-
-Parallelism can reduce elapsed time for large operations, but it also adds coordination overhead and consumes more server resources.
+- memory configuration.
 
 ---
 
-# 10. Using BUFFERS to Understand I/O
+# 5. One Practical Optimization Example
 
-PostgreSQL example:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT *
-FROM orders
-WHERE customer_id = 42;
-```
-
-Possible output: `Buffers: shared hit=120 read=8`
-
-## 10.1 Main Buffer Values
-
-| Value | Meaning |
-|---|---|
-| `shared hit` | Required block was already available in PostgreSQL's shared buffer cache |
-| `shared read` | Block had to be read into shared buffers from the operating-system/storage path |
-| `shared dirtied` | Query modified a previously clean shared block |
-| `shared written` | A dirty block was written by the backend |
-| `local hit/read` | Activity involving temporary tables or local buffers |
-| `temp read/written` | Temporary-file I/O, often caused by sorts, hashes, or materialization spilling to disk |
-
-## 10.2 Why BUFFERS Matter
-
-Two queries may have similar execution time during one test but very different I/O behavior.
-
-```text
-Query A: shared hit=25,000 read=0
-Query B: shared hit=300 read=0
-```
-
-Both may currently be cached, but Query A touches far more pages. Under concurrency or after cache eviction, it is likely to create more pressure.
-
-## 10.3 Warm Cache vs Cold Cache
-
-The first run may read blocks from storage, while later runs find them cached.
-
-```text
-First run:  shared read=5000
-Second run: shared hit=5000
-```
-
-For meaningful testing:
-
-- run the query more than once;
-- separate cold-cache and warm-cache observations;
-- do not compare one cold run with one warm run;
-- test with production-like data volume and distribution.
-
----
-
-# 11. Estimated Rows vs Actual Rows
-
-This is one of the most important parts of an analyzed plan.
-
-```text
-(cost=... rows=20 ...)
-(actual ... rows=250000 loops=1)
-```
-
-The optimizer expected 20 rows but received 250,000.
-
-That mismatch can lead to a poor plan because the optimizer may select:
-
-- a nested loop instead of a hash join;
-- repeated index lookups instead of a table scan;
-- insufficient memory for a hash or sort;
-- an inefficient join order;
-- no parallel execution when it would help.
-
-## 11.1 Estimate Error Ratio
-
-A simple diagnostic ratio is `larger row count ÷ smaller row count`.
-
-Example:
-
-```text
-Estimated rows: 100
-Actual rows:    10,000
-Error ratio:    10,000 ÷ 100 = 100×
-```
-
-A large ratio is a signal to investigate. It is not a fixed rule that every estimate must be exact.
-
-## 11.2 Why Estimates Become Inaccurate
-
-Common causes include:
-
-- outdated table statistics;
-- skewed data distribution;
-- correlated columns treated as independent;
-- expressions or functions that lack useful statistics;
-- parameter values with very different selectivity;
-- temporary tables without fresh statistics;
-- rapid data changes;
-- complex predicates that are difficult to estimate.
-
-## 11.3 Refreshing Statistics
-
-PostgreSQL: `ANALYZE orders;`
-
-For selected columns: `ANALYZE orders (customer_id, status, created_at);`
-
-MySQL: `ANALYZE TABLE orders;`
-
-SQL Server: `UPDATE STATISTICS dbo.orders;`
-
-Refreshing statistics may help the optimizer choose a better plan, but it does not replace proper indexing or query design.
-
----
-
-# 12. Practical Optimization Examples
-
-## 12.1 Example 1: Filtering Without an Index
-
-### Query
-
-```sql
-SELECT id, customer_id, total_amount
-FROM orders
-WHERE customer_id = 42;
-```
-
-### Initial Plan
-
-```text
-Seq Scan on orders
-  Filter: (customer_id = 42)
-  Rows Removed by Filter: 999850
-```
-
-Interpretation:
-
-- almost the whole table was scanned;
-- only a small number of rows matched;
-- `customer_id` is likely selective enough for an index.
-
-### Optimization
-
-```sql
-CREATE INDEX idx_orders_customer_id
-ON orders (customer_id);
-```
-
-### Improved Plan
-
-```text
-Index Scan using idx_orders_customer_id on orders
-  Index Cond: (customer_id = 42)
-```
-
-The database can now navigate directly to matching index entries.
-
----
-
-## 12.2 Example 2: Filter + Sort + LIMIT
-
-### Query
+Assume this query is common in an API:
 
 ```sql
 SELECT id, customer_id, created_at
@@ -856,7 +399,14 @@ ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-### Plan with a Single-Column Index
+## 5.1 Existing index
+
+```sql
+CREATE INDEX idx_orders_customer_id
+ON orders (customer_id);
+```
+
+A possible plan is:
 
 ```text
 Limit
@@ -866,16 +416,16 @@ Limit
         └── Bitmap Index Scan on idx_orders_customer_id
 ```
 
-The existing index helps filter by customer, but the matching rows still need to be sorted.
+The index helps find the customer's orders, but PostgreSQL still has to sort the matching rows.
 
-### Better Index for This Access Pattern
+## 5.2 Better index for this access pattern
 
 ```sql
 CREATE INDEX idx_orders_customer_created
 ON orders (customer_id, created_at DESC);
 ```
 
-### Possible Improved Plan
+A possible improved plan is:
 
 ```text
 Limit
@@ -883,163 +433,64 @@ Limit
     Index Cond: (customer_id = 42)
 ```
 
-The composite index supports both:
+Why it helps:
 
-1. equality filtering by `customer_id`;
-2. ordered retrieval by `created_at DESC`.
+1. `customer_id` supports the equality filter.
+2. `created_at DESC` matches the requested order.
+3. PostgreSQL can read rows in the required order.
+4. It can stop after 20 rows instead of sorting every matching order.
 
-The database can stop after finding 20 rows instead of sorting every matching order.
+The important lesson is not "always create a composite index." The index should match a real, frequent access pattern and should be verified with another analyzed plan.
 
 ---
 
-## 12.3 Example 3: A Function Prevents a Normal Index Lookup
+# 6. Using BUFFERS to Understand I/O
 
-Assume an index exists on `created_at`:
-
-```sql
-CREATE INDEX idx_orders_created_at
-ON orders (created_at);
-```
-
-### Less Index-Friendly Predicate
-
-```sql
-SELECT *
-FROM orders
-WHERE DATE(created_at) = DATE '2026-07-27';
-```
-
-Applying a function to the indexed column may prevent a normal range lookup, depending on the database and available expression indexes.
-
-### Range-Based Predicate
-
-```sql
-SELECT *
-FROM orders
-WHERE created_at >= TIMESTAMP '2026-07-27 00:00:00'
-  AND created_at <  TIMESTAMP '2026-07-28 00:00:00';
-```
-
-This form directly describes a range on `created_at` and is usually more index-friendly.
+PostgreSQL buffer information can look like:
 
 ```text
-Index Scan using idx_orders_created_at on orders
-  Index Cond:
-    (created_at >= '2026-07-27 00:00:00'
-     AND created_at < '2026-07-28 00:00:00')
+Buffers: shared hit=120 read=8
 ```
 
----
+| Metric | Meaning |
+|---|---|
+| `shared hit` | Block was already available in PostgreSQL shared buffers |
+| `shared read` | Block had to be read into shared buffers |
+| `shared dirtied` | Query changed a previously clean shared block |
+| `shared written` | A dirty shared block was written by the backend |
+| `temp read/written` | Temporary-file I/O, often from sorts or hashes |
 
-## 12.4 Example 4: Repeated Work in a Nested Loop
+A `shared read` does not necessarily mean a physical disk read because the operating system may still have the block cached.
 
-### Plan
+Why buffers matter:
 
 ```text
-Nested Loop
-  actual rows=200000 loops=1
-  ├── Seq Scan on customers
-  │   actual rows=50000 loops=1
-  └── Index Scan on orders
-      actual rows=4 loops=50000
+Query A: shared hit=25,000
+Query B: shared hit=300
 ```
 
-The inner index scan runs 50,000 times.
-
-Even if each lookup is fast, total work may be significant.
-
-Possible areas to investigate:
-
-- Can the outer input be filtered earlier?
-- Is the join producing more rows than expected?
-- Would a hash join be more appropriate for this volume?
-- Are statistics causing the optimizer to underestimate the outer row count?
-- Does the inner index match the join condition?
-
-Do not force a join algorithm immediately. First identify why the optimizer believed the selected algorithm would be inexpensive.
+Even if both are currently fast, Query A touches far more pages and can create more cache and I/O pressure under concurrency.
 
 ---
 
-## 12.5 Example 5: Rows Removed by Filter
+# 7. A Reliable Query-Tuning Workflow
 
-### Plan
+Use a **measure → change → measure** process.
 
-```text
-Index Scan using idx_orders_status on orders
-  Index Cond: (status = 'completed')
-  Filter: (total_amount > 5000)
-  Rows Removed by Filter: 800000
-  actual rows=1000
-```
+## Step 1: Capture the real query
 
-The index retrieves completed orders, but most are later rejected by `total_amount`.
+Use representative:
 
-A possible composite index is:
+- parameters;
+- joins;
+- filters;
+- ordering;
+- pagination;
+- schema and indexes.
 
-```sql
-CREATE INDEX idx_orders_status_amount
-ON orders (status, total_amount);
-```
+Different parameter values can produce very different plans.
 
-Whether this is beneficial depends on:
-
-- how frequently the query runs;
-- how selective `status` and `total_amount` are;
-- whether similar query patterns exist;
-- index storage and write overhead;
-- whether column order matches other predicates and ordering needs.
-
-Always verify the result with a new execution plan.
-
----
-
-## 12.6 Example 6: Sort Spilling to Disk
-
-### Plan
-
-```text
-Sort
-  Sort Key: created_at
-  Sort Method: external merge  Disk: 220000kB
-  └── Seq Scan on audit_logs
-      actual rows=8000000
-```
-
-Interpretation:
-
-- eight million rows are being sorted;
-- the sort exceeded available working memory;
-- temporary disk I/O was required.
-
-Possible improvements:
-
-- reduce rows before sorting;
-- select fewer or narrower columns;
-- use an index that provides the required ordering;
-- avoid sorting data that the application will not consume;
-- review per-operation memory carefully rather than globally increasing it without capacity analysis.
-
----
-
-# 13. A Reliable Query-Tuning Workflow
-
-Use a measured process rather than guessing. The seven steps below are the measure-change-measure loop sketched at the top of this note, written out in detail.
-
-## Step 1: Capture the Exact Query
-
-Include:
-
-- real parameter values;
-- complete joins and filters;
-- ordering and pagination;
-- relevant session settings;
-- the same schema and indexes as the target environment.
-
-Different parameter values can produce very different row counts and plans.
-
-## Step 2: Record a Baseline
-
-PostgreSQL:
+## Step 2: Capture a baseline
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS, SETTINGS)
@@ -1048,82 +499,67 @@ SELECT ...;
 
 Record:
 
-- total execution time;
-- planning time;
+- execution time;
 - actual rows;
 - loops;
-- buffer hits and reads;
-- temporary reads and writes;
-- sort/hash memory and disk usage.
+- buffer activity;
+- temporary I/O;
+- sort/hash behavior.
 
-## Step 3: Identify the Main Source of Work
+## Step 3: Find the expensive branch
 
 Look for:
 
-- scans over large tables;
-- high actual row counts;
-- rows removed by filters;
-- high loop counts;
-- large estimate errors;
-- disk-based sorts or hashes;
-- repeated subplans;
-- expensive operations early in the plan.
+- large estimated-vs-actual row differences;
+- scans reading many rows but returning few;
+- high `time × loops`;
+- many rows removed by filters;
+- repeated inner lookups;
+- disk-based sorts or hashes.
 
-## Step 4: Understand Why the Plan Was Chosen
+## Step 4: Understand why
 
-Ask:
+Ask whether the issue comes from:
 
-- Were statistics accurate?
-- Did the available index match the predicate?
-- Was the predicate selective?
-- Did the query request many columns?
-- Did ordering requirements influence the plan?
-- Did `LIMIT` favor a low-startup-cost plan?
-- Did parameter values differ from typical values?
+- missing or unsuitable indexes;
+- stale statistics;
+- low-selectivity predicates;
+- non-sargable expressions;
+- poor join conditions;
+- too many selected columns;
+- ordering or pagination requirements.
 
-## Step 5: Make One Focused Change
+## Step 5: Make one focused change
 
-Examples:
+Typical changes:
 
-- create or adjust a composite index;
-- rewrite a non-sargable predicate;
+- add or adjust an index;
 - refresh statistics;
-- reduce rows before joining or sorting;
-- remove unnecessary columns;
-- replace offset pagination with keyset pagination where appropriate;
-- fix a join condition that produces duplicate combinations.
+- rewrite a predicate so an index can be used;
+- reduce rows before sorting or joining;
+- return only required columns;
+- use keyset pagination for large paginated datasets where appropriate.
 
-## Step 6: Measure Again
+## Step 6: Measure again
 
-Compare the same metrics under similar conditions.
+Compare the same query under similar conditions.
 
 ```text
-Before: 850 ms, 120,000 shared blocks, 220 MB temp write
-After:   35 ms,   2,500 shared blocks,   0 MB temp write
+Before: 850 ms, 120,000 shared blocks
+After:   35 ms,   2,500 shared blocks
 ```
 
-A plan that merely looks different is not enough. The change should improve the workload metric that matters.
-
-## Step 7: Test Workload Impact
-
-An index can speed up reads while making writes more expensive.
-
-Before keeping it, consider:
-
-- insert/update/delete rate;
-- index size;
-- cache pressure;
-- maintenance overhead;
-- duplicated or overlapping indexes;
-- performance under realistic concurrency.
+A plan that merely looks different is not enough. The workload metric should actually improve.
 
 ---
 
-# 14. Safe Use with INSERT, UPDATE, and DELETE
+# 8. Safe Use in Development and Production
 
-`EXPLAIN ANALYZE` executes data-changing statements.
+## 8.1 Data-changing statements
 
-## 14.1 PostgreSQL Safe Testing Pattern
+`EXPLAIN ANALYZE` executes the statement.
+
+A PostgreSQL testing pattern is:
 
 ```sql
 BEGIN;
@@ -1136,41 +572,53 @@ WHERE created_at < DATE '2024-01-01';
 ROLLBACK;
 ```
 
-The update executes inside the transaction, runtime data is collected, and the changes are then rolled back.
+This rolls back transactional table changes, but the statement still runs.
 
-Before relying on this pattern, consider:
+Be aware that:
 
-- triggers still run;
 - locks can still be acquired;
+- triggers still execute;
 - sequences are generally not rolled back;
-- external side effects triggered outside the transaction may not be reversible;
-- a large update can still generate substantial temporary work and WAL;
-- running it on production can affect other sessions.
+- external side effects may not be reversible;
+- WAL and temporary work may still be generated.
 
-## 14.2 Safer First Step
+For production, start with plain `EXPLAIN` when actual execution is risky.
 
-Start with plain `EXPLAIN`:
+## 8.2 Test realistic data
 
-```sql
-EXPLAIN
-DELETE FROM sessions
-WHERE expires_at < CURRENT_TIMESTAMP;
-```
+Plans depend heavily on:
 
-Use `EXPLAIN ANALYZE` only in a controlled environment when actual runtime information is necessary.
+- table size;
+- data distribution;
+- tenant size;
+- null frequency;
+- date ranges;
+- parameter values;
+- concurrency.
+
+A query that works well on a small development database can behave very differently in production.
+
+## 8.3 Avoid tuning from one cached run
+
+Run comparable tests more than once and inspect buffer activity.
+
+Do not compare a cold first run directly with a fully cached later run and assume the plan change caused the difference.
 
 ---
 
-# 15. Database-Specific Differences
+# 9. Database-Specific Syntax
 
-The principle is shared across databases, but syntax and terminology differ.
+The main idea is the same across databases, but commands and terminology differ.
 
-## 15.1 PostgreSQL
-
-Common command:
+## 9.1 PostgreSQL 18
 
 ```sql
-EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+EXPLAIN
+SELECT ...;
+```
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
 SELECT ...;
 ```
 
@@ -1181,241 +629,101 @@ Important fields:
 - `actual time`, actual `rows`, and `loops`;
 - `Rows Removed by Filter`;
 - `Buffers`;
-- sort and hash details;
+- sort/hash details;
 - planning and execution time.
 
-PostgreSQL plans are usually read from the most deeply indented child nodes upward.
+PostgreSQL 18 implicitly enables `BUFFERS` with `ANALYZE`.
 
-## 15.2 MySQL 8.4
-
-Estimated plan:
+## 9.2 MySQL 8.4
 
 ```sql
 EXPLAIN FORMAT=TREE
 SELECT ...;
 ```
 
-Actual execution:
-
 ```sql
 EXPLAIN ANALYZE
 SELECT ...;
 ```
 
-Typical iterator output:
+MySQL 8.4 `EXPLAIN ANALYZE`:
+
+- executes the supported statement;
+- always uses `TREE` output;
+- reports estimated cost and rows;
+- reports actual first-row time, execution time, rows, and loops.
+
+Unlike normal `EXPLAIN`, `EXPLAIN ANALYZE` does not support JSON output in MySQL 8.4.
+
+## 9.3 SQL Server 2025
+
+SQL Server commonly uses graphical execution plans.
+
+- **Estimated Execution Plan:** shows the compiled plan without executing the query.
+- **Actual Execution Plan:** is produced after execution and includes runtime information.
+- Common operators include Index Seek, Index Scan, Table Scan, Nested Loops, Hash Match, Merge Join, Sort, and Aggregate.
+
+A key diagnostic is still:
 
 ```text
--> Index lookup on orders using idx_orders_customer_id
-   (customer_id=42)
-   (cost=5.20 rows=10)
-   (actual time=0.030..0.060 rows=8 loops=1)
+Estimated rows ↔ Actual rows
 ```
 
-MySQL 8.4 notes:
-
-- `EXPLAIN ANALYZE` uses `TREE` format;
-- times are shown in milliseconds;
-- estimated and actual rows can be compared directly;
-- JSON output is available for normal `EXPLAIN`, while `EXPLAIN ANALYZE` uses tree output.
-
-## 15.3 SQL Server
-
-SQL Server commonly uses graphical plans in SQL Server Management Studio.
-
-- **Estimated Execution Plan:** compiled optimizer plan without running the query.
-- **Actual Execution Plan:** compiled plan plus runtime execution context.
-- **Live Query Statistics:** runtime progress while a query is executing.
-
-Common operators include:
-
-- Table Scan;
-- Index Scan;
-- Index Seek;
-- Key Lookup;
-- Nested Loops;
-- Hash Match;
-- Merge Join;
-- Sort;
-- Stream Aggregate;
-- Hash Aggregate.
-
-A major diagnostic signal is the difference between **Estimated Number of Rows** and **Actual Number of Rows**.
-
-## 15.4 SQLite
+## 9.4 SQLite
 
 ```sql
 EXPLAIN QUERY PLAN
-SELECT *
-FROM orders
-WHERE customer_id = 42;
-```
-
-Possible output without an index: `SCAN orders`
-
-Possible output with an index: `SEARCH orders USING INDEX idx_orders_customer_id (customer_id=?)`
-
-SQLite terminology:
-
-- `SCAN` generally means all rows are visited;
-- `SEARCH` means only a subset is visited;
-- `USING COVERING INDEX` means required values can be read from the index;
-- `USE TEMP B-TREE FOR ORDER BY` indicates temporary sorting work.
-
-SQLite documents that `EXPLAIN QUERY PLAN` output is intended for interactive debugging and may change between releases, so applications should not parse it as a stable public format.
-
----
-
-# 16. Production Best Practices
-
-## 16.1 Find Important Queries Before Tuning
-
-Do not optimize only the query that looks complicated.
-
-Prioritize queries using workload evidence such as:
-
-- total database time consumed;
-- average and high-percentile latency;
-- call frequency;
-- rows read versus rows returned;
-- I/O usage;
-- temporary-file usage;
-- lock duration;
-- business impact.
-
-In PostgreSQL, `pg_stat_statements` is commonly used to identify high-impact queries by tracking planning and execution statistics across statements.
-
-## 16.2 Test with Realistic Data Distribution
-
-A query that is fast with 10,000 uniform test rows can behave differently with 100 million production rows containing skewed values.
-
-Test using realistic:
-
-- table sizes;
-- value frequency;
-- null percentage;
-- date ranges;
-- tenant sizes;
-- parameter values;
-- concurrency.
-
-## 16.3 Use Representative Parameters
-
-Consider a multi-tenant query:
-
-```sql
-SELECT *
-FROM invoices
-WHERE tenant_id = $1
-  AND status = $2;
-```
-
-One tenant may own 100 rows while another owns 20 million. A plan suitable for the first tenant may perform poorly for the second.
-
-Test common, small, large, and unusual parameter values.
-
-## 16.4 Keep Statistics Healthy
-
-Statistics should reflect current data.
-
-PostgreSQL normally uses autovacuum and auto-analyze, but bulk loads or rapidly changing tables may require an explicit `ANALYZE` at the appropriate time.
-
-## 16.5 Avoid Optimizing Only for One Cached Run
-
-Compare multiple runs and examine I/O counters. A query that is fast only because all pages are already cached may still create serious pressure under a busy workload.
-
-## 16.6 Prefer Evidence Over Planner Forcing
-
-Disabling scan or join strategies can be useful for controlled diagnosis, but permanently forcing the optimizer is usually fragile.
-
-A better long-term fix often involves:
-
-- accurate statistics;
-- suitable indexes;
-- clear predicates;
-- correct data types;
-- good query shape;
-- appropriate schema design.
-
-## 16.7 Remember EXPLAIN ANALYZE Overhead
-
-Runtime instrumentation adds overhead. Very small or highly repetitive nodes can be affected noticeably by timing measurements.
-
-When exact per-node timing is unnecessary in PostgreSQL, this can reduce overhead:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT ...;
 ```
 
-The complete statement runtime is still measured, and actual row counts are still collected.
+Typical output:
+
+```text
+SCAN orders
+```
+
+or:
+
+```text
+SEARCH orders USING INDEX idx_orders_customer_id (customer_id=?)
+```
+
+Useful SQLite terms:
+
+- `SCAN` — all rows are visited;
+- `SEARCH` — only a subset is visited;
+- `USING COVERING INDEX` — required values can be obtained from the index;
+- `USE TEMP B-TREE FOR ORDER BY` — temporary sorting is required.
+
+SQLite documents `EXPLAIN QUERY PLAN` as an interactive debugging format, so applications should not depend on its exact output format.
 
 ---
 
-# 17. Quick Reading Checklist
+# 10. What to Remember
 
-When reading a plan, follow this order:
-
-```text
-1. Total execution time
-2. Actual rows at the root
-3. Large estimated-vs-actual row differences
-4. Nodes with high time × loops
-5. Large scans returning few rows
-6. Rows removed by filters
-7. Join order and repeated inner lookups
-8. Sort/hash memory and disk spills
-9. Shared and temporary buffer activity
-10. Planning time and unusual planner settings
-```
-
-Use these questions while inspecting the plan:
-
-- What node produces the first large row set?
-- Where does the row count grow unexpectedly?
-- Which child is executed many times?
-- Is the query reading far more rows than it returns?
-- Is an index condition being applied, or only a post-read filter?
-- Does sorting happen before or after selective filtering?
-- Are statistics close enough to actual data?
-- Is the expensive behavior caused by query shape, indexing, statistics, or memory?
-
-Every one of those questions reduces to four relationships:
+When you open an execution plan, check these relationships first:
 
 ```text
 Estimated rows  ↔ Actual rows
-Cost            ↔ Actual time
-Rows per loop   × Loop count
+Actual time     × Loops
 Rows processed  ↔ Rows returned
+Memory work     ↔ Disk spill
+Buffer activity ↔ Query result size
 ```
 
----
+A practical reading order is:
 
-# 18. Official References
+1. Check total execution time.
+2. Compare estimated and actual rows.
+3. Find branches with high time or many loops.
+4. Look for large scans returning few rows.
+5. Check rows removed by filters.
+6. Inspect join strategy and repeated inner lookups.
+7. Check sort/hash memory and temporary I/O.
+8. Review buffer activity.
+9. Make one focused change.
+10. Run the same test again.
 
-- PostgreSQL 18 — EXPLAIN:  
-  <https://www.postgresql.org/docs/current/sql-explain.html>
+The key interview-level idea is simple:
 
-- PostgreSQL 18 — Using EXPLAIN:  
-  <https://www.postgresql.org/docs/current/using-explain.html>
-
-- PostgreSQL 18 — ANALYZE statistics collection:  
-  <https://www.postgresql.org/docs/current/sql-analyze.html>
-
-- PostgreSQL 18 — `pg_stat_statements`:  
-  <https://www.postgresql.org/docs/current/pgstatstatements.html>
-
-- MySQL 8.4 — EXPLAIN Statement:  
-  <https://dev.mysql.com/doc/refman/8.4/en/explain.html>
-
-- MySQL 8.4 — ANALYZE TABLE:  
-  <https://dev.mysql.com/doc/refman/8.4/en/analyze-table.html>
-
-- SQLite — EXPLAIN QUERY PLAN:  
-  <https://www.sqlite.org/eqp.html>
-
-- SQL Server — Query Processing Architecture Guide:  
-  <https://learn.microsoft.com/en-us/sql/relational-databases/query-processing-architecture-guide>
-
----
-
-**End of document**
+> An execution plan is evidence of **how the optimizer expected the query to run** and, with `ANALYZE`, **how it actually ran**. Effective tuning comes from comparing those two views and changing the real source of unnecessary work.

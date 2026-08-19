@@ -6,87 +6,117 @@ order: 3
 
 # Idempotency in Background Tasks
 
-> Design background tasks that remain correct when messages are retried, redelivered, duplicated, or processed concurrently.
+> Design background tasks so retries, duplicate delivery, worker crashes, and concurrent execution do not create duplicate business effects.
 
 ## In short
 
-- Queues deliver **at-least-once**, so assume every task can run more than once: worker crashes, lost acknowledgments, visibility timeouts, application retries and dead-letter replays all cause redelivery.
-- At-least-once delivery plus an idempotent consumer gives an *effectively-once* business outcome; true exactly-once is not achievable across broker, worker, and database.
-- Key on a **stable business identity** such as `invoice:{customer_id}:{billing_period}`, never on the Celery task ID, which identifies one message publication rather than one logical operation.
-- Enforce correctness in the database with a unique constraint or a conditional state transition, not with a check-then-act read followed by a write.
-- Locks, deduplication, and atomicity reduce duplicate work, but none of them replaces idempotency.
-- External side effects need a downstream idempotency key, a stored provider reference, or reconciliation; a timeout never means failure.
-- Multi-step tasks need persisted workflow state so a retry resumes at the step that has not completed.
+- Background queues commonly behave with **at-least-once delivery**, so a task may run more than once.
+- The goal is not “the task executes once”; the goal is **the business operation has one correct final effect**.
+- Use a **stable business idempotency key**, such as `invoice:{customer_id}:{billing_period}`.
+- Enforce correctness using the **database**: unique constraints, atomic upserts, or conditional state transitions.
+- Locks and message deduplication can reduce duplicate work, but they are not the final correctness guarantee.
+- External APIs should receive the same idempotency key on every retry when the provider supports it.
+- A timeout from an external service does **not** prove the operation failed.
+- Long workflows should persist step/state progress so retries resume safely.
+
+```text
+At-least-once delivery
+        +
+Idempotent processing
+        =
+Effectively-once business outcome
+```
 
 ```mermaid
 flowchart TD
-    A[Receive Task] --> B{Already completed?}
-    B -- Yes --> C[Return stored result]
-    B -- No --> D[Claim task]
-    D --> E[Execute operation]
-    E --> F{Successful?}
-    F -- Yes --> G[Mark completed]
+    A[Task received] --> B{Operation already completed?}
+    B -- Yes --> C[Return existing result]
+    B -- No --> D[Atomically claim operation]
+    D --> E[Execute business logic]
+    E --> F{Result}
+    F -- Success --> G[Store result and mark completed]
     F -- Transient failure --> H[Retry with backoff]
-    F -- Permanent failure --> I[Mark failed / Dead-letter queue]
+    F -- Permanent failure --> I[Mark failed / send to DLQ]
     H --> A
 ```
 
-**Interview answer:** Background workers run on at-least-once delivery, so a task must be safe to execute more than once — a worker can commit its database change and then crash before acknowledging, and the broker will redeliver. I make the task idempotent by deriving a stable business key for the logical operation and enforcing it in the database, either with a unique constraint or with a conditional state transition, so a second execution either returns the stored result or updates zero rows. Locks and deduplication are optimisations layered on top; the database constraint is the actual correctness guarantee.
+---
 
-**Gotcha:** Using the queue's generated task ID as the idempotency key. It identifies one message publication, so two publications of the same logical operation — a producer retry, a dead-letter replay, a duplicated scheduler tick — get different IDs and both execute.
+# Index
+
+1. [What Idempotency Means](#1-what-idempotency-means)
+2. [Why Background Tasks Run More Than Once](#2-why-background-tasks-run-more-than-once)
+3. [Idempotency vs Related Concepts](#3-idempotency-vs-related-concepts)
+4. [Stable Idempotency Keys](#4-stable-idempotency-keys)
+5. [Database-Enforced Idempotency](#5-database-enforced-idempotency)
+6. [Retries and External Side Effects](#6-retries-and-external-side-effects)
+7. [Practical Celery Example](#7-practical-celery-example)
+8. [Long-Running Workflows](#8-long-running-workflows)
+9. [Production Checklist](#9-production-checklist)
 
 ---
 
 # 1. What Idempotency Means
 
-An operation is **idempotent** when executing it multiple times has the same final effect as executing it once: `process(task)` run once, twice, or N times leaves the same final state. Idempotency does **not** mean every execution returns exactly the same runtime response — it means repeated executions do not create additional unwanted side effects.
+An operation is **idempotent** when running the same logical operation multiple times leaves the system in the same final business state as running it once.
 
-For background processing, the practical definition is:
+For background jobs:
 
-> The same logical task can be retried or delivered multiple times without producing duplicate records, duplicate payments, repeated emails, corrupted counters, or inconsistent business state.
+> The same task may be retried or delivered multiple times without creating duplicate records, duplicate payments, repeated inventory changes, or other unwanted side effects.
 
-Setting `order.status = "SHIPPED"` is naturally idempotent because it replaces a known value. Incrementing `order.notification_count += 1` is not, because every retry changes the state again.
+## Naturally idempotent
 
-For the full treatment — safe vs idempotent methods, the HTTP method matrix, and the general theory — see [HTTP Idempotency](../api-design/idempotency-http-methods.md). This note covers what changes when the caller is a queue rather than a client.
+```python
+user.is_verified = True
+order.status = "CANCELLED"
+```
+
+Repeating these assignments keeps the same final value.
+
+## Not naturally idempotent
+
+```python
+wallet.balance -= 100
+inventory.quantity -= 1
+send_email(...)
+create_invoice(...)
+```
+
+Each execution can create another effect, so these operations need explicit protection.
 
 ---
 
 # 2. Why Background Tasks Run More Than Once
 
-Most queue-based systems provide **at-least-once delivery**, not a perfect guarantee that a message is processed exactly once.
+A task may be executed again when:
 
-A task may be delivered again when:
+- A worker completes the database operation but crashes before acknowledging the message.
+- A message acknowledgment is lost.
+- A task exceeds a broker visibility timeout.
+- The application retries a transient failure.
+- A scheduler or producer publishes the same logical job twice.
+- A dead-letter queue is replayed.
+- Two workers process equivalent events concurrently.
 
-- The worker finishes the operation but crashes before acknowledging the message.
-- The acknowledgment is lost because of a network failure.
-- The task exceeds its visibility timeout.
-- The broker redelivers an unacknowledged message.
-- The application explicitly retries after a temporary failure.
-- A scheduler accidentally publishes the same task twice.
-- Two producers create the same logical job.
-- An administrator replays messages from a dead-letter queue.
-- A consumer restarts while processing a task.
-- Multiple workers race to process equivalent events.
-
-## Failure Timeline
+## Common failure timeline
 
 ```mermaid
 sequenceDiagram
-    participant Q as Message Queue
+    participant Q as Queue
     participant W as Worker
     participant DB as Database
 
-    Q->>W: Deliver task T-101
-    W->>DB: Create payment record
-    DB-->>W: Commit successful
+    Q->>W: Deliver generate_invoice
+    W->>DB: Create invoice
+    DB-->>W: Commit succeeds
     Note over W: Worker crashes before ACK
-    Q->>W: Redeliver task T-101
-    W->>DB: Attempts payment again
+    Q->>W: Redeliver task
+    W->>DB: Same logical operation runs again
 ```
 
-Without idempotency, one queue message can create two business operations.
+Without idempotency, the second execution can create a duplicate invoice.
 
-With idempotency, the second execution detects that `T-101` has already been completed and safely returns the original result.
+With idempotency, the retry discovers that the logical operation is already completed and returns the existing result.
 
 ---
 
@@ -94,84 +124,131 @@ With idempotency, the second execution detects that `T-101` has already been com
 
 ## 3.1 Idempotency vs Deduplication
 
-**Deduplication** attempts to stop duplicate messages from being processed. **Idempotency** makes duplicate processing harmless.
+**Deduplication** tries to prevent duplicate messages from reaching business logic.
 
-Deduplication is useful, but it is usually time-bound or storage-dependent, which makes it an optimization. Idempotent processing is the correctness guarantee and should remain the final layer.
+**Idempotency** makes duplicate execution harmless.
 
-## 3.2 Idempotency vs Exactly-Once Processing
+Deduplication is useful for efficiency, but idempotency should remain the correctness layer because duplicates can still appear after cache expiry, replay, worker failure, or concurrent delivery.
 
-"Exactly once" is difficult across distributed components because the broker, worker, database, and external services cannot usually commit one shared atomic transaction.
+## 3.2 Idempotency vs Atomicity
 
-A more realistic design is:
+**Atomicity** means a group of database operations completes fully or rolls back.
 
-```text
-At-least-once delivery
-        +
-Idempotent consumer
-        =
-Effectively-once business outcome
+**Idempotency** means repeating the logical operation does not create an additional effect.
+
+Example:
+
+```python
+account.balance += 100
 ```
 
-## 3.3 Idempotency vs Atomicity
+This can run inside an atomic transaction and still be non-idempotent because running it twice adds `200`.
 
-**Atomicity** means an operation completes fully or not at all.
+## 3.3 Idempotency vs Locking
 
-**Idempotency** means repeating the operation does not create additional effects.
+A lock prevents or reduces concurrent execution.
 
-A task can be:
+It does not protect against every later retry or replay.
 
-- Atomic but not idempotent
-- Idempotent but not atomic
-- Both atomic and idempotent
-- Neither
+Use a lock when useful for coordination, but keep a durable database rule such as a unique constraint or conditional update as the correctness guarantee.
 
-Example: `account.balance += 100`
+## 3.4 Exactly-once vs Effectively-once
 
-This may run inside an atomic transaction, but repeating it still adds the amount twice. Atomicity alone does not provide idempotency.
+Exactly-once execution across a broker, worker, database, and third-party API is difficult because they usually do not share one atomic transaction.
 
-## 3.4 Idempotency vs Distributed Locking
+In normal application design, the practical target is:
 
-A distributed lock reduces concurrent execution, but it is not a complete idempotency solution.
-
-Locks can expire, workers can crash, and messages can be replayed later. Use locks to control concurrency, while using durable database state to guarantee correctness.
+```text
+Message may execute more than once
+            ↓
+Every execution uses the same business identity
+            ↓
+Database / downstream service accepts the effect once
+            ↓
+Effectively-once business result
+```
 
 ---
 
-# 4. Identifying Safe and Unsafe Operations
+# 4. Stable Idempotency Keys
 
-## Naturally Idempotent Operations
+An idempotency key should identify the **logical business operation**, not one execution attempt.
 
-These operations usually produce the same final state when repeated:
+## Good keys
 
-```python
-user.is_verified = True
-order.status = "CANCELLED"
-cache.set("product:42", serialized_product)
-storage.put("reports/monthly.pdf", report_bytes)
+```text
+invoice:{customer_id}:{billing_period}
+payment:{order_id}
+refund:{payment_id}
+welcome-email:{user_id}
+webhook:{provider_event_id}
+report:{account_id}:{report_date}
 ```
-
-The operation replaces or sets a known value.
-
-## Non-Idempotent Operations
-
-These operations produce additional effects on every execution:
-
-```python
-wallet.balance -= 100
-inventory.quantity -= 1
-send_email(...)
-create_invoice(...)
-append_to_file(...)
-publish_event(...)
-```
-
-These require an explicit idempotency strategy.
-
-## Conditionally Idempotent Operations
-
-Some operations become idempotent only when combined with a condition.
 
 Example:
+
+```python
+task_key = f"invoice:{customer_id}:{billing_period}"
+```
+
+If the same customer invoice for the same billing period is retried five times, all five attempts use the same key.
+
+## Weak keys
+
+Avoid using only:
+
+```text
+Celery task ID
+random UUID generated inside the worker
+current timestamp
+worker process ID
+queue delivery tag
+```
+
+These identify an **attempt**, so a new publication or replay can generate a different value and bypass protection.
+
+## Key rule
+
+Generate or derive the key at the earliest stable business boundary and preserve it through:
+
+```mermaid
+flowchart LR
+    A[API / Event] --> B[Business idempotency key]
+    B --> C[Queue message]
+    C --> D[Worker]
+    D --> E[Database]
+    D --> F[External API]
+```
+
+---
+
+# 5. Database-Enforced Idempotency
+
+The database is normally the strongest place to enforce idempotency for backend applications.
+
+## 5.1 Unique business constraint
+
+For invoices:
+
+```python
+class Invoice(models.Model):
+    customer_id = models.IntegerField()
+    billing_period = models.CharField(max_length=7)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["customer_id", "billing_period"],
+                name="uniq_customer_billing_period",
+            )
+        ]
+```
+
+Now two workers cannot create two invoices for the same logical billing operation.
+
+## 5.2 Conditional state transition
+
+When an operation should occur only from one state:
 
 ```sql
 UPDATE orders
@@ -180,189 +257,147 @@ WHERE id = 101
   AND status = 'PENDING';
 ```
 
-Only the first execution changes the row. Later executions affect zero rows.
+The first worker changes the row.
 
----
+A concurrent or repeated execution affects `0` rows and knows another execution already claimed or completed the transition.
 
-# 5. Core Idempotency Mechanics
+## 5.3 Avoid check-then-act
 
-The patterns, storage schema, key design, and concurrency handling below are covered in depth in [HTTP Idempotency](../api-design/idempotency-http-methods.md). This section is a recap of what carries over to workers, plus the parts that differ.
+Unsafe pattern:
 
-## 5.1 Core Patterns
+```python
+if not Invoice.objects.filter(
+    customer_id=customer_id,
+    billing_period=billing_period,
+).exists():
+    Invoice.objects.create(...)
+```
 
-| Pattern | Mechanism |
-|---|---|
-| Store a processed-task record | Insert the idempotency key as a primary key; a duplicate insert fails |
-| Business-level unique constraint | `UNIQUE (customer_id, billing_period)` plus `ON CONFLICT DO NOTHING` |
-| Compare-and-set state transition | `UPDATE ... WHERE status = 'PAYMENT_PENDING'`; check the affected row count |
-| Store the original result | A retry returns the first execution's result instead of creating a second one |
-| Make the destination idempotent | Upsert by business key, replace at a deterministic path, or append a ledger entry keyed by a unique reference instead of mutating a balance |
+Two workers can both read “not found” before either inserts.
 
-## 5.2 Database-Backed Implementation
+Prefer a database constraint plus an atomic operation such as `get_or_create()`, `INSERT ... ON CONFLICT`, or a conditional update.
 
-Claim the key **before** doing the work, using a unique constraint rather than a check-then-act read. A read that asks "does this key exist?" and then writes is a race: two workers can both observe that the key is missing.
+## 5.4 Idempotency record
 
-The worker-specific addition to the request-scoped schema is a **lease**:
+For operations that need explicit tracking:
 
 ```python
 class IdempotencyRecord(models.Model):
     key = models.CharField(max_length=255, unique=True)
     status = models.CharField(max_length=20)
     result = models.JSONField(null=True)
-    error = models.TextField(null=True)
     locked_until = models.DateTimeField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 ```
 
-`locked_until` matters more for workers than for API requests: a crashed worker leaves a record stuck in `PROCESSING` with no client waiting to notice, so a lease and timeout policy are required to make abandoned tasks recoverable.
-
-Where possible, update the business data and the idempotency record in the same database transaction. That protects database changes, but it cannot include an external API call in the same transaction.
-
-## 5.3 Idempotency Keys
-
-An idempotency key identifies one **logical business operation**, so it must be derived from business identity:
+Typical states:
 
 ```text
-payment:{order_id}
-refund:{payment_id}:{refund_reason_code}
-invoice:{customer_id}:{billing_period}
-welcome-email:{user_id}
-webhook:{provider_event_id}
-report:{account_id}:{report_date}
+PROCESSING → COMPLETED
+     │
+     ├──→ RETRYABLE
+     └──→ FAILED
 ```
 
-A timestamp, a worker-generated UUID, a process ID, or a queue delivery tag are all weak keys: they identify an execution attempt, so every retry gets a different value and bypasses protection.
-
-Generate the key at the earliest stable boundary — normally when the request or event is first created — and keep it identical through every retry and downstream call.
-
-```mermaid
-flowchart LR
-    A[Client/API Request] --> B[Generate or accept idempotency key]
-    B --> C[Store key with business request]
-    C --> D[Publish background task]
-    D --> E[Worker reuses same key]
-    E --> F[External API receives same key]
-```
-
-Store a hash of the important request fields alongside the key so that the same key arriving with a different payload is rejected rather than silently returning an unrelated result.
-
-## 5.4 Concurrency and Race Conditions
-
-Idempotency must hold when duplicate tasks execute **at the same time**, not only one after another. Use unique constraints, atomic upserts, conditional updates, row-level locks, optimistic version columns, or — for rare high-risk workflows — serializable transactions.
-
-A Redis lock such as `redis.lock(f"task-lock:{task_key}", timeout=60)` reduces duplicate work, but it must not be the only protection: the lock may expire while the task is still running, the worker may pause or lose connectivity, Redis may restart or fail over, a duplicate may arrive after the lock is released, and incorrect ownership handling can release another worker's lock. See section 3.4 — the database uniqueness rule or state transition is the correctness mechanism.
+A lease such as `locked_until` helps recover a task if a worker crashes while the record remains in `PROCESSING`.
 
 ---
 
-# 6. Retries, Backoff, and Dead-Letter Queues
+# 6. Retries and External Side Effects
 
-Retries are safe only when the operation is idempotent, or when the retry occurs before any side effect.
+## 6.1 Retry only suitable failures
 
-The rules in one paragraph: retry transient failures (network timeout, connection reset, HTTP `429`, `502`, `503`, `504`, temporary database or broker unavailability); do not retry permanent ones (invalid payload, missing data, permission failure, business rule violation) without correction. Back off exponentially, add jitter so thousands of workers do not retry in lockstep, cap the attempts, and send whatever is left to a dead-letter queue.
+Typical transient failures:
 
-Replaying a dead-letter queue delivers old messages again, so replay tooling must preserve the original business idempotency key — this is the point where the two topics meet.
+- network timeout
+- connection reset
+- temporary database/broker unavailability
+- HTTP `429`
+- HTTP `502`, `503`, `504`
 
-Full treatment of failure classification, the backoff variants (full, equal, and decorrelated jitter), retry budgets, DLQ design, and redrive: [Retries and Dead-Letter Queues](retries-dead-letter-queues.md).
+Typical permanent failures:
 
----
+- invalid payload
+- failed business validation
+- unsupported operation
+- missing required data
+- permission failure that requires configuration changes
 
-# 7. External APIs and Side Effects
+For transient failures, use:
 
-External side effects are the most difficult part because your database transaction cannot normally roll back a payment, email, or third-party API call.
+```text
+bounded retries
++ exponential backoff
++ jitter
+```
 
-## 7.1 Pass an Idempotency Key Downstream
+This prevents many workers from retrying at the same moment.
 
-When the external provider supports idempotency, send the same key on every attempt.
+## 6.2 External API idempotency
+
+A database transaction cannot roll back a completed payment or third-party call.
+
+When the provider supports idempotency, reuse the same key:
 
 ```python
-response = payment_client.create_charge(
+payment_client.create_charge(
     amount=12000,
     currency="usd",
-    idempotency_key=f"charge:order:{order.id}",
+    idempotency_key=f"payment:order:{order.id}",
 )
 ```
 
-This is the preferred approach for payment creation and other high-risk operations.
-
-## 7.2 Record Provider References
-
-Store the external operation ID against the local record, so a retry can query or return the existing provider operation instead of creating a second one:
+Also store the provider reference:
 
 ```text
 order_id: 781
-payment_provider_id: pay_987
-idempotency_key: charge:order:781
+idempotency_key: payment:order:781
+provider_payment_id: pay_987
 status: SUCCEEDED
 ```
 
-## 7.3 The Uncertain Outcome Problem
+## 6.3 Timeout does not mean failure
 
-Consider this sequence:
+Consider:
 
-1. Worker sends payment request.
-2. Provider successfully charges the customer.
-3. Network times out before the worker receives the response.
-4. Worker does not know whether payment succeeded.
-
-Never assume a timeout means failure.
-
-Correct approaches:
-
-- Retry with the same provider idempotency key.
-- Query the provider using a stable merchant reference.
-- Reconcile through provider webhooks or settlement reports.
-- Mark the local operation as `UNKNOWN` or `PENDING_CONFIRMATION`.
-
-## 7.4 Emails and Notifications
-
-Email providers may not always offer request-level idempotency.
-
-Use a notification record:
-
-```sql
-CREATE TABLE notifications (
-    id BIGSERIAL PRIMARY KEY,
-    notification_key VARCHAR(255) UNIQUE NOT NULL,
-    recipient VARCHAR(320) NOT NULL,
-    template_name VARCHAR(100) NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    provider_message_id VARCHAR(255)
-);
+```text
+Worker sends payment
+        ↓
+Provider charges customer
+        ↓
+Network response is lost
+        ↓
+Worker receives timeout
 ```
 
-Claim the notification before sending.
+The result is **unknown**, not definitely failed.
 
-Be aware of the failure window:
+Safe approaches:
 
-```mermaid
-flowchart TD
-    A[Email sent successfully] --> B[Worker crashes before marking SENT]
-    B --> C[Retry may send again]
-```
+- retry using the same downstream idempotency key;
+- query by a stable merchant/business reference;
+- reconcile using provider webhooks or settlement data;
+- keep local state such as `PENDING_CONFIRMATION`.
 
-Possible mitigations:
-
-- Provider idempotency support
-- Deterministic provider message reference
-- Provider delivery lookup
-- Acceptable duplicate semantics for low-risk notifications
-- A reconciliation process
-
-Some side effects cannot be made perfectly duplicate-free without support from the destination system.
+This is especially important for payments, refunds, emails, and other irreversible side effects.
 
 ---
 
-# 8. Celery Example
+# 7. Practical Celery Example
 
-Celery can retry tasks, and late acknowledgment can cause a task to be redelivered after a worker failure. Therefore, task code should be idempotent.
+Consider a monthly invoice task.
 
-## Celery Task with Database Idempotency
+The logical rule is:
+
+> A customer must have only one invoice for one billing period.
+
+## 7.1 Celery task
 
 ```python
 from celery import shared_task
-from django.db import IntegrityError, transaction
-from django.utils import timezone
+from django.db import transaction
+
 
 @shared_task(
     bind=True,
@@ -375,212 +410,134 @@ from django.utils import timezone
 def generate_invoice(self, customer_id: int, billing_period: str):
     task_key = f"invoice:{customer_id}:{billing_period}"
 
-    try:
-        with transaction.atomic():
-            record = IdempotencyRecord.objects.create(
-                key=task_key,
-                status="PROCESSING",
-            )
-    except IntegrityError:
-        existing = IdempotencyRecord.objects.get(key=task_key)
-
-        if existing.status == "COMPLETED":
-            return existing.result
-
-        # Another worker may currently own the task.
-        # A production implementation should use a lease/timeout policy.
-        return {"status": existing.status}
-
-    try:
-        with transaction.atomic():
-            invoice, _ = Invoice.objects.get_or_create(
-                customer_id=customer_id,
-                billing_period=billing_period,
-                defaults={"status": "CREATED"},
-            )
-
-            result = {
-                "invoice_id": invoice.id,
-                "status": invoice.status,
-            }
-
-            record.status = "COMPLETED"
-            record.result = result
-            record.completed_at = timezone.now()
-            record.save(
-                update_fields=[
-                    "status",
-                    "result",
-                    "completed_at",
-                    "updated_at",
-                ]
-            )
-
-        return result
-
-    except Exception as exc:
-        IdempotencyRecord.objects.filter(id=record.id).update(
-            status="RETRYABLE",
-            error=str(exc),
+    with transaction.atomic():
+        invoice, created = Invoice.objects.get_or_create(
+            customer_id=customer_id,
+            billing_period=billing_period,
+            defaults={"status": "CREATED"},
         )
-        raise
+
+    return {
+        "invoice_id": invoice.id,
+        "status": invoice.status,
+        "idempotency_key": task_key,
+        "created": created,
+    }
 ```
 
-## Celery Configuration Considerations
+The important part is **not** `acks_late=True`.
+
+The important correctness guarantee is the unique business constraint on:
+
+```text
+(customer_id, billing_period)
+```
+
+`acks_late` changes acknowledgment behavior, but task logic must still be safe when a message is redelivered.
+
+## 7.2 Relevant Celery configuration
 
 ```python
 task_acks_late = True
 task_reject_on_worker_lost = True
+
+# Often useful for long-running tasks; tune based on workload.
 worker_prefetch_multiplier = 1
 ```
 
-These settings affect delivery and failure behavior. They do not replace idempotent task logic.
+These settings influence delivery and worker behavior. They do not replace idempotency.
 
-## Important Design Detail
+## Interview-ready explanation
 
-Do not use Celery's generated task ID as the only business idempotency key when two separate task publications may represent the same logical operation. Prefer `task_key = f"invoice:{customer_id}:{billing_period}"` over `task_key = self.request.id`.
+A strong explanation is:
 
-The Celery task ID identifies one message publication. The business key identifies the operation that must happen once.
+> Background jobs can be delivered more than once, especially when a worker completes a database change and crashes before acknowledgment. I design the task around a stable business key, such as `invoice:{customer_id}:{billing_period}`, and enforce that identity in the database with a unique constraint or conditional state transition. Retries then become safe because the duplicate execution cannot create another business effect. For external APIs, I propagate the same idempotency key and store the provider reference so timeout outcomes can be reconciled.
 
 ---
 
-# 9. Outbox and Inbox Patterns
+# 8. Long-Running Workflows
 
-## 9.1 Transactional Outbox
-
-A common problem is updating the database and publishing an event reliably.
-
-Unsafe flow:
-
-```mermaid
-flowchart TD
-    A[Update order in database] --> B[Application crashes]
-    B --> C["Order changed, but event was never published"]
-```
-
-Reversing the order creates the opposite problem: the event may be published while the database transaction later fails.
-
-The transactional outbox stores the business change and event in one transaction.
-
-```mermaid
-flowchart LR
-    A[Application Transaction] --> B[(Business Tables)]
-    A --> C[(Outbox Table)]
-    C --> D[Outbox Publisher]
-    D --> E[Message Broker]
-```
+A multi-step workflow should not depend only on in-memory progress.
 
 Example:
 
-```python
-from django.db import transaction
-
-with transaction.atomic():
-    order.status = "PAID"
-    order.save(update_fields=["status"])
-
-    OutboxEvent.objects.create(
-        event_id=event_id,
-        event_type="OrderPaid",
-        payload={"order_id": order.id},
-    )
-```
-
-A separate publisher sends unsent outbox rows. Publishing may happen more than once, so consumers must still be idempotent.
-
-## 9.2 Inbox / Processed-Message Pattern
-
-A consumer stores every processed message ID.
-
-```sql
-CREATE TABLE consumer_inbox (
-    consumer_name VARCHAR(100) NOT NULL,
-    message_id VARCHAR(255) NOT NULL,
-    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (consumer_name, message_id)
-);
-```
-
-The inbox insert and business update should occur in the same transaction.
-
-```python
-with transaction.atomic():
-    InboxMessage.objects.create(
-        consumer_name="inventory-service",
-        message_id=event["id"],
-    )
-
-    apply_inventory_change(event)
-```
-
-A duplicate message causes a uniqueness conflict and the handler can skip processing.
-
----
-
-# 10. Long-Running and Multi-Step Tasks
-
-A task that performs multiple side effects needs step-level idempotency. Consider a workflow that reserves inventory, charges payment, creates a shipment, and sends a confirmation: a retry may begin after the payment step has already completed.
-
-## Persist Workflow State
-
 ```mermaid
-flowchart TD
+flowchart LR
     A[PENDING] --> B[INVENTORY_RESERVED]
     B --> C[PAYMENT_CAPTURED]
     C --> D[SHIPMENT_CREATED]
     D --> E[COMPLETED]
 ```
 
-Each step should:
+Persist the workflow state after each successful step.
 
-1. Check whether the step is already completed.
-2. Execute only when the current state allows it.
-3. Save the external reference and next state.
-4. Be independently retryable.
+On retry:
 
-## Example
+1. Read the current state.
+2. Skip steps already completed.
+3. Execute only the next valid transition.
+4. Store external references.
+5. Persist the next state.
+
+Example:
 
 ```python
-def process_order(order_id: int):
-    order = Order.objects.get(id=order_id)
-
+def process_order(order):
     if order.state == "PENDING":
         reserve_inventory_once(order)
-        order.state = "INVENTORY_RESERVED"
-        order.save(update_fields=["state"])
+        transition(order, "INVENTORY_RESERVED")
 
     if order.state == "INVENTORY_RESERVED":
         capture_payment_once(order)
-        order.state = "PAYMENT_CAPTURED"
-        order.save(update_fields=["state"])
+        transition(order, "PAYMENT_CAPTURED")
 
     if order.state == "PAYMENT_CAPTURED":
         create_shipment_once(order)
-        order.state = "SHIPMENT_CREATED"
-        order.save(update_fields=["state"])
+        transition(order, "SHIPMENT_CREATED")
 ```
 
-For complex workflows, use a durable workflow engine or a carefully designed state machine instead of one large task with hidden in-memory progress.
-
-## Compensation
-
-Some workflows require a compensating action:
-
-```mermaid
-flowchart TD
-    A[Payment captured] --> C[Create refund operation]
-    B[Inventory reservation failed permanently] --> C
-```
-
-The compensation must also be idempotent, keyed on `refund:{original_payment_id}`.
+For complex, long-running business workflows, a durable state machine or workflow engine is usually easier to operate than one very large task.
 
 ---
 
-# 11. Observability and Testing
+# 9. Production Checklist
 
-## Useful Log Fields
+## Task identity
 
-Include these in structured logs:
+- Use a stable business idempotency key.
+- Preserve the same key across retries and replays.
+- Do not depend only on a queue-generated task ID.
+
+## Database
+
+- Add a unique constraint where the business rule is naturally unique.
+- Prefer atomic upserts or conditional updates over check-then-act.
+- Make concurrent duplicate execution safe.
+- Recover abandoned `PROCESSING` records using a lease/timeout strategy when needed.
+
+## Retries
+
+- Retry transient failures only.
+- Use exponential backoff and jitter.
+- Limit retry attempts.
+- Provide a dead-letter or manual-review path.
+
+## External side effects
+
+- Reuse provider-supported idempotency keys.
+- Store downstream operation IDs.
+- Treat timeouts as uncertain outcomes.
+- Add reconciliation where duplicate effects are high risk.
+
+## Multi-step tasks
+
+- Persist workflow state.
+- Make each step independently retryable.
+- Make compensation operations idempotent too.
+
+## Observability
+
+Useful log fields:
 
 ```text
 task_name
@@ -588,139 +545,29 @@ task_id
 idempotency_key
 business_entity_id
 attempt_number
-worker_id
 status
-previous_status
 external_reference
-duration_ms
 retry_reason
+duration_ms
 ```
 
-Example:
+Useful metrics:
 
-```python
-logger.info(
-    "background_task_completed",
-    task_name="generate_invoice",
-    idempotency_key=task_key,
-    invoice_id=invoice.id,
-    attempt=self.request.retries + 1,
-)
-```
-
-## Useful Metrics
-
-Track:
-
-- Total task executions
-- Unique logical tasks
-- Duplicate execution attempts
-- Idempotency cache/database hits
-- Tasks stuck in `PROCESSING`
-- Retry count by failure type
-- Dead-letter queue size
-- External calls with unknown outcomes
-- Idempotency key conflicts with mismatched payloads
-- Lock wait time
-- Task completion latency
-
-## Testing Strategy
-
-### Repeat Execution Test
-
-```python
-def test_task_is_idempotent():
-    first = generate_invoice(customer_id=42, billing_period="2026-07")
-    second = generate_invoice(customer_id=42, billing_period="2026-07")
-
-    assert Invoice.objects.filter(
-        customer_id=42,
-        billing_period="2026-07",
-    ).count() == 1
-
-    assert first["invoice_id"] == second["invoice_id"]
-```
-
-### Concurrent Execution Test
-
-Start several workers or threads with the same key and verify:
-
-- Only one business record is created.
-- Only one external operation is accepted.
-- All callers receive a valid final state.
-- No records remain permanently stuck in `PROCESSING`.
-
-### Crash-Point Testing
-
-Simulate failure:
-
-- Before the database transaction
-- After the business update
-- Before acknowledgment
-- After the external request but before saving its response
-- During completion-state update
-- During dead-letter replay
-
-The task should recover correctly at every boundary.
-
----
-
-# 12. Production Design Checklist
-
-## Task Identity
-
-- Does the task have a stable business idempotency key?
-- Is the same key preserved across all retries?
-- Can two producers derive the same logical key?
-- Is key reuse with a different payload rejected?
-
-## Storage and Concurrency
-
-- Is there a database unique constraint?
-- Are check-and-write operations atomic?
-- Can two workers safely run concurrently?
-- Is abandoned `PROCESSING` state recoverable?
-- Is there a lease or timeout policy for stuck tasks?
-
-## Side Effects
-
-- Does the external API support idempotency keys?
-- Is the downstream operation reference stored?
-- Can an uncertain timeout be reconciled?
-- Are emails, payments, webhooks, and file writes protected separately?
-
-## Retries
-
-- Are only transient failures retried?
-- Is exponential backoff used?
-- Is jitter enabled?
-- Is there a maximum retry count?
-- Is there a dead-letter or manual-review path?
-
-## Workflow Design
-
-- Are long tasks divided into retryable steps?
-- Is each step idempotent?
-- Is workflow state persisted?
-- Are compensating actions idempotent?
-- Are events published using an outbox when consistency matters?
-
-## Operations
-
-- Are duplicate attempts observable?
-- Can support teams search by idempotency key?
-- Can failed tasks be replayed without changing their keys?
-- Are idempotency records retained long enough for the replay window?
-- Is there a cleanup policy for old records?
+- duplicate execution attempts;
+- idempotency conflicts/hits;
+- retry count;
+- tasks stuck in `PROCESSING`;
+- dead-letter queue size;
+- unknown external outcomes;
+- task completion latency.
 
 ---
 
 # References
 
-- [Celery Documentation — Optimizing and Late Acknowledgment](https://docs.celeryq.dev/en/latest/userguide/optimizing.html)
-- [Celery Documentation — Canvas and Idempotent Tasks](https://docs.celeryq.dev/en/latest/userguide/canvas.html)
-- [AWS Well-Architected Framework — Make Mutating Operations Idempotent](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_prevent_interaction_failure_idempotent.html)
-- [AWS Prescriptive Guidance — Retry with Backoff Pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/retry-backoff.html)
+- [Celery 5.6.3 Documentation — Tasks](https://docs.celeryq.dev/en/stable/userguide/tasks.html)
+- [Celery Documentation — Optimizing](https://docs.celeryq.dev/en/stable/userguide/optimizing.html)
+- [AWS Well-Architected — Make Mutating Operations Idempotent](https://docs.aws.amazon.com/wellarchitected/latest/framework/rel_prevent_interaction_failure_idempotent.html)
+- [AWS Well-Architected — Control and Limit Retry Calls](https://docs.aws.amazon.com/wellarchitected/latest/framework/rel_mitigate_interaction_failure_limit_retries.html)
 - [Stripe API — Idempotent Requests](https://docs.stripe.com/api/idempotent_requests)
 - [Google Cloud Tasks — Understand Cloud Tasks](https://docs.cloud.google.com/tasks/docs/dual-overview)
-- [Google Cloud Run — Job Retries and Checkpoints](https://docs.cloud.google.com/run/docs/jobs-retries)

@@ -1648,17 +1648,3 @@ Stage 1 is suitable for a small product, and every later stage is driven by a sp
 Whatever the stage, the design principle does not change: accept notification intent quickly, persist it durably, process it asynchronously, isolate channels from one another, make retries safe, and track final delivery through provider callbacks.
 
 ---
-
-# 27. Official References
-
-The following official documentation is useful when implementing provider integrations:
-
-- [Amazon SNS message delivery retries](https://docs.aws.amazon.com/sns/latest/dg/sns-message-delivery-retries.html)
-- [Amazon SNS dead-letter queues](https://docs.aws.amazon.com/sns/latest/dg/sns-dead-letter-queues.html)
-- [Firebase Cloud Messaging architecture](https://firebase.google.com/docs/cloud-messaging/fcm-architecture)
-- [Firebase Cloud Messaging message types](https://firebase.google.com/docs/cloud-messaging/customize-messages/set-message-type)
-- [Firebase collapsible and non-collapsible messages](https://firebase.google.com/docs/cloud-messaging/customize-messages/collapsible-message-types)
-- [Apple: Establishing a connection to APNs](https://developer.apple.com/documentation/usernotifications/establishing-a-connection-to-apns)
-- [Twilio outbound message status callbacks](https://www.twilio.com/docs/messaging/guides/outbound-message-status-in-status-callbacks)
-- [Twilio messaging webhooks](https://www.twilio.com/docs/usage/webhooks/messaging-webhooks)
-- [Twilio SendGrid Event Webhook overview](https://sendgrid.com/en-us/blog/whats-webhook)

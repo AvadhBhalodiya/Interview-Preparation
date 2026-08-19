@@ -6,487 +6,184 @@ order: 11
 
 # GIL (Global Interpreter Lock)
 
-> The **Global Interpreter Lock (GIL)** is a locking mechanism used by CPython.
->
-> In a normal GIL-enabled CPython interpreter, only one thread can execute Python bytecode at a time.
+> The **Global Interpreter Lock (GIL)** is a CPython mechanism that allows only one thread to execute Python bytecode at a time in the normal GIL-enabled build.
 
-## In short
+The GIL is an important concept when choosing between **threads, processes, and async programming**. It mainly affects **CPU-bound Python code running in threads**.
 
-- The GIL is a **CPython implementation detail**, not a rule of the Python language, and other implementations may use a different concurrency model.
-- In a normal GIL-enabled build only the thread holding the lock executes Python bytecode, so threads give concurrency but not multi-core Python execution.
-- It exists because CPython manages object lifetime with reference counting, and one global lock kept interpreter internals and the C-extension model simple.
-- A thread stops holding the GIL on blocking I/O, `time.sleep()`, a lock or queue wait, when CPython lets another thread run, or when native code releases it explicitly.
-- Threads remain effective for I/O-bound work; CPU-bound pure-Python work normally needs processes for real multi-core execution.
-- Native extensions such as NumPy or pandas may release the GIL during native work, so some CPU-heavy library calls do run in parallel — benchmark instead of assuming.
-- Python 3.13 added an optional experimental free-threaded build and 3.14 an officially supported one (PEP 703); locks and package-compatibility checks are still required.
+> **Current status (August 2026):** Python 3.14 is the current stable feature series. Free-threaded CPython is officially supported in Python 3.14, but it is still an **optional build**; the normal CPython build continues to use the GIL by default.
 
-```mermaid
-flowchart LR
-    A[Thread A] --> G{GIL}
-    B[Thread B] --> G
-    C[Thread C] --> G
+---
 
-    G --> P[CPython Interpreter]
-```
+## Index
 
-**Interview answer:** The GIL is a lock inside CPython that protects the interpreter and many internal objects, and it means only one thread executes Python bytecode at a time. For I/O-bound code that barely matters, because a thread releases the GIL while it waits on the network, a database, a file, or `time.sleep()` — so threads still overlap the waiting. For CPU-bound pure-Python work threads do not scale across cores, so I use processes, a native library that releases the GIL, or a free-threaded build where the dependencies support it.
-
-**Gotcha:** Assuming the GIL makes threaded code thread-safe. It protects interpreter internals, not a complete application-level operation: a check-then-act sequence such as reading a balance, comparing it, then subtracting can be interrupted between those logical steps, so shared mutable state still needs an explicit `threading.Lock`.
+1. [Overview](#1-overview)
+2. [How the GIL Works](#2-how-the-gil-works)
+3. [Why CPython Uses the GIL](#3-why-cpython-uses-the-gil)
+4. [GIL with I/O-Bound and CPU-Bound Work](#4-gil-with-io-bound-and-cpu-bound-work)
+5. [GIL and Thread Safety](#5-gil-and-thread-safety)
+6. [Free-Threaded Python](#6-free-threaded-python)
+7. [Choosing the Right Concurrency Model](#7-choosing-the-right-concurrency-model)
+8. [Practical Example](#8-practical-example)
+9. [Key Takeaways](#9-key-takeaways)
+10. [References](#10-references)
 
 ---
 
 # 1. Overview
 
-Python supports multiple concurrency approaches:
+Python supports several concurrency models:
 
-- Threads
-- Processes
-- Asynchronous programming
-- Multiple isolated interpreters
-- Free-threaded execution
+| Approach | Best suited for | GIL impact |
+|---|---|---|
+| `threading` / `ThreadPoolExecutor` | I/O-bound work | Affected in normal CPython |
+| `asyncio` | Large numbers of I/O operations | Usually runs on one event-loop thread |
+| `multiprocessing` / `ProcessPoolExecutor` | CPU-bound Python work | Separate processes avoid one shared GIL |
+| `InterpreterPoolExecutor` | Isolated parallel tasks | Separate interpreters can run in parallel |
+| Free-threaded CPython | Thread-based parallel execution | GIL can be disabled |
 
-The GIL mainly affects **threads executing Python code inside CPython**.
+The practical rule for normal CPython is:
 
-| Approach | Behaviour |
-|---|---|
-| `threading` | Affected by the GIL in normal CPython |
-| `multiprocessing` | Separate process and separate interpreter |
-| `asyncio` | Cooperative concurrency, usually one thread |
-| Isolated interpreters | Separate interpreter state |
-| Free-threaded CPython | Optional build where the GIL can be disabled |
-
-The most important practical idea is:
-
-> Threads are generally effective for I/O-bound work, while processes are usually better for CPU-bound pure-Python work in a normal GIL-enabled CPython build.
+> **I/O-bound work → threads or asyncio**  
+> **CPU-bound pure-Python work → processes**
 
 ---
 
-# 2. What Is the GIL?
+# 2. How the GIL Works
 
-GIL means: `Global Interpreter Lock`
-
-It is a lock that protects access to the CPython interpreter and many internal Python objects.
-
-In a normal CPython process with the GIL enabled: `Only one thread executes Python bytecode at a time`
-
-Suppose a program creates three threads:
+Suppose one Python process contains three threads:
 
 ```mermaid
-flowchart TD
-    PROC[Python process] --> TA[Thread A]
-    PROC --> TB[Thread B]
-    PROC --> TC[Thread C]
+flowchart LR
+    T1[Thread A] --> G{GIL}
+    T2[Thread B] --> G
+    T3[Thread C] --> G
+    G --> P[Execute Python bytecode]
 ```
 
-All three threads exist, but they compete for the same interpreter lock. Only the thread that holds the GIL can execute Python bytecode.
+In a normal GIL-enabled CPython interpreter:
 
-## Important Scope
-
-The GIL is mainly associated with **CPython**, which is the standard and most commonly used Python implementation.
-
-It is not a rule of the Python language itself.
-
-Other Python implementations may use a different concurrency model.
-
----
-
-# 3. Why Does CPython Have a GIL?
-
-The GIL historically made CPython's memory management and extension ecosystem easier to implement safely.
-
-## 3.1 Reference Counting
-
-CPython primarily manages object lifetime using reference counting.
-
-```python
-user_name = "Avadh"
-display_name = user_name
-```
+1. A thread acquires the GIL.
+2. It executes Python bytecode.
+3. CPython eventually allows another thread to run.
+4. Blocking operations such as I/O release the GIL so another thread can make progress.
 
 Conceptually:
 
 ```text
-"Avadh" object
-Reference count = 2
+Time ---------------------------------------------------->
+
+Thread A: [Python] [I/O wait........] [Python]
+Thread B: [wait..] [Python] [I/O wait........]
 ```
 
-When a reference is created or removed, CPython updates the object's reference count.
+The threads are **concurrent**, but Python bytecode is not normally executing in parallel across multiple cores.
 
-Without synchronization, two threads could update the same count at the same time.
+### Important distinction
 
-```text
-Initial reference count = 2
+**Concurrency** means tasks make progress during overlapping periods.
 
-Thread A reads 2
-Thread B reads 2
+**Parallelism** means tasks execute at the same instant, usually on different CPU cores.
 
-Thread A writes 3
-Thread B writes 3
-
-Expected value = 4
-Actual value   = 3
-```
-
-The GIL provides broad protection around many interpreter-level operations.
-
-## 3.2 Simpler Interpreter Internals
-
-The GIL historically simplified access to objects such as:
-
-- Lists
-- Dictionaries
-- Functions
-- Classes
-- Modules
-- Reference counts
-- Interpreter state
-
-Without one global lock, CPython would need more fine-grained synchronization throughout the interpreter.
-
-## 3.3 C Extension Compatibility
-
-Many Python packages use native C or C++ extensions.
-
-Examples include:
-
-- NumPy
-- pandas
-- Pillow
-- cryptography
-- Database drivers
-
-The GIL historically provided a relatively simple model for extension authors when interacting with Python objects.
-
-## Main Trade-off
-
-```mermaid
-flowchart TD
-    A[Simpler interpreter implementation] --> C[Limited parallel execution of Python bytecode<br/>inside one GIL-enabled interpreter]
-    B[Large native-extension ecosystem] --> C
-```
+The normal CPython GIL allows thread concurrency but limits parallel execution of Python bytecode.
 
 ---
 
-# 4. How the GIL Works
+# 3. Why CPython Uses the GIL
 
-A simplified execution sequence is:
+The GIL is mainly a **CPython implementation detail**, not a rule of the Python language.
 
-```mermaid
-sequenceDiagram
-    participant T1 as Thread A
-    participant G as GIL
-    participant P as CPython
-    participant T2 as Thread B
+Historically, it simplified important interpreter responsibilities such as:
 
-    T1->>G: Request lock
-    G-->>T1: Lock acquired
-    T1->>P: Execute Python bytecode
-    T1->>G: Release or yield lock
+- Protecting CPython's object model from unsafe concurrent access.
+- Managing internal interpreter state.
+- Supporting CPython's reference-counting memory-management model.
+- Providing a simpler synchronization model for many C extensions.
 
-    T2->>G: Request lock
-    G-->>T2: Lock acquired
-    T2->>P: Execute Python bytecode
-    T2->>G: Release or yield lock
-```
-
-From the developer's perspective, thread execution may look like this:
-
-```text
-Time ------------------------------------------------------>
-
-Thread A: [running] [waiting] [running] [waiting]
-Thread B: [waiting] [running] [waiting] [running]
-```
-
-The threads make progress concurrently, but only one normally executes Python bytecode at a specific instant.
-
-## When a Thread May Release or Yield the GIL
-
-A thread may stop holding the GIL when:
-
-- It performs blocking I/O.
-- It calls `time.sleep()`.
-- It waits for a lock or queue.
-- CPython allows another thread to run.
-- Native extension code explicitly releases the GIL.
-
-Example:
-
-```python
-import time
-
-def load_data() -> None:
-    print("Loading started")
-    time.sleep(2)
-    print("Loading completed")
-```
-
-While the thread is sleeping, another thread can execute.
-
----
-
-# 5. Concurrency, Parallelism, and Workload Type
-
-Concurrency means several tasks make progress over overlapping periods; parallelism means they execute at the same instant on different CPU cores. In a normal GIL-enabled CPython build, threads provide concurrency but not parallel execution of Python bytecode.
-
-That is why the effect of the GIL depends heavily on the type of work: I/O-bound work, which spends most of its time waiting on a network, disk, or database, still benefits from threads, while CPU-bound pure-Python work needs processes.
-
-See [Multithreading vs Multiprocessing vs Asyncio](threading-multiprocessing-asyncio.md) for the full taxonomy and the workload-identification guide.
-
----
-
-# 6. Threads with I/O-Bound Work
-
-Consider three simulated API calls.
-
-## Sequential Version
-
-```python
-from time import perf_counter, sleep
-
-def fetch_user(user_id: int) -> str:
-    sleep(2)
-    return f"User {user_id}"
-
-def main() -> None:
-    started_at = perf_counter()
-
-    results = [
-        fetch_user(1),
-        fetch_user(2),
-        fetch_user(3),
-    ]
-
-    elapsed = perf_counter() - started_at
-
-    print(results)
-    print(f"Completed in {elapsed:.2f} seconds")
-
-if __name__ == "__main__":
-    main()
-```
-
-Approximate execution time: `2 seconds + 2 seconds + 2 seconds = 6 seconds`
-
-## Threaded Version
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-from time import perf_counter, sleep
-
-def fetch_user(user_id: int) -> str:
-    """Simulate a network or database operation."""
-    sleep(2)
-    return f"User {user_id}"
-
-def main() -> None:
-    user_ids = [1, 2, 3]
-    started_at = perf_counter()
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(fetch_user, user_ids))
-
-    elapsed = perf_counter() - started_at
-
-    print(results)
-    print(f"Completed in {elapsed:.2f} seconds")
-
-if __name__ == "__main__":
-    main()
-```
-
-Approximate execution time: `Around 2 seconds`
-
-The exact result depends on the environment.
-
-## Why Threads Help
-
-```text
-Thread 1: [waiting for API ----------------]
-Thread 2: [waiting for API ----------------]
-Thread 3: [waiting for API ----------------]
-
-Total time: approximately one waiting period
-```
-
-The program spends most of its time waiting, so the GIL is not the main bottleneck.
-
----
-
-# 7. Threads with CPU-Bound Work
-
-Consider a CPU-heavy pure-Python calculation.
-
-```python
-def calculate_sum_of_squares(limit: int) -> int:
-    return sum(number * number for number in range(limit))
-```
-
-Running several copies using threads may not produce a meaningful speed improvement in a GIL-enabled CPython interpreter.
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-from time import perf_counter
-
-def calculate_sum_of_squares(limit: int) -> int:
-    return sum(number * number for number in range(limit))
-
-def main() -> None:
-    limits = [8_000_000] * 4
-    started_at = perf_counter()
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(calculate_sum_of_squares, limits))
-
-    elapsed = perf_counter() - started_at
-
-    print(results)
-    print(f"Completed in {elapsed:.2f} seconds")
-
-if __name__ == "__main__":
-    main()
-```
-
-## What Happens Internally
-
-```text
-Thread A wants the GIL
-Thread B wants the GIL
-Thread C wants the GIL
-Thread D wants the GIL
-
-Only one executes Python bytecode at a time.
-```
-
-Thread switching also adds overhead.
-
-Therefore: `More threads do not automatically mean faster CPU execution`
-
----
-
-# 8. Using Multiprocessing for CPU Work
-
-Each process has its own:
-
-- Memory space
-- Python interpreter
-- GIL in a traditional build
+The trade-off is straightforward:
 
 ```mermaid
 flowchart LR
-    P1[Process 1] --> I1[Interpreter 1]
-    I1 --> G1[GIL 1]
-    G1 --> C1[CPU Core 1]
-
-    P2[Process 2] --> I2[Interpreter 2]
-    I2 --> G2[GIL 2]
-    G2 --> C2[CPU Core 2]
+    A[Simpler interpreter and extension model]
+    A --> B[GIL]
+    B --> C[Only one thread executes Python bytecode at a time]
 ```
 
-Because the processes do not share one interpreter-level GIL, they can run on multiple CPU cores.
-
-## `ProcessPoolExecutor` Example
-
-```python
-from concurrent.futures import ProcessPoolExecutor
-from time import perf_counter
-
-def calculate_sum_of_squares(limit: int) -> int:
-    """Perform CPU-heavy pure-Python work."""
-    return sum(number * number for number in range(limit))
-
-def main() -> None:
-    limits = [8_000_000] * 4
-    started_at = perf_counter()
-
-    with ProcessPoolExecutor() as executor:
-        results = list(executor.map(calculate_sum_of_squares, limits))
-
-    elapsed = perf_counter() - started_at
-
-    print(results)
-    print(f"Completed in {elapsed:.2f} seconds")
-
-if __name__ == "__main__":
-    main()
-```
-
-The `if __name__ == "__main__":` guard is important when using multiprocessing.
-
-## Multiprocessing Trade-offs
-
-| Advantages | Disadvantages |
-|---|---|
-| True multi-core execution | Higher memory usage |
-| Suitable for CPU-heavy work | Process startup cost |
-| Separate failure boundaries | Data must often be serialized |
-| Avoids one shared GIL | Shared state is more difficult |
-| Good task isolation | Inter-process communication overhead |
-
-Use processes when each task performs enough work to justify the additional overhead.
+This is why adding more threads does not automatically make CPU-heavy Python code faster.
 
 ---
 
-# 9. The GIL Does Not Prevent Race Conditions
+# 4. GIL with I/O-Bound and CPU-Bound Work
 
-A common misunderstanding is:
+## 4.1 I/O-Bound Work
 
-> The GIL makes all threaded Python code thread-safe.
+I/O-bound applications spend much of their time waiting for external operations such as:
 
-This is incorrect.
+- HTTP APIs
+- Database queries
+- Files
+- Sockets
+- Cloud services
 
-The GIL protects interpreter internals. It does not automatically protect a complete application-level operation.
+During blocking I/O, CPython releases the GIL. Other threads can therefore execute while one thread is waiting.
 
-## Unsafe Example
+That is why threads remain useful for common backend workloads such as calling multiple APIs or processing independent database/network operations.
 
-```python
-class BankAccount:
-    def __init__(self, balance: int) -> None:
-        self.balance = balance
+## 4.2 CPU-Bound Work
 
-    def withdraw(self, amount: int) -> bool:
-        if self.balance >= amount:
-            self.balance -= amount
-            return True
+CPU-bound work spends most of its time executing calculations in Python.
 
-        return False
-```
+Examples:
 
-The withdrawal is a multi-step operation:
+- Large pure-Python loops
+- Data transformation implemented in Python
+- Encryption or compression implemented directly in Python
+- Mathematical calculations without optimized native libraries
+
+In the normal GIL-enabled build, multiple Python threads compete for the same GIL, so they usually **do not provide multi-core speed-up** for this type of work.
+
+For CPU-heavy pure-Python work, `ProcessPoolExecutor` or `multiprocessing` is usually a better choice.
+
+## 4.3 Native Libraries Are Different
+
+The GIL mainly limits **Python bytecode**.
+
+Native extensions can release the GIL while performing work that does not require Python objects. Because of this, some operations in libraries such as NumPy, compression libraries, cryptography libraries, or database drivers can execute in parallel.
+
+Do not assume that every library releases the GIL. **Benchmark the actual workload.**
+
+---
+
+# 5. GIL and Thread Safety
+
+A very important point is:
+
+> **The GIL does not make your application thread-safe.**
+
+The GIL protects CPython internals, but a business operation can contain multiple steps.
+
+For example:
 
 ```text
-1. Read balance
-2. Compare balance
-3. Calculate new balance
-4. Store new balance
+Read balance
+     ↓
+Check balance >= amount
+     ↓
+Subtract amount
+     ↓
+Save new balance
 ```
 
-A thread switch can happen between these logical steps.
+Another thread may run between these logical steps.
 
-## Safe Version with a Lock
+When multiple threads modify shared state, protect the complete operation with synchronization such as:
 
 ```python
-import threading
-
-class BankAccount:
-    def __init__(self, balance: int) -> None:
-        self.balance = balance
-        self._lock = threading.Lock()
-
-    def withdraw(self, amount: int) -> bool:
-        with self._lock:
-            if self.balance < amount:
-                return False
-
-            self.balance -= amount
-            return True
+with balance_lock:
+    if balance >= amount:
+        balance -= amount
 ```
 
-The lock protects the complete business rule: `The account balance must not become negative`
-
-## Common Synchronization Tools
-
-Python provides:
+Common synchronization tools include:
 
 - `threading.Lock`
 - `threading.RLock`
@@ -495,76 +192,29 @@ Python provides:
 - `threading.Condition`
 - `queue.Queue`
 
-## Important Rule
-
-> Use explicit synchronization when multiple threads access shared mutable state.
-
-Do not depend on the GIL for application correctness.
+Do not rely on an operation being atomic unless Python explicitly documents that guarantee.
 
 ---
 
-# 10. Native Extensions and the GIL
+# 6. Free-Threaded Python
 
-The statement that only one thread runs at a time requires an important qualification:
+## 6.1 Python 3.13 and 3.14
 
-> The GIL primarily limits simultaneous execution of Python bytecode.
+Python 3.13 introduced an **experimental free-threaded CPython build** where the GIL can be disabled.
 
-Native extension code may release the GIL while performing work that does not need direct access to Python objects.
+Python 3.14 moved free-threaded CPython to **officially supported status**, but it remains optional rather than the default build.
 
-Conceptually:
+With free threading:
 
-```mermaid
-flowchart TD
-    THR[Thread A] --> A[Acquires GIL]
-    A --> B[Calls native function]
-    B --> C[Native function releases GIL]
-    C --> D[Native calculation runs]
-    D --> E[Reacquires GIL before returning to Python]
+```text
+Thread A ─────────► CPU Core 1
+Thread B ─────────► CPU Core 2
+Thread C ─────────► CPU Core 3
 ```
 
-While Thread A is running native code without the GIL, another thread may execute.
+Multiple threads can execute Python code in parallel.
 
-Packages that may perform some operations in native code include:
-
-- NumPy
-- pandas
-- Pillow
-- SciPy
-- Compression libraries
-- Cryptography libraries
-- Database drivers
-
-Whether threads achieve parallelism depends on the specific package and operation.
-
-## Practical Lesson
-
-Pure-Python code: `Usually limited by the GIL for CPU-heavy threading`
-
-Optimized native code: `May release the GIL and run in parallel`
-
-Always benchmark the actual workload instead of assuming behavior.
-
----
-
-# 11. Free-Threaded Python
-
-CPython now supports an optional build where the GIL can be disabled.
-
-## 11.1 Version Status
-
-| Python version | Free-threaded support |
-|---|---|
-| 3.12 and earlier | Traditional GIL-enabled CPython |
-| 3.13 | Optional experimental free-threaded build |
-| 3.14 | Optional officially supported free-threaded build |
-
-The standard CPython build remains GIL-enabled by default.
-
-Free-threaded execution allows multiple threads to run Python code in parallel on available CPU cores.
-
-This work is based on **PEP 703**, which makes the GIL optional.
-
-## 11.2 Check Whether the GIL Is Enabled
+## 6.2 Check Whether the GIL Is Enabled
 
 On supported recent CPython versions:
 
@@ -574,318 +224,136 @@ import sys
 print(sys._is_gil_enabled())
 ```
 
-Possible output: `True`
-
-or: `False`
-
-A compatibility-friendly check can be written as:
+A free-threaded build can also be identified using:
 
 ```python
-import sys
-
-def is_gil_enabled() -> bool:
-    checker = getattr(sys, "_is_gil_enabled", None)
-
-    if checker is None:
-        return True
-
-    return checker()
-
-print(f"GIL enabled: {is_gil_enabled()}")
+sysconfig.get_config_var("Py_GIL_DISABLED")
 ```
 
-## 11.3 Check Whether Python Supports Free Threading
+## 6.3 Free Threading Does Not Remove Locks
 
-```python
-import sysconfig
+Free threading does **not** mean shared mutable state is automatically safe.
 
-is_free_threaded_build = (
-    sysconfig.get_config_var("Py_GIL_DISABLED") == 1
-)
+Application-level synchronization is still required when multiple threads modify related data.
 
-print(f"Free-threaded build: {is_free_threaded_build}")
-```
+## 6.4 Dependency Compatibility
 
-## 11.4 Free Threading Does Not Remove Race Conditions
+Some C-extension packages may not yet support free threading fully. Importing an incompatible extension can cause the GIL to be re-enabled at runtime.
 
-```text
-GIL disabled
-    does not mean
-Locks are unnecessary
-```
+Before adopting free-threaded Python in production, verify:
 
-Multiple threads can execute simultaneously, so shared-state synchronization becomes even more important.
-
-```python
-import threading
-
-shared_results: list[int] = []
-results_lock = threading.Lock()
-
-def store_result(result: int) -> None:
-    with results_lock:
-        shared_results.append(result)
-```
-
-## 11.5 Package Compatibility
-
-Some C extensions may not yet fully support free-threaded execution.
-
-A package may:
-
-- Work normally
-- Require a special free-threaded build
-- Perform more slowly
-- Re-enable the GIL at runtime
-- Be unsupported
-
-Before using free-threaded Python in production, verify:
-
-- Package compatibility
+- Dependency support
 - Thread safety
-- Performance improvement
+- CPU improvement
 - Memory usage
 - Single-thread performance
-- Deployment support
-
-## 11.6 When Free-Threaded Python Helps
-
-It is most useful when:
-
-- The workload is CPU-bound.
-- Tasks can execute safely in parallel.
-- The application uses threads naturally.
-- Dependencies support free threading.
-- Benchmarks show a real improvement.
-
-It may provide little benefit when:
-
-- The workload is mostly I/O waiting.
-- A database or external API is the bottleneck.
-- The application has heavy lock contention.
-- Dependencies re-enable the GIL.
-- The workload is already handled by optimized native libraries.
+- Deployment/runtime compatibility
 
 ---
 
-# 12. Choosing the Right Concurrency Model
+# 7. Choosing the Right Concurrency Model
 
-Use the following decision flow.
+Use the workload—not the number of tasks—to choose the model.
 
 ```mermaid
 flowchart TD
-    A[What is the main workload?] --> B{Mostly waiting?}
+    A[What is the workload?] --> B{Mostly waiting on I/O?}
+    B -- Yes --> C{Very high network concurrency?}
+    C -- Yes --> D[asyncio]
+    C -- No --> E[Threads / ThreadPoolExecutor]
 
-    B -- Yes --> C{Thousands of network tasks?}
-    C -- Yes --> D[Use asyncio]
-    C -- No --> E[Use threads or ThreadPoolExecutor]
-
-    B -- No --> F{CPU-heavy Python work?}
-    F -- No --> G[Keep the design simple and benchmark]
+    B -- No --> F{CPU-heavy Python code?}
+    F -- No --> G[Keep it simple and benchmark]
     F -- Yes --> H{Free-threaded build and compatible dependencies?}
-
-    H -- Yes --> I[Threads may provide parallelism]
-    H -- No --> J[Use ProcessPoolExecutor or multiprocessing]
+    H -- Yes --> I[Threads can provide parallelism]
+    H -- No --> J[ProcessPoolExecutor / multiprocessing]
 ```
 
-## Tool Comparison
+### Practical selection
 
-| Tool | Memory Model | Multi-Core Python Execution | Best Use |
-|---|---|---:|---|
-| `threading` | Shared memory | Not normally with a GIL-enabled build | I/O-bound tasks |
-| `ThreadPoolExecutor` | Shared memory | Not normally with a GIL-enabled build | Simple concurrent I/O |
-| `asyncio` | Event loop | No by default | Many network operations |
-| `multiprocessing` | Separate memory | Yes | CPU-bound work |
-| `ProcessPoolExecutor` | Separate memory | Yes | Independent CPU tasks |
-| `InterpreterPoolExecutor` | Isolated interpreters | Yes | Isolated CPU tasks |
-| Free-threaded threads | Shared memory | Yes | Compatible thread-safe workloads |
-| Native extensions | Library-specific | Often possible | Numerical or specialized work |
-
-## Simple Selection Guide
-
-```mermaid
-flowchart LR
-    NET["Network/API/database waiting"] --> NETC[asyncio or threads]
-    FILE["File I/O"] --> FILEC[threads]
-    CPU[Pure-Python CPU calculation] --> CPUC[processes]
-    NATIVE[CPU work using a native library] --> NATIVEC[Benchmark threads and processes]
-    FREE[Free-threaded CPython available] --> FREEC[Verify compatibility, then benchmark threads]
-```
+| Situation | Preferred approach |
+|---|---|
+| Calling several APIs | `ThreadPoolExecutor` |
+| Thousands of network connections | `asyncio` |
+| CPU-heavy pure-Python calculation | `ProcessPoolExecutor` |
+| CPU work inside a native library | Benchmark threads and processes |
+| Free-threaded CPython with compatible dependencies | Threads may use multiple cores |
+| Need isolated interpreters in Python 3.14+ | `InterpreterPoolExecutor` |
 
 ---
 
-# 13. Practical Development Guidelines
+# 8. Practical Example
 
-## 13.1 Identify the Real Bottleneck
-
-The correct concurrency model depends on the actual bottleneck.
-
-Before adding concurrency, measure whether the application is limited by:
-
-- CPU usage
-- Network latency
-- Database latency
-- Disk operations
-- Lock contention
-- Serialization
-- External service response time
-
-## 13.2 Prefer High-Level APIs
-
-Prefer:
+Assume a backend service needs to fetch three independent user profiles from external APIs.
 
 ```python
-ThreadPoolExecutor
-ProcessPoolExecutor
-asyncio
-```
+from concurrent.futures import ThreadPoolExecutor
+from time import perf_counter, sleep
 
-over manually creating and managing many workers.
 
-High-level APIs provide:
+def fetch_user(user_id: int) -> str:
+    # Simulates waiting for an HTTP API.
+    sleep(2)
+    return f"User {user_id}"
 
-- Worker management
-- Result collection
-- Exception propagation
-- Resource cleanup
-- Context-manager support
-
-## 13.3 Minimize Shared Mutable State
-
-Prefer this design:
-
-```mermaid
-flowchart TD
-    A[Input] --> B[Independent worker]
-    B --> C[Result]
-    C --> D[Coordinator]
-```
-
-Avoid this design when possible:
-
-```text
-Many workers
-    ↓
-One large shared mutable object
-```
-
-## 13.4 Keep Critical Sections Small
-
-Good:
-
-```python
-result = perform_expensive_work()
-
-with lock:
-    shared_results.append(result)
-```
-
-Avoid:
-
-```python
-with lock:
-    result = perform_expensive_work()
-    shared_results.append(result)
-```
-
-The second version holds the lock during expensive work and prevents other threads from making progress.
-
-## 13.5 Use Queues for Worker Communication
-
-For producer-consumer workflows, use `queue.Queue`.
-
-```python
-from queue import Queue
-
-task_queue: Queue[int] = Queue()
-```
-
-A queue provides thread-safe communication without manually protecting a shared list.
-
-## 13.6 Do Not Assume an Operation Is Atomic
-
-Avoid correctness assumptions such as: `"This works because CPython currently executes it atomically."`
-
-Behavior may change across:
-
-- Python versions
-- Free-threaded builds
-- Other Python implementations
-- Native extensions
-- Refactored code
-
-Protect the complete business operation explicitly.
-
-## 13.7 Benchmark Realistic Workloads
-
-Measure:
-
-- Total execution time
-- Requests per second
-- Average latency
-- High-percentile latency
-- CPU utilization
-- Memory utilization
-- Process startup overhead
-- Serialization cost
-- Lock waiting time
-
-Use realistic data sizes and production-like conditions.
-
-## 13.8 Handle Worker Failures
-
-Concurrency code should account for:
-
-- Exceptions
-- Timeouts
-- Cancellation
-- Partial results
-- Worker crashes
-- Resource cleanup
-- Application shutdown
-
-Example:
-
-```python
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def process_item(item_id: int) -> str:
-    if item_id == 3:
-        raise ValueError("Invalid item")
-
-    return f"Processed {item_id}"
 
 def main() -> None:
-    item_ids = [1, 2, 3, 4]
+    user_ids = [1, 2, 3]
+    started_at = perf_counter()
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_item = {
-            executor.submit(process_item, item_id): item_id
-            for item_id in item_ids
-        }
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        users = list(executor.map(fetch_user, user_ids))
 
-        for future in as_completed(future_to_item):
-            item_id = future_to_item[future]
+    print(users)
+    print(f"Completed in {perf_counter() - started_at:.2f}s")
 
-            try:
-                result = future.result()
-            except Exception as error:
-                print(f"Item {item_id} failed: {error}")
-            else:
-                print(result)
 
 if __name__ == "__main__":
     main()
 ```
 
+Sequential execution would take roughly:
+
+```text
+2s + 2s + 2s ≈ 6s
+```
+
+With three threads, the waits overlap:
+
+```text
+Thread 1: [API wait ----------------]
+Thread 2: [API wait ----------------]
+Thread 3: [API wait ----------------]
+
+Total ≈ 2s
+```
+
+The GIL does not prevent this improvement because the workload spends most of its time waiting rather than executing Python bytecode.
+
+If `fetch_user()` were replaced by a CPU-heavy pure-Python calculation, the same thread pool would normally not scale across CPU cores in a standard GIL-enabled CPython build. In that case, a process pool is usually the better choice.
+
 ---
 
-# 14. References
+# 9. Key Takeaways
 
-- [Python Glossary: Global Interpreter Lock](https://docs.python.org/3/glossary.html#term-global-interpreter-lock)
+- The GIL is a **CPython implementation mechanism**.
+- In normal CPython, only one thread executes Python bytecode at a time.
+- Threads are still effective for **I/O-bound workloads**.
+- CPU-bound pure-Python threading normally does not scale across cores.
+- Use **processes** for CPU-heavy Python work when using the normal GIL-enabled build.
+- Native extensions may release the GIL and achieve parallel execution.
+- The GIL does **not** make compound application operations thread-safe.
+- Use explicit locks or thread-safe communication primitives for shared mutable state.
+- Python 3.14 officially supports optional **free-threaded CPython**, but it is not yet the default.
+- Choose concurrency based on the real bottleneck and benchmark production-like workloads.
+
+---
+
+# 10. References
+
+- [Python Glossary — Global Interpreter Lock](https://docs.python.org/3/glossary.html#term-global-interpreter-lock)
 - [Python `threading` Documentation](https://docs.python.org/3/library/threading.html)
 - [Python Free-Threading Guide](https://docs.python.org/3/howto/free-threading-python.html)
 - [Python `concurrent.futures` Documentation](https://docs.python.org/3/library/concurrent.futures.html)
-- [Python `multiprocessing` Documentation](https://docs.python.org/3/library/multiprocessing.html)
-- [PEP 703: Making the Global Interpreter Lock Optional](https://peps.python.org/pep-0703/)
-- [PEP 779: Supported Status for Free-Threaded Python](https://peps.python.org/pep-0779/)
+- [PEP 703 — Making the Global Interpreter Lock Optional](https://peps.python.org/pep-0703/)
+- [PEP 779 — Supported Status for Free-Threaded Python](https://peps.python.org/pep-0779/)

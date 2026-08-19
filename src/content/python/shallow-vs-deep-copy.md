@@ -4,171 +4,94 @@ group: "Memory"
 order: 15
 ---
 
-# Shallow Copy vs Deep Copy in Python
+# Shallow vs Deep Copy in Python
 
-> Python variables store references to objects.
->
-> A **shallow copy** creates a new outer object but reuses nested objects.
-> A **deep copy** recursively creates independent copies of nested objects.
+Python variables do not store independent copies of objects automatically. A variable is a **name bound to an object**, so understanding object references is the key to understanding copying.
 
-## In short
-
-- Assignment (`b = a`) copies nothing: it binds a second name to the same object, so `a is b` is `True` and every change is shared.
-- A shallow copy (`copy.copy()`) creates a new outer container but keeps references to the same nested objects, so independence stops at the first level.
-- A deep copy (`copy.deepcopy()`) recurses, building new copies of the nested mutable objects as well.
-- Immutable values such as `int`, `str` and `frozenset` cannot be changed in place, so sharing them between copies is safe and the distinction stops mattering.
-- A tuple is immutable but a list inside it is not, so an immutable container does not guarantee an immutable structure.
-- `deepcopy()` carries a memo dictionary, so circular references terminate and objects shared inside the original stay shared inside the copy.
-- Deep copying costs time and memory proportional to the whole object graph, and some objects — connections, file handles, locks, generators — should not be deep-copied at all.
+- **Assignment** creates another reference to the same object.
+- **Shallow copy** creates a new outer object but reuses references to nested objects.
+- **Deep copy** recursively copies the object graph so nested mutable objects can be modified independently.
 
 ```mermaid
 flowchart LR
-    subgraph ASSIGN[Assignment]
-        A1[New variable] --> A2[Original object]
-    end
-
-    subgraph SHALLOW[Shallow copy]
-        S1[New variable] --> S2[New outer object]
-        S2 --> S3[Shared nested objects]
-    end
-
-    subgraph DEEP[Deep copy]
-        D1[New variable] --> D2[New outer object]
-        D2 --> D3[New nested objects]
-    end
+    A["Assignment"] --> A1["Same object"]
+    S["Shallow copy"] --> S1["New outer object"]
+    S1 --> S2["Shared nested objects"]
+    D["Deep copy"] --> D1["New outer object"]
+    D1 --> D2["Copied nested objects"]
 ```
 
-**Interview answer:** A shallow copy creates a new outer object, but its entries are still references to the same nested objects, so mutating anything nested is visible through both. A deep copy walks the structure recursively and creates new nested objects, so the two graphs are independent. Assignment does neither — it only creates a second name for the same object.
-
-**Gotcha:** `list(original)`, `original[:]` and `dict(original)` look like real copies, but all of them are shallow — mutating a nested list or dictionary still leaks back into the original.
+> [!KEY]
+> The difference matters mainly when an object contains **nested mutable objects** such as lists, dictionaries, sets, or mutable class instances.
 
 ---
 
-# 1. Why Copying Matters
+# 1. Assignment Is Not Copying
 
-Copying becomes important when you need to modify data without changing the original object.
-
-This commonly happens with:
-
-- API request or response payloads
-- Application configuration
-- Nested dictionaries and lists
-- Cached data
-- Test fixtures
-- Domain models
-- Background job payloads
-- Template objects used to create new records
-
-Consider this nested dictionary:
-
-```python
-user = {
-    "name": "Avadh",
-    "skills": ["Python", "Django"],
-}
-```
-
-It contains:
-
-- An outer dictionary
-- A string value
-- A nested list
-
-The outer dictionary and nested list are separate objects. This is why copying only the outer dictionary may not be enough.
-
----
-
-# 2. Assignment Is Not Copying
-
-The assignment operator `=` does not create a new object. It creates another reference to the same object.
+Using `=` does not create a copy.
 
 ```python
 original = ["Python", "Django"]
-duplicate = original
+assigned = original
 
-duplicate.append("FastAPI")
+assigned.append("FastAPI")
 
-print(original)               # ['Python', 'Django', 'FastAPI']
-print(duplicate)              # ['Python', 'Django', 'FastAPI']
-print(original is duplicate)  # True
+print(original)              # ['Python', 'Django', 'FastAPI']
+print(original is assigned)  # True
 ```
 
-Both variables refer to the same list.
+Both names point to the same list.
 
 ```mermaid
 flowchart LR
-    A["original"] --> L["List object<br/>Python, Django"]
-    B["duplicate"] --> L
+    O["original"] --> L["List object"]
+    A["assigned"] --> L
 ```
 
-The `is` operator checks object identity, not value equality.
+The `is` operator checks **object identity**, while `==` checks **value equality**.
 
 ```python
 a = [1, 2]
 b = [1, 2]
 
-print(a == b)  # True  - same values
-print(a is b)  # False - different objects
+print(a == b)  # True
+print(a is b)  # False
 ```
 
-> [!IMPORTANT]
-> Use `==` to compare values.  
-> Use `is` to check whether two references point to the exact same object.
+Use `is` mainly for identity checks such as `value is None`, not for normal value comparison.
 
 ---
 
-# 3. Shallow Copy
+# 2. Shallow Copy
 
-A shallow copy creates:
-
-- A new outer container
-- References to the same nested objects
-
-Use `copy.copy()`:
+A **shallow copy** creates a new outer container, but the objects stored inside it are still shared.
 
 ```python
 import copy
 
 original = {
-    "name": "Avadh",
+    "name": "Asha",
     "skills": ["Python", "Django"],
 }
 
 shallow = copy.copy(original)
 
-print(original is shallow)                      # False - the outer dictionaries differ
-print(original["skills"] is shallow["skills"])  # True  - the nested lists are shared
+print(original is shallow)                      # False
+print(original["skills"] is shallow["skills"])  # True
 ```
 
-## 3.1 Memory Structure
+## 2.1 What Changes Independently?
 
-```mermaid
-flowchart LR
-    O["original dictionary"] --> N1["name: Avadh"]
-    O --> S["skills list<br/>Python, Django"]
-
-    C["shallow dictionary"] --> N2["name: Avadh"]
-    C --> S
-```
-
-The outer dictionary was copied, but both dictionaries still reference the same `skills` list.
-
-## 3.2 Changing the Outer Object
-
-Replacing a top-level value affects only the copied dictionary:
+A top-level replacement affects only the copied dictionary:
 
 ```python
-shallow["name"] = "Rahul"
+shallow["name"] = "Ravi"
 
-print(original["name"])  # Avadh
-print(shallow["name"])   # Rahul
+print(original["name"])  # Asha
+print(shallow["name"])   # Ravi
 ```
 
-This works independently because the outer dictionaries are separate.
-
-## 3.3 Changing a Nested Mutable Object
-
-Modifying the shared nested list affects both objects:
+But mutating the shared nested list affects both:
 
 ```python
 shallow["skills"].append("FastAPI")
@@ -177,57 +100,53 @@ print(original["skills"])  # ['Python', 'Django', 'FastAPI']
 print(shallow["skills"])   # ['Python', 'Django', 'FastAPI']
 ```
 
-The nested list was not copied.
+```mermaid
+flowchart LR
+    O["original dict"] --> S["Shared skills list"]
+    C["shallow copy"] --> S
+```
 
-## 3.4 Important Rule
+> A shallow copy gives independence at the **outer level only**.
 
-> A shallow copy provides independence only at the first level.
+## 2.2 Common Shallow-Copy Syntax
 
-This is safe when:
+For built-in collections, these are shallow copies:
 
-- The object is flat
-- Nested values are immutable
-- Sharing nested objects is intentional
-- Nested objects will not be modified
+```python
+new_list = old_list.copy()
+new_list = old_list[:]
+new_list = list(old_list)
+
+new_dict = old_dict.copy()
+new_dict = dict(old_dict)
+
+new_set = old_set.copy()
+new_set = set(old_set)
+```
+
+`copy.copy(obj)` is useful when you need a generic shallow-copy operation across different object types.
 
 ---
 
-# 4. Deep Copy
+# 3. Deep Copy
 
-A deep copy creates:
-
-- A new outer object
-- New copies of nested mutable objects
-- Recursively independent object structures
-
-Use `copy.deepcopy()`:
+A **deep copy** creates a new outer object and recursively copies nested objects.
 
 ```python
 import copy
 
 original = {
-    "name": "Avadh",
+    "name": "Asha",
     "skills": ["Python", "Django"],
 }
 
 deep = copy.deepcopy(original)
 
-print(original is deep)                      # False - the outer dictionaries differ
-print(original["skills"] is deep["skills"])  # False - the nested lists differ too
+print(original is deep)                      # False
+print(original["skills"] is deep["skills"])  # False
 ```
 
-## 4.1 Memory Structure
-
-```mermaid
-flowchart LR
-    O["original dictionary"] --> N1["name: Avadh"]
-    O --> S1["skills list<br/>Python, Django"]
-
-    D["deep-copy dictionary"] --> N2["name: Avadh"]
-    D --> S2["new skills list<br/>Python, Django"]
-```
-
-## 4.2 Modifying Nested Data
+Now nested mutations are isolated:
 
 ```python
 deep["skills"].append("FastAPI")
@@ -236,131 +155,100 @@ print(original["skills"])  # ['Python', 'Django']
 print(deep["skills"])      # ['Python', 'Django', 'FastAPI']
 ```
 
-The original object remains unchanged.
-
-## 4.3 Important Rule
-
-> A deep copy provides recursive independence for copied mutable objects.
-
-Use it when:
-
-- Nested data must be modified independently
-- The original object must remain unchanged
-- The structure contains several mutable levels
-- You are creating isolated test data or configuration
-
----
-
-# 5. Shallow Copy vs Deep Copy
-
-| Behavior | Assignment | Shallow Copy | Deep Copy |
-|---|---:|---:|---:|
-| Creates a new outer object | No | Yes | Yes |
-| Copies nested objects | No | No | Yes, recursively |
-| Shares nested mutable data | Yes | Yes | Usually no |
-| Faster | Fastest | Usually fast | Usually slower |
-| Lower memory usage | Yes | Usually | No |
-| Original nested data is protected | No | No | Yes |
-| Typical syntax | `b = a` | `copy.copy(a)` | `copy.deepcopy(a)` |
-
-## 5.1 One Example Showing All Three
-
-```python
-import copy
-
-original = {
-    "project": "Backend API",
-    "members": [
-        {"name": "Asha", "role": "Developer"},
-        {"name": "Ravi", "role": "Tester"},
-    ],
-}
-
-assigned = original
-shallow = copy.copy(original)
-deep = copy.deepcopy(original)
-
-print(assigned is original)  # True
-print(shallow is original)   # False
-print(deep is original)      # False
-
-print(shallow["members"] is original["members"])  # True
-print(deep["members"] is original["members"])     # False
-```
-
-Now modify a nested value through each copy:
-
-```python
-shallow["members"][0]["role"] = "Tech Lead"
-print(original["members"][0]["role"])  # Tech Lead - the nested structure is shared
-
-deep["members"][0]["role"] = "Architect"
-print(original["members"][0]["role"])  # Tech Lead
-print(deep["members"][0]["role"])      # Architect
-```
-
----
-
-# 6. Common Ways to Copy Built-in Collections
-
-Python provides several shallow-copy techniques.
-
-## 6.1 Lists
-
-```python
-import copy
-
-original = [1, 2, 3]
-
-copied = original.copy()      # list.copy()
-copied = original[:]          # slicing
-copied = list(original)       # the constructor
-copied = copy.copy(original)  # the generic copy module
-
-# All four produce shallow copies.
-```
-
-## 6.2 Dictionaries and Sets
-
-```python
-original = {"name": "Avadh", "skills": ["Python"]}
-copy_1 = original.copy()
-copy_2 = dict(original)
-
-tags = {"Python", "Django"}
-copy_3 = tags.copy()
-copy_4 = set(tags)
-```
-
-These create a new outer container and are shallow as well.
-
-## 6.3 Nested Collections Still Share Objects
-
-```python
-original = [[1, 2], [3, 4]]
-copied = original[:]
-
-copied[0].append(99)
-
-print(original)  # [[1, 2, 99], [3, 4]]
-```
-
-Slicing copied the outer list only.
-
 ```mermaid
 flowchart LR
-    O["original list"] --> A["nested list: 1, 2"]
-    O --> B["nested list: 3, 4"]
-
-    C["sliced list"] --> A
-    C --> B
+    O["original dict"] --> S1["Original skills list"]
+    D["deep copy"] --> S2["Copied skills list"]
 ```
+
+> A deep copy is useful when nested mutable state must be changed without affecting the original structure.
 
 ---
 
-# 7. How Immutable Objects Affect Copying
+# 4. One Practical Example
 
-Common immutable types include:
+Consider a backend service that receives configuration data and needs to create a modified version for one request.
+
+```python
+import copy
+
+config = {
+    "service": "payment-api",
+    "database": {
+        "host": "db.internal",
+        "options": {
+            "pool_size": 10,
+        },
+    },
+    "features": ["payments", "refunds"],
+}
+
+assigned = config
+shallow = copy.copy(config)
+deep = copy.deepcopy(config)
+
+shallow["database"]["options"]["pool_size"] = 20
+deep["features"].append("webhooks")
+
+print(config["database"]["options"]["pool_size"])
+# 20 -> shallow copy shared the nested dictionaries
+
+print(config["features"])
+# ['payments', 'refunds']
+
+print(deep["features"])
+# ['payments', 'refunds', 'webhooks']
+```
+
+The important ownership relationships are:
+
+```mermaid
+flowchart TD
+    C["config"]
+    A["assigned"]
+    S["shallow"]
+    D["deep"]
+
+    C --> N1["Original nested objects"]
+    A --> C
+    S --> N1
+    D --> N2["Independent nested copies"]
+```
+
+This is the core behavior interviewers usually expect you to understand.
+
+---
+
+# 5. Assignment vs Shallow vs Deep Copy
+
+| Behavior | Assignment | Shallow Copy | Deep Copy |
+|---|---|---|---|
+| New outer object | No | Yes | Yes |
+| Nested objects copied | No | No | Recursively, where applicable |
+| Nested mutable state shared | Yes | Yes | Usually no |
+| Typical cost | Lowest | Low | Higher |
+| Common syntax | `b = a` | `copy.copy(a)` | `copy.deepcopy(a)` |
+| Best use | Intentional shared state | Flat or safely shared structures | Full nested isolation |
+
+The phrase **"usually no"** is important for deep copy because classes can customize copying behavior, and some objects are intentionally returned unchanged.
+
+---
+
+# 6. Mutable and Immutable Objects
+
+Copying behavior becomes important because Python objects can be mutable or immutable.
+
+## 6.1 Common Mutable Types
+
+- `list`
+- `dict`
+- `set`
+- `bytearray`
+- Most normal class instances
+
+These objects can change in place.
+
+## 6.2 Common Immutable Types
 
 - `int`
 - `float`
@@ -368,84 +256,160 @@ Common immutable types include:
 - `str`
 - `bytes`
 - `frozenset`
-- Most tuples, depending on their contents
+- `tuple`
 
-Immutable objects cannot be changed in place. Therefore, sharing them is normally safe.
-
-```python
-import copy
-
-original = {
-    "name": "Avadh",
-    "experience": 3,
-}
-
-shallow = copy.copy(original)
-
-print(original["name"] is shallow["name"])
-print(original["experience"] is shallow["experience"])
-```
-
-The references may be shared, but this is not normally a problem because strings and integers cannot be mutated.
-
-## 7.1 Tuple Edge Case
-
-A tuple is immutable, but it can contain a mutable object. You cannot replace an element — `data[0] = "Java"` raises `TypeError` — but you can still modify its nested list:
+A tuple itself is always immutable, but it can still contain a reference to a mutable object:
 
 ```python
 data = ("Python", ["Django", "FastAPI"])
 
 data[1].append("Flask")
 
-print(data)  # ('Python', ['Django', 'FastAPI', 'Flask'])
+print(data)
+# ('Python', ['Django', 'FastAPI', 'Flask'])
 ```
 
-A container being immutable does not guarantee that everything inside it is immutable.
+So an immutable outer container does **not** mean every object reachable from it is immutable.
 
 ---
 
-# 8. Practical Development Examples
+# 7. How `deepcopy()` Handles Object Graphs
 
-## 8.1 API Payload Modification
+`deepcopy()` does more than blindly recurse through every reference.
 
-A service receives a nested payload and needs to add internal processing data without changing the original request. A shallow copy is not enough:
+## 7.1 Memo Dictionary
+
+During a deep copy, Python keeps a `memo` dictionary containing objects that have already been copied.
+
+This solves two important problems:
+
+- Prevents infinite recursion for circular references.
+- Preserves shared-reference relationships inside the copied graph.
+
+### Circular Reference
 
 ```python
 import copy
 
-request_payload = {
-    "customer": {
-        "name": "Asha",
-        "contact": {
-            "email": "asha@example.com",
-        },
-    },
-    "items": [
-        {"product_id": 101, "quantity": 2},
-    ],
-}
+data = []
+data.append(data)
 
-processing_payload = copy.copy(request_payload)
-processing_payload["customer"]["contact"]["verified"] = True
+cloned = copy.deepcopy(data)
 
-print(request_payload["customer"]["contact"])
-# {'email': 'asha@example.com', 'verified': True}
+print(cloned is cloned[0])  # True
 ```
 
-Use `copy.deepcopy(request_payload)` instead when full isolation is required. The original `request_payload` then remains unchanged.
+The copied list still correctly refers to itself.
 
-## 8.2 Selective Copying Instead of Full Deep Copy
+### Shared References
 
-A full deep copy is not always required. Suppose only one nested list needs to be modified — you can selectively copy the changed path:
+```python
+import copy
+
+permissions = ["read"]
+
+user = {
+    "direct": permissions,
+    "role": permissions,
+}
+
+copied = copy.deepcopy(user)
+
+print(copied["direct"] is copied["role"])  # True
+print(copied["direct"] is permissions)      # False
+```
+
+Python creates one new permissions list and preserves the fact that both keys refer to that same list inside the copied object graph.
+
+---
+
+# 8. Copying Custom Classes
+
+The `copy` module also works with user-defined classes.
+
+A class can customize its behavior with:
+
+- `__copy__()` for shallow copying.
+- `__deepcopy__(memo)` for deep copying.
+
+```python
+import copy
+
+class Project:
+    def __init__(self, name: str, members: list[str]) -> None:
+        self.name = name
+        self.members = members
+
+project = Project("Payment API", ["Asha", "Ravi"])
+
+shallow = copy.copy(project)
+deep = copy.deepcopy(project)
+
+print(project.members is shallow.members)  # True
+print(project.members is deep.members)     # False
+```
+
+Custom copy methods are mainly useful when an object has special ownership rules or contains state that should not be duplicated normally.
+
+> [!IMPORTANT]
+> Files, sockets, stack frames, modules, and similar runtime or external-resource objects are not meaningfully deep-copied by the `copy` module. Prefer creating a new domain object containing only the plain data you actually need.
+
+---
+
+# 9. `copy.replace()` in Modern Python
+
+Python 3.13 introduced `copy.replace()`.
+
+It creates a new object of the same type while replacing selected fields:
+
+```python
+from copy import replace
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class User:
+    name: str
+    role: str
+
+user = User("Asha", "developer")
+updated = replace(user, role="tech-lead")
+
+print(user)     # User(name='Asha', role='developer')
+print(updated)  # User(name='Asha', role='tech-lead')
+```
+
+`copy.replace()` is **not a replacement for `copy()` or `deepcopy()`**. It is a more limited API intended for supported structured objects such as:
+
+- Dataclass instances
+- Named tuples created with `namedtuple()`
+- Classes implementing `__replace__()`
+
+This is especially useful when working with immutable-style data models.
+
+---
+
+# 10. Performance and Choosing the Right Strategy
+
+Deep copying is usually more expensive because Python may need to traverse and recreate a large object graph.
+
+| Situation | Prefer |
+|---|---|
+| Same object should be shared | Assignment |
+| Only top-level changes are needed | Shallow copy |
+| Nested values are immutable or intentionally shared | Shallow copy |
+| Nested mutable values must be independent | Deep copy |
+| Only one nested branch will change | Selective copying |
+| Immutable structured object needs a few field changes | `copy.replace()` when supported |
+
+## 10.1 Selective Copying
+
+Do not deep-copy an entire large object when only one branch needs independence.
 
 ```python
 original = {
     "name": "Project Alpha",
-    "tags": ["backend", "python"],
-    "owner": {
-        "id": 10,
-        "name": "Asha",
-    },
+    "tags": ["python", "backend"],
+    "owner": {"id": 10, "name": "Asha"},
 }
 
 updated = {
@@ -456,314 +420,52 @@ updated = {
 updated["tags"].append("api")
 ```
 
-Now:
+Here:
 
-- The outer dictionary is new
-- The `tags` list is new
-- The unchanged `owner` dictionary is shared
+- The outer dictionary is new.
+- `tags` is copied because it will be modified.
+- `owner` remains shared because it is not being changed.
 
-This is often more efficient than copying the entire object graph.
-
-```mermaid
-flowchart LR
-    O["original"] --> T1["original tags"]
-    O --> OWNER["shared owner"]
-
-    U["updated"] --> T2["copied tags"]
-    U --> OWNER
-```
-
-This technique is common in state-management and data-transformation code.
+This approach is often clearer and cheaper than `deepcopy()`.
 
 ---
 
-# 9. Copying Custom Classes
-
-The `copy` module can copy instances of custom classes.
-
-```python
-import copy
-
-class Project:
-    def __init__(self, name: str, members: list[str]) -> None:
-        self.name = name
-        self.members = members
-
-original = Project("Payment API", ["Asha", "Ravi"])
-
-shallow = copy.copy(original)
-deep = copy.deepcopy(original)
-
-print(original is shallow)  # False
-print(original is deep)     # False
-
-print(original.members is shallow.members)  # True  - the nested list is shared
-print(original.members is deep.members)     # False - the nested list was copied
-```
-
-## 9.1 Customizing Shallow Copy with `__copy__()`
-
-A class can define its own shallow-copy behavior. The method should return the desired shallow copy:
-
-```python
-import copy
-
-class Project:
-    def __init__(self, name: str, members: list[str]) -> None:
-        self.name = name
-        self.members = members
-
-    def __copy__(self) -> "Project":
-        new_project = type(self)(
-            name=self.name,
-            members=self.members,
-        )
-        return new_project
-
-project = Project("Payment API", ["Asha", "Ravi"])
-copied_project = copy.copy(project)
-```
-
-## 9.2 Customizing Deep Copy with `__deepcopy__()`
-
-```python
-import copy
-
-class Project:
-    def __init__(self, name: str, members: list[str]) -> None:
-        self.name = name
-        self.members = members
-
-    def __deepcopy__(self, memo: dict[int, object]) -> "Project":
-        existing = memo.get(id(self))
-
-        if existing is not None:
-            return existing  # type: ignore[return-value]
-
-        new_project = type(self).__new__(type(self))
-        memo[id(self)] = new_project
-
-        new_project.name = copy.deepcopy(self.name, memo)
-        new_project.members = copy.deepcopy(self.members, memo)
-
-        return new_project
-```
-
-The `memo` dictionary is important because it:
-
-- Prevents infinite recursion
-- Preserves shared-reference relationships
-- Avoids repeatedly copying the same object
-
-> [!NOTE]
-> Custom copy methods are useful when a class contains resources that should not be duplicated, such as database connections, locks, open files, sockets, or framework-managed objects.
-
----
-
-# 10. How `deepcopy()` Handles Cycles and Shared References
-
-Deep copying is more complex than recursively calling `copy()` on every value.
-
-## 10.1 Circular References
-
-An object may indirectly refer back to itself, as `data = []` followed by `data.append(data)` does:
-
-```mermaid
-flowchart LR
-    A["data list"] -->|"element 0 refers back to the list itself"| A
-```
-
-A naive recursive copy would run forever. Python's `deepcopy()` uses an internal memo dictionary to remember objects that have already been copied:
-
-```python
-import copy
-
-cloned = copy.deepcopy(data)
-
-print(cloned is cloned[0])  # True
-```
-
-The circular structure is preserved safely.
-
-## 10.2 Shared References Are Preserved
-
-Consider two keys referencing the same list:
-
-```python
-import copy
-
-shared_permissions = ["read"]
-
-user = {
-    "direct_permissions": shared_permissions,
-    "role_permissions": shared_permissions,
-}
-
-copied_user = copy.deepcopy(user)
-
-# The two keys still share one list inside the copy
-print(copied_user["direct_permissions"] is copied_user["role_permissions"])  # True
-
-# But that list is independent from the original
-print(copied_user["direct_permissions"] is shared_permissions)  # False
-```
-
-`deepcopy()` creates one copied permissions list and reuses it within the new object graph.
-
-```mermaid
-flowchart LR
-    O1["original key 1"] --> L1["original shared list"]
-    O2["original key 2"] --> L1
-
-    C1["copied key 1"] --> L2["new shared list"]
-    C2["copied key 2"] --> L2
-```
-
----
-
-# 11. Performance Considerations
-
-A deep copy usually requires more CPU time and memory because it traverses the object graph recursively.
-
-## 11.1 General Cost
-
-| Operation | Time Cost | Memory Cost |
-|---|---:|---:|
-| Assignment | Very low | Very low |
-| Shallow copy | Proportional to outer container | New outer container |
-| Deep copy | Proportional to copied object graph | New copied graph |
-
-These are conceptual costs. Actual performance depends on:
-
-- Number of objects
-- Nesting depth
-- Object types
-- Custom copy methods
-- Circular and shared references
-- Expensive user-defined objects
-
-## 11.2 Deep Copy Can Copy More Than Needed
-
-```python
-large_state = {
-    "users": [...],
-    "settings": {...},
-    "cache": {...},
-    "current_page": 1,
-}
-
-# If only current_page changes, deep copying the whole state is unnecessary
-updated_state = {
-    **large_state,
-    "current_page": 2,
-}
-```
-
-Use the smallest amount of copying required for safe isolation.
-
-## 11.3 Some Objects Should Not Be Deep-Copied
-
-Objects representing external resources may not support meaningful copying:
-
-- Database connections
-- File handles
-- Network sockets
-- Thread locks
-- Generators
-- Modules
-- Runtime or framework contexts
-
-Instead of copying such objects, create a new domain object with only the required plain data.
-
----
-
-# 12. Choosing the Correct Approach
-
-Use the following decision flow:
-
-```mermaid
-flowchart TD
-    A["Do you need another reference<br/>to the same object?"] -->|Yes| B["Use assignment: b = a"]
-    A -->|No| C["Does the object contain<br/>nested mutable values?"]
-
-    C -->|No| D["Use a shallow copy"]
-    C -->|Yes| E["Will nested values be modified?"]
-
-    E -->|No| F["Shallow copy may be enough"]
-    E -->|Yes| G["Must every nested object<br/>be independent?"]
-
-    G -->|Yes| H["Use deepcopy()"]
-    G -->|No| I["Selectively copy only<br/>the modified paths"]
-```
-
-| Choose | Syntax | When |
-|---|---|---|
-| Assignment | `alias = original` | Shared state is intentional and both names should observe the same changes |
-| Shallow copy | `copied = original.copy()` | The structure is flat, nested values are immutable, or only top-level items will change |
-| Deep copy | `copied = copy.deepcopy(original)` | Nested mutable objects will change, full isolation is required, and the extra cost is acceptable |
-| Selective copy | `{**original, "items": original["items"].copy()}` | Only a known part of a large structure changes and you want explicit ownership of the copied paths |
-
----
-
-# 13. Best Practices
-
-## 13.1 Understand the Object Structure First
-
-Before choosing a copy strategy, identify:
-
-- Which objects are mutable
-- Which nested objects are shared
-- Which parts will be changed
-- Whether shared state is intentional
-
-> [!KEY]
-> Do not choose a copy type based only on whether the outer object is a list or dictionary.  
-> Choose it based on the complete nested structure and which parts your code will mutate.
-
-## 13.2 Prefer Explicit Copying
-
-For built-in collections, explicit methods such as `users.copy()`, `config.copy()` and `tags.copy()` are often more readable. Use `copy.copy()` when you need a generic shallow-copy operation across object types.
-
-## 13.3 Do Not Use `deepcopy()` Automatically
-
-`deepcopy()` is useful, but it can:
-
-- Consume significant memory
-- Hide unclear ownership
-- Copy unnecessary data
-- Interact unexpectedly with custom classes
-- Fail for objects tied to external resources
-
-Use it because full recursive isolation is required, not merely as a defensive habit.
-
-## 13.4 Prefer Immutable Data Where Practical
-
-Immutable values reduce copying concerns. For example, prefer a tuple such as `SUPPORTED_ROLES = ("admin", "developer", "tester")` when a collection should never change.
-
-## 13.5 Copy at Clear Boundaries
-
-Useful copying boundaries include:
-
-- Before modifying cached data
-- When constructing test fixtures
-- When converting external input into internal state
-- When creating an independent configuration
-- When passing mutable data to code that may modify it
-
-## 13.6 Verify Important Assumptions
-
-Use identity checks during debugging:
+# 11. Best Practices
+
+- Understand which parts of the object graph are **mutable** before choosing a copy strategy.
+- Use shallow copies for flat structures or when nested sharing is intentional.
+- Use `deepcopy()` only when recursive isolation is genuinely required.
+- Prefer selective copying when only a known branch will change.
+- Do not rely on `is` for normal value comparison; use `==`.
+- Avoid deep-copying objects that represent database connections, files, sockets, locks, or framework/runtime contexts.
+- When ownership matters, verify it explicitly in tests:
 
 ```python
 assert original is not copied
 assert original["items"] is not copied["items"]
 ```
 
-This makes ownership expectations explicit in tests.
+---
+
+# 12. Quick Mental Model
+
+```mermaid
+flowchart TD
+    A["Need another variable?"] -->|"Same shared state"| B["Assignment"]
+    A -->|"Independent outer object"| C["Nested mutable data?"]
+    C -->|"No / intentionally shared"| D["Shallow copy"]
+    C -->|"Yes"| E["Will nested data change independently?"]
+    E -->|"Yes, whole graph"| F["deepcopy()"]
+    E -->|"Only specific branches"| G["Selective copy"]
+```
+
+Remember:
+
+> **Assignment shares the whole object. Shallow copy separates the outer container. Deep copy separates the nested object graph.**
 
 ---
 
 # References
 
-- Python `copy` module: <https://docs.python.org/3/library/copy.html>
-- Python data model: <https://docs.python.org/3/reference/datamodel.html>
+- Python 3.14.7 documentation — `copy` module
+- Python 3.14.7 documentation — Data model

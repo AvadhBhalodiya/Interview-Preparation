@@ -1623,18 +1623,3 @@ Track:
 - Redis memory usage
 
 ---
-
-# 18. Official References
-
-- [Redis Key Eviction](https://redis.io/docs/latest/develop/reference/eviction/)
-- [Redis EXPIRE Command](https://redis.io/docs/latest/commands/expire/)
-- [Redis TTL Command](https://redis.io/docs/latest/commands/ttl/)
-- [Redis PTTL Command](https://redis.io/docs/latest/commands/pttl/)
-- [Redis INFO Command](https://redis.io/docs/latest/commands/info/)
-- [Redis OBJECT FREQ Command](https://redis.io/docs/latest/commands/object-freq/)
-- [Redis OBJECT IDLETIME Command](https://redis.io/docs/latest/commands/object-idletime/)
-- [Redis Keyspace and Expiration](https://redis.io/docs/latest/develop/use/keyspace/)
-
----
-
-> **Key takeaway:** TTL protects data freshness. Eviction protects memory capacity. A reliable Redis cache normally needs both.

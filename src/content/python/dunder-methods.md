@@ -4,1018 +4,466 @@ group: "OOP"
 order: 8
 ---
 
-# Python Dunder Methods: `__init__`, `__str__`, `__repr__`, `__eq__`
+# Python Generators, Iterators, and `yield`
 
-> Dunder methods are special methods that connect custom Python classes to Python's built-in syntax and functions. They let an object initialize itself, display meaningful text, support debugging, and define value-based equality.
+> Python iteration is built around three related concepts: **iterables provide iterators, iterators produce values one at a time, and generators are a concise way to create iterators using `yield`.**
 
-## In short
+## In Short
 
-- `__init__` initializes an instance that `__new__` has already created, so it is an initializer rather than a constructor, and it must return `None`.
-- `__str__` returns readable text for people, and `str()`, `print()`, and plain f-strings use it.
-- `__repr__` returns unambiguous, information-rich text for developers, and `repr()`, `!r`, debuggers, and containers displaying their items use it.
-- When a class defines `__repr__` but no `__str__`, Python falls back to `__repr__`, which is why implementing `__repr__` first is a sensible default.
-- `__eq__` defines what `==` means by value; accept `other: object` and return `NotImplemented` for unsupported operand types so Python can try the reflected comparison.
-- Defining `__eq__` without `__hash__` makes instances unhashable, and the contract is `x == y ⇒ hash(x) == hash(y)`.
-- `==` asks whether values are equal and is controlled by `__eq__`; `is` asks whether two references point at the same object and cannot be overloaded.
+- An **iterable** is something Python can loop over, such as a list, tuple, string, file, or custom collection.
+- An **iterator** keeps traversal state and returns the next value through `__next__()`.
+- A **generator** is an iterator created by a generator function or generator expression.
+- Calling a generator function **does not execute its body immediately**. It returns a generator object.
+- `yield` produces a value, pauses execution, and preserves local state for the next iteration.
+- Generators are **lazy and single-pass**. They are useful for files, database rows, paginated APIs, pipelines, and potentially large streams of data.
+- `yield from` delegates iteration to another iterable or generator.
+- Generators usually reduce memory usage, but laziness does **not** automatically make code faster.
 
 ```mermaid
 flowchart LR
-    A[Python syntax or built-in] --> B{Operation}
-    B -->|Product name, price| C[Product.__init__]
-    B -->|print or str| D[Product.__str__]
-    B -->|repr, debugger, container| E[Product.__repr__]
-    B -->|left == right| F[Product.__eq__]
+    A[Iterable] -->|iter()| B[Iterator]
+    B -->|next()| C[Value]
+    C -->|request next value| B
+    B -->|no values left| D[StopIteration]
+
+    E[Generator function] -->|call| F[Generator object]
+    F --> B
 ```
-
-**Interview answer:** `__str__` is the readable representation meant for people, used by `str()`, `print()`, and normal f-strings, while `__repr__` is the unambiguous, information-rich representation meant for developers, used by `repr()`, `!r`, debuggers, and containers such as lists when they display their items. A `__repr__` should ideally resemble the constructor call that would recreate an equivalent object. If a class defines only `__repr__`, Python uses it for `str()` as well, so `__repr__` is the one to write first.
-
-**Gotcha:** Defining `__eq__` without also defining `__hash__` makes instances unhashable — `hash(product)` then raises `TypeError: unhashable type: 'Product'`, and the object can no longer be a dictionary key or a set member. Add a `__hash__` built from the same fields whenever the object still has to live in a hashed collection, and only when those fields will not change while it is in one.
 
 ---
 
-# 1. What Are Dunder Methods?
+## 1. Core Mental Model
 
-**Dunder** means **double underscore**. A dunder method has two leading and two trailing underscores: `__init__`, `__str__`, `__repr__`, `__eq__`.
+### 1.1 Iterable
 
-They are also called:
+An **iterable** is an object that can provide an iterator.
 
-- **Special methods**
-- **Magic methods**
-- **Data model methods**
+Common examples are:
 
-Dunder methods allow your classes to participate naturally in Python operations. You normally use the public syntax—such as `print(product)` or `product1 == product2`—instead of calling dunder methods directly.
+- `list`, `tuple`, `set`, `dict`
+- `str`
+- `range`
+- file objects
+- custom objects implementing `__iter__()`
 
-## Why They Matter
+A reusable container such as a list normally creates a **new iterator** each time `iter()` is called.
 
-Without meaningful dunder methods, a custom object behaves like a basic object with limited readability and identity-based comparison.
+### 1.2 Iterator
 
-```python
-class Product:
-    pass
+An **iterator** represents an active traversal through values.
 
-product = Product()
-print(product)
-# Possible output: <__main__.Product object at 0x1045A1F10>
+It follows the iterator protocol:
+
+- `__iter__()` returns the iterator itself.
+- `__next__()` returns the next value.
+- `__next__()` raises `StopIteration` when no values remain.
+
+Because the iterator itself stores the current position, it is normally **single-pass**.
+
+### 1.3 Generator
+
+A **generator** is a special iterator created in one of two common ways:
+
+1. A function containing `yield`
+2. A generator expression such as `(x * x for x in values)`
+
+The important relationship is:
+
+```text
+Iterable
+   │
+   └── provides ──> Iterator
+                       │
+                       └── Generator is a specialized iterator
 ```
 
-This output identifies the object's type and runtime identity, but it does not explain the object's business data. With dunder methods, the same object can become expressive: `Keyboard — $80.00`.
+| Concept | Purpose | Usually reusable? |
+|---|---|---|
+| **Iterable** | Provides values to iterate over | Often yes |
+| **Iterator** | Tracks traversal and returns one item at a time | No |
+| **Generator** | Implements lazy iteration using `yield` | No |
 
 ---
 
-# 2. How Python Calls Them
+## 2. How Python Iteration Works
 
-Dunder methods are hooks used by Python's object model.
-
-## Method Mapping
-
-| Python code | Method Python uses |
-|---|---|
-| `Product("Keyboard", 80.0)` | `Product.__new__()` followed by `Product.__init__()` |
-| `str(product)` | `product.__str__()` |
-| `print(product)` | Uses `str(product)`, which normally calls `__str__()` |
-| `repr(product)` | `product.__repr__()` |
-| `f"{product!r}"` | `product.__repr__()` |
-| `product1 == product2` | `product1.__eq__(product2)` |
-
-> [!IMPORTANT]
-> Python looks up most special methods on the object's **class**, not through normal instance attribute lookup. Define them on the class rather than assigning them to one instance.
-
----
-
-# 3. `__init__`: Initialize Object State
-
-## Purpose
-
-`__init__` initializes an object after Python has created it.
-
-```python
-class Product:
-    def __init__(self, name: str, price: float) -> None:
-        self.name = name
-        self.price = price
-
-product = Product("Keyboard", 80.0)
-print(product.name)   # Keyboard
-print(product.price)  # 80.0
-```
-
-## What Happens During Object Creation?
-
-```mermaid
-sequenceDiagram
-    participant Code as Application code
-    participant Class as Product class
-    participant New as __new__
-    participant Init as __init__
-
-    Code->>Class: Product("Keyboard", 80.0)
-    Class->>New: Create a new Product instance
-    New-->>Class: Return the instance
-    Class->>Init: Initialize that instance
-    Init-->>Code: Constructor call returns the instance
-```
+A `for` loop uses the iterator protocol internally.
 
 Conceptually:
 
 ```text
-__new__  → creates and returns the instance
-__init__ → configures the already-created instance
+iterable
+   │
+   │ iter()
+   ▼
+iterator
+   │
+   │ next()
+   ▼
+value
+   │
+   ├── more values ──> next()
+   │
+   └── finished ─────> StopIteration ──> loop ends
 ```
 
-Therefore, `__init__` is technically an **initializer**, although developers often casually call it a constructor.
-
-`self` refers to the current instance, and Python passes it for you:
+A loop such as:
 
 ```python
-class User:
-    def __init__(self, username: str) -> None:
-        self.username = username
-
-user = User("avadh")   # Effectively initializes the object via User.__init__(user, "avadh")
+for item in values:
+    process(item)
 ```
 
-You should let Python perform this call through `User("avadh")` rather than calling `__init__` yourself.
-
-## Initialize Instance Attributes
-
-Attributes assigned through `self` belong to that particular object.
+behaves conceptually like:
 
 ```python
-class BankAccount:
-    def __init__(self, account_number: str, balance: float = 0.0) -> None:
-        self.account_number = account_number
-        self.balance = balance
+iterator = iter(values)
 
-first = BankAccount("ACC-101", 500.0)
-second = BankAccount("ACC-102")
+while True:
+    try:
+        item = next(iterator)
+    except StopIteration:
+        break
 
-print(first.balance)   # 500.0
-print(second.balance)  # 0.0
+    process(item)
 ```
 
-Each instance stores its own state.
+In normal application code, you usually let the `for` loop handle `StopIteration` rather than catching it yourself.
 
-## Validate Data During Initialization
+---
 
-`__init__` is a useful place to establish class invariants—conditions that should remain true for every valid object.
+## 3. Generator Functions and `yield`
 
-```python
-class Product:
-    def __init__(self, name: str, price: float) -> None:
-        cleaned_name = name.strip()
+A function becomes a **generator function** when its body contains `yield`.
 
-        if not cleaned_name:
-            raise ValueError("Product name cannot be empty")
+Calling that function returns a generator object immediately. The function body starts only when the generator is advanced with `next()`, a `for` loop, or another generator operation.
 
-        if price < 0:
-            raise ValueError("Product price cannot be negative")
+When execution reaches `yield`:
 
-        self.name = cleaned_name
-        self.price = float(price)
-
-Product("", 50)       # ValueError
-Product("Mouse", -10) # ValueError
-```
-
-Now an invalid object cannot be created.
-
-## Return `None`, and Avoid Mutable Defaults
-
-Do not return another value from `__init__`. Writing `return self` at the end of `__init__` raises `TypeError: __init__() should return None, not 'User'`. A normal `__init__` either:
-
-- Reaches the end without an explicit `return`
-- Uses `return` by itself for an early exit
-- Raises an exception when initialization cannot continue
-
-Also avoid sharing one mutable default across multiple instances. The `None` sentinel gives every object its own list:
-
-```python
-class Team:
-    def __init__(self, members: list[str] | None = None) -> None:
-        self.members = [] if members is None else list(members)
-
-backend = Team()
-frontend = Team()
-
-backend.members.append("Asha")
-
-print(backend.members)   # ['Asha']
-print(frontend.members)  # []
-```
-
-## Practical `__init__` Guideline
-
-Keep initialization predictable:
+1. A value is returned to the caller.
+2. The generator pauses.
+3. Local variables are preserved.
+4. The execution position is preserved.
+5. The next iteration resumes immediately after that `yield`.
 
 ```mermaid
-flowchart TD
-    A[Validate input] --> B[Normalize input]
-    B --> C[Assign object state]
-    C --> D[Leave expensive I/O to explicit methods or services]
+stateDiagram-v2
+    [*] --> Created: call generator function
+    Created --> Running: next()
+    Running --> Suspended: yield value
+    Suspended --> Running: next()
+    Running --> Completed: return / function ends
+    Completed --> Completed: next() raises StopIteration
 ```
 
-For example, prefer this:
+### `return` vs `yield`
 
-```python
-class Report:
-    def __init__(self, report_id: str) -> None:
-        self.report_id = report_id
-        self.content: str | None = None
-
-    def load(self, repository: "ReportRepository") -> None:
-        self.content = repository.fetch(self.report_id)
-```
-
-This design makes object creation fast and easier to test.
-
----
-
-# 4. `__str__`: Human-Readable Representation
-
-## Purpose
-
-`__str__` returns a readable description for users, logs, command-line output, or UI-facing text.
-
-```python
-class Product:
-    def __init__(self, name: str, price: float) -> None:
-        self.name = name
-        self.price = price
-
-    def __str__(self) -> str:
-        return f"{self.name} — ${self.price:.2f}"
-
-product = Product("Keyboard", 80.0)
-print(str(product))  # Keyboard — $80.00
-print(product)       # Keyboard — $80.00
-```
-
-The calls `str(product)`, `print(product)`, `f"Selected item: {product}"`, and `"{}".format(product)` all normally use the object's informal string representation. The method must return a string: a body such as `return 100  # Incorrect` makes `str(product)` raise a `TypeError`, because a string representation must be a `str` object.
-
-## Design a Useful `__str__`
-
-A good `__str__` is:
-
-- Easy for a person to read
-- Concise
-- Stable enough for display
-- Free from unnecessary implementation details
-
-Example:
-
-```python
-class Order:
-    def __init__(self, order_number: str, status: str, total: float) -> None:
-        self.order_number = order_number
-        self.status = status
-        self.total = total
-
-    def __str__(self) -> str:
-        return (
-            f"Order {self.order_number}: "
-            f"{self.status} — ${self.total:.2f}"
-        )
-
-order = Order("ORD-1042", "PAID", 249.50)
-print(order)  # Order ORD-1042: PAID — $249.50
-```
-
-## Fallback Behavior
-
-When a class defines `__repr__` but does not define `__str__`, Python uses `__repr__` as the fallback informal representation.
-
-```python
-class Product:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __repr__(self) -> str:
-        return f"Product(name={self.name!r})"
-
-product = Product("Keyboard")
-print(str(product))   # Product(name='Keyboard')
-print(product)        # Product(name='Keyboard')
-```
-
-This is why implementing `__repr__` first is often a sensible default.
-
----
-
-# 5. `__repr__`: Developer-Readable Representation
-
-## Purpose
-
-`__repr__` returns an unambiguous, information-rich representation intended mainly for developers, debugging, logs, and interactive sessions.
-
-```python
-class Product:
-    def __init__(self, name: str, price: float) -> None:
-        self.name = name
-        self.price = price
-
-    def __repr__(self) -> str:
-        return f"Product(name={self.name!r}, price={self.price!r})"
-
-product = Product("Keyboard", 80.0)
-print(repr(product))  # Product(name='Keyboard', price=80.0)
-```
-
-## Why Use `!r`?
-
-Inside an f-string, `!r` applies `repr()` to a value.
-
-```python
-name = "Keyboard\nPro"
-
-print(f"{name}")    # Uses str(name)
-print(f"{name!r}")  # Uses repr(name)
-```
-
-Output:
-
-```text
-Keyboard
-Pro
-'Keyboard\nPro'
-```
-
-For `__repr__`, `!r` preserves quotes and escape sequences, making the output less ambiguous, which is why the `Product.__repr__` above formats every field with `!r`.
-
-## Representation Convention
-
-When practical, `__repr__` should resemble valid Python code that could recreate an equivalent object, the way `repr(product)` above returns `Product(name='Keyboard', price=80.0)`. This is a convention, not a requirement that every representation must be executable.
-
-For objects that cannot be conveniently reconstructed, provide an informative angle-bracket representation:
-
-```python
-class DatabaseConnection:
-    def __init__(self, host: str, connected: bool) -> None:
-        self.host = host
-        self.connected = connected
-
-    def __repr__(self) -> str:
-        return (
-            f"<DatabaseConnection host={self.host!r} "
-            f"connected={self.connected}>"
-        )
-```
-
-## Containers Usually Display `repr()` of Their Items
-
-```python
-products = [
-    Product("Keyboard", 80.0),
-    Product("Mouse", 30.0),
-]
-
-print(products)
-# [Product(name='Keyboard', price=80.0), Product(name='Mouse', price=30.0)]
-```
-
-Although `print(products)` displays a list, the list represents each element using its `repr()`.
-
-```mermaid
-flowchart TD
-    A[print products_list] --> B[list.__str__ / list representation]
-    B --> C[repr first Product]
-    B --> D[repr second Product]
-    C --> E[Product.__repr__]
-    D --> E
-```
-
-This makes `__repr__` especially valuable when objects appear inside lists, dictionaries, sets, tracebacks, and debugger views.
-
-## Protect Sensitive Data
-
-Representations often appear in logs and monitoring systems. Do not expose passwords, tokens, secrets, or full payment details.
-
-```python
-class ApiCredential:
-    def __init__(self, client_id: str, secret: str) -> None:
-        self.client_id = client_id
-        self.secret = secret
-
-    def __repr__(self) -> str:
-        return (
-            f"ApiCredential(client_id={self.client_id!r}, "
-            "secret='<redacted>')"
-        )
-```
-
----
-
-# 6. `__str__` vs `__repr__`
-
-| Aspect | `__str__` | `__repr__` |
-|---|---|---|
-| Audience | End user or operator | Developer |
-| Goal | Readable and concise | Unambiguous and information-rich |
-| Called by | `str()`, `print()`, normal f-strings | `repr()`, debugger, `!r`, many containers |
-| Expected format | Friendly text | Often constructor-like text |
-| Required return type | `str` | `str` |
-| Fallback | Uses `__repr__` when `__str__` is absent | Uses `object.__repr__` when absent |
-
-## Both Methods Together
-
-```python
-class Product:
-    def __init__(self, sku: str, name: str, price: float) -> None:
-        self.sku = sku
-        self.name = name
-        self.price = price
-
-    def __str__(self) -> str:
-        return f"{self.name} — ${self.price:.2f}"
-
-    def __repr__(self) -> str:
-        return (
-            f"Product(sku={self.sku!r}, "
-            f"name={self.name!r}, price={self.price!r})"
-        )
-
-product = Product("KB-101", "Keyboard", 80.0)
-
-print(product)          # Keyboard — $80.00
-print(f"{product}")     # Keyboard — $80.00
-print(repr(product))    # Product(sku='KB-101', name='Keyboard', price=80.0)
-print(f"{product!r}")   # Product(sku='KB-101', name='Keyboard', price=80.0)
-```
-
-## Simple Mental Model
-
-```text
-__str__  → “How should a person see this object?”
-__repr__ → “How should a developer inspect this object?”
-```
-
----
-
-# 7. `__eq__`: Define Value Equality
-
-## Purpose
-
-`__eq__` defines what `==` means for instances of your class.
-
-Without a custom `__eq__`, normal user-defined objects compare by identity.
-
-```python
-class Product:
-    def __init__(self, sku: str) -> None:
-        self.sku = sku
-
-first = Product("KB-101")
-second = Product("KB-101")
-
-print(first == second)  # False
-```
-
-The two objects contain the same SKU, but they are different instances.
-
-## Implement Value-Based Equality
-
-```python
-class Product:
-    def __init__(self, sku: str, name: str) -> None:
-        self.sku = sku
-        self.name = name
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Product):
-            return NotImplemented
-
-        return self.sku == other.sku
-
-first = Product("KB-101", "Keyboard")
-second = Product("KB-101", "Mechanical Keyboard")
-third = Product("MS-202", "Mouse")
-
-print(first == second)  # True
-print(first == third)   # False
-```
-
-Here, the class defines product equality by SKU because the SKU represents the business identity.
-
-## Choosing Equality Fields
-
-The fields used by `__eq__` should represent the object's logical value or domain identity.
-
-Examples:
-
-| Class | Possible equality definition |
+| `return` | `yield` |
 |---|---|
-| `Money` | Currency and amount |
-| `Coordinate` | Latitude and longitude |
-| `Product` | SKU |
-| `User` | Stable user ID |
-| `Version` | Major, minor, and patch numbers |
+| Finishes a normal function | Pauses a generator |
+| Returns a final result | Produces values incrementally |
+| Local execution state is discarded | Local execution state is preserved |
+| Function work happens during the call | Generator work happens during iteration |
 
-Example value object:
-
-```python
-class Money:
-    def __init__(self, amount: int, currency: str) -> None:
-        self.amount = amount
-        self.currency = currency.upper()
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Money):
-            return NotImplemented
-
-        return (
-            self.amount == other.amount
-            and self.currency == other.currency
-        )
-
-print(Money(100, "usd") == Money(100, "USD"))  # True
-print(Money(100, "USD") == Money(100, "EUR"))  # False
-```
-
-## Why Return `NotImplemented`?
-
-When the other operand has an unsupported type, return `NotImplemented` rather than immediately returning `False`, exactly as the `Product.__eq__` and `Money.__eq__` methods above do.
-
-`NotImplemented` tells Python:
-
-> “This method does not know how to compare these two operand types.”
-
-Python can then try the reflected comparison on the other operand or use the comparison fallback behavior.
-
-```mermaid
-flowchart TD
-    A[left == right] --> B[left.__eq__ right]
-    B -->|True or False| C[Return result]
-    B -->|NotImplemented| D[Try right-side comparison when applicable]
-    D -->|Supported| E[Return reflected result]
-    D -->|Still NotImplemented| F[Equality falls back to identity behavior]
-```
-
-> [!NOTE]
-> `NotImplemented` is a special singleton value. It is different from raising `NotImplementedError`, which is an exception generally used for unimplemented abstract-style behavior.
-> In Python 3.14, evaluating `NotImplemented` in a Boolean context raises `TypeError`. Return it to Python's operator machinery; do not use it as a truthy or falsy result.
-
-## Type Hint for `other`
-
-Use `object` for the `other` parameter, as in `def __eq__(self, other: object) -> bool:`. The expression `product == 10` is legal Python. Your method must therefore be prepared to receive any object, even if it supports comparison only with `Product`.
-
-## Exact Type vs `isinstance`
-
-### Polymorphic comparison
-
-```python
-if not isinstance(other, Product):
-    return NotImplemented
-```
-
-This allows subclasses of `Product` to participate in the comparison.
-
-### Exact-type comparison
-
-```python
-if type(other) is not type(self):
-    return NotImplemented
-```
-
-This is useful when subclass instances should not automatically be considered equal to base-class instances.
-
-Choose the policy according to the domain model. Equality should remain symmetric and unsurprising.
-
-## Equality Properties
-
-A well-designed equality relation should normally be:
-
-1. **Reflexive**: `x == x`
-2. **Symmetric**: if `x == y`, then `y == x`
-3. **Transitive**: if `x == y` and `y == z`, then `x == z`
-4. **Consistent**: repeated comparison gives the same result while relevant state is unchanged
-
-These properties become important in collections, tests, caching, and domain logic.
+A `return` inside a generator ends the generator. Internally, its optional return value becomes the value carried by `StopIteration`, which is mainly relevant when using `yield from`.
 
 ---
 
-# 8. `==` vs `is`
+## 4. Generator Expressions and `yield from`
 
-`==` and `is` answer different questions.
+### 4.1 Generator Expressions
 
-| Operator | Question | Controlled by |
-|---|---|---|
-| `==` | Do these objects have equal values? | `__eq__` |
-| `is` | Are these references pointing to the exact same object? | Object identity; cannot be overloaded |
+A generator expression is the lazy form of a comprehension:
 
 ```python
-first = Product("KB-101", "Keyboard")
-second = Product("KB-101", "Keyboard")
-alias = first
-
-print(first == second)  # True, when __eq__ compares SKU
-print(first is second)  # False, two different instances
-print(first is alias)   # True, same instance
+(number * number for number in values)
 ```
+
+It produces values only when requested instead of building the complete result in memory.
+
+Use a generator expression when the consumer only needs to process values sequentially. Use a list comprehension when you actually need the complete collection, repeated access, indexing, or its length.
+
+### 4.2 `yield from`
+
+`yield from iterable` delegates value production to another iterable.
+
+Conceptually:
+
+```text
+Caller
+  │
+  ▼
+Parent generator
+  │
+  │ yield from
+  ▼
+Child iterable / generator
+  │
+  └──────── values ────────> Caller
+```
+
+It is useful when a generator is composed from smaller generators or nested iterable sources.
+
+For delegated generators, `yield from` also handles advanced generator communication such as `send()`, `throw()`, and `close()`.
+
+---
+
+## 5. Practical Example: Paginated API as One Stream
+
+A common backend use case is an API that returns users page by page. The application usually does not want pagination logic everywhere, so a generator can expose all users as one logical stream.
+
+```python
+from collections.abc import Callable, Iterator
+from typing import Any
+
+PageFetcher = Callable[[str | None], dict[str, Any]]
+
+
+def iter_users(fetch_page: PageFetcher) -> Iterator[dict[str, Any]]:
+    next_token: str | None = None
+
+    while True:
+        response = fetch_page(next_token)
+
+        for user in response["items"]:
+            yield user
+
+        next_token = response.get("next_token")
+
+        if next_token is None:
+            break
+
+
+for user in iter_users(fetch_page):
+    process(user)
+```
+
+### What happens here?
+
+1. `iter_users(fetch_page)` returns a generator object.
+2. No API request is made until iteration starts.
+3. The first page is fetched only when the caller needs the first user.
+4. Each user is yielded one at a time.
+5. The generator pauses after every `yield`.
+6. When the current page is exhausted, it fetches the next page.
+7. When `next_token` becomes `None`, the generator finishes.
+
+```mermaid
+flowchart TD
+    A[Caller requests next user] --> B[Fetch current API page]
+    B --> C[Read one user]
+    C --> D[Yield user]
+    D --> E[Caller processes user]
+    E --> F{More users in page?}
+    F -->|Yes| C
+    F -->|No| G{Next token exists?}
+    G -->|Yes| B
+    G -->|No| H[Generator completes]
+```
+
+### Why this pattern is useful
+
+The caller works with a simple `for` loop while the generator owns:
+
+- pagination
+- continuation tokens
+- lazy fetching
+- traversal state
+
+It also allows the caller to stop early without first fetching every page.
+
+---
+
+## 6. Important Generator Behavior
+
+### 6.1 Generators Are Single-Pass
+
+Once a generator has been consumed, it remains exhausted.
+
+```text
+generator created
+      │
+      ▼
+values consumed
+      │
+      ▼
+generator exhausted
+      │
+      └── iterating again produces no values
+```
+
+If the values need to be processed again, create a **new generator object** or materialize them into a collection such as a list when appropriate.
+
+### 6.2 Execution Is Lazy
+
+Generator work happens during iteration, not necessarily when the generator object is created.
+
+This means:
+
+- expensive work can be delayed until needed;
+- processing can stop early;
+- exceptions may also occur later, during consumption.
+
+That timing difference is important when debugging streaming code.
+
+### 6.3 Memory Efficient Does Not Mean Automatically Faster
+
+A list stores all produced results.
+
+A generator mainly stores:
+
+- its current execution state;
+- local variables;
+- the current yielded value.
+
+That usually gives generators a memory advantage for large streams.
 
 ```mermaid
 flowchart LR
-    A[first variable] --> O1[Product object A]
-    B[alias variable] --> O1
-    C[second variable] --> O2[Product object B]
+    subgraph LIST[List]
+        L1[Produce all values] --> L2[Store all values] --> L3[Consume]
+    end
 
-    O1 -. same logical SKU .- O2
+    subgraph GEN[Generator]
+        G1[Produce one value] --> G2[Consume] --> G3[Produce next]
+        G3 --> G2
+    end
 ```
 
-## Use `is` for Singleton Checks
-
-The most common identity check is `None`:
-
-```python
-if result is None:
-    print("No result found")
-```
-
-Prefer `is None` over `== None` because `None` is a singleton and custom equality should not affect this check.
+A list can still be the better choice when the data is small and the result must be reused, indexed, sorted repeatedly, or inspected as a complete snapshot.
 
 ---
 
-# 9. `__eq__` and `__hash__`
+## 7. Typing Generators
 
-Equality affects whether an object can safely be used in hashed collections such as:
-
-- Dictionary keys
-- Set members
-- `frozenset` members
-
-## The Hash Contract
-
-When two objects compare equal, they must have the same hash: `x == y  ⇒  hash(x) == hash(y)`
-
-The reverse is not required. Different objects may occasionally have the same hash due to collisions.
-
-## What Python Does Automatically
-
-When a class defines `__eq__` but does not define `__hash__`, Python normally marks its instances as unhashable.
+For normal generator functions, prefer abstract types from `collections.abc`.
 
 ```python
-class Product:
-    def __init__(self, sku: str) -> None:
-        self.sku = sku
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Product):
-            return NotImplemented
-        return self.sku == other.sku
-
-product = Product("KB-101")
-hash(product)   # TypeError: unhashable type: 'Product'
+from collections.abc import Iterable, Iterator
 ```
 
-This protects hashed collections from objects whose equality-related state may change.
+A common API style is:
 
-## Value Object with `__hash__`
-
-```python
-class Coordinate:
-    def __init__(self, latitude: float, longitude: float) -> None:
-        self.latitude = latitude
-        self.longitude = longitude
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Coordinate):
-            return NotImplemented
-
-        return (
-            self.latitude == other.latitude
-            and self.longitude == other.longitude
-        )
-
-    def __hash__(self) -> int:
-        return hash((self.latitude, self.longitude))
-
-first = Coordinate(23.0225, 72.5714)
-second = Coordinate(23.0225, 72.5714)
-
-print(first == second)              # True
-print(hash(first) == hash(second))  # True
-
-locations = {first, second}
-print(len(locations))               # 1
+```text
+accept Iterable[T]  →  return Iterator[T]
 ```
 
-Only implement a value-based `__hash__` when the fields used for hashing will not change while the object is being used in a hashed collection. Treat the `Coordinate` fields above as immutable after initialization; a frozen dataclass provides stronger enforcement.
+This communicates that the function:
 
-A frozen dataclass is often a cleaner solution for immutable value objects.
+- accepts any iterable source;
+- produces values lazily;
+- does not promise indexing or repeated iteration.
+
+For most generator functions that only yield values, `Iterator[T]` is sufficient.
+
+`typing.Generator[YieldType, SendType, ReturnType]` is useful when advanced `send()` behavior or the generator's return value is part of the API.
 
 ---
 
-# 10. Complete Real-World Example
+## 8. Advanced Generator Methods
 
-The following `Product` class combines all four methods.
+Generator objects support several methods beyond normal iteration.
 
-```python
-from __future__ import annotations
+| Method | Purpose |
+|---|---|
+| `next(generator)` | Resume until the next `yield` |
+| `generator.send(value)` | Resume and send a value into the suspended `yield` |
+| `generator.throw(exc)` | Raise an exception where the generator is paused |
+| `generator.close()` | Request generator termination using `GeneratorExit` |
 
-class Product:
-    def __init__(
-        self,
-        sku: str,
-        name: str,
-        price: float,
-        *,
-        active: bool = True,
-    ) -> None:
-        normalized_sku = sku.strip().upper()
-        normalized_name = name.strip()
-
-        if not normalized_sku:
-            raise ValueError("SKU cannot be empty")
-
-        if not normalized_name:
-            raise ValueError("Product name cannot be empty")
-
-        if price < 0:
-            raise ValueError("Price cannot be negative")
-
-        self.sku = normalized_sku
-        self.name = normalized_name
-        self.price = float(price)
-        self.active = active
-
-    def __str__(self) -> str:
-        status = "active" if self.active else "inactive"
-        return f"{self.name} ({self.sku}) — ${self.price:.2f}, {status}"
-
-    def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}("
-            f"sku={self.sku!r}, "
-            f"name={self.name!r}, "
-            f"price={self.price!r}, "
-            f"active={self.active!r})"
-        )
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Product):
-            return NotImplemented
-
-        return self.sku == other.sku
-```
-
-## Usage
-
-```python
-first = Product(sku=" kb-101 ", name="Mechanical Keyboard", price=80)
-second = Product(sku="KB-101", name="Keyboard - New Packaging", price=85)
-third = Product(sku="MS-202", name="Wireless Mouse", price=30)
-
-# Initialization normalized and converted the input
-print(first.sku)          # KB-101
-print(first.price)        # 80.0
-
-# Human-readable and developer-readable output
-print(first)              # Mechanical Keyboard (KB-101) — $80.00, active
-print(repr(first))        # Product(sku='KB-101', name='Mechanical Keyboard', price=80.0, active=True)
-
-# Equality
-print(first == second)    # True: same normalized SKU
-print(first == third)     # False: different SKU
-print(first == "KB-101")  # False after Python's comparison fallback
-```
-
-## End-to-End Flow
-
-```mermaid
-flowchart TD
-    A[Product constructor call] --> B[__new__ creates instance]
-    B --> C[__init__ validates and normalizes data]
-    C --> D[Ready Product object]
-
-    D --> E[print product]
-    E --> F[__str__ returns friendly text]
-
-    D --> G[repr product or inspect list]
-    G --> H[__repr__ returns detailed text]
-
-    D --> I[product1 == product2]
-    I --> J[__eq__ compares normalized SKU]
-```
+For normal backend development, `next()` and standard iteration cover most use cases. `send()`, `throw()`, and direct `close()` are more specialized and are mainly useful for state-machine, coroutine-style, or explicit resource-management designs.
 
 ---
 
-# 11. Inheritance and `super()`
+## 9. Synchronous vs Asynchronous Generators
 
-A subclass that defines its own `__init__` should explicitly cooperate with the base class when it needs the base initialization.
+A synchronous generator uses `def` and is consumed with `for`.
 
-```python
-class Product:
-    def __init__(self, sku: str, name: str) -> None:
-        self.sku = sku
-        self.name = name
+An asynchronous generator uses `async def`, contains `yield`, and is consumed with `async for`.
 
-class DigitalProduct(Product):
-    def __init__(self, sku: str, name: str, download_url: str) -> None:
-        super().__init__(sku, name)
-        self.download_url = download_url
+| Synchronous generator | Asynchronous generator |
+|---|---|
+| `def` + `yield` | `async def` + `yield` |
+| Consumed with `for` | Consumed with `async for` |
+| Usually typed as `Iterator[T]` | Usually typed as `AsyncIterator[T]` |
+| Best for synchronous lazy processing | Best for asynchronously arriving values |
 
-course = DigitalProduct("PY-301", "Advanced Python", "https://example.com/download/PY-301")
-```
+An asynchronous generator can use `await`, which makes it useful for streaming events, WebSocket messages, database cursors, or other async I/O sources.
 
-## Reuse Base Representation Carefully
-
-```python
-class Product:
-    def __init__(self, sku: str, name: str) -> None:
-        self.sku = sku
-        self.name = name
-
-    def __str__(self) -> str:
-        return f"{self.name} ({self.sku})"
-
-class DigitalProduct(Product):
-    def __init__(self, sku: str, name: str, file_format: str) -> None:
-        super().__init__(sku, name)
-        self.file_format = file_format
-
-    def __str__(self) -> str:
-        return f"{super().__str__()} [{self.file_format}]"
-
-ebook = DigitalProduct("BK-501", "Python Guide", "PDF")
-print(ebook)  # Python Guide (BK-501) [PDF]
-```
-
-## Representation That Supports Subclasses
-
-Using `type(self).__name__` prevents the base class name from being hard-coded:
-
-```python
-def __repr__(self) -> str:
-    return (
-        f"{type(self).__name__}("
-        f"sku={self.sku!r}, name={self.name!r})"
-    )
-```
-
-Whether base and subclass instances should compare equal requires an explicit domain decision. Use exact-type comparison when equality across subclasses could hide meaningful differences.
+`yield from` is **not allowed** inside an asynchronous generator; delegation is normally written with `async for`.
 
 ---
 
-# 12. Dunder Methods with `dataclass`
+## 10. When to Use Generators
 
-Python's `@dataclass` can automatically generate `__init__`, `__repr__`, and `__eq__`.
+Generators are a strong fit for:
 
-```python
-from dataclasses import dataclass
+- large files;
+- paginated APIs;
+- database row streaming;
+- message or event streams;
+- transformation pipelines;
+- batch processing;
+- early-exit searches;
+- potentially infinite sequences.
 
-@dataclass
-class Product:
-    sku: str
-    name: str
-    price: float
+Prefer a normal collection such as a list when:
 
-product = Product("KB-101", "Keyboard", 80.0)
-
-print(repr(product))  # Product(sku='KB-101', name='Keyboard', price=80.0)
-print(product == Product("KB-101", "Keyboard", 80.0))  # True
-```
-
-By default, dataclass equality compares the class and all fields in declaration order. It behaves as though the instance were compared using a tuple of its fields, while requiring both operands to have the identical class.
-
-## Add a Custom `__str__`
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class Product:
-    sku: str
-    name: str
-    price: float
-
-    def __str__(self) -> str:
-        return f"{self.name} — ${self.price:.2f}"
-```
-
-## Immutable, Hashable Value Object
-
-```python
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class Coordinate:
-    latitude: float
-    longitude: float
-
-first = Coordinate(23.0225, 72.5714)
-second = Coordinate(23.0225, 72.5714)
-
-print(first == second)              # True
-print(hash(first) == hash(second))  # True
-```
-
-Use a dataclass when a class primarily stores data. Write the methods manually when equality, validation, representation, inheritance, or lifecycle behavior follows richer domain rules.
+- the full result is small;
+- values must be reused multiple times;
+- indexing or slicing is required;
+- the total length is needed frequently;
+- the complete snapshot should exist before processing starts.
 
 ---
 
-# 13. Testing Dunder Methods
+## 11. Best Practices
 
-Dunder methods are part of your class's public behavior, so test their observable results.
+### Prefer generators for clear sequential streaming
 
-## Example with `pytest`
+A generator should usually represent one understandable flow of values rather than mixing unrelated responsibilities.
 
-```python
-import pytest
+### Accept `Iterable`, return `Iterator`
 
-def test_product_initialization_normalizes_values() -> None:
-    product = Product(" kb-101 ", " Keyboard ", 80)
+This keeps function inputs flexible and clearly communicates lazy output.
 
-    assert product.sku == "KB-101"
-    assert product.name == "Keyboard"
-    assert product.price == 80.0
+### Make lazy behavior obvious in API names
 
-def test_product_rejects_negative_price() -> None:
-    with pytest.raises(ValueError, match="Price cannot be negative"):
-        Product("KB-101", "Keyboard", -1)
+Names such as:
 
-def test_product_str_is_human_readable() -> None:
-    product = Product("KB-101", "Keyboard", 80)
+- `iter_users()`
+- `stream_events()`
+- `generate_batches()`
 
-    assert str(product) == "Keyboard (KB-101) — $80.00, active"
+make single-pass behavior clearer than a vague name such as `get_data()`.
 
-def test_product_repr_contains_debugging_state() -> None:
-    product = Product("KB-101", "Keyboard", 80)
+### Be aware of resource lifetime
 
-    assert repr(product) == (
-        "Product(sku='KB-101', name='Keyboard', "
-        "price=80.0, active=True)"
-    )
+A suspended generator can keep local resources alive. If a generator owns a file, connection, or similar resource, structure cleanup carefully and use context managers where appropriate.
 
-def test_products_with_same_sku_are_equal() -> None:
-    first = Product("KB-101", "Keyboard", 80)
-    second = Product("KB-101", "Keyboard V2", 90)
+### Use built-in iterator tools first
 
-    assert first == second
+Before writing custom iteration logic, check Python's built-ins and `itertools`, especially:
 
-def test_product_comparison_with_unrelated_type() -> None:
-    product = Product("KB-101", "Keyboard", 80)
+- `enumerate()`
+- `zip()`
+- `map()`
+- `filter()`
+- `iter()`
+- `itertools.chain()`
+- `itertools.islice()`
+- `itertools.batched()`
 
-    assert product != "KB-101"
-```
-
-## Test the Contract, Not Internal Calls
-
-Prefer:
-
-```python
-assert str(product) == "Keyboard (KB-101) — $80.00, active"
-assert first == second
-```
-
-Rather than directly testing:
-
-```python
-assert product.__str__() == "Keyboard (KB-101) — $80.00, active"
-assert first.__eq__(second) is True
-```
-
-The first style verifies the same public syntax used by application code.
+In current Python, `itertools.batched()` lazily groups values into tuples, and its `strict` option can require every batch to have exactly the requested size.
 
 ---
 
-# 14. Best Practices
+## Interview Takeaway
 
-## For `__init__`
+The most important idea is not simply that generators "save memory."
 
-- Establish a valid initial state.
-- Validate and normalize constructor input when it protects class invariants.
-- Use `None` as a sentinel for optional mutable values.
-- Call `super().__init__()` when the base class requires initialization.
-- Avoid returning a value.
-- Keep heavy network, file, and database work outside basic initialization when practical.
+A strong understanding is:
 
-## For `__str__`
+> A generator is a specialized iterator whose execution can pause at `yield` and resume later with its local state preserved. It follows Python's iterator protocol, produces values lazily, and is normally consumed only once.
 
-- Optimize for human readability.
-- Keep the output concise.
-- Return a string in every path.
-- Avoid making application logic depend on display formatting.
-
-## For `__repr__`
-
-- Include fields that help diagnose the object's state.
-- Prefer unambiguous formatting and use `!r` for nested values.
-- Consider a constructor-like representation when practical.
-- Never reveal secrets or sensitive personal data.
-- Keep the method reliable; debugging output should not unexpectedly fail.
-
-## For `__eq__`
-
-- Compare fields that define logical equality.
-- Accept `other: object`.
-- Return `NotImplemented` for unsupported operand types.
-- Preserve reflexivity, symmetry, transitivity, and consistency.
-- Consider the `__hash__` contract before making objects hashable.
-- Avoid equality rules based on unstable or frequently changing fields.
-
----
-
-## Official References
-
-- [Python Data Model — Basic Customization](https://docs.python.org/3/reference/datamodel.html#basic-customization)
-- [Python Data Model — Rich Comparison Methods](https://docs.python.org/3/reference/datamodel.html#object.__eq__)
-- [Python Built-in Functions — `repr`](https://docs.python.org/3/library/functions.html#repr)
-- [Python `dataclasses`](https://docs.python.org/3/library/dataclasses.html)
+For day-to-day backend development, the most useful applications are **streaming data, hiding pagination, processing large inputs, and building lazy pipelines**. Use generators when values naturally flow one at a time; use a concrete collection when the complete result needs to exist and be reused.

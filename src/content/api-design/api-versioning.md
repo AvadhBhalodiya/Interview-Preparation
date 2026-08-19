@@ -1315,12 +1315,3 @@ Use:
 A deployment should be blocked when an accidental breaking change is detected in an existing version.
 
 ---
-
-# 17. Official References
-
-- [Google AIP-185: API Versioning](https://google.aip.dev/185)
-- [Google AIP-180: Backwards Compatibility](https://google.aip.dev/180)
-- [Microsoft: Web API Design Best Practices](https://learn.microsoft.com/en-us/azure/architecture/best-practices/api-design)
-- [GitHub REST API Versions](https://docs.github.com/en/rest/about-the-rest-api/api-versions)
-- [Stripe API Versioning](https://docs.stripe.com/api/versioning)
-- [RFC 8594: The Sunset HTTP Header Field](https://www.rfc-editor.org/rfc/rfc8594)

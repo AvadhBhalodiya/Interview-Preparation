@@ -7,280 +7,261 @@ updated: "July 27, 2026"
 
 # FastAPI vs Django: When to Pick Which
 
-> Understand the practical differences between FastAPI and Django and make a confident framework choice for real projects and technical discussions
+> Understand the practical difference between FastAPI and Django, where each framework fits best, and how to choose confidently for real projects.
 >
-> **Versions referenced:** FastAPI 0.139.0 and Django 6.0.7
+> **Versions referenced:** FastAPI 0.141.1, Django 6.1, and Django REST Framework 3.18.0.
 
 ## In short
 
-- FastAPI is an API-first toolkit: Pydantic validation, async/ASGI by default, dependency injection, and automatic OpenAPI docs. Django is a full batteries-included web platform: ORM, migrations, admin, auth, sessions, forms, and templates.
-- For APIs, the fair comparison is FastAPI vs. Django + Django REST Framework (DRF), not bare Django — DRF is what adds serializers, viewsets, routers, and permissions.
-- Pick FastAPI for API-only services, microservices, high-concurrency async I/O, and AI/ML inference endpoints, where the team is willing to assemble its own ORM, auth, and project structure.
-- Pick Django (usually with DRF) for database-heavy business applications that need a built-in admin, users/sessions/permissions, forms, and fast CRUD delivery.
-- Both frameworks support async today, but async only helps I/O-bound waiting, not CPU-bound work, and one blocking call in the request path removes the benefit either way.
-- Real-world latency is usually dominated by database queries, external calls, and serialization, not framework overhead, so "FastAPI is faster" is rarely the deciding factor.
-- The choice isn't always exclusive: a common pattern pairs a Django core (business data, admin, auth) with a FastAPI service for a specialized async or AI workload.
+- **FastAPI** is an API-first framework. It gives you type-based validation, dependency injection, automatic OpenAPI documentation, and strong async support, while letting you choose components such as the ORM, migrations, and authentication system.
+- **Django** is a batteries-included web framework. It provides an ORM, migrations, authentication, sessions, forms, templates, middleware, and a powerful admin site.
+- For API development, the practical comparison is usually **FastAPI vs Django + Django REST Framework (DRF)**, because DRF adds serializers, API views/viewsets, routers, permissions, filtering, pagination, and API-oriented request/response handling.
+- Prefer **FastAPI** for focused APIs, microservices, high-concurrency I/O, integrations, and AI/ML services.
+- Prefer **Django + DRF** for relational, CRUD-heavy business applications where admin operations, users, permissions, and integrated data management matter.
+- Both support async. Async is mainly useful for **I/O-bound waiting** such as database, HTTP, or network calls; it does not make CPU-heavy Python work automatically faster.
+- Do not choose only from benchmark numbers. Database design, external calls, serialization, caching, and application architecture usually matter more to real response time.
 
 ```mermaid
 flowchart TD
-    Start[What are you building?]
-    FullStack{Do you need built-in admin,<br/>ORM, auth, forms, or templates?}
-    APIOnly{Is it mainly an API or<br/>independent service?}
-    AsyncNeed{Is high-concurrency async I/O<br/>a major requirement?}
-    DataHeavy{Is it a relational,<br/>CRUD-heavy business system?}
-    Django[Django + DRF]
-    FastAPI[FastAPI]
-    Evaluate[Evaluate team skills and ecosystem]
-    Hybrid[Consider Django core + FastAPI service]
-
-    Start --> FullStack
-    FullStack -- Yes --> DataHeavy
-    DataHeavy -- Yes --> Django
-    DataHeavy -- No --> Evaluate
-
-    FullStack -- No --> APIOnly
-    APIOnly -- Yes --> AsyncNeed
-    AsyncNeed -- Yes --> FastAPI
-    AsyncNeed -- No --> Evaluate
-
-    Evaluate --> Django
-    Evaluate --> FastAPI
-
-    Django -. Specialized async or AI component .-> Hybrid
+    A[What are you building?] --> B{Need built-in ORM, admin,<br/>auth, forms or sessions?}
+    B -- Yes --> C[Django + DRF]
+    B -- No --> D{Mostly a focused API<br/>or independent service?}
+    D -- Yes --> E{Heavy concurrent I/O,<br/>integrations or AI workload?}
+    E -- Yes --> F[FastAPI]
+    E -- No --> G{Is relational business data<br/>the center of the system?}
+    G -- Yes --> C
+    G -- No --> F
+    C -. Specialized async / AI service .-> H[Django core + FastAPI service]
 ```
-
-**Interview answer:** Pick FastAPI when the system is mainly an API or independent service with heavy async I/O and the team wants control over its own ORM, auth, and architecture — microservices, public APIs, AI inference. Pick Django, usually with DRF, when it is a database-heavy business application that needs a built-in admin, authentication/sessions, and fast CRUD delivery. Many real systems use both: Django as the business core, FastAPI for a specialized async or AI service.
-
-**Gotcha:** Assuming "FastAPI is faster" settles the decision. Database time, external calls, and serialization dominate real-world latency far more than framework overhead, so the right basis for the choice is product shape — focused API vs. integrated business application — not a benchmark chart.
 
 ---
 
 # 1. The Core Difference
 
-FastAPI and Django are both Python web frameworks, but they solve different default problems.
+FastAPI and Django can both build production web APIs, but their **default responsibilities are different**.
 
 ## FastAPI
 
-FastAPI is primarily an **API-first framework**.
+FastAPI focuses on the API layer:
 
-It is designed around:
-
-- HTTP APIs
-- Python type hints
+- HTTP routing
 - Request and response validation
-- OpenAPI schema generation
-- Interactive API documentation
+- Python type hints
+- Pydantic models
 - Dependency injection
-- Asynchronous request handling
-- Lightweight service architecture
+- OpenAPI schema generation
+- Swagger UI / ReDoc
+- Async request handling
 
-FastAPI gives you strong API building blocks, but you usually choose and integrate the remaining components yourself, such as:
-
-- ORM
-- Migration tool
-- Admin interface
-- Authentication storage
-- Background job system
-- Project structure
-
-## Django
-
-Django is primarily a **full web application framework**.
-
-It includes an integrated set of components:
-
-- ORM
-- Database migrations
-- Authentication
-- Sessions
-- Forms
-- Templates
-- Admin panel
-- Middleware
-- Security protections
-- Caching utilities
-- Management commands
-
-For REST APIs, Django is commonly used with **Django REST Framework**, usually called DRF.
-
-## Simple Mental Model
+You normally choose the surrounding components yourself, for example:
 
 ```text
 FastAPI
-    = API toolkit with modern typing and async-first design
-
-Django
-    = Complete web application platform
-
-Django + DRF
-    = Complete web platform with a mature REST API layer
+  + SQLAlchemy / SQLModel
+  + Alembic
+  + PostgreSQL
+  + JWT / external identity provider
+  + Celery / another worker system
 ```
 
-The decision should therefore not be based only on which framework can return JSON faster.
+This makes FastAPI flexible, but the team must define consistent architecture and conventions.
 
-The better question is:
+## Django
 
-> Does the project need a focused API service, or does it need an integrated business application platform?
+Django provides a complete application platform:
+
+- ORM
+- Database migrations
+- Authentication and permissions
+- Sessions
+- Forms and ModelForms
+- Templates
+- Admin site
+- Middleware
+- Security utilities
+- Caching support
+- Management commands
+
+For REST APIs, Django is commonly paired with **Django REST Framework**.
+
+### Simple mental model
+
+```text
+FastAPI      = API-first framework + choose your surrounding components
+Django       = Full web application framework
+Django + DRF = Full application framework + mature REST API layer
+```
+
+The key question is therefore not *“Which one can return JSON faster?”* but:
+
+> **Does the system need a focused API service or an integrated business application platform?**
 
 ---
 
-# 2. A Fair Comparison: FastAPI vs Django + DRF
+# 2. FastAPI vs Django + DRF
 
-Comparing FastAPI directly with core Django can be misleading.
+Comparing FastAPI with bare Django is not completely fair for REST API projects.
 
-Core Django can return JSON, but Django REST Framework adds the API-specific features normally expected in production systems:
+DRF adds the API features normally expected in a Django API codebase:
 
-- Serializers
-- Request parsing
-- Authentication policies
-- Permissions
-- Pagination
-- Filtering
-- ViewSets
+- Serializers and validation
+- API views and ViewSets
 - Routers
+- Authentication classes
+- Permission classes
+- Pagination
+- Filtering and search
+- Content negotiation
 - Browsable API
-- OpenAPI schema support
+- OpenAPI/schema tooling
 
-Therefore, in practice: an API-only or service-oriented application points to FastAPI, while a database-heavy business application with APIs points to Django + Django REST Framework.
+So the practical comparison is usually:
+
+```text
+Focused API / service                  -> FastAPI
+Business application with REST APIs   -> Django + DRF
+```
 
 ---
 
-# 3. High-Level Architecture
+# 3. Feature Comparison
 
-## FastAPI-Oriented Architecture
-
-```mermaid
-flowchart LR
-    Client[Web / Mobile / External Client]
-    API[FastAPI Application]
-    Validation[Pydantic Validation]
-    DI[Dependency Injection]
-    Service[Service Layer]
-    ORM[SQLAlchemy / SQLModel / Other ORM]
-    DB[(Database)]
-    Queue[Celery / RQ / Task Queue]
-
-    Client --> API
-    API --> Validation
-    API --> DI
-    DI --> Service
-    Service --> ORM
-    ORM --> DB
-    Service --> Queue
-```
-
-FastAPI provides the HTTP and API layer. The development team selects the data, task, and administration components.
-
-## Django-Oriented Architecture
-
-```mermaid
-flowchart LR
-    Client[Browser / Mobile / External Client]
-    URLs[Django URL Router]
-    Views[Django Views or DRF ViewSets]
-    Services[Optional Service Layer]
-    ORM[Django ORM]
-    DB[(Database)]
-    Admin[Django Admin]
-    Auth[Django Authentication]
-    Middleware[Django Middleware]
-
-    Client --> Middleware
-    Middleware --> URLs
-    URLs --> Views
-    Views --> Services
-    Services --> ORM
-    ORM --> DB
-    Admin --> ORM
-    Auth --> Views
-```
-
-Django provides more of the application platform as one integrated system.
-
----
-
-# 4. Feature Comparison
-
-| Area | FastAPI | Django / Django REST Framework |
+| Area | FastAPI | Django + DRF |
 |---|---|---|
-| Primary purpose | API-first services | Full web and business applications |
-| Default architecture | Lightweight and composable | Integrated and convention-driven |
-| Async model | First-class ASGI and async support | Supports async views and ASGI; some application paths may remain synchronous |
-| Request validation | Pydantic models and type hints | Django Forms or DRF Serializers |
-| Response validation | Native `response_model` support | DRF Serializers |
-| API documentation | Automatic Swagger UI and ReDoc | Available through DRF schema tooling or third-party packages |
-| ORM | Not built in | Built-in Django ORM |
-| Migrations | Chosen separately, often Alembic | Built-in migration framework |
-| Admin panel | Not built in | Powerful built-in admin |
-| Authentication | Security utilities; application integration required | Built-in users, sessions, permissions, and DRF authentication options |
-| Dependency injection | Built in | Not a central framework feature |
-| Templates | Possible through Starlette/Jinja integration | Built-in template system |
-| Forms | No full built-in forms framework | Built-in Forms and ModelForms |
-| Project conventions | Flexible | Strong conventions |
-| Microservices | Excellent fit | Possible, but often heavier than necessary |
-| Business CRUD systems | Requires more assembly | Excellent fit |
-| WebSockets | Strong ASGI ecosystem support | Supported through ASGI, commonly with Channels or related tooling |
-| Learning focus | Typing, async, Pydantic, DI | ORM, apps, settings, middleware, models, migrations, DRF |
-| Initial API code | Usually small | More structured and sometimes more verbose |
-| Long-term consistency | Depends heavily on team architecture | Strong defaults encourage consistency |
+| Primary focus | API-first services | Full business/web applications with APIs |
+| API validation | Pydantic models | DRF serializers |
+| Response validation | Native response models | DRF serializers |
+| OpenAPI docs | Automatic and built in | Supported through DRF schema tooling |
+| ORM | Not built in | Django ORM built in |
+| Migrations | Separate tool, commonly Alembic | Built in |
+| Admin panel | Not built in | Built in |
+| Authentication | Security primitives; full identity design is application-specific | Users, password hashing, sessions, groups, permissions + DRF auth |
+| Dependency injection | First-class feature | Not a central framework pattern |
+| Async | ASGI-first and natural for async APIs | Async views and many async APIs under ASGI |
+| Templates and forms | Available through integrations, but not the main focus | Built in and deeply integrated |
+| Project structure | Flexible | Convention-driven |
+| Microservices | Excellent fit | Possible, but often heavier than needed |
+| CRUD/business systems | More components must be assembled | Excellent fit |
+| Internal operations | Separate admin solution required | Django admin is a major advantage |
+| Architecture consistency | Depends heavily on team conventions | Strong framework conventions |
+
+---
+
+# 4. Async and Performance
+
+## 4.1 FastAPI async model
+
+FastAPI supports both synchronous and asynchronous path functions.
+
+```python
+@app.get("/sync")
+def sync_endpoint():
+    return blocking_library_call()
+
+
+@app.get("/async")
+async def async_endpoint():
+    return await async_library_call()
+```
+
+A normal `def` path function is run in a thread pool by FastAPI. An `async def` path function runs on the async event loop and should avoid directly calling blocking I/O.
+
+Use `async def` when the libraries in the request path are async, for example:
+
+- Async HTTP clients
+- Async database drivers
+- Async cache clients
+- Streaming APIs
+- Long-lived network connections
+
+## 4.2 Django async model
+
+Django 6.1 supports async views and an async-enabled request stack under ASGI. Many Django components expose async APIs, including parts of the ORM, cache framework, authentication, sessions, and signals.
+
+However, the full path still matters:
+
+```text
+ASGI server
+   ↓
+Async middleware
+   ↓
+Async view
+   ↓
+Async-compatible operations
+```
+
+If synchronous middleware or a blocking library is inserted into the path, Django has to adapt between sync and async execution.
+
+A useful Django 6.1 limitation to remember is that **database transactions still need synchronous handling**. Transactional work should remain inside a synchronous function when required.
+
+## 4.3 What async actually improves
+
+Async is best for **I/O-bound concurrency**, not CPU-heavy computation.
+
+```text
+Good async workload:
+Request -> await external API -> await database -> await cache -> response
+
+CPU-heavy workload:
+Request -> image processing / ML inference / PDF parsing / heavy calculation
+                     ↓
+              worker / separate process
+```
+
+For CPU-heavy tasks, use background workers, multiprocessing, dedicated inference services, or specialized compute infrastructure.
+
+## 4.4 Real performance
+
+A more realistic latency model is:
+
+```text
+Total response time =
+    framework overhead
+  + application logic
+  + database queries
+  + external API calls
+  + serialization
+  + network time
+```
+
+FastAPI is a strong fit for lightweight and highly concurrent API workloads, but that does not mean every FastAPI application will outperform every Django application.
 
 ---
 
 # 5. When FastAPI Is the Better Choice
 
-Choose FastAPI when the system is mainly an API or independently deployable service.
+Choose FastAPI when the application is mainly an API or independently deployable service.
 
-## 5.1 API-First Products
+## 5.1 API-first backend
 
-FastAPI is a strong choice when the backend exists mainly to serve:
+Good examples include:
 
-- Mobile applications
-- React, Vue, or Angular frontends
-- Third-party integrations
+- Mobile application APIs
+- React/Vue/Angular backends
 - Public developer APIs
-- Internal platform APIs
 - Backend-for-frontend services
+- Third-party integration APIs
 
-Its type-driven request declarations make API contracts visible directly in the endpoint code.
+The request schema is directly visible from Python type hints and Pydantic models, which makes API contracts easy to understand.
 
-## 5.2 High-Concurrency I/O Workloads
+## 5.2 Microservices and focused services
 
-FastAPI works well when requests spend significant time waiting for I/O:
+FastAPI works especially well for small services with one clear responsibility:
 
-- Calling external APIs
-- Querying async database drivers
-- Reading from object storage
-- Communicating with message brokers
-- Streaming data
-- Maintaining many network connections
-
-Async does not make CPU work faster. It improves resource usage when many requests are waiting on external operations.
-
-## 5.3 Microservices
-
-FastAPI is usually easier to adopt for focused services such as:
-
-- Payment orchestration service
 - Notification service
 - Search service
-- Recommendation API
+- Payment orchestration service
 - Document processing API
-- Authentication gateway
-- AI inference service
+- Integration gateway
+- Recommendation service
 
-A small service may not need Django’s admin, forms, template system, session framework, or complete ORM integration.
+A small service often does not need Django's forms, templates, admin, session framework, or complete model stack.
 
-## 5.4 Machine Learning and AI APIs
+## 5.3 AI and ML services
 
-FastAPI fits naturally around Python-based ML systems because:
+FastAPI is common around Python AI workloads because it fits naturally with model-serving and orchestration code.
 
-- Models are commonly loaded in Python.
-- Input schemas can be expressed using Pydantic.
-- OpenAPI documentation is generated automatically.
-- Async endpoints can coordinate calls to model servers or external AI services.
-- It is straightforward to build inference and orchestration endpoints.
-
-Example use cases:
+Typical endpoints might look like:
 
 ```text
 POST /predict
@@ -290,272 +271,46 @@ POST /embeddings
 GET  /jobs/{job_id}
 ```
 
-## 5.5 Teams That Need Component Freedom
+It is particularly useful when the API coordinates external LLMs, model servers, object storage, vector databases, or async processing services.
 
-FastAPI is appropriate when the team wants to choose:
+## 5.4 Teams that want component freedom
 
-- SQLAlchemy instead of a framework-owned ORM
-- Alembic for migrations
-- A custom identity provider
-- A separate frontend
-- A specific repository or service-layer pattern
-- Different libraries for different services
+FastAPI is a good fit when the team intentionally wants to choose its own:
 
-This flexibility is valuable, but it creates architectural responsibility. Without team conventions, two FastAPI services can end up looking completely different.
+- ORM
+- Migration system
+- Authentication provider
+- Repository/service architecture
+- Background worker
+- Project layout
+
+The trade-off is that the team must establish those conventions itself.
 
 ---
 
 # 6. When Django Is the Better Choice
 
-Choose Django when the project is a data-driven business application rather than only an API transport layer.
+Choose Django when the system is primarily a **data-driven business application**.
 
-## 6.1 Database-Heavy Business Systems
+## 6.1 Relational and CRUD-heavy systems
 
-Django is especially effective for:
+Django is a strong default for applications such as:
 
 - Insurance platforms
 - Healthcare administration systems
-- ERP applications
-- CRM systems
+- ERP/CRM systems
 - Recruitment platforms
 - E-commerce back offices
-- Workflow and approval systems
-- Content management applications
+- Approval/workflow systems
 - Multi-tenant business portals
 
-These systems usually require more than endpoints. They require models, permissions, admin operations, migrations, forms, reports, and internal workflows.
+These applications usually need more than endpoints. They need models, migrations, permissions, operational screens, reports, admin workflows, and strong relational data handling.
 
-## 6.2 Admin and Operations Are Important
+## 6.2 Admin and internal operations
 
-Django’s admin can provide internal users with a working data-management interface very early in development.
-
-For example, an insurance platform may need operations teams to manage:
-
-- Policies
-- Customers
-- Claims
-- Documents
-- Payment status
-- Reference data
-- Product configuration
-
-FastAPI can support the same business logic, but the admin experience must be built or integrated separately.
-
-## 6.3 Built-In Authentication and Sessions
-
-Django is a strong default when the application needs:
-
-- User accounts
-- Password authentication
-- Groups
-- Permissions
-- Session-based login
-- CSRF protection
-- Password reset flows
-- Admin-user management
-
-FastAPI provides security primitives and OpenAPI security integration, but a complete identity system still needs to be designed or connected.
-
-## 6.4 Server-Rendered Web Applications
-
-Django is normally the better choice when the backend must render:
-
-- HTML pages
-- Forms
-- Validation errors
-- Internal portals
-- Content pages
-- Traditional multi-page applications
-
-FastAPI can render templates, but Django’s template, form, CSRF, session, and model ecosystems are more integrated.
-
-## 6.5 Mature Monoliths
-
-A well-structured Django monolith is often a sensible starting point for a business product.
-
-It can provide:
-
-- Faster feature delivery
-- Simple transactions across modules
-- Centralized permissions
-- Easier local development
-- Fewer distributed-system problems
-- Consistent data modeling
-
-Do not choose microservices only because FastAPI makes small services easy to create. Service boundaries should follow business and scaling needs.
-
----
-
-# 7. Practical Example: Building the Same API
-
-Consider a simple endpoint that creates a product.
-
-Request:
-
-```json
-{
-  "name": "Mechanical Keyboard",
-  "price": 129.99,
-  "is_active": true
-}
-```
-
-Response:
-
-```json
-{
-  "id": 1,
-  "name": "Mechanical Keyboard",
-  "price": 129.99,
-  "is_active": true
-}
-```
-
-## 7.1 FastAPI Version
+The Django admin can create a useful model-based internal interface with very little code.
 
 ```python
-from typing import Annotated
-
-from fastapi import Depends, FastAPI, status
-from pydantic import BaseModel, ConfigDict, Field
-
-app = FastAPI()
-
-class ProductCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=120)
-    price: float = Field(gt=0)
-    is_active: bool = True
-
-class ProductResponse(ProductCreate):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-
-def get_current_user() -> dict:
-    # Replace with real token validation.
-    return {"id": 42, "role": "admin"}
-
-@app.post(
-    "/products",
-    response_model=ProductResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_product(
-    payload: ProductCreate,
-    current_user: Annotated[dict, Depends(get_current_user)],
-) -> ProductResponse:
-    # Replace with service and repository/database code.
-    return ProductResponse(id=1, **payload.model_dump())
-```
-
-What FastAPI provides here:
-
-- JSON parsing
-- Input validation
-- Output validation
-- OpenAPI schema
-- Swagger UI
-- Dependency injection
-- HTTP status handling
-
-What is not shown:
-
-- Database model
-- ORM session
-- Migration
-- Persistent authentication model
-- Admin interface
-
-These are selected and configured separately.
-
-## 7.2 Django + DRF Version
-
-### Model
-
-```python
-# products/models.py
-
-from django.db import models
-
-class Product(models.Model):
-    name = models.CharField(max_length=120)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self) -> str:
-        return self.name
-```
-
-### Serializer
-
-```python
-# products/serializers.py
-
-from rest_framework import serializers
-
-from .models import Product
-
-class ProductSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Product
-        fields = ["id", "name", "price", "is_active"]
-        read_only_fields = ["id"]
-
-    def validate_price(self, value):
-        if value <= 0:
-            raise serializers.ValidationError(
-                "Price must be greater than zero."
-            )
-        return value
-```
-
-### ViewSet
-
-```python
-# products/views.py
-
-from rest_framework.permissions import IsAdminUser
-from rest_framework.viewsets import ModelViewSet
-
-from .models import Product
-from .serializers import ProductSerializer
-
-class ProductViewSet(ModelViewSet):
-    queryset = Product.objects.all()
-    serializer_class = ProductSerializer
-    permission_classes = [IsAdminUser]
-```
-
-### Router
-
-```python
-# config/urls.py
-
-from django.contrib import admin
-from django.urls import include, path
-from rest_framework.routers import DefaultRouter
-
-from products.views import ProductViewSet
-
-router = DefaultRouter()
-router.register("products", ProductViewSet, basename="product")
-
-urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/", include(router.urls)),
-]
-```
-
-### Admin Registration
-
-```python
-# products/admin.py
-
-from django.contrib import admin
-
-from .models import Product
-
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     list_display = ["id", "name", "price", "is_active"]
@@ -563,682 +318,303 @@ class ProductAdmin(admin.ModelAdmin):
     search_fields = ["name"]
 ```
 
-Django requires more framework structure, but this structure also gives the project:
+This can immediately help support, QA, operations, and product teams inspect or manage application data.
 
-- Persistent model
-- Migration support
-- ORM query API
-- CRUD API
-- Permission integration
-- Routing
-- Admin interface
+The admin should remain an **internal management tool**. Complex customer-facing or process-oriented screens should use dedicated views or a separate frontend.
 
-## Main Observation
+## 6.3 Authentication and permissions
 
-```text
-FastAPI:
-Less framework code for the HTTP API itself,
-but more architecture must be selected around it.
+Django already provides core identity features such as:
 
-Django:
-More framework structure,
-but more application capabilities arrive already integrated.
-```
-
----
-
-# 8. Async and Performance
-
-## 8.1 FastAPI Async Model
-
-FastAPI is built on ASGI technologies and is designed to support both:
-
-```python
-@app.get("/sync")
-def sync_endpoint():
-    return blocking_library_call()
-```
-
-and:
-
-```python
-@app.get("/async")
-async def async_endpoint():
-    return await async_library_call()
-```
-
-FastAPI handles normal `def` endpoints and `async def` endpoints differently so that both can be used in one application.
-
-Use `async def` when the libraries called by the endpoint are asynchronous.
-
-Use normal `def` when the endpoint calls blocking libraries that do not support `await`, unless that blocking work is explicitly moved to an appropriate thread or worker.
-
-## 8.2 Django Async Model
-
-Modern Django supports:
-
-- ASGI deployment
-- Async views
-- Async middleware support
-- Async ORM operations for many query patterns
-- Sync-to-async adapters where required
-
-However, the entire request path must be considered.
-
-A single synchronous middleware or blocking library can reduce the benefit of an otherwise asynchronous request path.
-
-## 8.3 Performance Is More Than Framework Overhead
-
-Application response time is often dominated by database query time, external API latency, serialization cost, cache access, network overhead, and business logic — framework overhead is usually a small part of the total:
-
-```text
-Total latency =
-    framework overhead
-  + business logic
-  + database time
-  + external service time
-  + serialization
-  + network time
-```
-
-FastAPI usually has an advantage for lightweight, high-concurrency API workloads, especially when the complete stack is asynchronous.
-
-Django can still scale very well when:
-
-- Queries are optimized.
-- Caching is used correctly.
-- Static files are handled outside the application.
-- Work is distributed across processes.
-- Expensive tasks are moved to workers.
-- The database is properly indexed.
-- The application is profiled before optimization.
-
-## Important Rule
-
-> Choose FastAPI because its API-first and async model fits the system—not only because its name contains “Fast.”
-
----
-
-# 9. Database and ORM Considerations
-
-## FastAPI
-
-FastAPI does not force a database layer.
-
-Common choices include:
-
-- SQLAlchemy
-- SQLModel
-- Django ORM used independently in advanced integrations
-- Tortoise ORM
-- MongoDB clients
-- Direct database drivers
-- Repository abstractions
-
-A common relational stack is FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL.
-
-This provides flexibility, but the team must define:
-
-- Session lifecycle
-- Transaction boundaries
-- Repository conventions
-- Migration workflow
-- Model-to-schema mapping
-- Async versus sync database access
-- Testing strategy
-
-## Django
-
-Django’s ORM and migrations are integrated into the framework.
-
-A Django model acts as the primary definition of persisted application data:
-
-```mermaid
-flowchart TD
-    A[Model change] --> B[makemigrations]
-    B --> C[Migration file]
-    C --> D[migrate]
-    D --> E[Database schema updated]
-```
-
-Django is particularly productive when the domain has:
-
-- Many related tables
-- CRUD-heavy workflows
-- Frequent schema changes
-- Admin-managed reference data
-- Complex filters and reports
-- Strong model-driven behavior
-
-## Practical Choice
-
-Choose FastAPI when database access is only one replaceable component of a service.
-
-Choose Django when the domain model and relational data management are central to the application.
-
----
-
-# 10. Authentication, Authorization, and Security
-
-## FastAPI
-
-FastAPI provides tools for implementing security schemes such as:
-
-- OAuth2 flows
-- Bearer tokens
-- API keys
-- OpenID Connect metadata
-- Dependency-based access checks
-
-Example:
-
-```python
-from typing import Annotated
-
-from fastapi import Depends, HTTPException, status
-
-def require_admin(user: Annotated[dict, Depends(get_current_user)]) -> dict:
-    if user["role"] != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access is required.",
-        )
-    return user
-```
-
-This is clean and composable, but the application still needs decisions around:
-
-- User storage
-- Token issuing
-- Refresh tokens
-- Revocation
-- Password hashing
-- Role model
-- Permission model
-- Login auditing
-- Identity provider integration
-
-## Django
-
-Django includes:
-
-- User model support
+- User models
 - Password hashing
 - Sessions
 - Groups
 - Permissions
 - Authentication middleware
 - CSRF protection
-- Security middleware
-- Admin integration
+- Admin-user management
 
-Django also includes protections and utilities related to:
+DRF builds API authentication and permission policies on top of that ecosystem.
 
-- XSS
-- CSRF
-- SQL injection through parameterized ORM queries
-- Clickjacking
-- Host header validation
-- HTTPS-related settings
-- Content Security Policy configuration in modern Django versions
+## 6.4 Mature monoliths
 
-Django’s defaults are useful for applications with browser logins and internal users.
+For many business products, a modular Django monolith is simpler and faster to operate than starting with several microservices.
 
-## Practical Choice
+Benefits include:
 
-Use FastAPI when authentication is token-based, externalized, or service-oriented.
+- Easier transactions across modules
+- Centralized authentication and permissions
+- Faster local development
+- Fewer distributed-system failures
+- Consistent data modeling
 
-Use Django when users, sessions, groups, permissions, and browser security are central application concepts.
+Extract a service later when an actual scaling, ownership, dependency, or deployment boundary becomes clear.
 
 ---
 
-# 11. Admin Panel and Internal Operations
+# 7. Practical Example: Product Creation API
 
-Django’s admin is one of the biggest practical differences between the frameworks.
+Assume we need this endpoint:
 
-It reads model metadata and creates an internal, model-oriented management interface.
-
-Example:
-
-```python
-@admin.register(Claim)
-class ClaimAdmin(admin.ModelAdmin):
-    list_display = [
-        "claim_number",
-        "customer",
-        "status",
-        "created_at",
-    ]
-    list_filter = ["status", "created_at"]
-    search_fields = [
-        "claim_number",
-        "customer__email",
-    ]
+```http
+POST /products
 ```
 
-This can immediately help:
+Request:
 
-- Operations teams
-- Support teams
-- QA engineers
-- Product managers
-- Data administrators
+```json
+{
+  "name": "Mechanical Keyboard",
+  "price": "129.99"
+}
+```
 
-However, Django’s own documentation recommends the admin mainly as an internal management tool. It should not automatically become the customer-facing frontend.
+## 7.1 FastAPI approach
 
-FastAPI has no equivalent built-in admin. Options include:
+```python
+from decimal import Decimal
 
-- Building a separate admin frontend
-- Using a third-party admin package
-- Connecting a low-code internal tool
-- Creating a dedicated operations service
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
 
-## Decision Impact
+app = FastAPI()
 
-If internal data operations are required from the first release, Django can save significant development time.
+
+class ProductCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    price: Decimal = Field(gt=0)
+
+
+class ProductResponse(ProductCreate):
+    id: int
+
+
+@app.post("/products", response_model=ProductResponse, status_code=201)
+async def create_product(payload: ProductCreate) -> ProductResponse:
+    # Normally call a service/repository here.
+    return ProductResponse(id=1, **payload.model_dump())
+```
+
+FastAPI already gives this endpoint:
+
+- JSON parsing
+- Input validation
+- Response validation
+- OpenAPI schema
+- Interactive API docs
+
+The database model, migration, session handling, authentication storage, and admin interface are separate architecture decisions.
+
+## 7.2 Django + DRF approach
+
+```python
+# models.py
+from django.db import models
+
+
+class Product(models.Model):
+    name = models.CharField(max_length=120)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+```
+
+```python
+# serializers.py
+from rest_framework import serializers
+from .models import Product
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = ["id", "name", "price"]
+```
+
+```python
+# views.py
+from rest_framework.viewsets import ModelViewSet
+from .models import Product
+from .serializers import ProductSerializer
+
+
+class ProductViewSet(ModelViewSet):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+```
+
+The Django version has more framework structure, but the model also participates in:
+
+- ORM queries
+- Database migrations
+- Admin registration
+- DRF CRUD operations
+- Permission integration
+
+### Main observation
+
+```text
+FastAPI:
+Smaller API layer, but more surrounding architecture is selected by the team.
+
+Django + DRF:
+More framework structure, but more application capabilities are already integrated.
+```
 
 ---
 
-# 12. Project Structure and Development Style
+# 8. Database, Authentication, and Project Structure
 
-## Typical FastAPI Structure
+## FastAPI style
+
+A common production structure is:
 
 ```text
 app/
 ├── main.py
 ├── api/
-│   ├── dependencies.py
 │   └── routes/
-│       ├── users.py
-│       └── products.py
 ├── schemas/
-│   ├── user.py
-│   └── product.py
 ├── models/
 ├── services/
 ├── repositories/
 ├── core/
-│   ├── config.py
-│   └── security.py
 ├── db/
 └── tests/
 ```
 
-This is only a convention. FastAPI does not require it.
+This is a convention, not a FastAPI requirement.
 
-### Benefit
+A typical relational stack is:
 
-The architecture can be designed around the service.
+```text
+FastAPI + Pydantic + SQLAlchemy + Alembic + PostgreSQL
+```
 
-### Risk
+The team should explicitly define:
 
-Without agreed conventions, developers may place business logic directly in route functions, mix ORM models with API schemas, or create inconsistent dependency patterns.
+- Session lifecycle
+- Transaction boundaries
+- Schema-to-model mapping
+- Dependency conventions
+- Authentication strategy
+- Sync vs async database access
 
-## Typical Django Structure
+## Django style
+
+A common Django project is split into domain apps:
 
 ```text
 project/
 ├── manage.py
 ├── config/
-│   ├── settings.py
-│   ├── urls.py
-│   ├── asgi.py
-│   └── wsgi.py
 ├── users/
-│   ├── models.py
-│   ├── views.py
-│   ├── admin.py
-│   ├── apps.py
-│   └── migrations/
 ├── products/
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   ├── admin.py
-│   └── migrations/
+├── orders/
 └── tests/
 ```
 
-Django encourages applications to be divided into reusable domain modules.
+Each app usually keeps related models, migrations, admin configuration, views, and API serializers close together.
 
-### Benefit
-
-Developers familiar with Django can navigate new projects quickly.
-
-### Risk
-
-Large projects can become tightly coupled if every feature directly imports models and logic from every other Django app.
+Django 6.1 also adds ORM improvements such as **model field fetch modes**, which can help control on-demand field loading and reduce some N+1-style access patterns.
 
 ---
 
-# 13. Testing and Maintainability
+# 9. Using FastAPI and Django Together
 
-Both frameworks support production-quality testing.
-
-## FastAPI Testing Style
-
-FastAPI works naturally with:
-
-- `pytest`
-- `TestClient`
-- `httpx`
-- Dependency overrides
-- Async test clients
-- Mocked service dependencies
-
-Dependency injection makes external components replaceable during tests.
-
-Example concept: `app.dependency_overrides[get_current_user] = lambda: {"id": 1, "role": "admin"}`.
-
-## Django Testing Style
-
-Django provides:
-
-- Test client
-- Database test setup
-- Transaction-aware test classes
-- Fixture support
-- Management command testing
-- Email testing utilities
-- Authentication helpers
-
-DRF adds an API test client and request factories.
-
-## Maintainability Difference
-
-FastAPI maintainability depends more heavily on the architecture chosen by the team.
-
-Django maintainability benefits from framework conventions, but teams should still separate:
-
-- HTTP handling
-- Domain logic
-- Data access
-- Integrations
-- Long-running tasks
-
-Neither framework prevents bad architecture.
-
----
-
-# 14. Deployment and Scaling
-
-## FastAPI Deployment
-
-FastAPI applications are normally deployed as ASGI applications using a server such as Uvicorn or another compatible process setup.
-
-```mermaid
-flowchart TD
-    LB[Load Balancer] --> P[ASGI Processes]
-    P --> A[FastAPI Application]
-    A --> D["Database / Cache / External Services"]
-```
-
-Use multiple processes or containers for CPU utilization and availability.
-
-## Django Deployment
-
-Django can run through:
-
-- WSGI for traditional synchronous applications
-- ASGI for asynchronous capabilities
-
-```mermaid
-flowchart TD
-    LB[Load Balancer] --> P[WSGI or ASGI Processes]
-    P --> A[Django Application]
-    A --> D["Database / Cache / Task Workers"]
-```
-
-## Scaling Principles Shared by Both
-
-- Keep application instances stateless where possible.
-- Store shared session or cache state externally.
-- Use connection pooling carefully.
-- Add database indexes based on query patterns.
-- Avoid N+1 queries.
-- Move CPU-heavy and long-running work to worker processes.
-- Set request timeouts.
-- Apply rate limiting at the gateway or application layer.
-- Add metrics, tracing, and structured logs.
-- Scale based on measured bottlenecks.
-
-## CPU-Bound Work
-
-Neither FastAPI async endpoints nor Django async views make CPU-heavy Python work automatically scalable.
-
-For tasks such as:
-
-- Image processing
-- PDF extraction
-- Large report generation
-- ML inference
-- Video processing
-- Heavy calculations
-
-use one or more of:
-
-- Background workers
-- Separate inference services
-- Multiprocessing
-- Specialized compute infrastructure
-- Queue-based job execution
-
----
-
-# 15. Using FastAPI and Django Together
-
-The choice does not always need to be exclusive.
+The choice does not have to be exclusive.
 
 A common architecture is:
 
 ```mermaid
 flowchart LR
-    Client[Web / Mobile Client]
-    Gateway[API Gateway]
-    Django[Django Core Business Platform]
-    Admin[Django Admin]
-    FastAPI[FastAPI Specialized Service]
-    DB[(Primary Database)]
-    Model[AI / Processing Engine]
-    Queue[Message Queue]
-
-    Client --> Gateway
-    Gateway --> Django
-    Gateway --> FastAPI
-    Django --> DB
-    Admin --> Django
-    Django --> Queue
+    Client[Web / Mobile] --> Gateway[API Gateway]
+    Gateway --> Django[Django + DRF Business Core]
+    Gateway --> FastAPI[FastAPI Specialized Service]
+    Django --> DB[(Primary Database)]
+    Django --> Admin[Django Admin]
+    Django --> Queue[Message Queue]
     Queue --> FastAPI
-    FastAPI --> Model
+    FastAPI --> AI[AI / Processing Engine]
 ```
 
 Example:
 
-- Django manages customers, policies, claims, permissions, and operations.
-- FastAPI exposes a document-extraction or AI-inference service.
-- The services communicate through HTTP or a message queue.
+- Django manages customers, policies, claims, users, permissions, and operations.
+- FastAPI exposes document extraction, AI inference, or another independently scalable service.
+- Communication happens through HTTP, events, or a message queue.
 
-This is useful when the specialized service has:
+Use this split only when there is a meaningful boundary such as:
 
 - Different scaling requirements
-- Different dependencies
-- Heavy async I/O
-- ML model dependencies
+- Different runtime dependencies
 - Independent release cycles
+- Separate ownership
+- Security isolation
+- Clear domain responsibility
 
-## Avoid Unnecessary Splitting
-
-Do not split one simple application into Django and FastAPI merely to use both frameworks.
-
-A second framework adds:
-
-- Deployment complexity
-- Authentication propagation
-- Distributed tracing needs
-- Failure handling
-- Network latency
-- Contract versioning
-- More repositories or modules to maintain
-
-Use both only when the boundary provides clear operational or domain value.
+Using both frameworks without a real boundary only adds deployment, authentication, tracing, networking, and contract-management complexity.
 
 ---
 
-# 16. Decision Framework
+# 10. Decision Framework and Best Practices
 
-## Quick Selection Rules
-
-### Pick FastAPI when most statements are true
+## Pick FastAPI when most of these are true
 
 - The product is mainly an API.
-- The service has a focused responsibility.
-- Async I/O is important.
-- Automatic API contracts are important.
+- The service has one focused responsibility.
+- Concurrent I/O is important.
 - The frontend is completely separate.
-- Authentication is provided by an external identity system.
-- The team wants to choose its own ORM and architecture.
-- The service is related to AI, streaming, gateways, or integrations.
+- OpenAPI-first development is valuable.
+- Authentication is externalized or token-oriented.
+- The team wants control over ORM and architecture choices.
+- The service handles AI, integrations, streaming, or orchestration.
 
-### Pick Django when most statements are true
+## Pick Django + DRF when most of these are true
 
 - The product is a business application.
 - Relational data is central.
-- An internal admin is needed.
-- User accounts, sessions, groups, and permissions are important.
-- The project includes server-rendered pages or forms.
+- An internal admin is valuable.
+- Users, groups, sessions, and permissions are core concepts.
 - Rapid CRUD delivery matters.
-- The team benefits from framework conventions.
-- The application is likely to begin as a modular monolith.
+- The system has many connected business entities.
+- Strong framework conventions help the team.
+- A modular monolith is a sensible starting architecture.
 
----
+## Shared best practices
 
-# 17. Common Real-World Scenarios
-
-| Scenario | Recommended Default | Reason |
-|---|---|---|
-| AI inference endpoint | FastAPI | Lightweight API layer and natural fit with Python AI libraries |
-| Insurance claims platform | Django + DRF | Relational workflows, permissions, admin, audit-oriented operations |
-| Internal CRUD portal | Django | Admin, ORM, forms, authentication, and templates |
-| Public developer API | FastAPI | Strong schema generation, validation, and API-first ergonomics |
-| Notification microservice | FastAPI | Small focused service with external I/O |
-| E-commerce back office | Django + DRF | Models, admin, users, permissions, and operational workflows |
-| Streaming or WebSocket gateway | FastAPI | ASGI-first model and lightweight service design |
-| Content-driven website | Django | Templates, forms, admin, and mature content ecosystem |
-| Recruitment management system | Django + DRF | Complex relational domain and internal operations |
-| OCR/document extraction service | FastAPI | Independent compute/API service with async orchestration |
-| Small API over an existing database | Depends | FastAPI for a focused read/API layer; Django if model management and admin are needed |
-| New SaaS MVP with many business screens | Django + DRF | Faster integrated delivery for users, data, permissions, and admin |
-| Backend-for-frontend service | FastAPI | Tailored API aggregation with concurrent external calls |
-
----
-
-# 18. Best Practices
-
-## 18.1 Base the Choice on Product Shape
-
-Start with business and operational requirements:
-
-```text
-Users
-Data model
-Admin operations
-Authentication
-Frontend model
-Integration count
-Traffic pattern
-Team experience
-Deployment model
-```
-
-Do not start with benchmark charts.
-
-## 18.2 Keep Business Logic Outside Endpoints
-
-FastAPI route functions and Django/DRF views should coordinate work, not contain the entire domain.
+1. **Keep business logic outside endpoints and views.**
 
 ```mermaid
-flowchart TD
-    A[Request] --> B["Endpoint / View"]
-    B --> C[Application or Service Layer]
+flowchart LR
+    A[Request] --> B[Endpoint / View]
+    B --> C[Service / Application Layer]
     C --> D[Domain Rules]
-    D --> E["Repository / ORM / Integration"]
+    D --> E[ORM / Repository / Integration]
 ```
 
-## 18.3 Do Not Force Async Everywhere
+2. **Do not force async everywhere.** Use it when the complete request path benefits from non-blocking I/O.
 
-Use async only when the complete call path benefits from it.
+3. **Use `Decimal` for money**, with a suitable database decimal type and explicit currency/rounding rules.
 
-A blocking database or SDK call inside an `async def` function can block the event loop unless handled correctly.
+4. **Optimize measured bottlenecks**, especially database queries, N+1 access, external API latency, caching, and worker queues.
 
-## 18.4 Use Decimal for Money
+5. **Prefer a modular monolith until service boundaries are clear.** Microservices solve specific organizational and scaling problems; they are not automatically a better architecture.
 
-For financial applications, avoid binary floating-point fields for persisted money — use Python's `Decimal` (`from decimal import Decimal`) with suitable database decimal types, and define currency, precision, and rounding rules explicitly.
-
-## 18.5 Measure Before Optimizing
-
-Monitor:
-
-- Request latency
-- Error rate
-- Database query count
-- Slow queries
-- External API latency
-- Worker queue time
-- CPU and memory usage
-- Event-loop blocking
-- Cache hit rate
-
-## 18.6 Prefer a Modular Monolith Until Boundaries Are Clear
-
-A modular Django application or a well-structured FastAPI application is often easier to operate than early microservices.
-
-Extract a service when there is a concrete reason, such as:
-
-- Independent scaling
-- Independent ownership
-- Security isolation
-- Different runtime dependencies
-- Separate release cycle
-- Clear domain boundary
-
-## 18.7 Keep Framework Versions Patched
-
-FastAPI remains in the `0.x` version series and evolves actively. Pin dependencies and review release notes before upgrades.
-
-For Django, use a currently supported release series and apply patch/security releases promptly.
+6. **Keep dependencies patched and review release notes before upgrades.** FastAPI remains in the `0.x` series and can evolve quickly; Django and DRF also introduce compatibility changes between feature releases.
 
 ---
 
-# 20. Official References
+# Final Takeaway
 
-The content was verified against current official documentation available on July 27, 2026.
+```text
+Choose FastAPI when:
+API/service boundaries, async I/O, integrations, or AI workloads are the center of the system.
 
-## FastAPI
+Choose Django + DRF when:
+Relational business data, admin operations, users, permissions, and integrated CRUD are the center of the system.
 
-- [FastAPI Official Documentation](https://fastapi.tiangolo.com/)
-- [FastAPI Features](https://fastapi.tiangolo.com/features/)
-- [Concurrency and async / await](https://fastapi.tiangolo.com/async/)
-- [FastAPI Dependencies](https://fastapi.tiangolo.com/tutorial/dependencies/)
-- [FastAPI Security](https://fastapi.tiangolo.com/tutorial/security/)
-- [FastAPI Release Notes](https://fastapi.tiangolo.com/release-notes/)
-- [About FastAPI Versions](https://fastapi.tiangolo.com/deployment/versions/)
+Use both when:
+A real system boundary justifies separate scaling, dependencies, ownership, or deployment.
+```
 
-## Django
-
-- [Django Official Website](https://www.djangoproject.com/)
-- [Django Download and Current Release](https://www.djangoproject.com/download/)
-- [Django 6.0 Documentation](https://docs.djangoproject.com/en/6.0/)
-- [Django Models](https://docs.djangoproject.com/en/6.0/topics/db/models/)
-- [Django Migrations](https://docs.djangoproject.com/en/6.0/topics/migrations/)
-- [Django Async Support](https://docs.djangoproject.com/en/6.0/topics/async/)
-- [Django Authentication](https://docs.djangoproject.com/en/6.0/topics/auth/)
-- [Django Admin](https://docs.djangoproject.com/en/6.0/ref/contrib/admin/)
-- [Django Security](https://docs.djangoproject.com/en/6.0/topics/security/)
-
-## Django REST Framework
-
-- [Django REST Framework](https://www.django-rest-framework.org/)
-- [DRF Serializers](https://www.django-rest-framework.org/api-guide/serializers/)
-- [DRF ViewSets](https://www.django-rest-framework.org/api-guide/viewsets/)
-- [DRF Routers](https://www.django-rest-framework.org/api-guide/routers/)
-- [DRF Schemas](https://www.django-rest-framework.org/api-guide/schemas/)
+The most interview-relevant idea is that **framework choice should follow the shape of the product and its operational needs, not a simple “FastAPI is faster” benchmark comparison**.

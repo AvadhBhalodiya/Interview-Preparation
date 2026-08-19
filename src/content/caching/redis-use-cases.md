@@ -1188,22 +1188,3 @@ Checkout request:
 Redis is handling fast operational state. PostgreSQL remains the durable source of truth for products, customers, orders, and payments.
 
 ---
-
-# 23. Official References
-
-- [Redis documentation](https://redis.io/docs/latest/)
-- [Redis use cases](https://redis.io/docs/latest/develop/use-cases/)
-- [Redis data types](https://redis.io/docs/latest/develop/data-types/)
-- [Cache-aside](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
-- [Session storage](https://redis.io/docs/latest/develop/use-cases/session-store/)
-- [Rate limiting](https://redis.io/docs/latest/develop/use-cases/rate-limiter/)
-- [Leaderboards](https://redis.io/docs/latest/develop/use-cases/leaderboard/)
-- [Pub/Sub](https://redis.io/docs/latest/develop/use-cases/pub-sub/)
-- [Redis Streams](https://redis.io/docs/latest/develop/use-cases/streaming/)
-- [Geospatial indexes](https://redis.io/docs/latest/develop/data-types/geospatial/)
-- [Time Series](https://redis.io/docs/latest/develop/data-types/timeseries/)
-- [Vector search](https://redis.io/docs/latest/develop/ai/search-and-query/vectors/)
-- [Semantic cache](https://redis.io/docs/latest/develop/use-cases/semantic-cache/)
-- [Recommendation engine](https://redis.io/docs/latest/develop/use-cases/recommendation-engine/)
-- [Feature store](https://redis.io/docs/latest/develop/use-cases/feature-store/)
-- [Agent memory](https://redis.io/docs/latest/develop/use-cases/agent-memory/)

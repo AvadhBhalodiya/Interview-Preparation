@@ -6,534 +6,149 @@ order: 6
 
 # Python Context Managers: `with`, `__enter__()`, and `__exit__()`
 
-> A **context manager** controls what happens before and after a block of code. It is commonly used to acquire a resource, use it safely, and release it automatically—even when an exception occurs.
+> A **context manager** controls what happens when a block starts and when it finishes. Its main purpose is to make resource setup and cleanup reliable, even when an exception occurs.
 
 ## In short
 
-- A context manager pairs setup with guaranteed cleanup: `__enter__()` runs before the block, `__exit__()` runs when the block is left for any reason — normal completion, `return`, `break`, `continue`, or an exception.
-- The value bound after `as` is whatever `__enter__()` returns; it is not required to be the context manager object itself, and returning `self` or the managed resource are both valid designs.
-- `__exit__(exc_type, exc_value, traceback)` receives `None, None, None` on success and the exception class, instance, and traceback on failure.
-- The return value of `__exit__()` decides propagation: truthy suppresses the exception, falsy (`False`, `None`, or no `return` at all) lets it propagate.
-- Once `__enter__()` completes successfully `__exit__()` is guaranteed to run, but if `__enter__()` itself raises, that manager's `__exit__()` is never called.
-- `@contextmanager` builds one from a generator that yields exactly once with cleanup in `finally`; a class is better when there is state, extra methods, inheritance, or a complex lifecycle.
-- Multiple managers enter left to right and exit right to left; `ExitStack` handles a dynamic or optional set, and `async with` with `__aenter__()`/`__aexit__()` handles async resources.
+- `with` is Python's standard way to manage a resource or temporary runtime state.
+- `__enter__()` runs before the `with` block and its return value becomes the value after `as`.
+- `__exit__()` runs when the block finishes and receives exception information when the block fails.
+- Returning a truthy value from `__exit__()` suppresses the exception; returning `False` or `None` lets it propagate.
+- If `__enter__()` finishes successfully, Python guarantees that `__exit__()` is called when the context is left.
+- `@contextmanager` is usually the simplest choice for small setup/cleanup logic.
+- `ExitStack` is useful when the number of managed resources is dynamic.
+- `async with` uses `__aenter__()` and `__aexit__()` when setup or cleanup needs `await`.
 
 ```mermaid
 flowchart TD
     A[Evaluate context expression] --> B[Call __enter__]
-    B --> C[Assign returned value after as]
-    C --> D[Execute with block]
-    D --> E{Did an exception occur?}
-    E -- No --> F[Call __exit__ with None, None, None]
+    B --> C[Bind returned value after as]
+    C --> D[Run with block]
+    D --> E{Exception?}
+    E -- No --> F[Call __exit__ with None values]
     E -- Yes --> G[Call __exit__ with exception details]
-    G --> H{Did __exit__ return truthy?}
+    G --> H{Truthy return?}
     H -- Yes --> I[Suppress exception]
     H -- No --> J[Propagate exception]
-    F --> K[Continue after with]
+    F --> K[Continue execution]
     I --> K
 ```
-
-**Interview answer:** A context manager is an object implementing `__enter__()` and `__exit__()`, and the `with` statement calls `__enter__()`, binds its result after `as`, runs the body, then calls `__exit__()` however the body is left. That is why `with open(...)` closes the file even when the block raises, without writing `try`/`finally` at every call site. Because `__exit__()` also receives the exception type, value, and traceback, the same protocol expresses transaction commit-or-rollback, exception translation, state restore, and tracing scopes — not just closing resources.
-
-**Gotcha:** The return value of `__exit__()` is not a status flag: a truthy return silently swallows the exception. Return `False` or `None` unless suppression is a documented feature, and never `return True` unconditionally, because that hides `TypeError`, `AttributeError`, `KeyError`, `AssertionError`, and every other programming error raised inside the block.
 
 ---
 
 # 1. Why Context Managers Exist
 
-Many operations follow the same three-step pattern:
+Many operations follow the same lifecycle:
 
 ```text
-1. Acquire or configure something
-2. Execute business logic
-3. Release, restore, or clean up
+Acquire or configure resource
+        ↓
+Run application logic
+        ↓
+Release, restore, or clean up
 ```
 
-Common examples include:
+Common development use cases include:
 
-- Opening and closing files
-- Acquiring and releasing locks
-- Starting and committing database transactions
-- Opening and returning database connections
-- Creating and removing temporary resources
+- Files and streams
+- Database connections and transactions
+- Thread or process locks
+- HTTP client sessions
+- Temporary files and directories
+- Tracing and timing scopes
 - Temporarily changing application state
-- Measuring execution time
-- Redirecting output
-- Starting and stopping tracing or logging scopes
 
-Without a context manager, cleanup is normally written with `try` and `finally`.
+Without a context manager, this normally requires `try` / `finally` so cleanup cannot be skipped.
 
-```python
-file = open("report.txt", "r", encoding="utf-8")
-
-try:
-    content = file.read()
-finally:
-    file.close()
-```
-
-This works, but the setup and cleanup logic must be repeated everywhere.
-
-A context manager moves that responsibility into a reusable object:
-
-```python
-with open("report.txt", "r", encoding="utf-8") as file:
-    content = file.read()
-```
-
-The file is closed automatically when the block finishes.
-
-That cleanup happens when the block exits because of:
-
-- Normal completion
-- `return`
-- `break`
-- `continue`
-- An exception
-
-## Core idea
-
-```text
-Context manager = setup logic + cleanup logic
-```
+The `with` statement packages that pattern into a reusable and readable API.
 
 ---
 
-# 2. The `with` Statement
+# 2. How the `with` Statement Works
 
-The basic syntax is:
+Basic syntax:
 
 ```python
 with context_expression as value:
-    # Code executed inside the managed context
+    # Work inside the managed context
     ...
 ```
 
-Example:
+The lifecycle is approximately:
 
-```python
-with open("users.txt", "w", encoding="utf-8") as file:
-    file.write("Alice\n")
-    file.write("Bob\n")
+```text
+1. Evaluate context_expression
+2. Call __enter__()
+3. Assign its result to value
+4. Execute the block
+5. Call __exit__()
 ```
 
-Here:
+## 2.1 `__enter__()`
 
-- `open(...)` creates a file object.
-- The file object acts as a context manager.
-- Its `__enter__()` result is assigned to `file`.
-- The body executes.
-- Its `__exit__()` method closes the file.
+`__enter__()` prepares the context.
 
-## Important distinction
+It may:
 
-The object after `as` is the value returned by `__enter__()`.
+- Acquire a resource
+- Start a transaction
+- Acquire a lock
+- Save existing state
+- Start timing or tracing
 
-It is not required to be the context manager object itself.
-
-```python
-class DemoContext:
-    def __enter__(self) -> str:
-        return "value returned by __enter__"
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        return None
-
-with DemoContext() as value:
-    print(value)
-```
-
-Output: `value returned by __enter__`
-
----
-
-# 3. How `with` Works Internally
-
-Consider this code:
+Its return value is assigned to the target after `as`.
 
 ```python
-with ResourceManager() as resource:
-    resource.process()
+def __enter__(self):
+    return managed_resource
 ```
 
-Conceptually, Python performs logic similar to:
+The method may return `self`, the underlying resource, or another useful value.
 
-```python
-manager = ResourceManager()
-resource = manager.__enter__()
+## 2.2 `__exit__()`
 
-try:
-    resource.process()
-except BaseException as error:
-    suppress = manager.__exit__(
-        type(error),
-        error,
-        error.__traceback__,
-    )
-
-    if not suppress:
-        raise
-else:
-    manager.__exit__(None, None, None)
-```
-
-This is a simplified explanation. The Python language specification includes more precise handling for special-method lookup and every possible control-flow path.
-
-## Main guarantee
-
-Once `__enter__()` completes successfully, Python guarantees that `__exit__()` will be called when the `with` block is left.
-
-However, if `__enter__()` itself raises an exception, that context manager's `__exit__()` is not called because the context was never entered successfully.
-
----
-
-# 4. `__enter__()` and `__exit__()`
-
-A synchronous context manager implements two methods:
-
-```python
-class ContextManager:
-    def __enter__(self):
-        ...
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        ...
-```
-
-## 4.1 `__enter__()`
-
-`__enter__()` runs before the body of the `with` statement.
-
-It normally performs setup such as:
-
-- Opening a connection
-- Acquiring a lock
-- Starting a transaction
-- Creating a temporary object
-- Saving previous state
-- Starting a timer
-
-Its return value becomes the value after `as`.
-
-### Returning `self`
-
-Return `self` when the context manager object provides the operations needed inside the block.
-
-```python
-class ManagedFile:
-    def __enter__(self):
-        self.file = open("data.txt", "r", encoding="utf-8")
-        return self
-
-    def read(self) -> str:
-        return self.file.read()
-```
-
-Usage:
-
-```python
-with ManagedFile() as managed_file:
-    content = managed_file.read()
-```
-
-### Returning the managed resource
-
-Return the actual resource when callers should interact directly with that resource.
-
-```python
-class ManagedFile:
-    def __enter__(self):
-        self.file = open("data.txt", "r", encoding="utf-8")
-        return self.file
-```
-
-Usage:
-
-```python
-with ManagedFile() as file:
-    content = file.read()
-```
-
-Both designs are valid. The choice depends on the public API you want to expose.
-
----
-
-## 4.2 `__exit__()`
-
-`__exit__()` runs when execution leaves the `with` block.
-
-Its signature is:
+`__exit__()` performs cleanup when the block is left.
 
 ```python
 def __exit__(self, exc_type, exc_value, traceback):
     ...
 ```
 
-The arguments describe an exception raised inside the block.
-
-| Argument | Value when no exception occurs | Value when an exception occurs |
-|---|---:|---|
-| `exc_type` | `None` | Exception class |
-| `exc_value` | `None` | Exception instance |
-| `traceback` | `None` | Traceback object |
-
-Example:
-
-```python
-class DebugContext:
-    def __enter__(self):
-        print("Entering")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        print(f"Exception type: {exc_type}")
-        print(f"Exception value: {exc_value}")
-        return False
-```
-
-Normal execution:
-
-```python
-with DebugContext():
-    print("Processing")
-```
-
-Output:
+When the block succeeds:
 
 ```text
-Entering
-Processing
-Exception type: None
-Exception value: None
+exc_type     = None
+exc_value    = None
+traceback    = None
 ```
 
-Exceptional execution:
+When the block raises an exception, those arguments describe the exception.
 
-```python
-with DebugContext():
-    raise ValueError("Invalid input")
-```
+The return value is important:
 
-The method receives approximately:
+| `__exit__()` result | Behavior |
+|---|---|
+| `False` / `None` | Exception continues normally |
+| Truthy value | Exception is suppressed |
 
-```text
-exc_type  = ValueError
-exc_value = ValueError("Invalid input")
-traceback = traceback object
-```
+For most application code, returning `False` or `None` is the safest default.
 
-## The return value of `__exit__()`
+## 2.3 Important guarantee
 
-The return value controls exception propagation.
+If `__enter__()` completes successfully, Python guarantees that `__exit__()` is called when the context is left, including when the body exits through an exception, `return`, `break`, or `continue`.
 
-```text
-Falsy return value  -> propagate the exception
-Truthy return value -> suppress the exception
-```
-
-Typical implementations return `False` or `None`.
-
-```python
-def __exit__(self, exc_type, exc_value, traceback) -> bool:
-    self.cleanup()
-    return False
-```
-
-A method without an explicit return statement returns `None`, which is falsy.
-
-```python
-def __exit__(self, exc_type, exc_value, traceback) -> None:
-    self.cleanup()
-```
-
-Both implementations allow exceptions to continue normally.
+If `__enter__()` itself fails, that manager's `__exit__()` is not called because the context was never entered successfully.
 
 ---
 
-# 5. Creating a Class-Based Context Manager
+# 3. Practical Example: Database Transaction Context
 
-A class-based context manager is useful when:
-
-- The manager maintains state.
-- Setup and cleanup require several methods.
-- The object has a meaningful reusable API.
-- Inheritance or configuration is useful.
-- You want explicit control over the context-management protocol.
-
-## Example: execution timer
+A database transaction is a good real-world example because it needs different cleanup behavior for success and failure.
 
 ```python
-from time import perf_counter
 from types import TracebackType
-from typing import Self
 
-class Timer:
-    def __init__(self, label: str) -> None:
-        self.label = label
-        self.started_at: float | None = None
-        self.elapsed: float | None = None
 
-    def __enter__(self) -> Self:
-        self.started_at = perf_counter()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        if self.started_at is None:
-            raise RuntimeError("Timer was not started")
-
-        self.elapsed = perf_counter() - self.started_at
-        print(f"{self.label}: {self.elapsed:.4f} seconds")
-```
-
-Usage:
-
-```python
-with Timer("Generate report") as timer:
-    result = sum(number * number for number in range(1_000_000))
-
-print(timer.elapsed)
-```
-
-## Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Timer
-    Client->>Timer: Timer("Generate report")
-    Client->>Timer: __enter__()
-    Timer-->>Client: self
-    Client->>Client: Execute protected code
-    Client->>Timer: __exit__(...)
-    Timer->>Timer: Calculate elapsed time
-    Timer-->>Client: Do not suppress exceptions
-```
-
----
-
-# 6. Exception Handling and Suppression
-
-A context manager can inspect exceptions raised inside its block.
-
-This is useful for:
-
-- Transaction commit or rollback
-- Converting low-level exceptions into domain exceptions
-- Logging failures
-- Retrying or compensating for operations
-- Suppressing a narrowly defined and expected exception
-
-## 6.1 Cleanup without suppression
-
-Most context managers should clean up and allow the original exception to propagate.
-
-```python
-class Resource:
-    def __enter__(self):
-        print("Acquire resource")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        print("Release resource")
-        return False
-
-with Resource():
-    raise RuntimeError("Processing failed")
-```
-
-Output:
-
-```text
-Acquire resource
-Release resource
-```
-
-The `RuntimeError` still propagates.
-
----
-
-## 6.2 Selective exception suppression
-
-Suppress only exceptions that the context manager is explicitly designed to handle.
-
-```python
-class IgnoreMissingFile:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> bool:
-        return exc_type is FileNotFoundError
-```
-
-Usage:
-
-```python
-with IgnoreMissingFile():
-    with open("optional-config.json", encoding="utf-8") as file:
-        config = file.read()
-
-print("Application continues")
-```
-
-A `FileNotFoundError` is suppressed. Other exceptions continue normally.
-
-## Exception decision flow
-
-```mermaid
-flowchart LR
-    A[Exception raised in with block] --> B[__exit__ receives exception]
-    B --> C{Is it an expected exception?}
-    C -- Yes --> D[Return True]
-    D --> E[Exception suppressed]
-    C -- No --> F[Return False or None]
-    F --> G[Exception propagated]
-```
-
-## Why broad suppression is risky
-
-This implementation is dangerous:
-
-```python
-def __exit__(self, exc_type, exc_value, traceback):
-    return True
-```
-
-It suppresses every exception, including programming errors such as:
-
-- `TypeError`
-- `AttributeError`
-- `KeyError`
-- `AssertionError`
-- Unexpected runtime failures
-
-Prefer narrow checks:
-
-```python
-def __exit__(self, exc_type, exc_value, traceback) -> bool:
-    return exc_type is ExpectedError
-```
-
-Or:
-
-```python
-def __exit__(self, exc_type, exc_value, traceback) -> bool:
-    return exc_type is not None and issubclass(exc_type, ExpectedError)
-```
-
-Use the second form when subclasses of `ExpectedError` should also be handled.
-
----
-
-## 6.3 Transaction-style behavior
-
-Context managers map naturally to transaction boundaries.
-
-```python
 class Transaction:
     def __init__(self, connection) -> None:
         self.connection = connection
@@ -542,1126 +157,260 @@ class Transaction:
         self.connection.begin()
         return self.connection
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
         if exc_type is None:
             self.connection.commit()
         else:
             self.connection.rollback()
+
+        return False
 ```
 
-Flow:
+Usage:
+
+```python
+with Transaction(connection) as db:
+    db.execute("UPDATE accounts SET balance = balance - 100 WHERE id = 1")
+    db.execute("UPDATE accounts SET balance = balance + 100 WHERE id = 2")
+```
+
+### What happens
 
 ```mermaid
 flowchart TD
     A[Enter context] --> B[Begin transaction]
     B --> C[Run database operations]
     C -->|Success| D[Commit]
-    C -->|Failure| E[Rollback]
-    E --> F[Re-raise original exception]
+    C -->|Exception| E[Rollback]
+    E --> F[Exception propagates]
 ```
 
-Because `__exit__()` returns `None`, a failure is not suppressed.
+The important design point is that transaction ownership is centralized. Callers do not need to remember to commit, roll back, and clean up correctly in every code path.
 
 ---
 
-## 6.4 Raising a new exception from `__exit__()`
+# 4. Exception Handling and Suppression
 
-An `__exit__()` method can raise a different exception, but this changes what the caller sees.
+A context manager can inspect exceptions raised inside its block.
 
-```python
-class TranslateDatabaseError:
-    def __enter__(self):
-        return self
+This enables behavior such as:
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type is DatabaseDriverError:
-            raise RepositoryError("Repository operation failed") from exc_value
+- Roll back a failed transaction
+- Log a failed operation
+- Translate a low-level exception into a domain exception
+- Suppress a narrowly defined expected exception
 
-        return False
+The critical rule is:
+
+```text
+truthy __exit__ return  → suppress exception
+falsy __exit__ return   → propagate exception
 ```
 
-Use explicit exception chaining with `raise ... from ...` so debugging information is preserved.
+Avoid returning `True` unconditionally. It can hide real bugs such as `TypeError`, `KeyError`, `AttributeError`, and unexpected runtime failures.
+
+When suppression is genuinely intended, keep it narrow. The standard library also provides `contextlib.suppress()` for this purpose.
 
 ---
 
-# 7. Creating a Context Manager with `@contextmanager`
+# 5. `@contextmanager`
 
-The `contextlib.contextmanager` decorator lets you create a context manager from a generator function.
+For small setup/cleanup logic, creating a full class is often unnecessary.
+
+`contextlib.contextmanager` converts a generator function into a context manager.
 
 ```python
 from contextlib import contextmanager
 
+
 @contextmanager
 def managed_resource():
     resource = acquire_resource()
-
     try:
         yield resource
     finally:
         release_resource(resource)
 ```
 
-Usage:
+Think of it as:
 
-```python
-with managed_resource() as resource:
-    resource.process()
+```text
+Code before yield  → enter/setup
+Yielded value       → value after as
+Code after yield    → exit/cleanup
 ```
 
-## Meaning of `yield`
+The generator must yield exactly once.
 
-The code is divided into three parts:
+If the `with` block raises an exception, that exception is raised back at the `yield` point. If you catch it only to log or inspect it, re-raise it unless suppression is intentionally part of the API.
 
-```python
-@contextmanager
-def example():
-    # 1. Equivalent to __enter__ setup
-    setup()
+## Class or `@contextmanager`?
 
-    try:
-        # 2. Value after "as"
-        yield value
-    finally:
-        # 3. Equivalent to __exit__ cleanup
-        cleanup()
-```
-
-Execution:
-
-```mermaid
-flowchart TD
-    A[Code before yield] --> B[with block executes]
-    B --> C[Code after yield]
-```
-
-## Important rule: yield exactly once
-
-A function decorated with `@contextmanager` must yield exactly one time.
-
-Invalid:
-
-```python
-@contextmanager
-def invalid_manager():
-    return
-    yield
-```
-
-Invalid:
-
-```python
-@contextmanager
-def invalid_manager():
-    yield "first"
-    yield "second"
-```
-
-The context-manager protocol expects one entry point and one exit path.
+| Use a class when... | Use `@contextmanager` when... |
+|---|---|
+| The manager has meaningful state | Logic is mainly setup + cleanup |
+| Extra public methods are needed | The context is small and local |
+| Lifecycle logic is complex | A separate class adds unnecessary boilerplate |
+| Inheritance is useful | Local variables are enough for state |
 
 ---
 
-## Example: temporary environment variable
+# 6. Multiple and Dynamic Context Managers
 
-```python
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
+## Multiple managers
 
-@contextmanager
-def temporary_environment(
-    name: str,
-    value: str,
-) -> Iterator[None]:
-    previous_value = os.environ.get(name)
-    os.environ[name] = value
-
-    try:
-        yield
-    finally:
-        if previous_value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = previous_value
-```
-
-Usage:
-
-```python
-with temporary_environment("APP_MODE", "test"):
-    print(os.environ["APP_MODE"])
-
-print(os.environ.get("APP_MODE"))
-```
-
-The previous environment state is restored even if the block raises an exception.
-
----
-
-## Handling exceptions inside `@contextmanager`
-
-An exception from the `with` block is raised again at the `yield` expression.
-
-```python
-from collections.abc import Iterator
-from contextlib import contextmanager
-
-@contextmanager
-def log_failure() -> Iterator[None]:
-    try:
-        yield
-    except Exception:
-        print("Operation failed")
-        raise
-```
-
-Usage:
-
-```python
-with log_failure():
-    raise ValueError("Invalid input")
-```
-
-The exception is logged and then re-raised.
-
-To intentionally suppress a specific exception:
-
-```python
-@contextmanager
-def ignore_lookup_error() -> Iterator[None]:
-    try:
-        yield
-    except LookupError:
-        pass
-```
-
-Use this behavior only when suppression is an intentional part of the API.
-
----
-
-# 8. Class-Based vs Generator-Based Context Managers
-
-| Area | Class-based | `@contextmanager` |
-|---|---|---|
-| Main methods | `__enter__`, `__exit__` | Code before and after `yield` |
-| Boilerplate | More | Less |
-| State management | Natural | Possible through local variables |
-| Extra public methods | Easy | Not the main design |
-| Inheritance | Supported | Not applicable in the same way |
-| Simple setup/cleanup | More verbose | Usually ideal |
-| Complex lifecycle | Usually clearer | Can become difficult to follow |
-| Reuse as decorator | Use `ContextDecorator` | Supported automatically |
-
-## Choose a class when
-
-- The manager has multiple operations.
-- State must remain available after the block.
-- The object represents a meaningful domain abstraction.
-- The lifecycle is complex.
-- You need inheritance or an abstract base class.
-
-```python
-with UnitOfWork() as unit_of_work:
-    unit_of_work.orders.add(order)
-    unit_of_work.commit()
-```
-
-## Choose `@contextmanager` when
-
-- The logic is mainly setup, yield, and cleanup.
-- The manager is small and local.
-- A separate class would add unnecessary ceremony.
-
-```python
-with temporary_environment("MODE", "test"):
-    run_tests()
-```
-
----
-
-# 9. Using Multiple Context Managers
-
-Python can enter multiple context managers in one `with` statement.
-
-```python
-with open("source.txt", encoding="utf-8") as source, \
-     open("target.txt", "w", encoding="utf-8") as target:
-    target.write(source.read())
-```
-
-For better readability, modern Python supports parentheses:
+Python can manage several contexts in one statement:
 
 ```python
 with (
-    open("source.txt", encoding="utf-8") as source,
-    open("target.txt", "w", encoding="utf-8") as target,
+    first_resource() as first,
+    second_resource() as second,
 ):
-    target.write(source.read())
+    process(first, second)
 ```
 
-This is conceptually equivalent to nesting:
-
-```python
-with open("source.txt", encoding="utf-8") as source:
-    with open("target.txt", "w", encoding="utf-8") as target:
-        target.write(source.read())
-```
-
-## Entry and exit order
-
-Context managers are entered from left to right and exited from right to left.
+They are entered left to right and exited right to left.
 
 ```text
 Enter A
   Enter B
-    Execute body
+    Run body
   Exit B
 Exit A
 ```
 
-Example:
+This reverse cleanup order is useful when later resources depend on earlier ones.
 
-```python
-class Trace:
-    def __init__(self, name: str) -> None:
-        self.name = name
+## `ExitStack`
 
-    def __enter__(self):
-        print(f"Enter {self.name}")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        print(f"Exit {self.name}")
-
-with Trace("A"), Trace("B"):
-    print("Body")
-```
-
-Output:
-
-```text
-Enter A
-Enter B
-Body
-Exit B
-Exit A
-```
-
-The reverse cleanup order is important because later resources may depend on earlier resources.
-
----
-
-# 10. Useful Tools from `contextlib`
-
-The standard-library `contextlib` module provides reusable context-management utilities.
-
-## 10.1 `contextmanager`
-
-Creates a synchronous context manager from a generator function, imported with `from contextlib import contextmanager`. Use it for simple setup and cleanup flows.
-
----
-
-## 10.2 `closing`
-
-Calls an object's `close()` method when the block finishes.
-
-```python
-from contextlib import closing
-
-with closing(create_legacy_client()) as client:
-    client.send_request()
-```
-
-Use `closing()` for third-party or legacy objects that:
-
-- Have a `close()` method
-- Do not implement `__enter__()` and `__exit__()`
-
-Most modern resource objects already support `with` directly.
-
----
-
-## 10.3 `suppress`
-
-Suppresses specifically listed exception types.
-
-```python
-import os
-from contextlib import suppress
-
-with suppress(FileNotFoundError):
-    os.remove("temporary-file.txt")
-```
-
-This is equivalent to:
-
-```python
-try:
-    os.remove("temporary-file.txt")
-except FileNotFoundError:
-    pass
-```
-
-Keep the protected block small so it is clear which operation may raise the expected exception.
-
----
-
-## 10.4 `nullcontext`
-
-Provides a context manager that performs no setup or cleanup.
-
-It is useful when context management is optional.
-
-```python
-from contextlib import nullcontext
-from pathlib import Path
-from typing import TextIO
-
-def process_text(source: str | Path | TextIO) -> str:
-    if isinstance(source, (str, Path)):
-        context = open(source, encoding="utf-8")
-    else:
-        context = nullcontext(source)
-
-    with context as file:
-        return file.read()
-```
-
-Behavior:
-
-- A path is opened and closed by this function.
-- An existing file object is used but not closed by this function.
-
-This preserves clear ownership of resources.
-
----
-
-## 10.5 `redirect_stdout` and `redirect_stderr`
-
-Temporarily redirect Python-level standard output or error streams.
-
-```python
-from contextlib import redirect_stdout
-from io import StringIO
-
-buffer = StringIO()
-
-with redirect_stdout(buffer):
-    print("Captured output")
-
-captured = buffer.getvalue()
-```
-
-These utilities change global process state. They are useful in scripts and tests, but require care in threaded applications.
-
----
-
-## 10.6 `chdir`
-
-Temporarily changes the current working directory and restores it afterward.
-
-```python
-from contextlib import chdir
-
-with chdir("/tmp"):
-    run_local_command()
-```
-
-The current working directory is process-wide state, so this context manager is not suitable for most concurrent threaded or asynchronous code.
-
----
-
-## 10.7 `AbstractContextManager`
-
-`AbstractContextManager` can be used as a base class for custom context managers.
-
-```python
-from contextlib import AbstractContextManager
-from types import TracebackType
-from typing import Self
-
-class ManagedResource(AbstractContextManager["ManagedResource"]):
-    def __enter__(self) -> Self:
-        self.open()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.close()
-
-    def open(self) -> None:
-        print("Opened")
-
-    def close(self) -> None:
-        print("Closed")
-```
-
-`AbstractContextManager` provides a default `__enter__()` implementation that returns `self`, but defining it explicitly can make lifecycle behavior easier to understand.
-
----
-
-# 11. Dynamic Resource Management with `ExitStack`
-
-A normal `with` statement works best when the number of context managers is known while writing the code.
-
-`contextlib.ExitStack` is useful when resources are dynamic:
-
-- The number of files comes from user input.
-- Some resources are optional.
-- Context managers are created inside a loop.
-- Cleanup callbacks must be registered programmatically.
-- A sequence of setup steps must behave like one managed operation.
-
-## Example: open a dynamic list of files
+Use `contextlib.ExitStack` when the number of resources is not known until runtime or some contexts are optional.
 
 ```python
 from contextlib import ExitStack
-from pathlib import Path
-
-def read_files(paths: list[Path]) -> list[str]:
-    with ExitStack() as stack:
-        files = [
-            stack.enter_context(path.open(encoding="utf-8"))
-            for path in paths
-        ]
-
-        return [file.read() for file in files]
-```
-
-If opening a later file fails, all previously opened files are still closed.
-
-## Internal model
-
-`ExitStack` maintains a stack of cleanup operations.
-
-```text
-Register cleanup A
-Register cleanup B
-Register cleanup C
-
-On exit:
-
-Run cleanup C
-Run cleanup B
-Run cleanup A
-```
-
-This matches nested `with` behavior.
-
----
-
-## Registering a plain cleanup callback
-
-```python
-from contextlib import ExitStack
-
-def release_token(token: str) -> None:
-    print(f"Released token: {token}")
 
 with ExitStack() as stack:
-    token = "resource-token"
-    stack.callback(release_token, token)
-
-    print("Use resource")
+    resources = [
+        stack.enter_context(resource)
+        for resource in dynamic_resources
+    ]
+    process(resources)
 ```
 
-`stack.callback(...)` registers an ordinary function to be called when the stack exits.
-
-Callbacks registered this way do not receive exception information and cannot suppress exceptions.
+Registered cleanup operations are executed in reverse order, just like nested `with` statements.
 
 ---
 
-## Optional context managers
+# 7. Asynchronous Context Managers
+
+Use `async with` when entering or leaving a context requires asynchronous I/O.
+
+The protocol uses:
 
 ```python
-from contextlib import ExitStack
+async def __aenter__(self):
+    ...
 
-def run_job(use_lock: bool, use_trace: bool) -> None:
-    with ExitStack() as stack:
-        if use_lock:
-            stack.enter_context(distributed_lock("job-lock"))
-
-        if use_trace:
-            stack.enter_context(trace_span("run-job"))
-
-        execute_job()
+async def __aexit__(self, exc_type, exc_value, traceback):
+    ...
 ```
 
-This avoids deeply nested conditional `with` statements.
+Typical uses include:
 
----
+- Async database sessions or transactions
+- Async HTTP clients
+- Async locks
+- Async streams
 
-## Resource acquisition as an all-or-nothing operation
+Generator-style async contexts can be created with `@asynccontextmanager`.
 
 ```python
-from contextlib import ExitStack
-
-def acquire_all(resources):
-    stack = ExitStack()
-
-    try:
-        acquired = [
-            stack.enter_context(resource)
-            for resource in resources
-        ]
-    except Exception:
-        stack.close()
-        raise
-
-    return acquired, stack
-```
-
-The caller owns the returned stack and must close it.
-
-A safer API can expose the entire operation as another context manager instead of returning cleanup responsibility manually.
-
----
-
-# 12. Asynchronous Context Managers
-
-A synchronous context manager uses `__enter__()` and `__exit__()`. An asynchronous context manager uses `__aenter__()` and `__aexit__()`, and is consumed with `async with`.
-
-Use asynchronous context managers when setup or cleanup must await asynchronous work, such as:
-
-- Acquiring a connection from an async database pool
-- Opening an async HTTP client session
-- Starting an async transaction
-- Acquiring an async lock
-- Closing async streams
-- Starting or ending asynchronous tracing scopes
-
-## 12.1 Class-based async context manager
-
-```python
-from types import TracebackType
-
-class AsyncConnection:
-    async def execute(self, query: str) -> None:
-        print(f"Executing: {query}")
-
-class ConnectionPool:
-    async def acquire(self) -> AsyncConnection:
-        print("Acquire connection")
-        return AsyncConnection()
-
-    async def release(self, connection: AsyncConnection) -> None:
-        print("Release connection")
-
-class ManagedConnection:
-    def __init__(self, pool: ConnectionPool) -> None:
-        self.pool = pool
-        self.connection: AsyncConnection | None = None
-
-    async def __aenter__(self) -> AsyncConnection:
-        self.connection = await self.pool.acquire()
-        return self.connection
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        if self.connection is not None:
-            await self.pool.release(self.connection)
-```
-
-Usage:
-
-```python
-async def fetch_users(pool: ConnectionPool) -> None:
-    async with ManagedConnection(pool) as connection:
-        await connection.execute("SELECT * FROM users")
-```
-
-## Async lifecycle
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Manager
-    participant Pool
-    Caller->>Manager: async with
-    Manager->>Pool: await acquire()
-    Pool-->>Manager: connection
-    Manager-->>Caller: __aenter__ result
-    Caller->>Caller: await business operation
-    Caller->>Manager: await __aexit__(...)
-    Manager->>Pool: await release(connection)
-```
-
----
-
-## 12.2 `@asynccontextmanager`
-
-`contextlib.asynccontextmanager` provides a generator-style async context manager.
-
-```python
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-@asynccontextmanager
-async def managed_connection(
-    pool: ConnectionPool,
-) -> AsyncIterator[AsyncConnection]:
-    connection = await pool.acquire()
 
+@asynccontextmanager
+async def managed_connection(pool):
+    connection = await pool.acquire()
     try:
         yield connection
     finally:
         await pool.release(connection)
 ```
 
-Usage:
-
-```python
-async def fetch_users(pool: ConnectionPool) -> None:
-    async with managed_connection(pool) as connection:
-        await connection.execute("SELECT * FROM users")
-```
+If cleanup needs `await`, prefer an asynchronous context manager instead of performing blocking cleanup inside `__exit__()`.
 
 ---
 
-## 12.3 Async transaction example
+# 8. Useful `contextlib` Tools
 
-```python
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+These utilities cover most common cases without writing a custom manager.
 
-@asynccontextmanager
-async def transaction(connection) -> AsyncIterator[None]:
-    await connection.begin()
+| Utility | Typical use |
+|---|---|
+| `contextmanager` | Build a context manager from a generator |
+| `asynccontextmanager` | Async generator-based context manager |
+| `suppress()` | Ignore specific expected exceptions |
+| `nullcontext()` | Optional/no-op context |
+| `closing()` | Call `close()` on objects without context-manager support |
+| `ExitStack` | Dynamic synchronous resources |
+| `AsyncExitStack` | Dynamic synchronous + asynchronous resources |
 
-    try:
-        yield
-    except Exception:
-        await connection.rollback()
-        raise
-    else:
-        await connection.commit()
-```
-
-Usage:
-
-```python
-async with transaction(connection):
-    await connection.execute("UPDATE accounts SET balance = balance - 100")
-    await connection.execute("UPDATE accounts SET balance = balance + 100")
-```
+Prefer an existing context manager or `contextlib` helper before creating custom lifecycle code.
 
 ---
 
-## 12.4 `AsyncExitStack`
+# 9. Development Best Practices
 
-`AsyncExitStack` manages a dynamic collection of synchronous and asynchronous cleanup operations.
+## Keep ownership clear
 
-```python
-from contextlib import AsyncExitStack
+The code that creates or acquires a resource should normally define who is responsible for releasing it. Avoid unexpectedly closing resources supplied by callers.
 
-async def process_services(services) -> None:
-    async with AsyncExitStack() as stack:
-        clients = [
-            await stack.enter_async_context(service.client())
-            for service in services
-        ]
+## Keep managed scopes small
 
-        await execute_requests(clients)
-```
+Hold locks, connections, and transactions only for the code that actually needs them. Smaller scopes reduce contention and resource usage.
 
-It unwinds registered resources in reverse order, similar to `ExitStack`.
+## Make `__enter__()` failure-safe
 
----
+If `__enter__()` acquires several resources and a later acquisition fails, clean up earlier resources inside `__enter__()` itself. Python will not call that manager's `__exit__()` after a failed `__enter__()`.
 
-# 13. Real-World Development Examples
+`ExitStack` is especially useful for this kind of multi-step acquisition.
 
-## 13.1 Thread lock
+## Avoid broad exception suppression
 
-Locks support the context-management protocol, so `with cache_lock:` is equivalent to `cache_lock.acquire()` followed by a `try`/`finally` that calls `cache_lock.release()`.
+Treat suppression as part of the public contract of the context manager. Most managers should allow unexpected exceptions to propagate.
 
-```python
-from threading import Lock
+## Prefer deterministic cleanup
 
-cache_lock = Lock()
-cache: dict[str, object] = {}
-
-def update_cache(key: str, value: object) -> None:
-    with cache_lock:
-        cache[key] = value
-```
+Do not rely on garbage collection to release important external resources such as files, sockets, locks, or database connections. Use `with`, explicit closing, or another deterministic lifecycle mechanism.
 
 ---
 
-## 13.2 Database unit of work
+# 10. What to Remember for Interviews
 
-A unit-of-work context manager can centralize transaction behavior.
+A context manager is Python's reusable abstraction for **setup → use → cleanup**.
 
-```python
-from types import TracebackType
-from typing import Self
+The key points are:
 
-class UnitOfWork:
-    def __init__(self, session_factory) -> None:
-        self.session_factory = session_factory
-        self.session = None
-
-    def __enter__(self) -> Self:
-        self.session = self.session_factory()
-        return self
-
-    def commit(self) -> None:
-        if self.session is None:
-            raise RuntimeError("Unit of work is not active")
-
-        self.session.commit()
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        if self.session is None:
-            return
-
-        try:
-            if exc_type is not None:
-                self.session.rollback()
-        finally:
-            self.session.close()
+```text
+with
+ ├── calls __enter__()
+ ├── uses its return value after "as"
+ ├── executes the block
+ └── calls __exit__()
+       ├── success   → receives None, None, None
+       └── exception → receives exception details
 ```
 
-Usage:
-
-```python
-with UnitOfWork(session_factory) as unit_of_work:
-    unit_of_work.session.add(order)
-    unit_of_work.commit()
-```
-
-The context manager ensures that the session is closed and that failed operations are rolled back.
-
----
-
-## 13.3 Request tracing scope
-
-```python
-from collections.abc import Iterator
-from contextlib import contextmanager
-from time import perf_counter
-
-@contextmanager
-def trace_operation(name: str) -> Iterator[None]:
-    started_at = perf_counter()
-    print(f"Start: {name}")
-
-    try:
-        yield
-    except Exception as error:
-        print(f"Failed: {name}: {error}")
-        raise
-    finally:
-        elapsed = perf_counter() - started_at
-        print(f"End: {name}; elapsed={elapsed:.4f}s")
-```
-
-Usage:
-
-```python
-with trace_operation("generate-invoice"):
-    generate_invoice()
-```
-
----
-
-# 14. Testing Context Managers
-
-Context managers should be tested across both success and failure paths.
-
-## 14.1 Test normal lifecycle order
-
-```python
-class RecordedContext:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    def __enter__(self):
-        self.events.append("enter")
-        return "resource"
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.events.append("exit")
-```
-
-Test:
-
-```python
-def test_context_lifecycle() -> None:
-    events: list[str] = []
-
-    with RecordedContext(events) as resource:
-        events.append("body")
-        assert resource == "resource"
-
-    assert events == ["enter", "body", "exit"]
-```
-
----
-
-## 14.2 Test cleanup after an exception
-
-```python
-import pytest
-
-def test_cleanup_runs_after_failure() -> None:
-    events: list[str] = []
-
-    with pytest.raises(ValueError, match="invalid"):
-        with RecordedContext(events):
-            events.append("body")
-            raise ValueError("invalid")
-
-    assert events == ["enter", "body", "exit"]
-```
-
----
-
-## 14.3 Test selective suppression
-
-```python
-class SuppressMissingKey:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> bool:
-        return exc_type is KeyError
-```
-
-Test:
-
-```python
-def test_expected_exception_is_suppressed() -> None:
-    with SuppressMissingKey():
-        raise KeyError("optional")
-
-def test_unexpected_exception_propagates() -> None:
-    with pytest.raises(ValueError):
-        with SuppressMissingKey():
-            raise ValueError("unexpected")
-```
-
----
-
-## 14.4 Test cleanup order
-
-```python
-class NamedContext:
-    def __init__(self, name: str, events: list[str]) -> None:
-        self.name = name
-        self.events = events
-
-    def __enter__(self):
-        self.events.append(f"enter:{self.name}")
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.events.append(f"exit:{self.name}")
-```
-
-Test:
-
-```python
-def test_nested_cleanup_order() -> None:
-    events: list[str] = []
-
-    with NamedContext("A", events), NamedContext("B", events):
-        events.append("body")
-
-    assert events == [
-        "enter:A",
-        "enter:B",
-        "body",
-        "exit:B",
-        "exit:A",
-    ]
-```
-
----
-
-# 15. Design and Best Practices
-
-## 15.1 Keep ownership clear
-
-The code that creates a resource should usually be responsible for closing it. When a caller passes an already-open resource, avoid closing it unless the API explicitly transfers ownership.
-
-`nullcontext()` can help represent this distinction.
-
----
-
-## 15.2 Keep the managed scope focused
-
-Acquire the resource as late as practical and release it as early as practical.
-
-Less focused:
-
-```python
-with database_connection() as connection:
-    parse_large_file()
-    validate_unrelated_data()
-    save_result(connection)
-```
-
-More focused:
-
-```python
-parsed_data = parse_large_file()
-validated_data = validate_data(parsed_data)
-
-with database_connection() as connection:
-    save_result(connection, validated_data)
-```
-
-A smaller scope reduces lock duration, connection usage, and transaction time.
-
----
-
-## 15.3 Keep `__enter__()` failure-safe
-
-If `__enter__()` acquires several resources and a later step fails, earlier resources must still be cleaned up.
-
-Python does not call a context manager's `__exit__()` when its own `__enter__()` fails. Therefore, partial setup must be protected inside `__enter__()`.
-
-```python
-from contextlib import ExitStack
-from types import TracebackType
-
-class ComplexManager:
-    def __init__(self) -> None:
-        self._stack = ExitStack()
-
-    def __enter__(self):
-        with ExitStack() as setup_stack:
-            resource_a = setup_stack.enter_context(open_resource_a())
-            resource_b = setup_stack.enter_context(open_resource_b())
-
-            # Transfer successful cleanup registrations to the instance.
-            self._stack = setup_stack.pop_all()
-
-        return resource_a, resource_b
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ):
-        return self._stack.__exit__(exc_type, exc_value, traceback)
-```
-
-If acquiring `resource_b` fails, the local `setup_stack` immediately cleans up `resource_a`. If every acquisition succeeds, `pop_all()` transfers the cleanup callbacks to `self._stack` for normal cleanup in `__exit__()`.
-
----
-
-## 15.4 Avoid long blocking work in synchronous cleanup
-
-`__exit__()` blocks the current thread until it finishes. When cleanup requires asynchronous I/O, use an asynchronous context manager and `async with` instead.
-
----
-
-## 15.5 Document suppression behavior
-
-Most custom `__exit__()` implementations should return `False` or `None`; return a truthy value only when suppressing an exception is a documented feature. A caller should be able to understand whether the manager:
-
-- Propagates every exception
-- Suppresses a specific exception
-- Translates exceptions
-- Commits or rolls back based on failure
-- Retries an operation
-
-Exception behavior is part of the context manager's public contract.
-
----
-
-## 15.6 Understand reuse behavior
-
-Context managers can have different reuse characteristics.
-
-### Single-use
-
-A specific instance can be entered once.
-
-Examples commonly include:
-
-- File objects after they have been closed
-- Generator-based managers created by `@contextmanager`
-
-```python
-manager = temporary_environment("MODE", "test")
-
-with manager:
-    pass
-
-# Do not reuse the same generator-based manager instance.
-```
-
-Create a new instance each time:
-
-```python
-with temporary_environment("MODE", "test"):
-    pass
-
-with temporary_environment("MODE", "test"):
-    pass
-```
-
-### Reusable but not reentrant
-
-The same instance may be used again after the previous block finishes, but it cannot safely be entered again while already active.
-
-A regular `threading.Lock` is a familiar example.
-
-### Reentrant
-
-The same context manager instance can be nested within itself safely.
-
-Whether a custom manager is reentrant depends on how it stores and restores state.
-
----
-
-## 15.7 Prefer existing context managers
-
-Before writing a custom implementation, check whether the resource already supports `with`.
-
-Common examples:
-
-```python
-with open(...):
-    ...
-
-with lock:
-    ...
-
-with connection:
-    ...
-
-with TemporaryDirectory():
-    ...
-
-with decimal.localcontext():
-    ...
-```
-
-Use `contextlib` utilities when they already express the intended behavior.
-
----
-
-# 16. Official References
-
-This guide follows the modern Python context-management protocol documented for Python 3.14.
-
-- [Python Language Reference: The `with` statement](https://docs.python.org/3/reference/compound_stmts.html#the-with-statement)
-- [Python Data Model: Context managers](https://docs.python.org/3/reference/datamodel.html#context-managers)
-- [Python Standard Library: `contextlib`](https://docs.python.org/3/library/contextlib.html)
-- [PEP 343: The `with` Statement](https://peps.python.org/pep-0343/)
+Remember these distinctions:
+
+- `__enter__()` prepares the context and provides the managed value.
+- `__exit__()` performs cleanup and controls exception suppression.
+- `@contextmanager` is ideal for simple generator-based lifecycle code.
+- `ExitStack` handles dynamic resources.
+- `async with` is the equivalent pattern when setup or cleanup must be awaited.
+
+For normal backend development, the most important mental model is simple: **use context managers whenever an operation must reliably undo, release, restore, commit, or roll back something when a block ends.**

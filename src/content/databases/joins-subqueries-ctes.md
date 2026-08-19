@@ -8,72 +8,64 @@ order: 1
 
 > A practical, interview-focused guide for developers working with relational databases.
 >
-> **Coverage:** SQL joins, subqueries, common table expressions, recursive CTEs, query-planning concepts, performance, portability, and production patterns.
-> **Examples use mostly portable SQL.:** Database-specific differences are called out for PostgreSQL 18, MySQL 8.4, and the current SQL Server version-17 documentation view.
+> **Coverage:** joins, subqueries, CTEs, recursive CTEs, common production patterns, and performance basics.
+>
+> **Database notes:** Examples are mostly portable SQL. Differences are called out for PostgreSQL 18, MySQL 8.4, and SQL Server 2025 / 17.x documentation.
 
 ## In short
 
-- `INNER JOIN` keeps only matched pairs; `LEFT JOIN` keeps every left row and fills the right-side columns with `NULL` when nothing matches; `RIGHT JOIN` mirrors it, and `FULL OUTER JOIN` preserves unmatched rows from both sides.
-- A join produces one row per matching pair, so a one-to-many join multiplies the parent row — fix the result grain rather than hiding the multiplication behind `DISTINCT`.
-- Relationship conditions belong in `ON`; filters on the joined result belong in `WHERE`. On an outer join the two clauses mean different things.
-- Use `EXISTS` / `NOT EXISTS` for "does a related row exist" questions, and avoid `NOT IN` over a nullable column, where `UNKNOWN` comparisons can silently return nothing.
-- A subquery can be scalar, a column feeding `IN`/`ANY`/`ALL`, a correlated lookup, or a derived table in `FROM`; a CTE is the same idea given a name and scoped to the one statement that follows `WITH`.
-- `WITH RECURSIVE` walks hierarchies and graphs of unknown depth, and needs a termination condition plus cycle protection.
-- A CTE is a readability tool, not a guaranteed cache or optimisation fence — engines may inline, merge, spool, or materialise it.
+- Use a **`JOIN`** when you need columns from related tables.
+- Use **`EXISTS` / `NOT EXISTS`** when the question is whether a related row exists.
+- Use a **scalar subquery** when you need one calculated value inside another query.
+- Use a **CTE** when a complex query becomes easier to understand as named steps.
+- Use a **recursive CTE** for hierarchies or graph-like relationships of unknown depth.
+- A one-to-many join naturally creates multiple rows. Do not add `DISTINCT` just to hide incorrect join logic.
+- With an outer join, a right-table filter in `WHERE` can remove the `NULL` rows and change the meaning of the query.
+- A CTE is **not automatically faster** and is not guaranteed to behave like a cached temporary table.
 
 ```mermaid
-flowchart TD
-    A["FROM / JOIN"] --> B[ON]
-    B --> C[WHERE]
-    C --> D[GROUP BY]
-    D --> E[HAVING]
-    E --> F[SELECT]
-    F --> G[DISTINCT]
-    G --> H[ORDER BY]
-    H --> I["LIMIT / OFFSET / FETCH"]
+flowchart LR
+    Q[Business Requirement] --> D{What do you need?}
+    D -->|Columns from related tables| J[JOIN]
+    D -->|Check existence| E[EXISTS / NOT EXISTS]
+    D -->|One calculated value| S[Subquery]
+    D -->|Readable query stages| C[CTE]
+    D -->|Hierarchy / recursion| R[Recursive CTE]
 ```
-
-**Interview answer:** An `INNER JOIN` returns only rows that match on both sides, so a customer with no orders disappears from the result. A `LEFT JOIN` keeps every row of the left table and pads the right-side columns with `NULL` when there is no match, which is what makes "all customers, including those who never ordered" expressible, and what makes `WHERE o.order_id IS NULL` an anti-join. For matched rows the two behave identically; they differ only in whether unmatched left rows survive.
-
-**Gotcha:** Putting a filter on the right-hand table in the `WHERE` clause of a `LEFT JOIN` — `WHERE o.status = 'completed'` removes the `NULL`-extended rows and silently turns the query back into an inner join. That predicate belongs in the `ON` clause.
 
 ---
 
 ## 1. Why These Concepts Matter
 
-Real applications rarely store everything in one table. A typical API request may need to combine:
+Real applications rarely keep all required data in one table.
 
-- a customer record,
-- the customer's orders,
-- individual order items,
-- product information,
-- payment status,
-- and calculated totals.
+For example, an order API may need data from:
 
-Joins, subqueries, and CTEs are three ways to express relationships and break a data problem into manageable pieces.
+- `customers`
+- `orders`
+- `order_items`
+- `products`
 
-```mermaid
-flowchart LR
-    A[Business Question] --> B{What relationship is needed?}
-    B -->|Combine related rows| C[JOIN]
-    B -->|Use one query's result inside another| D[Subquery]
-    B -->|Name and organize intermediate steps| E[CTE]
-    B -->|Walk a hierarchy or graph| F[Recursive CTE]
-```
+These concepts solve different parts of that problem:
 
-The main skill is not memorizing syntax. It is choosing a form that is:
+- **Join:** combine related rows.
+- **Subquery:** use the result of one query inside another.
+- **CTE:** give an intermediate query a meaningful name.
+- **Recursive CTE:** repeatedly follow parent-child relationships.
 
-1. logically correct,
-2. readable for the team,
-3. efficient for the database optimizer,
-4. safe around duplicates and `NULL`,
-5. portable enough for the project's database.
+The key interview skill is not memorizing syntax. It is understanding:
+
+1. what one output row represents,
+2. how tables are related,
+3. where filtering should happen,
+4. how `NULL` affects the result,
+5. whether the query will scale with real data.
 
 ---
 
 ## 2. Sample Schema Used in This Guide
 
-Most examples use a small e-commerce model.
+We will use one small e-commerce example throughout the note.
 
 ```mermaid
 erDiagram
@@ -85,7 +77,6 @@ erDiagram
     CUSTOMERS {
         bigint customer_id PK
         varchar name
-        varchar city
     }
 
     ORDERS {
@@ -100,13 +91,11 @@ erDiagram
         bigint order_id FK
         bigint product_id FK
         int quantity
-        decimal unit_price
     }
 
     PRODUCTS {
         bigint product_id PK
         varchar product_name
-        varchar category
         decimal price
     }
 
@@ -117,77 +106,74 @@ erDiagram
     }
 ```
 
-Example rows:
+Assume:
 
-### `customers`
+```text
+customers
+1  Asha
+2  Ravi
+3  Neha
+4  Kabir
 
-| customer_id | name  | city      |
-|------------:|-------|-----------|
-| 1           | Asha  | Ahmedabad |
-| 2           | Ravi  | Mumbai    |
-| 3           | Neha  | Pune      |
-| 4           | Kabir | Delhi     |
+orders
+101  1  completed  120
+102  1  pending     80
+103  2  completed  250
+104  3  completed  180
+```
 
-### `orders`
-
-| order_id | customer_id | order_date | status    | total_amount |
-|---------:|------------:|------------|-----------|-------------:|
-| 101      | 1           | 2026-07-01 | completed | 120.00       |
-| 102      | 1           | 2026-07-05 | pending   | 80.00        |
-| 103      | 2           | 2026-07-07 | completed | 250.00       |
-| 104      | 2           | 2026-07-09 | cancelled | 40.00        |
-| 105      | 3           | 2026-07-10 | completed | 180.00       |
-
-Kabir has no order. This is useful when comparing inner and outer joins.
+Kabir has no order, which makes the difference between inner and outer joins easy to see.
 
 ---
 
 ## 3. The Core Mental Model
 
-A query works with **sets of rows**. Each clause transforms one set into another.
+SQL works with **sets of rows**.
 
-A simplified logical processing order is `FROM`/`JOIN` → `ON` → `WHERE` → `GROUP BY` → `HAVING` → `SELECT` → `DISTINCT` → `ORDER BY` → `LIMIT`/`OFFSET`/`FETCH`.
+A simplified logical processing order is:
 
-This order explains several important behaviors:
-
-- Tables are joined before the final `SELECT` list is produced.
-- `ON` controls matching during a join.
-- `WHERE` filters the joined result.
-- A filter placed in `WHERE` can remove the `NULL`-extended rows created by an outer join.
-- A subquery can produce one value, one row, one column, or a full table-like result.
-- A CTE gives a name to an intermediate result used by the statement that follows it.
-
-### Logical relationship vs physical execution
-
-SQL describes **what result you want**. The optimizer decides **how to produce it**.
-
-For example, this logical join:
-
-```sql
-SELECT c.customer_id, c.name, o.order_id
-FROM customers AS c
-JOIN orders AS o
-  ON o.customer_id = c.customer_id;
+```text
+FROM / JOIN
+    ↓
+ON
+    ↓
+WHERE
+    ↓
+GROUP BY
+    ↓
+HAVING
+    ↓
+SELECT
+    ↓
+DISTINCT
+    ↓
+ORDER BY
+    ↓
+LIMIT / OFFSET / FETCH
 ```
 
-might physically use:
+This explains an important rule:
 
-- a nested-loop join,
-- a hash join,
-- a merge join,
-- or a database-specific adaptive strategy.
+- `ON` controls which rows match during a join.
+- `WHERE` filters the result after the join.
 
-You normally should not force an algorithm before checking the execution plan and measuring the workload.
+For inner joins, moving some conditions between `ON` and `WHERE` may produce the same result.
+
+For outer joins, it can completely change the result.
+
+Also remember:
+
+> SQL describes **what result you want**. The optimizer decides **how to execute it**.
+
+A logical `JOIN` may physically use nested loops, a hash join, or a merge join depending on the database, indexes, statistics, and data size.
 
 ---
 
 ## 4. SQL Joins
 
-A join combines rows from two input relations using a condition: `left input + join rule + right input = joined result`.
+### 4.1 `INNER JOIN`
 
-### 4.1 INNER JOIN
-
-An inner join returns only rows that match on both sides.
+Returns only rows that match on both sides.
 
 ```sql
 SELECT
@@ -196,105 +182,49 @@ SELECT
     o.order_id,
     o.total_amount
 FROM customers AS c
-INNER JOIN orders AS o
+JOIN orders AS o
     ON o.customer_id = c.customer_id;
 ```
 
-`INNER` is optional: `JOIN` on its own means the same thing.
-
-#### Conceptual result
+Conceptually:
 
 ```text
-customers                     orders
------------                   ------
-Asha  ─────────────────────── 101
-Asha  ─────────────────────── 102
-Ravi  ─────────────────────── 103
-Ravi  ─────────────────────── 104
-Neha  ─────────────────────── 105
-Kabir ── no match ─────────── removed
+Asha  → Order 101
+Asha  → Order 102
+Ravi  → Order 103
+Neha  → Order 104
+Kabir → no match → removed
 ```
 
-#### When to use it
+Use it when the result only makes sense if both related rows exist.
 
-Use an inner join when the result is meaningful only when both related rows exist.
+### 4.2 `LEFT JOIN`
 
-Examples:
-
-- orders with their customers,
-- order items with valid products,
-- employees assigned to an existing department,
-- payments linked to an order.
-
-#### Duplicate multiplication
-
-A join returns **one result row for every matching pair**.
-
-If one customer has three orders, the customer appears three times. If an order has five items, joining customers → orders → items can produce five rows for that order.
-
-```mermaid
-flowchart LR
-    C[1 Customer] --> O1[Order 101]
-    C --> O2[Order 102]
-    O1 --> I1[Item A]
-    O1 --> I2[Item B]
-    O2 --> I3[Item C]
-```
-
-This is normal relational behavior, not automatically a duplicate-data problem.
-
-Do not add `DISTINCT` merely to hide unexpected row multiplication. First verify the relationship cardinality and join condition.
-
----
-
-### 4.2 LEFT JOIN
-
-A left join returns:
-
-- every row from the left table,
-- matching rows from the right table,
-- `NULL` for right-side columns when no match exists.
+Keeps every row from the left table and fills right-side columns with `NULL` when no match exists.
 
 ```sql
 SELECT
     c.customer_id,
     c.name,
-    o.order_id,
-    o.status
+    o.order_id
 FROM customers AS c
 LEFT JOIN orders AS o
     ON o.customer_id = c.customer_id;
 ```
 
-Kabir remains in the result even though no order exists:
+Kabir still appears:
 
-| customer_id | name  | order_id | status |
-|------------:|-------|---------:|--------|
-| 1           | Asha  | 101      | completed |
-| 1           | Asha  | 102      | pending |
-| 2           | Ravi  | 103      | completed |
-| 2           | Ravi  | 104      | cancelled |
-| 3           | Neha  | 105      | completed |
-| 4           | Kabir | `NULL`   | `NULL` |
-
-#### Common use cases
-
-- list all customers, including customers without orders,
-- list all products, including products never sold,
-- show all dates, including dates with zero activity,
-- find missing related data.
-
-#### Find rows with no match
-
-```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-LEFT JOIN orders AS o
-    ON o.customer_id = c.customer_id
-WHERE o.order_id IS NULL;
+```text
+4 | Kabir | NULL
 ```
 
-This is an anti-join pattern. `NOT EXISTS` is often clearer and safer for the same intent:
+Common uses:
+
+- show all customers, including those without orders,
+- show all products, including never-sold products,
+- find missing related records.
+
+To find customers without orders:
 
 ```sql
 SELECT c.customer_id, c.name
@@ -306,45 +236,28 @@ WHERE NOT EXISTS (
 );
 ```
 
----
+`NOT EXISTS` usually communicates the anti-join intent more clearly than `LEFT JOIN ... IS NULL`.
 
-### 4.3 RIGHT JOIN
+### 4.3 `RIGHT JOIN`
 
-A right join preserves every row from the right table.
+Preserves all rows from the right side.
 
 ```sql
-SELECT
-    c.name,
-    o.order_id
+SELECT c.name, o.order_id
 FROM customers AS c
 RIGHT JOIN orders AS o
     ON o.customer_id = c.customer_id;
 ```
 
-It can usually be rewritten as a left join by swapping table order:
+It can usually be rewritten as a `LEFT JOIN` by swapping table order. Many teams prefer `LEFT JOIN` because the preserved side is easier to read consistently.
 
-```sql
-SELECT
-    c.name,
-    o.order_id
-FROM orders AS o
-LEFT JOIN customers AS c
-    ON c.customer_id = o.customer_id;
-```
+### 4.4 `FULL OUTER JOIN`
 
-#### Practical preference
+Keeps:
 
-Many teams standardize on `LEFT JOIN` because queries are easier to read from the preserved entity outward. `RIGHT JOIN` is valid, but using both left and right joins in a long query can make the preservation direction harder to follow.
-
----
-
-### 4.4 FULL OUTER JOIN
-
-A full outer join returns:
-
-- all matching pairs,
-- unmatched rows from the left,
-- unmatched rows from the right.
+- matched rows,
+- unmatched left rows,
+- unmatched right rows.
 
 ```sql
 SELECT
@@ -356,80 +269,34 @@ FULL OUTER JOIN orders AS o
     ON o.customer_id = c.customer_id;
 ```
 
-#### Typical uses
+Typical use cases are reconciliation, migration validation, and comparing two datasets.
 
-- compare data between two systems,
-- reconcile imported and existing records,
-- detect missing records on either side,
-- compare daily snapshots.
+**MySQL 8.4:** there is no native `FULL OUTER JOIN`; it is commonly emulated with a `LEFT JOIN` plus the unmatched rows from the other side using `UNION ALL`.
 
-#### MySQL note
+### 4.5 `CROSS JOIN`
 
-MySQL 8.4 does not provide native `FULL OUTER JOIN` syntax. A common emulation combines a left join and an anti-matching right-side query with `UNION ALL`:
+Returns every possible pair.
 
 ```sql
-SELECT
-    c.customer_id,
-    c.name,
-    o.order_id
-FROM customers AS c
-LEFT JOIN orders AS o
-    ON o.customer_id = c.customer_id
-
-UNION ALL
-
-SELECT
-    c.customer_id,
-    c.name,
-    o.order_id
-FROM orders AS o
-LEFT JOIN customers AS c
-    ON c.customer_id = o.customer_id
-WHERE c.customer_id IS NULL;
-```
-
-Use `UNION ALL` here because the second branch intentionally contains only right-only rows. It avoids unnecessary duplicate elimination.
-
----
-
-### 4.5 CROSS JOIN
-
-A cross join returns the Cartesian product: every left row paired with every right row.
-
-```sql
-SELECT
-    s.size_name,
-    c.color_name
+SELECT s.size_name, c.color_name
 FROM sizes AS s
 CROSS JOIN colors AS c;
 ```
 
-If there are 4 sizes and 5 colors, the result has `4 × 5 = 20` rows.
+If there are 4 sizes and 5 colors, the result has:
 
-#### Useful cases
+```text
+4 × 5 = 20 rows
+```
 
-- generate every size/color combination,
-- combine dates with stores for zero-filled reports,
-- create test combinations,
-- expand a small configuration matrix.
+Useful for generating combinations, but dangerous on large tables because row counts can grow very quickly.
 
-#### Risk
+### 4.6 Self Join
 
-A cross join between two large inputs can explode row counts: `1,000,000 rows × 50,000 rows = 50,000,000,000 pairs`.
-
-An accidental Cartesian product also occurs when a join condition is missing or incomplete.
-
----
-
-### 4.6 SELF JOIN
-
-A self join joins a table to itself using different aliases.
-
-For an employee hierarchy:
+A self join joins a table to itself using aliases.
 
 ```sql
 SELECT
-    e.employee_id,
     e.employee_name,
     m.employee_name AS manager_name
 FROM employees AS e
@@ -437,114 +304,43 @@ LEFT JOIN employees AS m
     ON m.employee_id = e.manager_id;
 ```
 
-Here:
+Typical use case: employee → manager.
 
-- `e` represents the employee role,
-- `m` represents the manager role,
-- both aliases refer to `employees`.
+For an unknown number of hierarchy levels, prefer a recursive CTE.
 
-#### Use cases
+### 4.7 Join Multiplication
 
-- employee and manager,
-- category and parent category,
-- compare rows within the same table,
-- find overlapping time ranges,
-- find previous/next related rows when window functions are not suitable.
+A join returns **one row for every matching pair**.
 
-For an unknown-depth hierarchy, a recursive CTE is more appropriate than manually chaining many self joins.
+If one customer has 3 orders, that customer appears 3 times.
 
----
-
-### 4.7 Semi-Joins and Anti-Joins
-
-SQL often expresses semi-join and anti-join logic through `EXISTS` and `NOT EXISTS`.
-
-#### Semi-join: return left rows that have at least one match
-
-```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-WHERE EXISTS (
-    SELECT 1
-    FROM orders AS o
-    WHERE o.customer_id = c.customer_id
-);
-```
-
-The result includes each qualifying customer once, regardless of how many orders the customer has.
-
-A normal join would return one row per matching order unless grouped or deduplicated.
-
-#### Anti-join: return left rows that have no match
-
-```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM orders AS o
-    WHERE o.customer_id = c.customer_id
-);
-```
-
-#### Why `EXISTS` communicates intent well
-
-Use `EXISTS` when the business question is:
-
-> Does at least one related row exist?
-
-The selected expression inside `EXISTS` is not used as output. `SELECT 1` is a common convention.
-
----
-
-### 4.8 Joining More Than Two Tables
-
-Example: customer order lines with product details.
-
-```sql
-SELECT
-    c.name AS customer_name,
-    o.order_id,
-    o.order_date,
-    p.product_name,
-    oi.quantity,
-    oi.unit_price,
-    oi.quantity * oi.unit_price AS line_total
-FROM customers AS c
-JOIN orders AS o
-    ON o.customer_id = c.customer_id
-JOIN order_items AS oi
-    ON oi.order_id = o.order_id
-JOIN products AS p
-    ON p.product_id = oi.product_id;
-```
-
-#### Read it as a relationship chain
+If an order has 2 items and 3 payments, joining both detail tables directly can create:
 
 ```text
-customers
-   └── orders
-         └── order_items
-               └── products
+2 items × 3 payments = 6 rows
 ```
 
-#### Keep each relationship local
+That can make aggregates incorrect.
 
-Keep every relationship condition in the `ON` clause of the join it belongs to, as in the query above. Avoid collecting unrelated join predicates in one distant `WHERE` block. ANSI join syntax makes relationships clearer and reduces accidental Cartesian products.
+```mermaid
+flowchart LR
+    C[1 Customer] --> O1[Order 101]
+    C --> O2[Order 102]
+    O1 --> I1[Item A]
+    O1 --> I2[Item B]
+```
 
-#### Join order in SQL text is not always execution order
+The important question is:
 
-For inner joins, an optimizer can often reorder inputs. Outer joins place more restrictions on reordering because row-preservation semantics must be maintained.
+> What should one final row represent?
 
----
+Do not use `DISTINCT` as a default fix for unexpected row multiplication.
 
-### 4.9 NULL and Predicate Placement
+### 4.8 `ON` vs `WHERE` with `LEFT JOIN`
 
-This is one of the most important join concepts.
+Requirement:
 
-Suppose the requirement is:
-
-> Show every customer and include only completed orders when available.
+> Show every customer and include completed orders when they exist.
 
 Correct:
 
@@ -559,7 +355,7 @@ LEFT JOIN orders AS o
    AND o.status = 'completed';
 ```
 
-The order-status predicate is part of matching. Customers without a completed order remain.
+The `status` condition controls which orders match, but every customer survives.
 
 Different meaning:
 
@@ -574,39 +370,22 @@ LEFT JOIN orders AS o
 WHERE o.status = 'completed';
 ```
 
-The `WHERE` condition removes rows where `o.status` is `NULL`, so customers without completed orders disappear. For this condition, the query behaves like an inner join.
+Now customers without a completed order are removed because their right-side value is `NULL`.
 
-```mermaid
-flowchart TD
-    A[LEFT JOIN creates unmatched rows] --> B[Right-side columns become NULL]
-    B --> C{Filter location}
-    C -->|ON clause| D[Controls which right rows match]
-    C -->|WHERE clause| E[Filters final joined rows]
-    E --> F[May remove NULL-extended rows]
-```
-
-#### `NULL = NULL` is not true
-
-In normal SQL comparison logic, `NULL = NULL` produces `UNKNOWN`, not `TRUE`. Therefore, two `NULL` join keys do not match through a normal equality predicate.
-
-Some databases provide null-safe equality operators, but syntax differs. Use them only when null-to-null matching is genuinely required and portability is understood.
+This is one of the most common interview concepts around joins.
 
 ---
 
 ## 5. How Databases Physically Execute Joins
 
-Logical join type and physical join algorithm are different ideas.
-
-- **Logical join:** inner, left outer, full outer, semi, anti.
-- **Physical algorithm:** nested loops, hash, merge, or another engine-specific strategy.
+The SQL join type and the physical join algorithm are different concepts.
 
 ```mermaid
 flowchart LR
-    Q[SQL Query] --> O[Optimizer]
+    SQL[Logical JOIN] --> O[Optimizer]
     O --> N[Nested Loops]
     O --> H[Hash Join]
     O --> M[Merge Join]
-    O --> A[Adaptive or engine-specific plan]
 ```
 
 ### Nested-loop join
@@ -614,61 +393,43 @@ flowchart LR
 Conceptually:
 
 ```text
-for each row in outer input:
-    find matching rows in inner input
+for each row in the outer input:
+    find matching rows in the inner input
 ```
 
-It is often effective when:
+Often good when:
 
-- the outer input is small,
-- the inner input has a useful index,
-- the join is selective,
-- the workload retrieves a small number of rows.
-
-A problematic form occurs when the database repeatedly scans a large unindexed inner input.
+- the outer side is small,
+- the inner side has a useful index,
+- only a small number of rows are needed.
 
 ### Hash join
 
-Conceptually:
+The database builds a hash table from one input and probes it with the other.
 
-1. Build a hash table from one input, usually the smaller estimated input.
-2. Scan the other input.
-3. Probe the hash table for matching keys.
+Often useful for:
 
-It is often effective for:
+- large equality joins,
+- analytical workloads,
+- inputs without useful ordering.
 
-- large unsorted inputs,
-- equality joins,
-- analytical queries,
-- intermediate results without suitable indexes.
-
-A hash table that exceeds available memory may spill to disk, increasing I/O.
+If the hash table does not fit in memory, it may spill to disk.
 
 ### Merge join
 
-Conceptually:
+Reads two inputs in join-key order and advances through them together.
 
-1. Read both inputs in join-key order.
-2. Advance through them together.
-3. emit matching keys.
+Often useful when both sides are already ordered by indexes or sorting is otherwise cheap.
 
-It can be effective when:
+### Practical rule
 
-- both inputs are already sorted through indexes,
-- inputs are large,
-- the join predicate supports ordered matching.
-
-If sorting is required first, that cost may make another plan cheaper.
-
-### Confirming the choice
-
-The algorithm above is chosen from estimates, so the only way to know what a query really did is to read its plan. For the per-engine commands, the plan-node vocabulary, and how to compare estimated against actual rows, see [EXPLAIN and EXPLAIN ANALYZE](explain-analyze.md).
+Do not guess the physical join algorithm from the SQL text. Check the execution plan with the database's plan tools such as `EXPLAIN` or the SQL Server execution plan.
 
 ---
 
 ## 6. Subqueries
 
-A subquery is a query nested inside another SQL statement.
+A subquery is a query inside another SQL statement.
 
 ```sql
 SELECT ...
@@ -678,27 +439,12 @@ WHERE column = (
 );
 ```
 
-A subquery can produce:
+### 6.1 Scalar Subquery
 
-| Form | Typical shape | Common placement |
-|------|---------------|------------------|
-| Scalar | one row, one column | `SELECT`, `WHERE`, expression |
-| Row | one row, multiple columns | comparison, database-dependent syntax |
-| Column | many rows, one column | `IN`, `ANY`, `ALL` |
-| Table | many rows and columns | `FROM`, join input |
-
----
-
-### 6.1 Scalar Subqueries
-
-A scalar subquery must return at most one value.
-
-#### Compare with an aggregate result
+A scalar subquery returns one value.
 
 ```sql
-SELECT
-    order_id,
-    total_amount
+SELECT order_id, total_amount
 FROM orders
 WHERE total_amount > (
     SELECT AVG(total_amount)
@@ -706,58 +452,13 @@ WHERE total_amount > (
 );
 ```
 
-The inner query returns one average value. The outer query compares each order against it.
+Use it when the outer query needs one calculated value.
 
-#### Scalar subquery in the `SELECT` list
+If the subquery returns multiple rows where one value is required, the query fails.
 
-```sql
-SELECT
-    c.customer_id,
-    c.name,
-    (
-        SELECT COUNT(*)
-        FROM orders AS o
-        WHERE o.customer_id = c.customer_id
-    ) AS order_count
-FROM customers AS c;
-```
+### 6.2 `IN`
 
-This is a correlated scalar subquery because it references `c.customer_id` from the outer query.
-
-A grouped left join is an alternative:
-
-```sql
-SELECT
-    c.customer_id,
-    c.name,
-    COUNT(o.order_id) AS order_count
-FROM customers AS c
-LEFT JOIN orders AS o
-    ON o.customer_id = c.customer_id
-GROUP BY c.customer_id, c.name;
-```
-
-Do not assume one form is always faster. Modern optimizers can transform some subqueries, but plans depend on the engine, statistics, indexes, and data distribution.
-
-#### Multiple-row failure
-
-This is invalid if the subquery returns more than one row:
-
-```sql
-WHERE total_amount = (
-    SELECT total_amount
-    FROM orders
-    WHERE status = 'completed'
-)
-```
-
-Use an aggregate, `IN`, `EXISTS`, or another rule that matches the intended cardinality.
-
----
-
-### 6.2 Subqueries with IN
-
-`IN` checks whether a value equals any value returned by a subquery.
+Checks whether a value belongs to a returned set.
 
 ```sql
 SELECT customer_id, name
@@ -769,7 +470,11 @@ WHERE customer_id IN (
 );
 ```
 
-#### Equivalent intent using `EXISTS`
+This is readable for membership logic.
+
+### 6.3 `EXISTS`
+
+Checks whether at least one matching row exists.
 
 ```sql
 SELECT c.customer_id, c.name
@@ -782,28 +487,26 @@ WHERE EXISTS (
 );
 ```
 
-Both forms communicate membership/existence. The optimizer may transform them into a semi-join.
+Use `EXISTS` when you do not need columns from the related table and only care whether a match exists.
 
-#### The `NOT IN` and `NULL` trap
+The selected value inside `EXISTS` is not used; `SELECT 1` is simply a common convention.
 
-Consider:
+### 6.4 `NOT IN` and `NULL`
+
+Be careful with:
 
 ```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-WHERE c.customer_id NOT IN (
-    SELECT o.customer_id
-    FROM orders AS o
+WHERE customer_id NOT IN (
+    SELECT customer_id
+    FROM orders
 );
 ```
 
-If the subquery can return a `NULL`, the comparison can become `UNKNOWN`, potentially returning no rows or producing surprising results.
+If the subquery can return `NULL`, SQL's three-valued logic can produce unexpected results.
 
-Safer for anti-join logic:
+For anti-join logic, prefer:
 
 ```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
 WHERE NOT EXISTS (
     SELECT 1
     FROM orders AS o
@@ -811,53 +514,9 @@ WHERE NOT EXISTS (
 );
 ```
 
-Another option is to explicitly remove nulls from the subquery, but `NOT EXISTS` usually states the intent more directly.
+### 6.5 Correlated Subquery
 
----
-
-### 6.3 Subqueries with EXISTS
-
-`EXISTS` tests whether the subquery returns at least one row.
-
-```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-WHERE EXISTS (
-    SELECT 1
-    FROM orders AS o
-    WHERE o.customer_id = c.customer_id
-      AND o.total_amount >= 200.00
-);
-```
-
-#### Important behavior
-
-The database only needs to establish that a qualifying row exists. Logically, values selected inside the subquery are irrelevant, so `SELECT 1`, `SELECT *`, and `SELECT o.order_id` are equivalent in meaning inside `EXISTS`. `SELECT 1` is commonly used because it makes the existence-only intent obvious.
-
-#### Nested existence condition
-
-Find customers who purchased an electronics product:
-
-```sql
-SELECT c.customer_id, c.name
-FROM customers AS c
-WHERE EXISTS (
-    SELECT 1
-    FROM orders AS o
-    JOIN order_items AS oi
-        ON oi.order_id = o.order_id
-    JOIN products AS p
-        ON p.product_id = oi.product_id
-    WHERE o.customer_id = c.customer_id
-      AND p.category = 'Electronics'
-);
-```
-
----
-
-### 6.4 Correlated Subqueries
-
-A correlated subquery refers to columns from the outer query.
+A correlated subquery refers to a column from the outer query.
 
 ```sql
 SELECT
@@ -872,49 +531,16 @@ WHERE o.total_amount > (
 );
 ```
 
-The query returns orders above the average for their own customer.
+This returns orders above the average for their own customer.
 
-#### Conceptual evaluation
+Logically the inner query depends on each outer row, although the optimizer may transform the query into a more efficient plan.
 
-```mermaid
-flowchart TD
-    O["Outer row: order 101, customer 1"] --> I["Inner query: average orders for customer 1"]
-    I --> C[Compare order 101 to that average]
-```
+### 6.6 Derived Table
 
-Logically, the inner query is evaluated in the context of each outer row. Physically, the optimizer may decorrelate or transform it into a different plan.
-
-#### Window-function alternative
+A subquery in `FROM` acts like a table for that query.
 
 ```sql
-WITH scored_orders AS (
-    SELECT
-        o.*,
-        AVG(total_amount) OVER (
-            PARTITION BY customer_id
-        ) AS customer_avg
-    FROM orders AS o
-)
-SELECT
-    order_id,
-    customer_id,
-    total_amount
-FROM scored_orders
-WHERE total_amount > customer_avg;
-```
-
-Window functions often make “compare each row with its group's aggregate” problems clearer and can avoid repeated-looking aggregation logic.
-
----
-
-### 6.5 Derived Tables
-
-A subquery in the `FROM` clause behaves like a temporary table result for that query. It is called a derived table.
-
-```sql
-SELECT
-    customer_totals.customer_id,
-    customer_totals.total_spent
+SELECT totals.customer_id, totals.total_spent
 FROM (
     SELECT
         customer_id,
@@ -922,110 +548,25 @@ FROM (
     FROM orders
     WHERE status = 'completed'
     GROUP BY customer_id
-) AS customer_totals
-WHERE customer_totals.total_spent >= 200.00;
-```
-
-The derived table needs an alias in commonly used databases.
-
-#### Join a derived table
-
-```sql
-SELECT
-    c.customer_id,
-    c.name,
-    totals.total_spent
-FROM customers AS c
-JOIN (
-    SELECT
-        customer_id,
-        SUM(total_amount) AS total_spent
-    FROM orders
-    WHERE status = 'completed'
-    GROUP BY customer_id
 ) AS totals
-    ON totals.customer_id = c.customer_id;
+WHERE totals.total_spent >= 200;
 ```
 
-A CTE can make the same logic easier to scan:
+When nesting becomes difficult to read, a CTE often expresses the same logic more clearly.
+
+### 6.7 `ANY`, `SOME`, and `ALL`
+
+These compare one value against a set returned by a subquery.
 
 ```sql
-WITH totals AS (
-    SELECT
-        customer_id,
-        SUM(total_amount) AS total_spent
-    FROM orders
-    WHERE status = 'completed'
-    GROUP BY customer_id
-)
-SELECT
-    c.customer_id,
-    c.name,
-    totals.total_spent
-FROM customers AS c
-JOIN totals
-    ON totals.customer_id = c.customer_id;
-```
-
-#### Lateral derived tables
-
-A normal derived table cannot always reference an earlier `FROM` item. A lateral join allows that dependency.
-
-PostgreSQL-style example:
-
-```sql
-SELECT
-    c.customer_id,
-    c.name,
-    latest.order_id,
-    latest.order_date
-FROM customers AS c
-LEFT JOIN LATERAL (
-    SELECT o.order_id, o.order_date
-    FROM orders AS o
-    WHERE o.customer_id = c.customer_id
-    ORDER BY o.order_date DESC, o.order_id DESC
-    LIMIT 1
-) AS latest ON TRUE;
-```
-
-Use cases include:
-
-- top N related rows per parent,
-- calling a table-valued function per row,
-- reusing outer-row values in a `FROM` subquery.
-
-Portability differs:
-
-- PostgreSQL supports `LATERAL`.
-- MySQL 8.4 supports lateral derived tables.
-- SQL Server commonly expresses similar logic with `CROSS APPLY` or `OUTER APPLY`.
-
----
-
-### 6.6 ANY, SOME, and ALL
-
-These operators compare a value with a set returned by a subquery.
-
-`ANY` and `SOME` are synonyms in standard usage.
-
-#### Greater than at least one value
-
-```sql
-SELECT order_id, total_amount
-FROM orders
+-- Greater than at least one returned value
 WHERE total_amount > ANY (
     SELECT total_amount
     FROM orders
     WHERE customer_id = 1
 );
-```
 
-#### Greater than every value
-
-```sql
-SELECT order_id, total_amount
-FROM orders
+-- Greater than every returned value
 WHERE total_amount > ALL (
     SELECT total_amount
     FROM orders
@@ -1033,51 +574,42 @@ WHERE total_amount > ALL (
 );
 ```
 
-For readability, an aggregate is often clearer when the business rule is specifically based on a maximum or minimum:
+`ANY` and `SOME` are equivalent in this context. In everyday application SQL, `MIN()` or `MAX()` is often easier to read when that is the real business rule.
+
+### 6.8 Lateral Derived Tables
+
+A lateral query can reference an earlier table from the same `FROM` clause. It is useful for patterns such as "latest child row per parent."
+
+PostgreSQL/MySQL style:
 
 ```sql
-WHERE total_amount > (
-    SELECT MAX(total_amount)
-    FROM orders
-    WHERE customer_id = 1
-)
+SELECT
+    c.customer_id,
+    c.name,
+    latest.order_id
+FROM customers AS c
+LEFT JOIN LATERAL (
+    SELECT o.order_id
+    FROM orders AS o
+    WHERE o.customer_id = c.customer_id
+    ORDER BY o.order_date DESC, o.order_id DESC
+    LIMIT 1
+) AS latest ON TRUE;
 ```
 
-Be careful with empty sets and `NULL` values; three-valued logic affects the result.
+PostgreSQL and MySQL support `LATERAL`. SQL Server commonly expresses the same kind of dependent table expression with `CROSS APPLY` or `OUTER APPLY`.
 
 ---
 
 ## 7. Common Table Expressions
 
-A common table expression is a named result defined using `WITH` and scoped to one statement.
-
-```sql
-WITH cte_name AS (
-    SELECT ...
-)
-SELECT ...
-FROM cte_name;
-```
-
-Think of a CTE as a query-level name for an intermediate relation—not automatically as a stored table or cached result.
-
-```mermaid
-flowchart LR
-    A[Base Tables] --> B[CTE: filtered_orders]
-    B --> C[CTE: customer_totals]
-    C --> D[Final SELECT]
-```
-
----
-
-### 7.1 Basic CTE
+A CTE is a named intermediate result defined with `WITH`.
 
 ```sql
 WITH completed_orders AS (
     SELECT
         order_id,
         customer_id,
-        order_date,
         total_amount
     FROM orders
     WHERE status = 'completed'
@@ -1089,318 +621,130 @@ FROM completed_orders
 GROUP BY customer_id;
 ```
 
-#### Why use it
+Think of it as:
 
-- give a meaningful name to a transformation,
-- reduce nesting,
-- separate filtering, aggregation, and final presentation,
-- make a complex query easier to review,
-- provide the structure required for recursion.
+> a query-level name for an intermediate result.
 
----
+A CTE normally exists only for the single statement that follows it.
 
-### 7.2 Multiple CTEs
+### 7.1 Multiple CTEs
 
-CTEs can be chained.
+CTEs are useful when a complex query has clear stages.
 
 ```sql
 WITH completed_orders AS (
-    SELECT
-        order_id,
-        customer_id,
-        total_amount
+    SELECT customer_id, total_amount
     FROM orders
     WHERE status = 'completed'
 ),
 customer_totals AS (
     SELECT
         customer_id,
-        COUNT(*) AS completed_order_count,
         SUM(total_amount) AS total_spent
     FROM completed_orders
     GROUP BY customer_id
-),
-high_value_customers AS (
-    SELECT
-        customer_id,
-        completed_order_count,
-        total_spent
-    FROM customer_totals
-    WHERE total_spent >= 200.00
 )
 SELECT
     c.customer_id,
     c.name,
-    h.completed_order_count,
-    h.total_spent
-FROM high_value_customers AS h
+    ct.total_spent
+FROM customer_totals AS ct
 JOIN customers AS c
-    ON c.customer_id = h.customer_id
-ORDER BY h.total_spent DESC;
+    ON c.customer_id = ct.customer_id
+WHERE ct.total_spent >= 200;
 ```
-
-#### Data-flow view
 
 ```mermaid
-flowchart TD
-    O[orders] -->|Filter completed| CO[completed_orders]
-    CO -->|Group by customer| CT[customer_totals]
-    CT -->|Filter total| HV[high_value_customers]
-    HV -->|Join customer name| FR[Final result]
+flowchart LR
+    O[orders] --> F[completed_orders]
+    F --> A[customer_totals]
+    A --> J[Join customers]
+    J --> R[Final result]
 ```
 
-Each CTE should represent a useful logical step. Too many one-line CTEs can fragment a simple query, while one giant CTE can hide the workflow. Prefer meaningful boundaries.
+Use meaningful CTE names based on business steps rather than names such as `cte1`, `cte2`, and `temp`.
 
----
+### 7.2 CTE vs View vs Temporary Table
 
-### 7.3 CTE Reuse and Scope
-
-A CTE exists only for the statement immediately following the `WITH` clause.
-
-```sql
-WITH completed_orders AS (
-    SELECT *
-    FROM orders
-    WHERE status = 'completed'
-)
-SELECT *
-FROM completed_orders;
-
--- completed_orders is no longer available here.
-SELECT *
-FROM completed_orders;  -- invalid
-```
-
-#### Referencing a CTE more than once
-
-```sql
-WITH customer_totals AS (
-    SELECT
-        customer_id,
-        SUM(total_amount) AS total_spent
-    FROM orders
-    GROUP BY customer_id
-)
-SELECT
-    a.customer_id AS customer_a,
-    b.customer_id AS customer_b,
-    a.total_spent
-FROM customer_totals AS a
-JOIN customer_totals AS b
-    ON b.total_spent = a.total_spent
-   AND b.customer_id > a.customer_id;
-```
-
-Multiple references do not universally guarantee that the CTE is calculated once and cached. Engines may inline, merge, spool, or materialize it depending on semantics and optimizer rules.
-
-#### CTE is not a replacement for every database object
-
-Use a CTE for statement-local logic.
-
-Use another object when appropriate:
-
-| Need | Better fit |
-|------|------------|
+| Need | Better starting point |
+|---|---|
+| Readable logic inside one statement | CTE |
 | Reuse across many queries | View |
-| Persist intermediate data | Temporary table |
-| Add indexes to intermediate rows | Temporary table/materialized object |
-| Reuse controlled business API | Stored procedure/function, depending on architecture |
-| Precompute expensive reusable results | Materialized view or summary table |
+| Persist intermediate rows during a session/workflow | Temporary table |
+| Index a large intermediate result | Temporary/materialized object |
+| Precompute reusable expensive results | Materialized view or summary table |
 
----
+### 7.3 Recursive CTE
 
-### 7.4 Recursive CTEs
+A recursive CTE refers to itself and is useful for trees and hierarchies.
 
-A recursive CTE refers to itself. It is useful for hierarchical or iterative relationships.
-
-Typical structure:
-
-```sql
-WITH RECURSIVE hierarchy AS (
-    -- Anchor member: starting rows
-    SELECT ...
-
-    UNION ALL
-
-    -- Recursive member: find the next level
-    SELECT ...
-    FROM some_table
-    JOIN hierarchy
-      ON ...
-)
-SELECT *
-FROM hierarchy;
-```
-
-SQL Server uses recursive CTE syntax without the `RECURSIVE` keyword: plain `WITH hierarchy AS (...)`.
-
-#### Employee hierarchy example
+PostgreSQL/MySQL style:
 
 ```sql
 WITH RECURSIVE employee_tree AS (
     SELECT
-        e.employee_id,
-        e.employee_name,
-        e.manager_id,
+        employee_id,
+        employee_name,
+        manager_id,
         0 AS depth
-    FROM employees AS e
-    WHERE e.manager_id IS NULL
+    FROM employees
+    WHERE manager_id IS NULL
 
     UNION ALL
 
     SELECT
-        child.employee_id,
-        child.employee_name,
-        child.manager_id,
-        parent.depth + 1
-    FROM employees AS child
-    JOIN employee_tree AS parent
-        ON child.manager_id = parent.employee_id
+        e.employee_id,
+        e.employee_name,
+        e.manager_id,
+        t.depth + 1
+    FROM employees AS e
+    JOIN employee_tree AS t
+        ON e.manager_id = t.employee_id
 )
-SELECT
-    employee_id,
-    employee_name,
-    manager_id,
-    depth
-FROM employee_tree
-ORDER BY depth, employee_id;
+SELECT *
+FROM employee_tree;
 ```
 
-#### How recursion proceeds
+How it works:
 
 ```mermaid
 flowchart TD
-    A[Anchor: top-level employee] --> B[Working rows: level 0]
-    B --> C[Find direct reports]
-    C --> D[Output level 1]
-    D --> E[Use level 1 as next working rows]
-    E --> F[Find their direct reports]
-    F --> G{More rows?}
-    G -->|Yes| E
-    G -->|No| H[Return accumulated result]
+    A[Anchor rows] --> B[Level 0]
+    B --> C[Find children]
+    C --> D[Next level]
+    D --> E{More rows?}
+    E -->|Yes| C
+    E -->|No| F[Return result]
 ```
 
-#### Generate a date series
+A recursive CTE needs:
 
-```sql
-WITH RECURSIVE dates AS (
-    SELECT DATE '2026-07-01' AS day
+- an **anchor** query,
+- a **recursive** query,
+- a condition that eventually stops recursion,
+- cycle protection when the data can contain loops.
 
-    UNION ALL
+**SQL Server:** recursive CTEs use plain `WITH`, not `WITH RECURSIVE`.
 
-    SELECT day + INTERVAL '1 day'
-    FROM dates
-    WHERE day < DATE '2026-07-07'
-)
-SELECT day
-FROM dates;
-```
+### 7.4 Materialization and Inlining
 
-Date arithmetic syntax differs by database. For example, SQL Server commonly uses `DATEADD`, while MySQL uses forms such as `day + INTERVAL 1 DAY`.
+A CTE is primarily a readability and query-structure feature. Do not assume:
 
-#### Termination is essential
+> “A CTE is faster because it runs once.”
 
-A recursive CTE needs a condition that eventually stops producing rows, such as `WHERE depth < 20`, or a relationship that naturally reaches a leaf.
+Optimizer behavior differs.
 
-#### Cycle protection
+- **PostgreSQL 18** can fold eligible side-effect-free CTEs into the parent query and supports `MATERIALIZED` / `NOT MATERIALIZED` controls.
+- **MySQL 8.4** can merge eligible CTEs/derived tables into the outer query or materialize them.
+- **SQL Server 17.x** documentation states that non-recursive CTE query results are not inherently materialized; the optimizer decides how the final plan executes the references.
 
-Bad or graph-like data can contain cycles such as `A → B → C → A`.
-
-Possible safeguards include:
-
-- storing visited identifiers in a path,
-- rejecting a row already present in that path,
-- using database-supported cycle detection where available,
-- enforcing valid hierarchy constraints during writes,
-- applying a reasonable recursion-depth limit.
-
-PostgreSQL supports SQL-standard-style cycle handling in recursive queries. Other engines use different mechanisms and recursion limits.
-
-#### `UNION ALL` vs `UNION`
-
-Recursive CTEs commonly use `UNION ALL` because it:
-
-- retains all generated rows,
-- avoids duplicate-elimination work,
-- matches tree traversal semantics.
-
-Use `UNION` only when duplicate elimination is part of the required logic and you understand its effect on recursion.
-
----
-
-### 7.5 Materialization and Inlining
-
-A CTE is a logical construct. Its physical treatment varies.
-
-The optimizer may:
-
-- inline or merge the CTE into the outer query,
-- materialize it into an intermediate result,
-- reuse a spool or temporary structure,
-- choose different behavior based on references and query semantics.
-
-#### Why this matters
-
-Inlining may allow:
-
-- outer filters to be pushed into the CTE,
-- indexes to be used more selectively,
-- join reordering across the CTE boundary.
-
-Materialization may help when:
-
-- an expensive result is reused,
-- repeated evaluation must be avoided,
-- semantics require an execution boundary.
-
-Materialization may hurt when:
-
-- it creates a large temporary result,
-- it blocks predicate pushdown,
-- it prevents a more selective plan.
-
-#### PostgreSQL behavior
-
-Current PostgreSQL documentation describes CTE folding and materialization rules and supports `MATERIALIZED` and `NOT MATERIALIZED` controls for eligible non-recursive, side-effect-free CTEs.
-
-Example:
-
-```sql
-WITH recent_orders AS NOT MATERIALIZED (
-    SELECT *
-    FROM orders
-    WHERE order_date >= DATE '2026-07-01'
-)
-SELECT *
-FROM recent_orders
-WHERE customer_id = 1;
-```
-
-These keywords are PostgreSQL-specific. Use them after examining the plan rather than as a default style rule.
-
-#### MySQL behavior
-
-MySQL's optimizer can merge eligible derived tables, views, and CTEs into the outer query block or materialize them as internal temporary tables.
-
-#### SQL Server behavior
-
-SQL Server documentation notes that query results from a non-recursive CTE are not inherently materialized as a persisted result. Each outer reference can cause the CTE query definition to be considered again, though the optimizer can choose spools or other plan operators.
-
-#### Practical rule
-
-Do not claim:
-
-> “A CTE is always faster because it runs once.”
-
-That statement is not generally correct. Compare actual plans and runtime behavior.
+Always check the execution plan before using CTE structure as a performance assumption.
 
 ---
 
 ## 8. Join vs Subquery vs CTE
 
-Many problems can be expressed in more than one form.
-
-### Example requirement
+Requirement:
 
 > Return customers who have at least one completed order.
 
@@ -1416,7 +760,9 @@ JOIN orders AS o
 WHERE o.status = 'completed';
 ```
 
-### `EXISTS` subquery
+This works, but the join creates one row per matching order, so `DISTINCT` is needed to get one row per customer.
+
+### `EXISTS`
 
 ```sql
 SELECT
@@ -1431,7 +777,9 @@ WHERE EXISTS (
 );
 ```
 
-### CTE plus join
+This expresses the requirement more directly.
+
+### CTE
 
 ```sql
 WITH completed_customers AS (
@@ -1447,32 +795,33 @@ JOIN completed_customers AS cc
     ON cc.customer_id = c.customer_id;
 ```
 
-All three can be correct. The clearest intent is usually the `EXISTS` version because the requirement asks whether a matching row exists.
+Useful if the intermediate result is part of a larger query workflow.
 
 ### Decision guide
 
-| Requirement | Usually clear starting point |
-|-------------|------------------------------|
-| Return columns from both related tables | `JOIN` |
-| Check whether at least one match exists | `EXISTS` |
-| Check whether no match exists | `NOT EXISTS` |
-| Compare with one calculated value | Scalar subquery |
-| Use a nested result as a table | Derived table or CTE |
-| Split a long query into named stages | CTE |
-| Traverse unknown hierarchy depth | Recursive CTE |
-| Reuse and index a large intermediate set | Temporary table may be better |
+| Requirement | Clear starting point |
+|---|---|
+| Need columns from both tables | `JOIN` |
+| Need to know whether a related row exists | `EXISTS` |
+| Need to know whether no related row exists | `NOT EXISTS` |
+| Need one calculated value | Scalar subquery |
+| Need a table-like nested result | Derived table / CTE |
+| Need readable query stages | CTE |
+| Need unknown-depth hierarchy traversal | Recursive CTE |
 
-This is a starting point, not a performance guarantee.
+This is a readability guide, not a universal performance rule.
 
 ---
 
 ## 9. Practical Production Patterns
 
-### 9.1 Aggregate before joining to avoid double counting
+### 9.1 Aggregate Before Joining Detail Tables
 
-Suppose an order has multiple items and multiple payments. Joining both detail tables directly can multiply combinations — `2 items × 3 payments = 6 joined rows` — and aggregates can become incorrect.
+Suppose one order has multiple items and multiple payments.
 
-#### Safer pattern
+Joining both detail tables directly can multiply rows and over-count totals.
+
+Safer pattern:
 
 ```sql
 WITH item_totals AS (
@@ -1491,66 +840,39 @@ payment_totals AS (
 )
 SELECT
     o.order_id,
-    item_totals.item_total,
-    payment_totals.paid_total
+    it.item_total,
+    pt.paid_total
 FROM orders AS o
-LEFT JOIN item_totals
-    ON item_totals.order_id = o.order_id
-LEFT JOIN payment_totals
-    ON payment_totals.order_id = o.order_id;
+LEFT JOIN item_totals AS it
+    ON it.order_id = o.order_id
+LEFT JOIN payment_totals AS pt
+    ON pt.order_id = o.order_id;
 ```
 
-Each detail source is reduced to one row per order before the final join.
+Each detail table is reduced to **one row per order** before the final join.
 
----
+### 9.2 Latest Row per Parent
 
-### 9.2 Latest row per parent
-
-Requirement:
-
-> Return the latest order for every customer.
-
-#### Window-function solution
+Use a window function when you need one latest row per customer.
 
 ```sql
 WITH ranked_orders AS (
     SELECT
         o.*,
         ROW_NUMBER() OVER (
-            PARTITION BY o.customer_id
-            ORDER BY o.order_date DESC, o.order_id DESC
-        ) AS row_num
+            PARTITION BY customer_id
+            ORDER BY order_date DESC, order_id DESC
+        ) AS rn
     FROM orders AS o
 )
-SELECT
-    customer_id,
-    order_id,
-    order_date,
-    status,
-    total_amount
+SELECT *
 FROM ranked_orders
-WHERE row_num = 1;
+WHERE rn = 1;
 ```
 
-The secondary ordering by `order_id` provides deterministic tie-breaking when dates are equal.
+The secondary sort makes tie handling deterministic.
 
-#### Correlated-subquery version
-
-```sql
-SELECT o.*
-FROM orders AS o
-WHERE o.order_date = (
-    SELECT MAX(o2.order_date)
-    FROM orders AS o2
-    WHERE o2.customer_id = o.customer_id
-);
-```
-
-This may return multiple orders when a customer has multiple orders on the same latest date. That might be correct or might violate the requirement. Define tie behavior explicitly.
-
----
-
-### 9.3 Count related rows without losing zero counts
+### 9.3 Count Related Rows Including Zero
 
 ```sql
 SELECT
@@ -1565,103 +887,23 @@ GROUP BY c.customer_id, c.name;
 
 Use `COUNT(o.order_id)`, not `COUNT(*)`.
 
-For a customer with no orders:
+For a customer without orders:
 
-- `COUNT(*)` counts the preserved customer row and returns `1`.
+- `COUNT(*)` counts the preserved left row.
 - `COUNT(o.order_id)` ignores the right-side `NULL` and returns `0`.
 
----
+### 9.4 Pagination with One-to-Many Joins
 
-### 9.4 Conditional aggregation after a left join
+If you paginate after joining customers to orders, you may paginate **joined rows** instead of customers.
 
-```sql
-SELECT
-    c.customer_id,
-    c.name,
-    COUNT(o.order_id) AS all_orders,
-    SUM(CASE WHEN o.status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
-    SUM(CASE WHEN o.status = 'pending' THEN 1 ELSE 0 END) AS pending_orders
-FROM customers AS c
-LEFT JOIN orders AS o
-    ON o.customer_id = c.customer_id
-GROUP BY c.customer_id, c.name;
-```
+Safer approach:
 
-This produces several metrics in one grouped pass.
-
-Some databases support a `FILTER` clause for aggregates, but `CASE` is more portable.
-
----
-
-### 9.5 Find duplicate business keys
-
-```sql
-WITH duplicate_emails AS (
-    SELECT
-        email,
-        COUNT(*) AS occurrences
-    FROM users
-    GROUP BY email
-    HAVING COUNT(*) > 1
-)
-SELECT
-    u.user_id,
-    u.email,
-    d.occurrences
-FROM users AS u
-JOIN duplicate_emails AS d
-    ON d.email = u.email
-ORDER BY u.email, u.user_id;
-```
-
-The first CTE identifies duplicate keys; the final query returns the actual rows.
-
----
-
-### 9.6 Reconciliation between two systems
-
-```sql
-SELECT
-    COALESCE(a.external_id, b.external_id) AS external_id,
-    a.amount AS system_a_amount,
-    b.amount AS system_b_amount,
-    CASE
-        WHEN a.external_id IS NULL THEN 'missing_in_a'
-        WHEN b.external_id IS NULL THEN 'missing_in_b'
-        WHEN a.amount <> b.amount THEN 'amount_mismatch'
-        ELSE 'matched'
-    END AS reconciliation_status
-FROM system_a_transactions AS a
-FULL OUTER JOIN system_b_transactions AS b
-    ON b.external_id = a.external_id;
-```
-
-For MySQL, emulate the full outer join using two branches and `UNION ALL` as shown earlier.
-
----
-
-### 9.7 Pagination with joined data
-
-Joining one-to-many tables before applying pagination can paginate child rows instead of parent entities.
-
-Problematic intent:
-
-```sql
-SELECT c.*, o.*
-FROM customers AS c
-JOIN orders AS o
-    ON o.customer_id = c.customer_id
-ORDER BY c.customer_id
-LIMIT 20;
-```
-
-The first 20 joined rows may represent fewer than 20 customers.
-
-A safer parent-first pattern:
+1. select the customer page first,
+2. then join orders.
 
 ```sql
 WITH customer_page AS (
-    SELECT customer_id, name, city
+    SELECT customer_id, name
     FROM customers
     ORDER BY customer_id
     LIMIT 20 OFFSET 0
@@ -1669,65 +911,46 @@ WITH customer_page AS (
 SELECT
     cp.customer_id,
     cp.name,
-    cp.city,
-    o.order_id,
-    o.order_date
+    o.order_id
 FROM customer_page AS cp
 LEFT JOIN orders AS o
     ON o.customer_id = cp.customer_id
 ORDER BY cp.customer_id, o.order_id;
 ```
 
-For large page numbers, keyset pagination is usually more scalable than a high `OFFSET`.
-
----
-
-### 9.8 Delete or update based on related rows
-
-Database syntax varies for joined data-modification statements. A portable logical approach often uses `EXISTS`:
-
-```sql
-UPDATE customers AS c
-SET status = 'inactive'
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM orders AS o
-    WHERE o.customer_id = c.customer_id
-      AND o.order_date >= DATE '2025-07-27'
-);
-```
-
-Before running a broad `UPDATE` or `DELETE`, first execute the same predicate as a `SELECT` and verify the affected keys.
+For very large page numbers, keyset pagination is usually preferable to a high `OFFSET`.
 
 ---
 
 ## 10. Performance and Query-Review Checklist
 
-This section is a practical review sequence rather than a list of universal rules.
+Before optimizing a join/subquery/CTE query, review it in this order.
 
-### 10.1 Confirm result cardinality
+### 10.1 Define the result grain
 
-For each join, identify whether the relationship is:
+Ask:
+
+```text
+One row per customer?
+One row per order?
+One row per order item?
+One row per customer per month?
+```
+
+Many duplicate and aggregation problems come from not defining this first.
+
+### 10.2 Verify join cardinality
+
+Know whether each relationship is:
 
 - one-to-one,
 - one-to-many,
 - many-to-one,
 - many-to-many.
 
-Ask what one output row represents:
+### 10.3 Index join and correlation columns
 
-```text
-One row per customer?
-One row per order?
-One row per order item?
-One row per customer and month?
-```
-
-Without a defined result grain, accidental multiplication and incorrect aggregates are likely.
-
-### 10.2 Index join and correlation columns
-
-Common candidates:
+Common examples:
 
 ```sql
 orders(customer_id)
@@ -1736,129 +959,78 @@ order_items(product_id)
 employees(manager_id)
 ```
 
-A foreign-key constraint does not guarantee that every database automatically creates an index on the referencing column. Verify engine behavior and schema definitions.
+A foreign key does not universally mean the referencing column is automatically indexed. Verify the schema and database behavior.
 
-Composite indexes should match real filtering and ordering patterns. For example: `orders(customer_id, order_date DESC)`
+### 10.4 Keep related key types compatible
 
-can support “latest orders for one customer,” depending on the database and query.
+Avoid joining values that require implicit conversion, such as an integer key against a text key.
 
-### 10.3 Keep data types compatible
+Type mismatch can affect correctness and index usage.
 
-Joining an integer to a string can cause:
+### 10.5 Prefer `EXISTS` for existence logic
 
-- implicit conversion,
-- index avoidance,
-- extra CPU,
-- incorrect comparison behavior,
-- deployment differences between engines.
+If you only need to know whether a related row exists, `EXISTS` is usually clearer than `JOIN + DISTINCT`.
 
-Related keys should normally use the same data type and compatible collation.
+### 10.6 Treat `DISTINCT` as intentional
 
-### 10.4 Filter early—but preserve semantics
+Use `DISTINCT` when the requirement truly needs a distinct set—not as a repair for a bad join.
 
-Reducing rows before expensive joins can help, but do not move a filter across an outer join boundary unless the meaning remains unchanged.
+### 10.7 Be careful with `NOT IN`
 
-Correct optimization is semantic first, physical second.
+If the inner value can be `NULL`, prefer `NOT EXISTS`.
 
-### 10.5 Select only required columns
+### 10.8 Select only required columns
 
-Avoid `SELECT *` in production queries when:
+Avoid unnecessary `SELECT *` in production joins, especially when tables are wide or API contracts should remain stable.
 
-- joined tables have overlapping names,
-- the API needs a stable response contract,
-- wide text or binary columns exist,
-- covering indexes could otherwise satisfy the query,
-- schema additions should not silently change output.
+### 10.9 Check the execution plan
 
-### 10.6 Prefer `EXISTS` for existence logic
+Look for:
 
-When no right-side columns are needed, prefer `WHERE EXISTS (...)` over a `JOIN` plus `SELECT DISTINCT ...`. This often avoids duplicate-producing joins and communicates the requirement directly.
+- actual vs estimated row counts,
+- full scans on large tables,
+- repeated nested-loop work,
+- hash/sort spills,
+- missing or unused indexes,
+- unexpectedly large intermediate row counts.
 
-### 10.7 Treat `DISTINCT` as a semantic operator
+### 10.10 Test with realistic data
 
-`DISTINCT` is correct when the requirement is a distinct set. It should not be used automatically to conceal an incomplete join condition or misunderstood cardinality.
-
-### 10.8 Watch `NOT IN` with nullable data
-
-Prefer `NOT EXISTS` for anti-join logic unless the subquery column is guaranteed non-null and the team clearly understands the semantics.
-
-### 10.9 Inspect estimated and actual rows
-
-Large differences can indicate:
-
-- stale statistics,
-- skewed data,
-- correlated columns,
-- parameter sensitivity,
-- expressions that hide distribution,
-- missing constraints.
-
-Bad estimates can lead to an unsuitable join order or algorithm.
-
-### 10.10 Measure CTE behavior instead of assuming it
-
-A CTE may improve readability without changing performance. It can also change optimization boundaries depending on the database and query form.
-
-Compare plans for:
-
-- CTE,
-- derived table,
-- inline query,
-- temporary table with an index.
-
-Use the simplest version that remains clear and meets measured performance requirements.
-
-### 10.11 Watch memory-intensive operators
-
-Hash joins, sorts, and aggregations can spill to disk when memory is insufficient or cardinality estimates are wrong.
-
-Plan symptoms include:
-
-- temporary-file activity,
-- hash batches or spills,
-- sort spills,
-- high temp-database usage,
-- sudden latency growth as data increases.
-
-### 10.12 Test with production-like distributions
-
-Ten evenly distributed test rows cannot expose behavior caused by:
+A query that is fast on 20 rows may behave very differently with:
 
 - millions of rows,
-- one high-volume tenant,
-- a highly popular status value,
-- mostly `NULL` foreign keys,
-- a few customers with thousands of child rows.
+- skewed tenant data,
+- many `NULL` values,
+- a few parents with thousands of children.
 
-Performance testing should represent realistic volume and skew.
+Correct SQL comes first; measured optimization comes second.
 
 ---
 
 ## 11. Database Portability Notes
 
-| Feature | PostgreSQL 18 | MySQL 8.4 | SQL Server docs view 17 |
-|--------|---------------|-----------|-------------------------|
+| Feature | PostgreSQL 18 | MySQL 8.4 | SQL Server 17.x |
+|---|---|---|---|
 | `INNER JOIN` | Yes | Yes | Yes |
 | `LEFT JOIN` | Yes | Yes | Yes |
 | `RIGHT JOIN` | Yes | Yes | Yes |
 | Native `FULL OUTER JOIN` | Yes | No | Yes |
 | `CROSS JOIN` | Yes | Yes | Yes |
 | Non-recursive CTE | Yes | Yes | Yes |
-| Recursive CTE keyword | `WITH RECURSIVE` | `WITH RECURSIVE` | `WITH` |
-| Lateral query form | `LATERAL` | `LATERAL` derived tables | `APPLY` commonly used |
-| CTE materialization controls | `MATERIALIZED`, `NOT MATERIALIZED` for eligible cases | Optimizer chooses merge/materialization; hints/settings differ | Optimizer-managed; CTE is not inherently persisted |
-| Recursive cycle syntax | Supports `CYCLE` in current versions | Use explicit path/depth logic | Use explicit path/depth logic and recursion controls |
-| Date arithmetic | Interval syntax | `INTERVAL` syntax | `DATEADD` commonly used |
+| Recursive syntax | `WITH RECURSIVE` | `WITH RECURSIVE` | `WITH` |
+| Lateral form | `LATERAL` | `LATERAL` derived table | `CROSS APPLY` / `OUTER APPLY` |
+| CTE materialization control | `MATERIALIZED`, `NOT MATERIALIZED` for eligible CTEs | Optimizer merge/materialization | Optimizer-managed |
+| Recursive cycle support | `CYCLE` available | Usually explicit path/depth logic | Usually explicit path/depth logic / recursion controls |
 
-> SQL portability is broader than syntax. `NULL` ordering, collations, identifier casing, date arithmetic, execution plans, recursion limits, and optimization behavior also vary.
+### SQL Server semicolon before a CTE
 
-### Semicolon before a SQL Server CTE
-
-In T-SQL, a CTE may need a leading semicolon when the previous statement was not terminated:
+A CTE can require a leading semicolon when the previous T-SQL statement was not terminated:
 
 ```sql
 ;WITH customer_totals AS (
-    SELECT customer_id, SUM(total_amount) AS total_spent
+    SELECT
+        customer_id,
+        SUM(total_amount) AS total_spent
     FROM orders
     GROUP BY customer_id
 )
@@ -1866,38 +1038,33 @@ SELECT *
 FROM customer_totals;
 ```
 
-A better general practice is to terminate every SQL statement with a semicolon.
-
-### Data-changing CTEs
-
-PostgreSQL supports data-modifying statements inside `WITH` with important semantics and `RETURNING` behavior.
-
-Other databases differ significantly. Treat data-changing CTE syntax as database-specific and review concurrency, statement ordering, and affected-row semantics carefully.
+A good general practice is to terminate SQL statements with semicolons.
 
 ---
 
-## 12. Official References
+## Final Mental Model
 
-The database-specific notes in this guide were checked against current official documentation available in July 2026.
+```mermaid
+flowchart TD
+    A[Start with required result grain] --> B{Need related columns?}
+    B -->|Yes| C[JOIN]
+    B -->|No| D{Need existence check?}
+    D -->|Yes| E[EXISTS / NOT EXISTS]
+    D -->|No| F{Need intermediate calculation?}
+    F -->|One value| G[Scalar Subquery]
+    F -->|Named query stage| H[CTE]
+    H --> I{Hierarchy / unknown depth?}
+    I -->|Yes| J[Recursive CTE]
+    I -->|No| K[Normal CTE]
+    C --> L[Check cardinality + indexes + plan]
+    E --> L
+    G --> L
+    J --> L
+    K --> L
+```
 
-- [PostgreSQL 18 — `WITH` Queries / Common Table Expressions](https://www.postgresql.org/docs/18/queries-with.html)
-- [PostgreSQL 18 — SQL `SELECT`](https://www.postgresql.org/docs/current/sql-select.html)
-- [MySQL 8.4 — Common Table Expressions](https://dev.mysql.com/doc/refman/8.4/en/with.html)
-- [MySQL 8.4 — Subqueries](https://dev.mysql.com/doc/refman/8.4/en/subqueries.html)
-- [MySQL 8.4 — Optimizing Subqueries, Derived Tables, Views, and CTEs](https://dev.mysql.com/doc/refman/8.4/en/subquery-optimization.html)
-- [SQL Server — Joins](https://learn.microsoft.com/en-us/sql/relational-databases/performance/joins?view=sql-server-ver17)
-- [SQL Server — Common Table Expressions](https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql?view=sql-server-ver17)
-- [SQL Server — Recursive CTEs](https://learn.microsoft.com/en-us/sql/t-sql/queries/recursive-common-table-expression-transact-sql?view=sql-server-ver17)
+The most important practical habit is:
 
----
+> **Define what one result row represents before writing the joins.**
 
-### Final Perspective
-
-Joins, subqueries, and CTEs are not competing features. They are complementary tools:
-
-- a **join** expresses how relations connect,
-- a **subquery** lets one query depend on another result,
-- a **CTE** names and organizes a query step,
-- a **recursive CTE** walks relationships of unknown depth.
-
-Strong SQL comes from understanding the result grain, relationship cardinality, `NULL` behavior, and execution plan—not from preferring one syntax form in every situation.
+Once the result grain is clear, choosing between a join, subquery, and CTE becomes much easier—and most duplicate-counting and filtering mistakes become easier to spot.

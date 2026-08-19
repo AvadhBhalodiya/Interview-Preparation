@@ -6,225 +6,107 @@ order: 7
 
 # Normalization vs Denormalization in Databases
 
-> A practical, interview-focused guide for developers working with relational databases and SQL.
+> A concise, practical guide for understanding database normalization, denormalization, and when to use each in real systems.
 
-## In short
+## In Short
 
-- **Normalization** stores each business fact in exactly one place so insert, update, and delete anomalies cannot arise; **denormalization** deliberately re-introduces copies or precomputed values to make a proven read path faster or simpler.
-- **1NF** — one value per column per row and no repeating groups: store repeated business facts as rows, not as `product_1`, `product_2`, `product_3` columns.
-- **2NF** — 1NF plus no partial dependency: every non-key column must depend on the *whole* composite key, so `product_name` moves out of `order_items` into `products`.
-- **3NF** — 2NF plus no transitive dependency: a non-key column must not depend on another non-key column, so customer name and email move out of `orders` into `customers`; BCNF tightens this so every determinant is a superkey.
-- 3NF is the usual practical target for a transactional (OLTP) schema; denormalized shapes — summary tables, materialized views, star schemas, caches, search indexes, CQRS read models — sit on top of it to serve read and analytics workloads.
-- A duplicated value is not always redundancy: `products.current_price` and `order_items.unit_price` are different business facts, so a transaction snapshot is legitimate design rather than a normalization error.
-- Joins are not automatically the problem — read the execution plan and fix indexes, selectivity, and N+1 queries before reshaping the schema.
+- **Normalization** keeps each business fact in the right place and minimizes unnecessary duplication.
+- **1NF** removes repeating groups and keeps values in a clear row/column structure.
+- **2NF** removes partial dependency on part of a composite key.
+- **3NF** removes transitive dependency between non-key attributes.
+- **BCNF** is stricter: every determinant should be a superkey.
+- **Denormalization** intentionally stores copied or precomputed data to optimize important read paths.
+- For most OLTP systems, a **normalized model—commonly around 3NF—is the right starting point**.
+- Denormalize only when a real workload justifies the extra consistency and maintenance cost.
+- More joins do not automatically mean a bad schema. Check the query plan and indexes first.
 
 ```mermaid
 flowchart LR
-    A[Business data] --> B{Primary workload}
-    B -->|Frequent writes and transactions| C[Normalized model]
-    B -->|Heavy reads and reporting| D[Denormalized model]
+    A[Business Data] --> B{Primary Need}
+
+    B -->|Correct writes and transactions| C[Normalized Model]
+    B -->|Fast reads and analytics| D[Denormalized Read Model]
 
     C --> E[Less duplication]
-    C --> F[Stronger consistency]
+    C --> F[Clear ownership]
     C --> G[More joins]
 
-    D --> H[Faster targeted reads]
-    D --> I[Simpler reports]
-    D --> J[More synchronization work]
+    D --> H[Fewer runtime joins]
+    D --> I[Precomputed data]
+    D --> J[Sync and freshness management]
 ```
-
-**Interview answer:** 1NF means every column holds a single value for a row, with repeating groups stored as rows instead of numbered columns. 2NF adds that no non-key column may depend on only part of a composite key, so `product_name` belongs in `products` rather than in `order_items` keyed by `(order_id, product_id)`. 3NF adds that no non-key column may depend on another non-key column, so customer name and email belong in `customers` rather than in `orders` — and 3NF is where most transactional schemas should land.
-
-**Gotcha:** Denormalizing before you have a measured read problem, and then having no documented source of truth, accepted staleness, sync mechanism, or rebuild and reconciliation path for the duplicated data — which turns a controlled projection into accidental duplication that quietly drifts.
 
 ---
 
 # 1. Overview
 
-**Normalization** and **denormalization** are two database-design approaches used to balance:
+Normalization and denormalization solve different problems.
+
+### Normalization focuses on
 
 - Data correctness
-- Storage efficiency
-- Write simplicity
-- Read performance
-- Query complexity
-- Operational scalability
+- Clear entity boundaries
+- Fewer update anomalies
+- Easier maintenance
+- Strong transactional design
 
-Normalization organizes data so that each fact is stored in the most appropriate place, usually only once. Denormalization intentionally stores some repeated or precomputed data to make important reads faster or simpler.
+### Denormalization focuses on
 
-Neither approach is universally better.
+- Faster reads
+- Simpler reporting queries
+- Precomputed aggregates
+- Read-heavy APIs
+- Analytics and search workloads
 
-A healthy production system often uses:
-
-- A **normalized transactional model** as the source of truth
-- Carefully selected **denormalized read models**, summary tables, caches, or materialized views for expensive read paths
-
----
-
-# 2. The Core Idea
-
-## 2.1 Normalization
-
-Normalization divides data into related tables and connects them using keys.
-
-Its main goals are:
-
-- Reduce unnecessary duplication
-- Prevent inconsistent values
-- Avoid insert, update, and delete anomalies
-- Make data ownership clear
-- Improve long-term maintainability
-
-> Store each business fact in one logical place.
-
-For example, a customer's email belongs in the `customers` table rather than being copied into every order row.
-
-## 2.2 Denormalization
-
-Denormalization intentionally introduces redundancy or precomputed values.
-
-Its main goals are:
-
-- Reduce joins
-- Avoid repeated calculations
-- Improve read latency
-- Simplify reporting queries
-- Support high-volume read workloads
-
-> Duplicate or precompute selected data when the performance benefit justifies the consistency cost.
-
-For example, an analytics table may store `customer_name`, `product_category`, and `daily_revenue` together so that a dashboard does not need several joins and aggregations on every request.
-
----
-
-# 3. Why Database Design Matters
-
-Poor table design can work with a small dataset and still become a serious problem later.
-
-Consider a single table that stores orders, customers, and products together:
-
-| order_id | customer_name | customer_email | product_name | unit_price | quantity |
-|---:|---|---|---|---:|---:|
-| 1001 | Asha Patel | asha@example.com | Keyboard | 60.00 | 1 |
-| 1001 | Asha Patel | asha@example.com | Mouse | 25.00 | 2 |
-| 1002 | Ravi Shah | ravi@example.com | Keyboard | 60.00 | 1 |
-
-This design duplicates:
-
-- Customer information for every purchased item
-- Product information for every order containing that product
-
-It creates several questions:
-
-- What happens when Asha changes her email?
-- What happens when the keyboard's current price changes?
-- Can a product exist before it is ordered?
-- What happens to product information if its last order is deleted?
-
-Normalization gives each business entity a clear home.
-
----
-
-# 4. Data Anomalies
-
-An **anomaly** is an unexpected data problem caused by the way information is stored.
-
-## 4.1 Update Anomaly
-
-The same fact appears in multiple rows, but only some copies are updated.
+A common production architecture is:
 
 ```text
-Before:
-Order 1001 -> asha@example.com
-Order 1005 -> asha@example.com
-Order 1012 -> asha@example.com
-
-Only one row is updated:
-Order 1001 -> asha.patel@example.com
-Order 1005 -> asha@example.com
-Order 1012 -> asha@example.com
+Normalized transactional database
+        |
+        +--> cache
+        +--> materialized view
+        +--> summary table
+        +--> search index
+        +--> analytics warehouse
 ```
 
-The database now contains conflicting email addresses for the same customer.
-
-## 4.2 Insert Anomaly
-
-A fact cannot be stored until an unrelated fact exists.
-
-Example: A new product cannot be inserted because the table requires an `order_id`, even though nobody has purchased the product yet.
-
-## 4.3 Delete Anomaly
-
-Deleting one fact unintentionally removes another fact.
-
-Example: Deleting the last order containing a product also removes the only stored copy of that product's name and price.
-
-## 4.4 How Normalization Helps
-
-```mermaid
-flowchart TD
-    A[Repeated mixed data] --> B[Update anomaly]
-    A --> C[Insert anomaly]
-    A --> D[Delete anomaly]
-
-    B --> E[Separate entities into tables]
-    C --> E
-    D --> E
-
-    E --> F[Connect tables with keys]
-    F --> G[Clear ownership of each fact]
-```
+The normalized database remains the source of truth, while other structures optimize specific access patterns.
 
 ---
 
-# 5. Keys and Functional Dependencies
+# 2. Why Normalization Is Needed
 
-Normalization is based on relationships between attributes, not only on splitting large tables.
+Consider an order table that mixes customer, order, and product information:
 
-## 5.1 Primary Key
+| order_id | customer_name | customer_email | product_name | quantity |
+|---:|---|---|---|---:|
+| 1001 | Asha Patel | asha@example.com | Keyboard | 1 |
+| 1001 | Asha Patel | asha@example.com | Mouse | 2 |
+| 1002 | Asha Patel | asha@example.com | Monitor | 1 |
 
-A **primary key** uniquely identifies a row.
+The customer's name and email are repeated in every order line.
 
-```sql
-CREATE TABLE customers (
-    customer_id BIGINT PRIMARY KEY,
-    full_name   VARCHAR(150) NOT NULL,
-    email       VARCHAR(320) NOT NULL UNIQUE
-);
-```
+This creates three classic problems.
 
-Here, `customer_id` uniquely identifies each customer.
+## 2.1 Update Anomaly
 
-## 5.2 Candidate Key
+If Asha changes her email, every duplicated copy must be updated.
 
-A **candidate key** is any minimal set of columns that can uniquely identify a row.
+If one row is missed, the database now contains conflicting values.
 
-For `customers`, possible candidate keys may be:
+## 2.2 Insert Anomaly
 
-- `customer_id`
-- `email`, when the business guarantees email uniqueness
+Suppose product information exists only inside order rows.
 
-One candidate key is selected as the primary key. Other candidate keys are normally protected with `UNIQUE` constraints.
+A new product cannot be stored until somebody places an order.
 
-## 5.3 Composite Key
+## 2.3 Delete Anomaly
 
-A **composite key** uses multiple columns.
+If the last order containing a product is deleted, the only stored information about that product may also disappear.
 
-```sql
-CREATE TABLE order_items (
-    order_id   BIGINT NOT NULL,
-    line_no    INTEGER NOT NULL,
-    product_id BIGINT NOT NULL,
-    quantity   INTEGER NOT NULL,
-    PRIMARY KEY (order_id, line_no)
-);
-```
+### Core idea
 
-The combination `(order_id, line_no)` uniquely identifies an order line.
-
-## 5.4 Functional Dependency
-
-A functional dependency is written as `X -> Y`. It means that a value of `X` determines exactly one value of `Y`.
+> Store each business fact in the table whose key logically determines that fact.
 
 Examples:
 
@@ -234,117 +116,90 @@ product_id  -> product_name, current_price
 order_id    -> customer_id, ordered_at, status
 ```
 
-Functional dependencies help identify which columns belong together.
-
-## 5.5 Determinant
-
-The left side of a functional dependency is called the **determinant**. In `product_id -> product_name`, `product_id` is the determinant.
-
-A strong normalized design ensures that important determinants are represented by candidate keys or are separated into appropriate tables.
+These relationships are called **functional dependencies**.
 
 ---
 
-# 6. Normalization
+# 3. Normal Forms
 
-Normalization is usually applied as a sequence of normal forms.
+For normal application development, the most useful normal forms are:
 
-Each normal form adds rules to reduce a particular kind of dependency problem.
-
-For most day-to-day application design, developers should understand:
-
-- 1NF
-- 2NF
-- 3NF
-- The purpose of BCNF
-
-Third Normal Form is a common practical target for transactional systems, although the correct design still depends on the domain and workload.
+1. 1NF
+2. 2NF
+3. 3NF
+4. BCNF as an additional refinement
 
 ---
 
-## 6.1 First Normal Form — 1NF
+## 3.1 First Normal Form — 1NF
 
-A table is in **First Normal Form** when:
+A table is practically treated as being in **1NF** when:
 
-- Each row is uniquely identifiable
-- Each column stores one value for that row
+- Columns hold a single value for a row
 - Repeating groups are removed
-- Similar values are stored as rows rather than numbered columns
+- Similar repeated values are represented as rows instead of numbered columns
 
-### Not in 1NF
+### Poor design
 
-`orders`
-
-| order_id | customer | product_1 | product_2 | product_3 |
-|---|---|---|---|---|
-| 1001 | Asha | Keyboard | Mouse | NULL |
+| order_id | product_1 | product_2 | product_3 |
+|---:|---|---|---|
+| 1001 | Keyboard | Mouse | NULL |
 
 Problems:
 
-- The number of products is artificially limited
-- Adding `product_4` requires a schema change
-- Queries must inspect multiple product columns
-- Product data cannot be constrained consistently
+- Number of products is artificially limited
+- Adding another product may require a schema change
+- Queries must inspect multiple columns
 
-### 1NF Design
+### Better design
 
 `orders`
 
 | order_id | customer_id |
-|---|---|
+|---:|---:|
 | 1001 | 10 |
 
 `order_items`
 
 | order_id | line_no | product_id |
-|---|---|---|
+|---:|---:|---:|
 | 1001 | 1 | 501 |
 | 1001 | 2 | 502 |
 
-### SQL
+Now each product is represented as a row.
 
-```sql
-CREATE TABLE orders (
-    order_id    BIGINT PRIMARY KEY,
-    customer_id BIGINT NOT NULL
-);
+### Practical note
 
-CREATE TABLE order_items (
-    order_id   BIGINT NOT NULL,
-    line_no    INTEGER NOT NULL,
-    product_id BIGINT NOT NULL,
-    quantity   INTEGER NOT NULL CHECK (quantity > 0),
-    PRIMARY KEY (order_id, line_no),
-    FOREIGN KEY (order_id) REFERENCES orders(order_id)
-);
-```
+1NF does not mean JSON is always wrong.
 
-### Practical Meaning
-
-1NF does **not** mean that every value must be a string or that JSON is always forbidden. It means the table should have a clear relational structure and the database should not hide repeated business facts inside numbered columns or ambiguous multi-value fields.
-
-A JSON column can be reasonable for optional, document-like attributes. It is usually a poor replacement for relational rows when individual elements must be joined, constrained, indexed, or updated independently.
+A JSON column can be useful for optional document-like attributes. It becomes a poor choice when individual values need independent joins, constraints, indexes, or updates.
 
 ---
 
-## 6.2 Second Normal Form — 2NF
+## 3.2 Second Normal Form — 2NF
 
-A table is in **Second Normal Form** when:
+A table is in **2NF** when:
 
 - It is already in 1NF
-- Every non-key column depends on the **entire** candidate key
-- There are no partial dependencies on only part of a composite key
+- Every non-key attribute depends on the **whole candidate key**
+- No non-key attribute depends on only part of a composite key
 
-> 2NF mainly matters when a table has a composite candidate key.
+2NF matters mainly when a table has a composite candidate key.
 
-### Partial Dependency Example
+### Example
 
-Suppose the primary key is `(order_id, product_id)`:
+Suppose:
+
+```text
+PRIMARY KEY (order_id, product_id)
+```
+
+and the table contains:
 
 | order_id | product_id | product_name | quantity |
 |---:|---:|---|---:|
 | 1001 | 501 | Keyboard | 1 |
 | 1001 | 502 | Mouse | 2 |
-| 1002 | 501 | Keyboard | 1 |
 
 Dependencies:
 
@@ -353,245 +208,106 @@ Dependencies:
 product_id             -> product_name
 ```
 
-`product_name` depends only on `product_id`, not on the whole composite key. Therefore, the table violates 2NF.
+`product_name` depends only on `product_id`, not on the whole composite key.
 
-### 2NF Design
-
-```sql
-CREATE TABLE products (
-    product_id   BIGINT PRIMARY KEY,
-    product_name VARCHAR(200) NOT NULL
-);
-
-CREATE TABLE order_items (
-    order_id   BIGINT NOT NULL,
-    product_id BIGINT NOT NULL,
-    quantity   INTEGER NOT NULL CHECK (quantity > 0),
-    PRIMARY KEY (order_id, product_id),
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
-);
-```
-
-Now:
+So move product details into a separate table:
 
 ```text
-product_id             -> product_name
-(order_id, product_id) -> quantity
+products(product_id, product_name)
+
+order_items(order_id, product_id, quantity)
 ```
 
-Each fact is stored in the table whose key determines it.
+That removes the partial dependency.
 
 ---
 
-## 6.3 Third Normal Form — 3NF
+## 3.3 Third Normal Form — 3NF
 
-A table is in **Third Normal Form** when:
+A table is in **3NF** when:
 
 - It is already in 2NF
-- Non-key columns do not depend transitively on the key through another non-key column
+- Non-key attributes do not depend transitively on the key through another non-key attribute
 
-A common memory aid is:
+### Example
 
-```text
-Every non-key attribute should depend on:
-1. The key
-2. The whole key
-3. Nothing but the key
-```
+Suppose `orders` contains:
 
-The phrase is useful for intuition, but actual normalization should still be based on functional dependencies and business rules.
-
-### Transitive Dependency Example
-
-Consider:
-
-| order_id | customer_id | customer_name | customer_email | ordered_at |
-|---:|---:|---|---|---|
-| 1001 | 10 | Asha Patel | asha@example.com | 2026-07-20 |
-| 1002 | 10 | Asha Patel | asha@example.com | 2026-07-21 |
+| order_id | customer_id | customer_name | customer_email |
+|---:|---:|---|---|
+| 1001 | 10 | Asha Patel | asha@example.com |
 
 Dependencies:
 
 ```text
-order_id    -> customer_id, ordered_at
+order_id    -> customer_id
 customer_id -> customer_name, customer_email
 ```
 
-Therefore: `order_id -> customer_id -> customer_name, customer_email`
+Therefore:
 
-Customer details are transitively dependent on `order_id`. They belong in the `customers` table.
-
-### 3NF Design
-
-```sql
-CREATE TABLE customers (
-    customer_id BIGINT PRIMARY KEY,
-    full_name   VARCHAR(150) NOT NULL,
-    email       VARCHAR(320) NOT NULL UNIQUE
-);
-
-CREATE TABLE orders (
-    order_id    BIGINT PRIMARY KEY,
-    customer_id BIGINT NOT NULL,
-    ordered_at  TIMESTAMP NOT NULL,
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
-);
+```text
+order_id -> customer_id -> customer_name
 ```
 
-### Important Domain Nuance
+Customer details depend on `customer_id`, so they belong in `customers`, not `orders`.
 
-Normalization depends on what a column **means**.
+### Better structure
 
-For example:
+```text
+customers(
+    customer_id,
+    full_name,
+    email
+)
 
-- `customers.email` represents the customer's current email
-- `orders.customer_email_snapshot` may represent the email used when the order was placed
+orders(
+    order_id,
+    customer_id,
+    ordered_at,
+    status
+)
+```
 
-These are different business facts. Storing both is not necessarily accidental duplication.
+A useful memory rule is:
 
-The snapshot value can be valid denormalization when historical accuracy requires it.
+> A non-key attribute should depend on the key, the whole key, and nothing but the key.
+
+This is a learning shortcut; real normalization decisions should still follow actual business dependencies.
 
 ---
 
-## 6.4 Boyce-Codd Normal Form — BCNF
+## 3.4 Boyce-Codd Normal Form — BCNF
 
 BCNF is stricter than 3NF.
 
-A relation is in BCNF when, for every non-trivial dependency `X -> Y`, `X` is a superkey.
+Its key rule is:
 
-In simpler language:
+> For every dependency `X -> Y`, `X` should be a superkey.
 
-> Every determinant must be capable of uniquely identifying a row.
+In normal application schemas, a clean 3NF design often already satisfies BCNF.
 
-Most straightforward application tables that are correctly designed in 3NF will also satisfy BCNF. Differences appear in less common designs containing overlapping candidate keys and unusual business constraints.
+BCNF becomes more important when:
 
-### Conceptual Example
+- A table has multiple candidate keys
+- Candidate keys overlap
+- Business rules create unusual functional dependencies
 
-Assume these business rules:
-
-- A student can take multiple subjects
-- Each subject is taught by one instructor
-- An instructor teaches only one subject
-
-A table containing `(student_id, subject, instructor)` may have dependencies such as:
-
-```text
-(student_id, subject) -> instructor
-instructor            -> subject
-```
-
-`instructor` determines `subject`, but `instructor` may not uniquely identify the entire row because many students can have the same instructor. This indicates a BCNF issue and suggests separating the instructor-to-subject assignment.
-
-BCNF is valuable when multiple candidate keys or unusual determinants are present.
+For most day-to-day backend development, strong understanding of **1NF, 2NF, 3NF, and the purpose of BCNF** is enough.
 
 ---
 
-## 6.5 Higher Normal Forms
+# 4. One End-to-End Example
 
-Higher normal forms address more specialized dependency patterns.
+Consider an e-commerce order.
 
-| Normal form | Main concern | Typical relevance |
-|---|---|---|
-| 4NF | Independent multi-valued dependencies | Tables mixing two unrelated one-to-many relationships |
-| 5NF | Join dependencies | Complex decompositions where facts can be reconstructed from smaller relations |
-| 6NF | Extremely fine-grained temporal decomposition | Specialized temporal or analytical systems |
-
-### 4NF Intuition
-
-Suppose a consultant can have:
-
-- Multiple skills
-- Multiple office locations
-
-If skills and locations are independent, storing every combination creates artificial multiplication:
-
-| consultant_id | skill | office |
-|---:|---|---|
-| 7 | Python | Ahmedabad |
-| 7 | Python | Mumbai |
-| 7 | SQL | Ahmedabad |
-| 7 | SQL | Mumbai |
-
-A better design is:
-
-```text
-consultant_skills(consultant_id, skill)
-consultant_offices(consultant_id, office)
-```
-
-This separates two independent multi-valued facts.
-
-For normal application development, 3NF or BCNF is usually enough. Higher forms are useful when the domain naturally contains more complex dependencies.
-
----
-
-# 7. End-to-End Normalization Example
-
-Consider an unnormalized order record:
-
-```text
-order_id: 1001
-customer: Asha Patel
-email: asha@example.com
-products: Keyboard x 1, Mouse x 2
-shipping_city: Ahmedabad
-```
-
-## 7.1 Unnormalized Table
-
-```sql
-CREATE TABLE order_data_bad (
-    order_id       BIGINT PRIMARY KEY,
-    customer_name  VARCHAR(150),
-    customer_email VARCHAR(320),
-    product_1      VARCHAR(200),
-    quantity_1     INTEGER,
-    product_2      VARCHAR(200),
-    quantity_2     INTEGER,
-    shipping_city  VARCHAR(100)
-);
-```
-
-This table mixes:
-
-- Customer facts
-- Order facts
-- Address facts
-- Product facts
-- Order-line facts
-
-## 7.2 Move Repeating Products to Rows — 1NF
-
-```text
-orders(order_id, customer_name, customer_email, shipping_city)
-order_items(order_id, product_id, product_name, quantity)
-```
-
-The repeating product columns are gone.
-
-## 7.3 Remove Partial Dependencies — 2NF
-
-In `order_items`, `product_name` depends on `product_id`, not on the whole order-line key.
-
-Move product facts into `products`:
-
-```text
-products(product_id, product_name, current_price)
-order_items(order_id, line_no, product_id, quantity, unit_price)
-```
-
-## 7.4 Remove Transitive Dependencies — 3NF
-
-Customer details depend on `customer_id`, not directly on `order_id`.
-
-Final core model:
+## 4.1 Final normalized model
 
 ```mermaid
 erDiagram
     CUSTOMERS ||--o{ ORDERS : places
     ORDERS ||--|{ ORDER_ITEMS : contains
-    PRODUCTS ||--o{ ORDER_ITEMS : referenced_by
-    CUSTOMERS ||--o{ ADDRESSES : owns
+    PRODUCTS ||--o{ ORDER_ITEMS : references
 
     CUSTOMERS {
         bigint customer_id PK
@@ -599,20 +315,11 @@ erDiagram
         varchar email UK
     }
 
-    ADDRESSES {
-        bigint address_id PK
-        bigint customer_id FK
-        varchar line1
-        varchar city
-        varchar postal_code
-    }
-
     ORDERS {
         bigint order_id PK
         bigint customer_id FK
         timestamp ordered_at
         varchar status
-        bigint shipping_address_id FK
     }
 
     PRODUCTS {
@@ -630,22 +337,13 @@ erDiagram
     }
 ```
 
-## 7.5 SQL Schema
+## 4.2 SQL schema
 
 ```sql
 CREATE TABLE customers (
     customer_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     full_name   VARCHAR(150) NOT NULL,
     email       VARCHAR(320) NOT NULL UNIQUE
-);
-
-CREATE TABLE addresses (
-    address_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    customer_id BIGINT NOT NULL,
-    line1       VARCHAR(200) NOT NULL,
-    city        VARCHAR(100) NOT NULL,
-    postal_code VARCHAR(20) NOT NULL,
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
 );
 
 CREATE TABLE products (
@@ -655,13 +353,11 @@ CREATE TABLE products (
 );
 
 CREATE TABLE orders (
-    order_id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    customer_id         BIGINT NOT NULL,
-    shipping_address_id BIGINT NOT NULL,
-    ordered_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status              VARCHAR(30) NOT NULL,
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
-    FOREIGN KEY (shipping_address_id) REFERENCES addresses(address_id)
+    order_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    ordered_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status      VARCHAR(30) NOT NULL,
+    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
 );
 
 CREATE TABLE order_items (
@@ -670,24 +366,36 @@ CREATE TABLE order_items (
     product_id BIGINT NOT NULL,
     quantity   INTEGER NOT NULL CHECK (quantity > 0),
     unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0),
+
     PRIMARY KEY (order_id, line_no),
-    FOREIGN KEY (order_id) REFERENCES orders(order_id),
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
+
+    FOREIGN KEY (order_id)
+        REFERENCES orders(order_id),
+
+    FOREIGN KEY (product_id)
+        REFERENCES products(product_id)
 );
 ```
 
-## 7.6 Why `unit_price` Belongs in `order_items`
+## 4.3 Why `current_price` and `unit_price` both exist
 
-At first glance, storing both `products.current_price` and `order_items.unit_price` may look redundant.
+At first, these columns may look duplicated:
 
-They represent different facts:
+```text
+products.current_price
+order_items.unit_price
+```
 
-- `products.current_price`: the price currently offered
-- `order_items.unit_price`: the price charged for this specific order line
+But they represent different facts.
 
-When the product price changes tomorrow, historical orders must not change. Therefore, `unit_price` is a valid transaction snapshot, not a normalization error.
+- `current_price` = price offered now
+- `unit_price` = price actually charged for this order line
 
-## 7.7 Querying the Normalized Model
+If the product price changes tomorrow, historical orders should not change.
+
+So this is not accidental redundancy. It is correct historical modeling.
+
+## 4.4 Reading the normalized model
 
 ```sql
 SELECT
@@ -709,464 +417,158 @@ WHERE o.order_id = 1001
 ORDER BY oi.line_no;
 ```
 
-The query contains joins, but the model gives each fact one clear owner and preserves consistency.
+This query uses several joins, but each fact has one clear owner.
+
+That is usually a better starting point than duplicating data simply to avoid joins.
 
 ---
 
-# 8. Denormalization
+# 5. Denormalization
 
-Denormalization intentionally stores derived, copied, or combined data to optimize a known workload.
+Denormalization means intentionally storing copied, combined, or precomputed data to optimize a known workload.
 
-It should normally happen **after**:
+Use it when the benefit is clear and the consistency model is understood.
 
-1. The correct normalized model is understood
-2. The slow query or workload is measured
-3. Indexes and query improvements are considered
-4. The consistency model is explicitly defined
+## 5.1 Common techniques
 
-## 8.1 Why Denormalize?
+### Precomputed totals
 
-Common reasons include:
-
-- A dashboard repeatedly joins large tables
-- Aggregations scan millions of rows
-- Read latency is more important than immediate consistency
-- A distributed service cannot perform cross-service joins efficiently
-- Historical snapshots must remain unchanged
-- Analytics tools work better with star-schema or flattened data
-- A public API needs a stable read representation
-
-## 8.2 What Denormalization Costs
-
-Denormalization introduces additional responsibilities:
-
-- More storage
-- More complex writes
-- Synchronization logic
-- Risk of stale data
-- Possible conflicting values
-- Backfill and rebuild procedures
-- More operational monitoring
-
-The central trade-off is faster or simpler reads versus more expensive consistency management.
-
-## 8.3 Controlled vs Accidental Duplication
-
-**Controlled denormalization** has:
-
-- A documented source of truth
-- A clear refresh or synchronization mechanism
-- Defined acceptable staleness
-- Tests and monitoring
-- A rebuild strategy
-
-**Accidental duplication** has:
-
-- Multiple writable copies
-- No clear owner
-- No consistency rule
-- Manual correction when values disagree
-
-The first can be a sound architecture. The second becomes technical debt.
-
----
-
-# 9. Common Denormalization Techniques
-
-## 9.1 Copying Frequently Read Attributes
-
-A read-heavy order list may store a customer-name snapshot:
+Instead of recalculating an order total every time:
 
 ```sql
-ALTER TABLE orders
-ADD COLUMN customer_name_snapshot VARCHAR(150);
-```
-
-Possible purposes:
-
-- Avoid a join in a critical read path
-- Preserve the name shown when the order was placed
-- Keep order history independent of later profile changes
-
-The business meaning must be explicit. Is it:
-
-- A historical snapshot that should never change?
-- A cached copy that should follow the customer record?
-
-These require different update rules.
-
----
-
-## 9.2 Storing Precomputed Totals
-
-Without denormalization:
-
-```sql
-SELECT
-    order_id,
-    SUM(quantity * unit_price) AS total_amount
+SELECT SUM(quantity * unit_price)
 FROM order_items
-WHERE order_id = 1001
-GROUP BY order_id;
-```
-
-Denormalized design:
-
-```sql
-ALTER TABLE orders
-ADD COLUMN total_amount NUMERIC(14, 2) NOT NULL DEFAULT 0;
-```
-
-Benefits:
-
-- Fast order-list queries
-- Fast sorting by total
-- Less repeated aggregation
-
-Costs:
-
-- Every insert, update, or deletion of an order item must update the total
-- Concurrent updates must be handled transactionally
-- A repair job may be needed if values drift
-
-A safe transaction can update both the line and total together:
-
-```sql
-BEGIN;
-
-INSERT INTO order_items (
-    order_id,
-    line_no,
-    product_id,
-    quantity,
-    unit_price
-)
-VALUES (1001, 3, 503, 1, 40.00);
-
-UPDATE orders
-SET total_amount = total_amount + 40.00
 WHERE order_id = 1001;
-
-COMMIT;
 ```
 
-The exact approach depends on whether line items can later be edited, deleted, discounted, taxed, or refunded.
+you may store:
 
----
-
-## 9.3 Summary Tables
-
-A dashboard may require daily sales totals:
-
-```sql
-CREATE TABLE daily_sales_summary (
-    sales_date       DATE PRIMARY KEY,
-    order_count      BIGINT NOT NULL,
-    gross_revenue    NUMERIC(16, 2) NOT NULL,
-    average_order_value NUMERIC(16, 2) NOT NULL,
-    refreshed_at     TIMESTAMP NOT NULL
-);
+```text
+orders.total_amount
 ```
 
-Instead of scanning all orders for every page load, a scheduled process updates the summary.
+This speeds reads but means writes must keep the stored total correct.
 
-This works well when:
+### Materialized views
 
-- The dashboard tolerates delayed data
-- The metric definition is stable
-- Raw transactions remain the source of truth
-
----
-
-## 9.4 Materialized Views
-
-A normal view stores a query definition and executes the underlying query when accessed. A materialized view stores the query result and can be refreshed later.
+Useful when an expensive query is read frequently but does not need real-time freshness.
 
 ```sql
 CREATE MATERIALIZED VIEW product_sales_summary AS
 SELECT
-    oi.product_id,
-    p.product_name,
-    SUM(oi.quantity) AS units_sold,
-    SUM(oi.quantity * oi.unit_price) AS revenue
-FROM order_items AS oi
-JOIN products AS p
-    ON p.product_id = oi.product_id
-GROUP BY oi.product_id, p.product_name;
+    product_id,
+    SUM(quantity) AS units_sold,
+    SUM(quantity * unit_price) AS revenue
+FROM order_items
+GROUP BY product_id;
 ```
 
-Add an index for lookup performance:
+The database stores the query result and refreshes it when required.
 
-```sql
-CREATE UNIQUE INDEX product_sales_summary_product_id_idx
-    ON product_sales_summary (product_id);
+### Summary tables
+
+Useful for dashboards:
+
+```text
+daily_sales_summary(
+    sales_date,
+    order_count,
+    gross_revenue,
+    refreshed_at
+)
 ```
 
-Refresh when appropriate: `REFRESH MATERIALIZED VIEW product_sales_summary;`
+Instead of scanning millions of transactions for every dashboard request, the application reads pre-aggregated rows.
 
-Materialized views are useful when:
+### Read models and CQRS
 
-- The source query is expensive
-- Results are read frequently
-- Some staleness is acceptable
-- Rebuilding or refreshing has a manageable cost
+A system may use:
 
-They are less suitable when every request requires fully current data and refresh overhead is high.
+```text
+Normalized write model
+        |
+        | events / change stream
+        v
+Denormalized read model
+```
+
+The write side protects business rules and transactions.
+
+The read side can be shaped specifically for:
+
+- APIs
+- search
+- filtering
+- sorting
+- dashboards
+
+This is useful at scale, but it introduces eventual consistency and projection-management complexity.
+
+### Analytics star schema
+
+Analytics systems often use:
+
+```text
+fact_sales
+    |
+    +-- dim_date
+    +-- dim_customer
+    +-- dim_product
+```
+
+This structure is optimized for reporting and aggregation rather than transactional writes.
 
 ---
 
-## 9.5 Read Models and CQRS
-
-In Command Query Responsibility Segregation, writes and reads use different models.
-
-```mermaid
-flowchart LR
-    A[Client] --> B[Command API]
-    B --> C[Normalized write database]
-    C --> D[Domain event or change stream]
-    D --> E[Projection worker]
-    E --> F[Denormalized read model]
-    A --> G[Query API]
-    G --> F
-```
-
-The write model focuses on:
-
-- Business rules
-- Transactions
-- Referential integrity
-- Correct state changes
-
-The read model focuses on:
-
-- Fast lookup
-- API-specific response shapes
-- Search
-- Sorting and filtering
-- Prejoined or precomputed data
-
-This approach is powerful but adds eventual consistency, event handling, replay, monitoring, and operational complexity. It should be used when the workload justifies it.
-
----
-
-## 9.6 Star Schema
-
-Analytics systems commonly use a star schema:
-
-```mermaid
-erDiagram
-    FACT_SALES }o--|| DIM_DATE : date_key
-    FACT_SALES }o--|| DIM_CUSTOMER : customer_key
-    FACT_SALES }o--|| DIM_PRODUCT : product_key
-    FACT_SALES }o--|| DIM_STORE : store_key
-
-    FACT_SALES {
-        bigint date_key FK
-        bigint customer_key FK
-        bigint product_key FK
-        bigint store_key FK
-        integer quantity
-        numeric revenue
-    }
-
-    DIM_DATE {
-        bigint date_key PK
-        date full_date
-        integer month
-        integer quarter
-        integer year
-    }
-
-    DIM_CUSTOMER {
-        bigint customer_key PK
-        varchar customer_name
-        varchar segment
-        varchar city
-    }
-
-    DIM_PRODUCT {
-        bigint product_key PK
-        varchar product_name
-        varchar category
-        varchar brand
-    }
-
-    DIM_STORE {
-        bigint store_key PK
-        varchar store_name
-        varchar region
-    }
-```
-
-Dimension tables intentionally group descriptive attributes that may have been spread across several normalized operational tables.
-
-This makes analytical queries easier:
-
-```sql
-SELECT
-    d.year,
-    p.category,
-    SUM(f.revenue) AS revenue
-FROM fact_sales AS f
-JOIN dim_date AS d
-    ON d.date_key = f.date_key
-JOIN dim_product AS p
-    ON p.product_key = f.product_key
-GROUP BY d.year, p.category
-ORDER BY d.year, revenue DESC;
-```
-
-A star schema is not usually a replacement for the transactional database. It is a workload-specific model populated from operational sources.
-
----
-
-## 9.7 Caches and Search Indexes
-
-Not all denormalized data must live in the main relational database.
-
-Examples:
-
-- Redis object cache
-- Elasticsearch/OpenSearch document index
-- API response cache
-- Data warehouse tables
-- Key-value read store
-
-A search document may combine:
-
-```json
-{
-  "product_id": 501,
-  "name": "Mechanical Keyboard",
-  "category": "Accessories",
-  "brand": "ExampleTech",
-  "average_rating": 4.6,
-  "available_stock": 82
-}
-```
-
-This structure is excellent for search and filtering, but the relational database may remain the authoritative system for product and inventory updates.
-
----
-
-# 10. Normalization vs Denormalization
+# 6. Normalization vs Denormalization
 
 | Area | Normalization | Denormalization |
 |---|---|---|
-| Main objective | Correctness and maintainability | Read speed and query simplicity |
-| Data duplication | Minimized | Intentionally introduced |
-| Data consistency | Easier to enforce | Requires synchronization |
-| Write operations | Usually simpler and localized | May update multiple representations |
-| Read operations | May require joins and aggregation | Often fewer joins and calculations |
-| Storage usage | Usually lower | Usually higher |
-| Schema clarity | Strong entity boundaries | Workload-specific shapes |
-| Update anomalies | Reduced | Possible when controls are weak |
-| Best fit | OLTP and source-of-truth data | Reporting, analytics, caches, read models |
-| Freshness | Usually immediate | May be immediate or eventually consistent |
-| Recovery | Restore authoritative tables | May require projection rebuilds or refreshes |
+| Main goal | Correctness and maintainability | Faster or simpler reads |
+| Duplication | Minimized | Intentionally introduced |
+| Write behavior | Usually localized | May update several representations |
+| Read behavior | May need joins | Often fewer joins/calculations |
+| Consistency | Easier to enforce | Requires sync rules |
+| Storage | Usually lower | Usually higher |
+| Best fit | OLTP / source of truth | Analytics / read models / caches |
+| Freshness | Usually immediate | May be eventual |
+| Operational cost | Lower | Higher |
 
-## 10.1 The Practical Balance
+### Practical rule
 
-A common production arrangement is:
+```text
+OLTP:
+Normalize first.
 
-```mermaid
-flowchart LR
-    N[(Normalized transactional schema)]
-    N --> IX[Indexes for common queries]
-    N --> VW[Views for reusable query logic]
-    N --> MV[Materialized views for expensive reads]
-    N --> ST[Summary tables for dashboards]
-    N --> SI[Search index for full-text search]
-    N --> WH["Warehouse / star schema for analytics"]
+Read-heavy path:
+Measure first.
+
+If still too slow:
+Denormalize only that path.
 ```
-
-The normalized model protects the meaning of the data. Denormalized models optimize specific access patterns.
 
 ---
 
-# 11. OLTP vs Analytics
+# 7. Performance and Choosing the Right Design
 
-## 11.1 OLTP Systems
+Normalization does not automatically make a system slow.
 
-Online Transaction Processing systems handle operational activities such as:
+Joins are normal relational operations and can perform very well when the schema and indexes support the access pattern.
 
-- Creating an order
-- Updating inventory
-- Recording a payment
-- Changing an account setting
-- Booking a ticket
+Before denormalizing, check:
 
-Typical characteristics:
+1. Query execution plan
+2. Missing indexes
+3. Join selectivity
+4. Unnecessary `SELECT *`
+5. Large sorts or aggregations
+6. Application-level N+1 queries
+7. Repeated reads that could be cached
+8. Whether the query is genuinely important and frequent
 
-- Many small reads and writes
-- Strong transaction requirements
-- Concurrent users
-- Low-latency point lookups
-- Frequent state changes
+## 7.1 Useful indexes
 
-A normalized model is generally a strong starting point.
-
-## 11.2 Analytical Systems
-
-Analytical workloads include:
-
-- Revenue dashboards
-- Cohort analysis
-- Trend reporting
-- Business intelligence
-- Machine-learning feature extraction
-
-Typical characteristics:
-
-- Fewer writes
-- Large scans
-- Aggregations over many rows
-- Historical analysis
-- Dimension-based grouping
-
-Denormalized star schemas, columnar stores, materialized views, and summary tables are common.
-
-## 11.3 Hybrid Systems
-
-Modern applications frequently contain both workloads.
-
-Avoid forcing one physical model to serve every need.
-
-```mermaid
-flowchart LR
-    A[Application] --> B[Normalized OLTP database]
-    B --> C[Change data capture or ETL]
-    C --> D[Warehouse or lakehouse]
-    D --> E[Denormalized analytical model]
-    E --> F[Dashboards and reports]
-```
-
-The transactional database handles correct writes. The analytical platform handles large read workloads without overloading production transactions.
-
----
-
-# 12. Performance Considerations
-
-## 12.1 More Joins Do Not Automatically Mean Bad Design
-
-A join is a normal relational operation. Modern database engines can execute well-indexed joins efficiently.
-
-A normalized schema should not be flattened only because a query contains three or four joins.
-
-Before denormalizing, inspect:
-
-- Query execution plan
-- Row counts and selectivity
-- Missing or unsuitable indexes
-- Unnecessary columns
-- Filters applied too late
-- Large sorts or hash operations
-- Repeated queries that could be cached
-- Network and application-level N+1 queries
-
-## 12.2 Index Foreign Keys and Access Paths Appropriately
-
-Example indexes:
+Foreign keys define relationships, but your database may still need indexes on the referencing columns used by queries.
 
 ```sql
 CREATE INDEX orders_customer_id_idx
@@ -1179,364 +581,125 @@ CREATE INDEX orders_customer_date_idx
     ON orders (customer_id, ordered_at DESC);
 ```
 
-Indexes improve many reads but add storage and write overhead. They should match real query patterns.
-
-## 12.3 Select Only Required Columns
-
-Avoid unnecessary data transfer:
-
-```sql
--- Less efficient when the application needs only three columns
-SELECT *
-FROM orders;
-
--- Better aligned with the use case
-SELECT order_id, ordered_at, status
-FROM orders
-WHERE customer_id = 10
-ORDER BY ordered_at DESC;
-```
-
-## 12.4 Use Execution Plans
-
-In PostgreSQL-compatible syntax:
+## 7.2 Use the execution plan
 
 ```sql
 EXPLAIN ANALYZE
 SELECT
     o.order_id,
-    c.full_name,
-    SUM(oi.quantity * oi.unit_price) AS total_amount
-FROM orders AS o
-JOIN customers AS c
-    ON c.customer_id = o.customer_id
-JOIN order_items AS oi
-    ON oi.order_id = o.order_id
-WHERE o.ordered_at >= TIMESTAMP '2026-07-01 00:00:00'
-GROUP BY o.order_id, c.full_name;
-```
-
-Measure before changing the schema. The actual bottleneck may be a missing index, inaccurate statistics, an oversized result set, or application behavior rather than normalization itself.
-
-## 12.5 Compare Total System Cost
-
-A denormalized read may be faster, but evaluate the full cost:
-
-```text
-Read benefit
-- Lower query latency
-- Fewer joins
-- Less CPU per request
-
-Write and operational cost
-- More write operations
-- Synchronization jobs
-- Event processing
-- Rebuild procedures
-- Drift detection
-- Additional tests and alerts
-```
-
-A local query optimization can create global system complexity.
-
----
-
-# 13. Maintaining Consistency in Denormalized Data
-
-When the same logical fact exists in multiple places, decide which copy is authoritative.
-
-## 13.1 Single Source of Truth
-
-For example, `customers.full_name` is the authoritative value and `customer_order_summary.customer_name` is a read projection of it. Only the authoritative value should normally be edited directly.
-
-## 13.2 Same-Transaction Updates
-
-Use one database transaction when all copies live in the same database and must remain immediately consistent.
-
-```sql
-BEGIN;
-
-UPDATE customers
-SET full_name = 'Asha P. Patel'
-WHERE customer_id = 10;
-
-UPDATE customer_order_summary
-SET customer_name = 'Asha P. Patel'
-WHERE customer_id = 10;
-
-COMMIT;
-```
-
-This provides strong consistency but increases coupling and write work.
-
-## 13.3 Database Triggers
-
-A trigger can update derived data automatically.
-
-Advantages:
-
-- Runs close to the data
-- Covers writes from multiple applications
-- Can preserve atomicity
-
-Trade-offs:
-
-- Hidden write behavior
-- Harder debugging
-- Risk of complex trigger chains
-- Database-specific implementation
-
-Use triggers for focused invariants, not as an invisible application layer.
-
-## 13.4 Asynchronous Events
-
-A service writes authoritative data and publishes an event:
-
-```json
-{
-  "event_type": "CustomerNameChanged",
-  "customer_id": 10,
-  "new_name": "Asha P. Patel",
-  "occurred_at": "2026-07-27T10:30:00Z"
-}
-```
-
-Projection consumers update denormalized read models.
-
-This provides scalability and service independence, but introduces eventual consistency.
-
-The implementation should address:
-
-- Idempotency
-- Duplicate events
-- Event ordering
-- Retry and dead-letter handling
-- Schema evolution
-- Projection rebuilds
-- Observability
-
-## 13.5 Scheduled Refresh
-
-For dashboards, a periodic refresh may be enough:
-
-```text
-Every 15 minutes:
-1. Recompute daily metrics
-2. Replace or upsert summary rows
-3. Record refreshed_at
-4. Alert if refresh fails
-```
-
-The UI should expose freshness when it matters.
-
-## 13.6 Reconciliation
-
-For important derived values, run a comparison job:
-
-```sql
-SELECT
-    o.order_id,
-    o.total_amount AS stored_total,
-    SUM(oi.quantity * oi.unit_price) AS calculated_total
+    SUM(oi.quantity * oi.unit_price) AS total
 FROM orders AS o
 JOIN order_items AS oi
     ON oi.order_id = o.order_id
-GROUP BY o.order_id, o.total_amount
-HAVING o.total_amount <> SUM(oi.quantity * oi.unit_price);
+WHERE o.customer_id = 10
+GROUP BY o.order_id;
 ```
 
-This detects drift between stored totals and source rows.
+The actual bottleneck may be an index, row count, sort, poor filtering, or application behavior—not normalization itself.
 
----
-
-# 14. How to Choose
-
-Use a workload-driven process rather than choosing from theory alone.
+## 7.3 Decision flow
 
 ```mermaid
 flowchart TD
-    A[Start with business rules] --> B[Design clear normalized entities]
+    A[Understand business rules] --> B[Design normalized schema]
     B --> C[Add constraints and useful indexes]
-    C --> D[Measure representative queries]
+    C --> D[Measure real queries]
     D --> E{Performance target met?}
+
     E -->|Yes| F[Keep normalized design]
     E -->|No| G[Optimize query and indexes]
+
     G --> H{Target met?}
     H -->|Yes| F
-    H -->|No| I{Is the slow read frequent and important?}
-    I -->|No| J[Accept cost or redesign request]
-    I -->|Yes| K[Choose controlled denormalization]
+    H -->|No| I{Important repeated read path?}
+
+    I -->|No| J[Keep design simple]
+    I -->|Yes| K[Add controlled denormalization]
+
     K --> L[Define source of truth]
-    L --> M[Define freshness and sync mechanism]
-    M --> N[Add monitoring and rebuild strategy]
+    L --> M[Define freshness and sync]
+    M --> N[Add rebuild and monitoring]
 ```
-
-## 14.1 Prefer Normalization When
-
-- Data changes frequently
-- Strong consistency is required
-- Multiple workflows update the same entities
-- Business rules are still evolving
-- Storage duplication would be large
-- The database is the authoritative transactional system
-- Joins perform acceptably with proper indexes
-
-## 14.2 Consider Denormalization When
-
-- A measured read path is too slow
-- The same expensive aggregation runs repeatedly
-- Read volume is much higher than write volume
-- Some staleness is acceptable
-- Cross-service joins are impractical
-- A stable API or search document needs a flattened shape
-- Analytics requires dimension-oriented modeling
-- Historical snapshots are business requirements
-
-## 14.3 Questions to Answer Before Denormalizing
-
-1. What exact query or workload is slow?
-2. What latency or throughput target must be met?
-3. Is the query plan understood?
-4. Can an index, partitioning strategy, cache, or query rewrite solve it?
-5. Which table remains the source of truth?
-6. How stale may the copy become?
-7. How will updates be propagated?
-8. How will failures and retries work?
-9. Can the denormalized representation be rebuilt?
-10. How will drift be detected?
 
 ---
 
-# 15. Practical Architecture Patterns
+# 8. Practical Best Practices
 
-## 15.1 Normalized Core with Indexed Queries
+## Data modeling
 
-Use when the relational database can meet the workload directly.
+- Model business entities, not individual UI screens.
+- Give each table a clear primary key.
+- Use foreign keys where appropriate.
+- Protect alternate candidate keys with `UNIQUE`.
+- Use `NOT NULL`, `CHECK`, and suitable data types.
+- Keep current values separate from historical transaction facts.
+- Use 3NF as a practical starting point for transactional schemas.
 
-```text
-API -> normalized tables -> indexed joins -> response
-```
+## Performance
 
-This is the simplest option operationally and should be the default starting point for many applications.
-
-## 15.2 Normalized Core with Materialized Reporting View
-
-Use when an expensive report can tolerate refresh delay.
-
-```text
-Normalized tables -> materialized view -> reporting API
-```
-
-Good for:
-
-- Product sales summaries
-- Monthly account totals
-- Leaderboards
-- Dashboard widgets
-
-## 15.3 Normalized Core with Cache
-
-Use when the same data is requested repeatedly and invalidation is manageable.
-
-```mermaid
-flowchart LR
-    REQ[Request] --> C[(Cache)]
-    C -->|Miss| DB[(Normalized database)]
-```
-
-The database schema remains correct while the cache absorbs repeated reads.
-
-## 15.4 Transactional Database with Search Index
-
-Use when search requirements exceed normal relational lookup patterns.
-
-```text
-Normalized database -> change stream -> search index
-Application search ------------------> search index
-```
-
-Good for:
-
-- Full-text search
-- Faceted filtering
-- Typo tolerance
-- Ranking
-
-The search index is a projection, not normally the transaction authority.
-
-## 15.5 Operational Database with Analytics Warehouse
-
-Use when production transactions and business intelligence have very different workload shapes.
-
-```text
-OLTP database -> CDC/ETL -> warehouse -> star schema -> BI
-```
-
-This prevents analytical scans from competing with customer-facing transactions.
-
-## 15.6 Microservice-Owned Data with API Composition
-
-Each service owns a normalized model for its domain:
-
-```text
-Customer Service -> customer data
-Order Service    -> order data
-Catalog Service  -> product data
-```
-
-A gateway may compose results for low-volume requests. For high-volume reads, an event-driven denormalized projection may be more efficient.
-
-The key rule is that ownership must remain clear. A copied customer name in the order read model does not make the Order Service the authoritative owner of customer identity.
-
----
-
-# 16. Best-Practice Checklist
-
-## Data Modeling
-
-- Define entities from business meaning, not from one UI screen
-- Give every table a stable key
-- Use foreign keys where the architecture allows them
-- Protect candidate keys with `UNIQUE` constraints
-- Use `NOT NULL`, `CHECK`, and appropriate data types
-- Separate current values from historical snapshots
-- Normalize transactional data to a practical level, commonly 3NF
-
-## Query and Performance Work
-
-- Test with realistic data volume and distribution
-- Inspect execution plans
-- Index actual filter, join, and ordering patterns
-- Avoid selecting unused columns
-- Remove application-level N+1 queries
-- Cache repeated reads before redesigning the source model unnecessarily
+- Test with realistic data volume.
+- Read execution plans before redesigning tables.
+- Index common join, filter, and ordering columns.
+- Avoid application-level N+1 queries.
+- Select only the columns needed.
+- Cache frequently repeated reads when appropriate.
 
 ## Denormalization
 
-- Denormalize for a measured and important workload
-- Document the source of truth
-- Define maximum acceptable staleness
-- Prefer one-way projection from authority to read model
-- Make consumers idempotent when using events
-- Provide a refresh or rebuild procedure
-- Monitor lag, failures, and drift
-- Keep derived columns semantically clear with names such as `*_snapshot`, `*_cached`, or `*_total`
+When a denormalized copy exists, define:
+
+- The authoritative source
+- Maximum acceptable staleness
+- How updates propagate
+- What happens when propagation fails
+- How the derived data can be rebuilt
+- How drift is detected
+
+A useful principle is:
+
+> One authoritative write model, many rebuildable read representations.
 
 ---
 
-# 17. References
+# 9. Final Perspective
 
-The concepts and implementation notes in this guide align with current official database and architecture documentation available in July 2026:
+Normalization and denormalization are not competing rules.
 
-1. [Microsoft Learn — Description of database normalization basics](https://learn.microsoft.com/en-us/office/troubleshoot/access/database-normalization-description)
-2. [Oracle Database Data Warehousing Guide — Data warehouse logical design](https://docs.oracle.com/en/database/oracle/oracle-database/26/dwhsg/data-warehouse-logical-design.html)
-3. [PostgreSQL 18 Documentation — Data Definition](https://www.postgresql.org/docs/current/ddl.html)
-4. [PostgreSQL 18 Documentation — Indexes](https://www.postgresql.org/docs/current/indexes.html)
-5. [PostgreSQL 18 Documentation — Materialized Views](https://www.postgresql.org/docs/current/rules-materializedviews.html)
-6. [PostgreSQL 18 Documentation — CREATE MATERIALIZED VIEW](https://www.postgresql.org/docs/current/sql-creatematerializedview.html)
-7. [Microsoft Learn — CQRS pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs)
-8. [Microsoft Learn — Star schema guidance](https://learn.microsoft.com/en-us/power-bi/guidance/star-schema)
+They are tools for different workloads.
+
+```text
+Normalization
+    -> models the truth clearly
+    -> protects writes
+    -> reduces anomalies
+
+Denormalization
+    -> optimizes proven read paths
+    -> reduces repeated work
+    -> accepts extra consistency cost
+```
+
+For most backend systems:
+
+> **Normalize the source of truth first. Measure real performance. Denormalize only where the workload proves that you need it.**
 
 ---
 
-> **Final perspective:** Normalize to model the truth clearly. Denormalize to serve a proven workload efficiently. The strongest database designs do both deliberately.
+# 10. References
+
+Updated against current official documentation available in August 2026:
+
+1. PostgreSQL 18 Documentation — Materialized Views  
+   https://www.postgresql.org/docs/current/rules-materializedviews.html
+
+2. PostgreSQL 18 Documentation — CREATE MATERIALIZED VIEW  
+   https://www.postgresql.org/docs/current/sql-creatematerializedview.html
+
+3. Oracle AI Database 26ai — Data Warehousing Logical Design  
+   https://docs.oracle.com/en/database/oracle/oracle-database/26/dwhsg/data-warehouse-logical-design.html
+
+4. Oracle AI Database 26ai — Data Warehousing Glossary  
+   https://docs.oracle.com/en/database/oracle/oracle-database/26/dwhsg/glossary.html
+
+5. Microsoft Azure Architecture Center — CQRS Pattern  
+   https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs

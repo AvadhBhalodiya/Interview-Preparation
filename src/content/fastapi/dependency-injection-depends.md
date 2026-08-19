@@ -7,174 +7,105 @@ updated: "July 27, 2026"
 
 # FastAPI Dependency Injection (`Depends`)
 
-> Understand how FastAPI resolves and injects reusable request-level logic such as database sessions, authentication, pagination, configuration, and authorization.
->
-> **Examples:** Python 3.10+ and modern `Annotated` syntax
+> FastAPI dependency injection lets an endpoint **declare what it needs**—such as a database session, authenticated user, pagination values, or service object—and FastAPI resolves and injects those values before the endpoint runs.
 
-## In short
-
-- `Depends` lets a function declare what it needs; FastAPI inspects, resolves, and injects it before the endpoint runs.
-- Modern FastAPI code wraps repeated dependencies in `Annotated` aliases, e.g. `CurrentUser = Annotated[User, Depends(get_current_user)]`, instead of repeating `Depends(...)` inline.
-- Dependencies can depend on each other, forming a graph FastAPI resolves bottom-up; each result is cached once per request by default (`use_cache=True`).
-- Use `yield` with `try/finally` for anything needing cleanup (DB sessions, clients); `scope="request"` (default) cleans up after the response is sent, `scope="function"` cleans up before it.
-- Attach dependencies at the parameter (need the value), route decorator (need only the side effect), router, or app level (`include_router`, `FastAPI(dependencies=...)`).
-- Use `Security()` instead of `Depends()` only when OAuth2 scopes need to appear in OpenAPI.
-- `app.dependency_overrides` swaps a production dependency for a test double without touching endpoint code.
-
-```mermaid
-flowchart TD
-    A[Incoming HTTP request] --> B[Inspect endpoint dependencies]
-    B --> C[Build or reuse dependency graph]
-    C --> D[Resolve sub-dependencies]
-    D --> E[Read and validate request data]
-    E --> F[Execute dependencies]
-    F --> G[Inject returned values]
-    G --> H[Execute endpoint]
-    H --> I[Create response]
-    I --> J[Run dependency cleanup]
-```
-
-**Interview answer:** `Depends` is FastAPI's dependency injection marker — a callable that FastAPI inspects, resolves (including its own sub-dependencies), executes, and injects into the endpoint before the handler runs. It exists so shared logic like auth, DB sessions, and pagination is written once and reused across routes instead of duplicated in every handler, and it makes testing easy since `app.dependency_overrides` can swap any dependency for a fake without touching endpoint code.
-
-**Gotcha:** Writing `Depends(get_db())` instead of `Depends(get_db)` — calling the dependency immediately passes its return value (or generator object) to `Depends`, instead of giving FastAPI the callable it needs to inspect and invoke itself.
+> **Examples:** Python 3.10+ with modern `Annotated` syntax.
 
 ---
 
-# 1. What Dependency Injection Means
+## Index
 
-Dependency Injection, usually called **DI**, means that a function declares what it needs, while another system creates or retrieves those required objects.
+1. Dependency Injection Mental Model
+2. How `Depends` Works
+3. Reusable Dependencies with `Annotated`
+4. Sub-dependencies and Request Caching
+5. Dependencies with `yield`
+6. Authentication and Authorization
+7. Where Dependencies Can Be Applied
+8. Sync vs Async Dependencies
+9. `Depends` vs Middleware
+10. `Depends` vs `Security`
+11. Testing with Dependency Overrides
+12. Practical Example
+13. Best-Practice Summary
 
-Without dependency injection, an endpoint creates everything itself:
+---
+
+# 1. Dependency Injection Mental Model
+
+Dependency Injection (DI) means a function **declares its requirements**, while another system provides them.
+
+Without DI, an endpoint often creates infrastructure itself:
 
 ```python
 @app.get("/orders")
 def list_orders():
-    db = create_database_session()
+    db = create_session()
     user = authenticate_request()
-    orders = load_orders(db, user)
-    db.close()
 
-    return orders
+    try:
+        return load_orders(db, user)
+    finally:
+        db.close()
 ```
 
-This endpoint is responsible for too many things:
+The endpoint now handles database lifecycle, authentication, and business work.
 
-- Creating and closing the database session
-- Authenticating the user
-- Loading business data
-- Handling the HTTP response
-
-With FastAPI dependency injection, the endpoint only declares its requirements:
+With FastAPI DI:
 
 ```python
 @app.get("/orders")
 def list_orders(
     db: DbSession,
-    current_user: CurrentUser,
+    user: CurrentUser,
 ):
-    return load_orders(db, current_user)
+    return load_orders(db, user)
 ```
 
-FastAPI resolves `DbSession` and `CurrentUser` before calling the endpoint.
+The endpoint only describes what it needs.
 
-## Simple mental model
+### Mental model
 
-| Endpoint says | FastAPI does |
-| --- | --- |
-| I need a database | Create or retrieve a database session |
-| I need a user | Validate the request and load the user |
-| I need pagination | Read and validate query parameters |
+| Endpoint declares | FastAPI resolves |
+|---|---|
+| `DbSession` | Database session |
+| `CurrentUser` | Authenticated user |
+| `Pagination` | Validated query parameters |
+| `OrderServiceDep` | Ready-to-use service |
 
-The endpoint receives ready-to-use values.
+```mermaid
+flowchart LR
+    A[HTTP Request] --> B[Resolve Dependencies]
+    B --> C[Inject Values]
+    C --> D[Run Endpoint]
+    D --> E[Build Response]
+    E --> F[Dependency Cleanup]
+```
 
----
+The important idea is:
 
-# 2. Why FastAPI Uses Dependency Injection
-
-`Depends` is useful for logic that is shared across multiple endpoints.
-
-Common real-world use cases include:
-
-- Database sessions
-- Authentication
-- Role and permission checks
-- Tenant resolution
-- Pagination and filtering
-- API-key verification
-- Request context creation
-- Repositories and service objects
-- Feature-flag evaluation
-- Configuration access
-- Rate-limit checks
-- External client creation and cleanup
-
-## Main benefits
-
-### Reusability
-
-Write authentication or database setup once and reuse it across routes.
-
-### Separation of concerns
-
-An endpoint focuses on application behavior instead of infrastructure setup.
-
-### Testability
-
-Production dependencies can be replaced with test implementations.
-
-### Type safety
-
-Injected values can have proper Python type annotations and editor support.
-
-### Automatic OpenAPI integration
-
-When a dependency declares query parameters, headers, cookies, or security schemes, FastAPI can include them in the generated API schema.
+> **Endpoints describe requirements; dependencies handle request-level setup and reusable checks.**
 
 ---
 
-# 3. How `Depends` Works
+# 2. How `Depends` Works
 
-The modern signature is conceptually:
+The common form is:
 
 ```python
-Depends(
-    dependency=None,
-    *,
-    use_cache=True,
-    scope=None,
-)
-
-# The most common form:
 Depends(some_callable)
 ```
 
-A dependency can be any callable that FastAPI can inspect:
+FastAPI can use many kinds of callables as dependencies:
 
-- A normal function
-- An async function
-- A class
-- An object implementing `__call__`
-- A generator dependency using `yield`
-- An async generator dependency using `yield`
+- Normal functions
+- `async def` functions
+- Classes
+- Callable objects implementing `__call__`
+- Generator dependencies using `yield`
+- Async generator dependencies using `yield`
 
-For every request, FastAPI inspects the endpoint's dependencies, builds or reuses the dependency graph, resolves sub-dependencies, reads and validates request data, executes the dependencies, injects the returned values, executes the endpoint, creates the response, and finally runs dependency cleanup (see the flowchart in "In short" at the top of this note).
-
-## Important detail
-
-Pass the dependency callable itself — not the result of calling it:
-
-```python
-Depends(get_current_user)      # Correct: FastAPI calls this itself
-Depends(get_current_user())    # Incorrect: this calls it immediately
-```
-
-FastAPI must inspect and call the dependency so it can resolve its parameters and sub-dependencies.
-
----
-
-# 4. Basic Dependency Example
-
-The following dependency handles common search and pagination parameters:
+Example:
 
 ```python
 from typing import Annotated
@@ -182,6 +113,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Query
 
 app = FastAPI()
+
 
 def get_pagination(
     page: Annotated[int, Query(ge=1)] = 1,
@@ -193,342 +125,180 @@ def get_pagination(
         "offset": (page - 1) * page_size,
     }
 
+
 @app.get("/products")
 def list_products(
-    pagination: Annotated[dict[str, int], Depends(get_pagination)],
+    pagination: Annotated[
+        dict[str, int],
+        Depends(get_pagination),
+    ],
 ):
-    return {
-        "offset": pagination["offset"],
-        "limit": pagination["page_size"],
-    }
+    return pagination
 ```
 
-For the request `GET /products?page=3&page_size=10`, FastAPI performs the following work:
+For:
 
-1. Detects that `list_products()` depends on `get_pagination()`.
-2. Reads `page` and `page_size` from the query string.
-3. Validates their ranges.
-4. Calls `get_pagination(page=3, page_size=10)`.
-5. Injects the returned dictionary into `pagination`.
+```text
+GET /products?page=3&page_size=10
+```
+
+FastAPI:
+
+1. Detects `get_pagination`.
+2. Reads the query parameters.
+3. Validates them.
+4. Calls the dependency.
+5. Injects its returned value.
 6. Calls the endpoint.
 
-Result: `{"offset": 20, "limit": 10}`.
+Result:
 
-## Visual flow
+```json
+{
+  "page": 3,
+  "page_size": 10,
+  "offset": 20
+}
+```
+
+### Important syntax
+
+Pass the callable itself:
+
+```python
+Depends(get_pagination)    # Correct
+```
+
+FastAPI needs the callable so it can inspect its parameters and resolve any nested dependencies.
+
+---
+
+# 3. Reusable Dependencies with `Annotated`
+
+Modern FastAPI code commonly uses `typing.Annotated` to combine a Python type with FastAPI dependency metadata.
+
+Instead of repeating:
+
+```python
+user: Annotated[User, Depends(get_current_user)]
+```
+
+create a reusable alias:
+
+```python
+CurrentUser = Annotated[
+    User,
+    Depends(get_current_user),
+]
+```
+
+Then endpoints stay clean:
+
+```python
+@app.get("/profile")
+def read_profile(user: CurrentUser):
+    return user
+```
+
+The alias means two things:
 
 ```mermaid
-flowchart TD
-    A["GET /products?page=3&page_size=10"] --> B["get_pagination()<br/>page = 3, page_size = 10"]
-    B --> C["Returned dict: page 3, page_size 10, offset 20"]
-    C --> D["list_products()"]
+flowchart LR
+    A[CurrentUser] --> B["Python type: User"]
+    A --> C["FastAPI metadata: Depends(get_current_user)"]
 ```
 
----
-
-# 5. How FastAPI Resolves Dependency Parameters
-
-A dependency is processed similarly to an endpoint. Its parameters may come from:
-
-- Path parameters
-- Query parameters
-- Headers
-- Cookies
-- Request bodies
-- Other dependencies
-- Special FastAPI objects such as `Request`
-
-Example:
-
-```python
-from typing import Annotated
-
-from fastapi import Header, HTTPException, Request
-
-def build_request_context(
-    request: Request,
-    x_tenant_id: Annotated[str, Header()],
-) -> dict[str, str]:
-    if not x_tenant_id.strip():
-        raise HTTPException(status_code=400, detail="Tenant ID is required")
-
-    return {
-        "tenant_id": x_tenant_id,
-        "client_host": request.client.host if request.client else "unknown",
-    }
-```
-
-Use it in an endpoint:
-
-```python
-RequestContext = Annotated[
-    dict[str, str],
-    Depends(build_request_context),
-]
-
-@app.get("/dashboard")
-def get_dashboard(context: RequestContext):
-    return {
-        "tenant": context["tenant_id"],
-        "client": context["client_host"],
-    }
-```
-
-The dependency validates the request context before the endpoint executes.
-
-If it raises `HTTPException`, FastAPI stops resolving that branch and returns the HTTP error.
-
----
-
-# 6. Reusable Type Aliases with `Annotated`
-
-Modern FastAPI documentation prefers `typing.Annotated` when possible.
-
-Instead of repeating `Depends(get_pagination)` on every route, create a reusable alias:
-
-```python
-@app.get("/products")
-def list_products(
-    pagination: Annotated[dict[str, int], Depends(get_pagination)],
-):
-    ...
-
-# Becomes a reusable alias:
-Pagination = Annotated[
-    dict[str, int],
-    Depends(get_pagination),
-]
-
-# Then use it naturally:
-@app.get("/products")
-def list_products(pagination: Pagination):
-    ...
-
-@app.get("/orders")
-def list_orders(pagination: Pagination):
-    ...
-```
-
-## Why aliases are useful
-
-They keep route signatures readable and centralize dependency wiring, so the endpoint becomes a clear declaration of its requirements:
+Typical aliases in a real project:
 
 ```python
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+AdminUser = Annotated[User, Depends(require_admin)]
 Pagination = Annotated[PaginationParams, Depends()]
-
-@app.get("/orders")
-def list_orders(
-    db: DbSession,
-    user: CurrentUser,
-    pagination: Pagination,
-):
-    ...
 ```
 
-## Type alias meaning
-
-```mermaid
-flowchart TD
-    A[DbSession] --> B["Runtime value type: Session"]
-    A --> C["FastAPI metadata: Depends(get_db)"]
-```
-
-Static tools understand the value as `Session`, while FastAPI reads the dependency metadata.
+This keeps type information visible while reducing repeated dependency wiring.
 
 ---
 
-# 7. Sub-dependencies and Dependency Graphs
+# 4. Sub-dependencies and Request Caching
 
 A dependency can depend on another dependency.
 
-This creates a **dependency graph** rather than a flat list.
-
-Consider this authentication chain:
+For example:
 
 ```python
-from dataclasses import dataclass
-from typing import Annotated
+def get_access_token(...) -> str:
+    ...
 
-from fastapi import Depends, Header, HTTPException, status
-
-@dataclass
-class User:
-    id: int
-    username: str
-    is_active: bool
-    role: str
-
-def get_access_token(
-    authorization: Annotated[str | None, Header()] = None,
-) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token",
-        )
-
-    return authorization.removeprefix("Bearer ").strip()
 
 def get_current_user(
     token: Annotated[str, Depends(get_access_token)],
 ) -> User:
-    # Replace this demo logic with real token verification.
-    if token != "valid-token":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
+    ...
 
-    return User(
-        id=101,
-        username="avadh",
-        is_active=True,
-        role="admin",
-    )
 
-def get_active_user(
+def require_admin(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Inactive user",
-        )
-
-    return user
+    ...
 ```
 
-Use only the final dependency:
-
-```python
-ActiveUser = Annotated[User, Depends(get_active_user)]
-
-@app.get("/profile")
-def read_profile(user: ActiveUser):
-    return {
-        "id": user.id,
-        "username": user.username,
-    }
-```
-
-FastAPI automatically resolves the entire chain.
+FastAPI resolves the deepest requirement first:
 
 ```mermaid
 flowchart LR
-    A[Endpoint: read_profile] --> B[get_active_user]
+    A[Authorization Header] --> B[get_access_token]
     B --> C[get_current_user]
-    C --> D[get_access_token]
-    D --> E[Authorization header]
+    C --> D[require_admin]
+    D --> E[Endpoint]
 ```
 
-## Resolution order
+This creates a **dependency graph**.
 
-FastAPI resolves dependencies from the deepest required dependency upward:
+### Per-request caching
+
+If the same dependency is required multiple times in one request, FastAPI normally executes it once and reuses the result.
 
 ```mermaid
 flowchart TD
-    A[Authorization header] --> B["get_access_token()"]
-    B --> C["get_current_user()"]
-    C --> D["get_active_user()"]
-    D --> E["read_profile()"]
+    A[Endpoint] --> B[get_account]
+    A --> C[get_permissions]
+    B --> D[get_current_user]
+    C --> D
 ```
 
-Sub-dependencies can be nested as deeply as the application requires, but shallow and focused graphs are easier to understand.
+`get_current_user()` is normally resolved once for that request.
+
+The default behavior is:
+
+```python
+Depends(get_current_user, use_cache=True)
+```
+
+Use:
+
+```python
+Depends(get_value, use_cache=False)
+```
+
+only when the dependency must intentionally run again within the same request.
+
+> This cache is **request-scoped**. It is not an application-wide cache.
 
 ---
 
-# 8. Authentication and Authorization
+# 5. Dependencies with `yield`
 
-Dependency injection is a natural fit for authentication and authorization because each route can declare its exact security requirement.
+Use `yield` when a dependency needs both **setup and cleanup**.
 
-## Authentication dependency
-
-Authentication answers:
-
-> Who is making this request?
-
-```python
-CurrentUser = Annotated[User, Depends(get_current_user)]
-```
-
-## Authorization dependency
-
-Authorization answers:
-
-> Is this user allowed to perform this operation?
-
-```python
-def require_admin(user: CurrentUser) -> User:
-    if user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-
-    return user
-
-AdminUser = Annotated[User, Depends(require_admin)]
-```
-
-Use the appropriate dependency per route:
-
-```python
-@app.get("/account")
-def read_account(user: CurrentUser):
-    return {"username": user.username}
-
-@app.delete("/admin/users/{user_id}")
-def delete_user(user_id: int, admin: AdminUser):
-    return {
-        "deleted_user_id": user_id,
-        "deleted_by": admin.username,
-    }
-```
-
-## Security dependency graph
-
-```mermaid
-flowchart TD
-    A[Authorization header] --> B[Extract token]
-    B --> C[Validate token]
-    C --> D[Load current user]
-    D --> E{Required role?}
-    E -- Normal user route --> F[Endpoint]
-    E -- Admin route --> G[Check admin permission]
-    G --> F
-```
-
-This design keeps authentication reusable while allowing route-specific authorization.
-
----
-
-# 9. Database Sessions with `yield`
-
-Database sessions need setup and cleanup.
-
-A dependency using `yield` behaves similarly to a context manager:
+Database sessions are the common example:
 
 ```python
 from collections.abc import Generator
-from typing import Annotated
 
-from fastapi import Depends
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-DATABASE_URL = "sqlite:///./app.db"
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
-
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    expire_on_commit=False,
-)
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
@@ -537,242 +307,143 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-DbSession = Annotated[Session, Depends(get_db)]
 ```
 
-Use it in an endpoint:
+Create an alias:
 
 ```python
-@app.get("/customers/{customer_id}")
-def get_customer(
-    customer_id: int,
-    db: DbSession,
-):
-    customer = db.get(Customer, customer_id)
-
-    if customer is None:
-        raise HTTPException(status_code=404, detail="Customer not found")
-
-    return customer
+DbSession = Annotated[
+    Session,
+    Depends(get_db),
+]
 ```
 
-## Lifecycle
-
-The session is created, yielded for injection, used while the endpoint runs and the response is built and sent, then closed in a `finally` block:
+Lifecycle:
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant FastAPI
-    participant Dependency as get_db
-    participant Endpoint
-    participant DB
+    participant F as FastAPI
+    participant D as get_db
+    participant E as Endpoint
 
-    Client->>FastAPI: HTTP request
-    FastAPI->>Dependency: Start dependency
-    Dependency->>DB: Open session
-    Dependency-->>FastAPI: yield db
-    FastAPI->>Endpoint: Call endpoint(db)
-    Endpoint->>DB: Query data
-    DB-->>Endpoint: Result
-    Endpoint-->>FastAPI: Response data
-    FastAPI-->>Client: HTTP response
-    FastAPI->>Dependency: Continue after yield
-    Dependency->>DB: Close session
+    F->>D: Start dependency
+    D-->>F: yield db
+    F->>E: Execute endpoint(db)
+    E-->>F: Return result
+    F->>D: Continue after yield
+    D->>D: Close session
 ```
 
-## Why `try/finally` matters
+The `finally` block ensures cleanup even when an exception occurs.
 
-Cleanup must run even when:
+### Cleanup scope
 
-- The endpoint raises an exception
-- A downstream dependency fails
-- Database work fails
-- Response processing fails
+A `yield` dependency can use two scopes:
 
-Use one `yield` per dependency and place mandatory cleanup in `finally`.
+| Scope | Cleanup timing |
+|---|---|
+| `request` | After the response is sent |
+| `function` | After the endpoint function returns, before the response is sent |
 
----
-
-# 10. Dependency Cleanup Scope
-
-Modern FastAPI supports a `scope` option mainly for dependencies using `yield`, passed as `Depends(get_resource, scope="function")` or `Depends(get_resource, scope="request")`.
-
-## `scope="request"`
-
-This is the default behavior.
-
-The cleanup code after `yield` runs after the response is sent.
-
-```mermaid
-flowchart TD
-    A[Dependency setup] --> B[Endpoint execution]
-    B --> C[Response sent]
-    C --> D[Dependency cleanup]
-```
-
-Use it when the resource should remain available through response processing.
-
-## `scope="function"`
-
-Cleanup runs after the endpoint function finishes but before the response is sent.
-
-```mermaid
-flowchart TD
-    A[Dependency setup] --> B[Endpoint execution]
-    B --> C[Dependency cleanup]
-    C --> D[Response sent]
-```
+`request` is the default for a dependency using `yield`.
 
 Example:
 
 ```python
-FunctionScopedDb = Annotated[
+EarlyDbSession = Annotated[
     Session,
     Depends(get_db, scope="function"),
 ]
 ```
 
-## Scope comparison
-
-| Scope | Cleanup occurs | Typical reason |
-|---|---|---|
-| `request` | After the response is sent | Resource may be needed during response handling |
-| `function` | After endpoint execution, before sending the response | Release a resource as early as possible |
-
-> `Depends(scope="function")` for `yield` dependencies was added in FastAPI 0.121.0. Confirm the installed FastAPI version before using it in an older project.
+Use `scope="function"` when the resource is no longer needed after the path operation returns and should be released earlier.
 
 ---
 
-# 11. Classes as Dependencies
+# 6. Authentication and Authorization
 
-A class can act as a dependency. FastAPI inspects its constructor parameters, creates an instance, and injects that instance.
+Dependencies are a natural place for request-level security.
+
+### Authentication
+
+Authentication answers:
+
+> **Who is making this request?**
 
 ```python
-from typing import Annotated
+def get_current_user(
+    token: Annotated[str, Depends(get_access_token)],
+) -> User:
+    user = validate_token_and_load_user(token)
 
-from fastapi import Depends, Query
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+        )
 
-class ProductFilters:
-    def __init__(
-        self,
-        search: Annotated[str | None, Query(max_length=100)] = None,
-        category: str | None = None,
-        min_price: float | None = None,
-        max_price: float | None = None,
-    ) -> None:
-        self.search = search
-        self.category = category
-        self.min_price = min_price
-        self.max_price = max_price
+    return user
+```
 
-ProductFilterParams = Annotated[
-    ProductFilters,
-    Depends(),
+Alias:
+
+```python
+CurrentUser = Annotated[
+    User,
+    Depends(get_current_user),
 ]
 ```
 
-Use it in an endpoint:
+### Authorization
+
+Authorization answers:
+
+> **Is this user allowed to perform this operation?**
 
 ```python
-@app.get("/products")
-def list_products(filters: ProductFilterParams):
-    return {
-        "search": filters.search,
-        "category": filters.category,
-        "price_range": {
-            "min": filters.min_price,
-            "max": filters.max_price,
-        },
-    }
+def require_admin(user: CurrentUser) -> User:
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required",
+        )
+
+    return user
+
+
+AdminUser = Annotated[
+    User,
+    Depends(require_admin),
+]
 ```
 
-FastAPI uses the annotated class as the dependency callable when `Depends()` has no explicit argument.
+Then different routes can declare different access requirements:
 
-## Function or class?
+```python
+@app.get("/account")
+def read_account(user: CurrentUser):
+    ...
 
-Use a function when:
 
-- The dependency performs one focused action.
-- A dictionary or single object is enough.
-- There is little reusable state.
+@app.delete("/admin/users/{user_id}")
+def delete_user(
+    user_id: int,
+    admin: AdminUser,
+):
+    ...
+```
 
-Use a class when:
-
-- Multiple related values belong together.
-- Named attributes improve readability.
-- The dependency represents a structured request object.
-- Validation and helper methods belong to the object.
+This keeps reusable authentication separate from route-specific authorization.
 
 ---
 
-# 12. Callable Objects as Configured Dependencies
+# 7. Where Dependencies Can Be Applied
 
-An object implementing `__call__` can act as a dependency.
+FastAPI allows dependencies at several levels.
 
-This pattern is useful when the dependency needs configuration.
+## 7.1 Endpoint parameter
 
-```python
-from typing import Annotated
-
-from fastapi import Depends, HTTPException, Query
-
-class RequireMinimumAge:
-    def __init__(self, minimum_age: int) -> None:
-        self.minimum_age = minimum_age
-
-    def __call__(
-        self,
-        age: Annotated[int, Query(ge=0)],
-    ) -> int:
-        if age < self.minimum_age:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Minimum age is {self.minimum_age}",
-            )
-
-        return age
-
-require_adult = RequireMinimumAge(minimum_age=18)
-require_senior = RequireMinimumAge(minimum_age=60)
-```
-
-Use configured instances:
-
-```python
-@app.get("/adult-content")
-def adult_content(
-    age: Annotated[int, Depends(require_adult)],
-):
-    return {"allowed": True, "age": age}
-
-@app.get("/senior-benefits")
-def senior_benefits(
-    age: Annotated[int, Depends(require_senior)],
-):
-    return {"eligible": True, "age": age}
-```
-
-FastAPI calls the instance:
-
-```mermaid
-flowchart TD
-    A["require_adult(age=20)"] --> B["RequireMinimumAge.__call__(age=20)"]
-    B --> C[20 is injected into the endpoint]
-```
-
-This provides reusable behavior without using global mutable state.
-
----
-
-# 13. Route, Router, and Application Dependencies
-
-A dependency can be attached at several levels.
-
-## 13.1 Parameter dependency
-
-Use this when the endpoint needs the dependency's returned value.
+Use when the endpoint needs the returned value.
 
 ```python
 @app.get("/profile")
@@ -780,17 +451,11 @@ def read_profile(user: CurrentUser):
     return user
 ```
 
-## 13.2 Route decorator dependency
+## 7.2 Route decorator
 
-Use this when the dependency must execute, but the endpoint does not need its returned value.
+Use when the dependency must run but its value is not needed.
 
 ```python
-def verify_api_key(
-    x_api_key: Annotated[str, Header()],
-) -> None:
-    if x_api_key != "expected-key":
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
 @app.get(
     "/internal/status",
     dependencies=[Depends(verify_api_key)],
@@ -799,44 +464,27 @@ def internal_status():
     return {"status": "ok"}
 ```
 
-The dependency runs before the endpoint, but no extra parameter appears in the endpoint signature.
+## 7.3 Router level
 
-## 13.3 Router-level dependency
-
-Apply shared logic to every endpoint in a router:
+Apply shared checks to a feature group:
 
 ```python
-from fastapi import APIRouter
-
-admin_router = APIRouter(
+router = APIRouter(
     prefix="/admin",
-    tags=["admin"],
     dependencies=[Depends(verify_api_key)],
 )
-
-@admin_router.get("/reports")
-def list_reports():
-    return []
-
-@admin_router.get("/settings")
-def read_settings():
-    return {}
 ```
 
-## 13.4 Dependency while including a router
+## 7.4 While including a router
 
 ```python
 app.include_router(
-    admin_router,
+    router,
     dependencies=[Depends(require_internal_network)],
 )
 ```
 
-This adds a dependency without changing the original router.
-
-## 13.5 Application-level dependency
-
-Apply a dependency to all path operations:
+## 7.5 Application level
 
 ```python
 app = FastAPI(
@@ -844,439 +492,276 @@ app = FastAPI(
 )
 ```
 
-Use application-wide dependencies only for behavior that truly applies to every route.
-
-## Choosing the correct level
+### Choosing the level
 
 | Requirement | Best location |
 |---|---|
-| Endpoint needs returned value | Endpoint parameter |
-| Check applies to one endpoint | Route decorator |
-| Check applies to a feature group | `APIRouter` |
-| Add policy when mounting a router | `include_router()` |
-| Logic applies to every route | `FastAPI(...)` |
+| Endpoint needs dependency value | Parameter |
+| One endpoint needs a check | Route decorator |
+| Feature group shares a rule | `APIRouter` |
+| Rule added while mounting router | `include_router()` |
+| Every path operation needs it | `FastAPI(...)` |
 
 ---
 
-# 14. Dependency Caching and `use_cache`
+# 8. Sync vs Async Dependencies
 
-FastAPI caches a dependency's result within a single request by default.
+FastAPI supports both synchronous and asynchronous dependency functions.
 
-Consider two dependencies that both require the current user:
+### Async dependency
 
-```python
-def get_account(user: CurrentUser) -> Account:
-    ...
-
-def get_permissions(user: CurrentUser) -> set[str]:
-    ...
-```
-
-An endpoint uses both:
-
-```python
-@app.get("/dashboard")
-def dashboard(
-    account: Annotated[Account, Depends(get_account)],
-    permissions: Annotated[set[str], Depends(get_permissions)],
-):
-    ...
-```
-
-Dependency graph:
-
-```mermaid
-flowchart TD
-    A[dashboard] --> B[get_account]
-    A --> C[get_permissions]
-    B --> D[get_current_user]
-    C --> D
-```
-
-By default, `get_current_user()` is called once for that request, and its result is reused — the cache is request-scoped, not an application-wide cache, so a second request calls it once again.
-
-## Disabling the cache
-
-```python
-FreshRequestId = Annotated[
-    str,
-    Depends(generate_request_value, use_cache=False),
-]
-```
-
-With `use_cache=False`, FastAPI executes that dependency again when it appears multiple times in the same request graph.
-
-Use this only when repeated execution is intentional. Authentication, database sessions, and request context normally benefit from the default cache.
-
----
-
-# 15. Sync and Async Dependencies
-
-FastAPI supports both `def` and `async def` dependencies.
-
-## Async dependency
-
-Use `async def` when the dependency calls asynchronous code:
+Use `async def` when the work itself uses async I/O:
 
 ```python
 async def get_remote_profile(
     user: CurrentUser,
-) -> dict:
+) -> Profile:
     return await profile_client.fetch(user.id)
 ```
 
-## Synchronous dependency
+### Sync dependency
 
-Use normal `def` when using a synchronous library:
+Use `def` with synchronous libraries:
 
 ```python
 def get_legacy_record(record_id: int) -> dict:
     return legacy_client.fetch(record_id)
 ```
 
-FastAPI can mix synchronous and asynchronous dependencies in the same graph.
+FastAPI can mix both styles in the same dependency graph.
 
 ```mermaid
 flowchart LR
-    A[Async endpoint] --> B[Async dependency]
-    A --> C[Sync dependency]
-    B --> D[Async HTTP client]
-    C --> E[Synchronous library]
+    A[Endpoint] --> B[Async Dependency]
+    A --> C[Sync Dependency]
+    B --> D[Async DB / HTTP Client]
+    C --> E[Sync SDK / Library]
 ```
 
-Normal `def` dependencies called by FastAPI are handled in an external thread pool so they do not directly block the event loop.
+Normal synchronous dependencies executed by FastAPI are handled so they do not run directly on the event loop.
 
-## Practical rule
+The practical rule is simple:
 
-| Dependency work | Definition |
-|---|---|
-| Uses `await` with async database or HTTP client | `async def` |
-| Uses a synchronous SDK or database client | `def` |
-| Performs simple CPU-light validation | Either; usually `def` is clear |
-| Performs heavy CPU work | Move it to a worker/process system |
-
-Do not declare a function `async def` and then perform long blocking I/O inside it.
+- Use `async def` when you actually need `await`.
+- Use `def` for synchronous libraries.
+- Do not put long blocking I/O inside an `async def` dependency.
+- Move heavy CPU work to an appropriate worker/process system.
 
 ---
 
-# 16. `Depends` vs Middleware
+# 9. `Depends` vs Middleware
 
-Both dependencies and middleware can run shared logic, but they solve different problems.
-
-## Middleware
-
-Middleware wraps the overall HTTP request/response cycle.
-
-Typical uses:
-
-- Request logging
-- CORS
-- Compression
-- Trace IDs
-- Response timing
-- Global headers
-- Observability
-
-## Dependency
-
-A dependency belongs to FastAPI's route dependency graph.
-
-Typical uses:
-
-- Current user
-- Permission checks
-- Database session
-- Tenant context
-- Validated pagination
-- Route-specific services
-- Request data transformed into domain objects
-
-## Comparison
+Both can run shared logic, but they work at different layers.
 
 | Area | Dependency | Middleware |
 |---|---|---|
-| Can be route-specific | Yes | Usually global or path-filtered manually |
-| Can inject a typed value | Yes | Not directly into function parameters |
-| Supports sub-dependencies | Yes | No FastAPI dependency graph |
-| Integrated with parameter validation | Yes | Manual |
-| Integrated with OpenAPI | Often yes | Usually no |
-| Wraps every request/response | Only where applied | Yes |
-| Best for authentication rules | Usually dependency | Sometimes middleware for coarse checks |
-| Best for logging/timing | Possible, but not ideal | Yes |
+| Route-specific | Yes | Usually not naturally |
+| Inject typed values | Yes | No direct parameter injection |
+| Sub-dependencies | Yes | No DI graph |
+| Request parameter validation | Yes | Manual |
+| OpenAPI integration | Often | Usually no |
+| Wraps whole request/response cycle | Only where applied | Yes |
 
-## Decision guide
+### Use dependencies for
+
+- Current user
+- Permission checks
+- Database sessions
+- Tenant context
+- Pagination
+- Request-scoped services
+
+### Use middleware for
+
+- Request logging
+- CORS
+- Timing
+- Trace/request IDs
+- Compression
+- Global response headers
 
 ```mermaid
 flowchart TD
-    A{"Does the endpoint need a typed value?"} -->|Yes| B[Dependency]
-    A -->|No| C{"Does the logic wrap most or all HTTP traffic?"}
+    A{Need a typed value in endpoint?}
+    A -->|Yes| B[Dependency]
+    A -->|No| C{Wrap most HTTP traffic?}
     C -->|Yes| D[Middleware]
-    C -->|No| E["Route or router dependency"]
+    C -->|No| E[Route / Router Dependency]
 ```
-
-A common production design uses middleware for request tracing and dependencies for authentication, authorization, tenant resolution, and database access.
 
 ---
 
-# 17. `Depends` vs `Security`
+# 10. `Depends` vs `Security`
 
-`Security()` is built on the same dependency system.
+`Security()` uses the same dependency system as `Depends()`.
 
-Use `Depends()` for normal dependency injection and security checks that do not need OAuth2 scope metadata: `CurrentUser = Annotated[User, Depends(get_current_user)]`
+Use `Depends()` for normal dependency injection and for security logic that does not need OAuth2 scope metadata.
 
-Use `Security()` when declaring OAuth2 scopes that should be included in OpenAPI and the interactive API documentation:
+Use `Security()` when the route declares OAuth2 scopes that should also appear in OpenAPI.
 
 ```python
 from fastapi import Security
 
+
 @app.get("/users/me/items")
 def read_own_items(
-    user: Annotated[User, Security(get_current_user, scopes=["items:read"])],
+    user: Annotated[
+        User,
+        Security(
+            get_current_user,
+            scopes=["items:read"],
+        ),
+    ],
 ):
-    return []
+    ...
 ```
-
-## Main difference
 
 | Feature | `Depends` | `Security` |
 |---|---|---|
 | Dependency injection | Yes | Yes |
-| Authentication and authorization logic | Yes | Yes |
-| Declares OAuth2 scopes | No | Yes |
-| Adds required scopes to OpenAPI | No | Yes |
+| Authentication logic | Yes | Yes |
+| OAuth2 scope declaration | No | Yes |
+| Scope metadata in OpenAPI | No | Yes |
 
-Use `Security` when scopes are part of the API's formal authorization contract.
+For many internal APIs, plain `Depends()` is sufficient. Use `Security()` when OAuth2 scopes are part of the API authorization contract.
 
 ---
 
-# 18. Testing with Dependency Overrides
+# 11. Testing with Dependency Overrides
 
-FastAPI exposes `app.dependency_overrides`, a dictionary mapping an original dependency to a replacement dependency.
+FastAPI lets tests replace production dependencies without changing endpoint code.
 
-## Application dependency
+Production dependency:
 
 ```python
 def get_current_user() -> User:
-    # Real token validation and database work
     ...
 ```
 
-## Test override
+Test replacement:
 
 ```python
-from fastapi.testclient import TestClient
-
 def override_current_user() -> User:
     return User(
         id=999,
         username="test-user",
-        is_active=True,
         role="admin",
     )
-
-client = TestClient(app)
-
-def test_admin_endpoint():
-    app.dependency_overrides[get_current_user] = override_current_user
-
-    try:
-        response = client.get("/admin/reports")
-
-        assert response.status_code == 200
-    finally:
-        app.dependency_overrides.clear()
 ```
 
-FastAPI calls the override instead of the original dependency. The original dependency's sub-dependencies are also skipped for that override.
-
-## Pytest fixture pattern
+Register the override:
 
 ```python
-import pytest
-
-@pytest.fixture
-def authenticated_client():
-    app.dependency_overrides[get_current_user] = override_current_user
-
-    with TestClient(app) as client:
-        yield client
-
-    app.dependency_overrides.clear()
-
-def test_profile(authenticated_client: TestClient):
-    response = authenticated_client.get("/profile")
-
-    assert response.status_code == 200
-    assert response.json()["username"] == "test-user"
+app.dependency_overrides[get_current_user] = (
+    override_current_user
+)
 ```
 
-## Override a database dependency
+FastAPI now uses the override anywhere the original dependency is required.
+
+After the test:
 
 ```python
-def override_get_db():
-    db = TestingSessionLocal()
+app.dependency_overrides.clear()
+```
+
+This is especially useful for replacing:
+
+- Authentication providers
+- Database dependencies
+- External API clients
+- Payment gateways
+- Expensive integrations
+
+```mermaid
+flowchart LR
+    A[Endpoint] --> B[get_current_user]
+    B -->|Production| C[Real Authentication]
+    B -->|Tests| D[Fake User]
+```
+
+---
+
+# 12. Practical Example
+
+The following example shows the most common real-world pattern: **database session + authenticated user + service injection**.
+
+## 12.1 Database dependency
+
+```python
+def get_db():
+    db = SessionLocal()
 
     try:
         yield db
     finally:
         db.close()
 
-app.dependency_overrides[get_db] = override_get_db
-```
 
-This keeps endpoint code unchanged while tests use an isolated database.
-
-## Testing architecture
-
-```mermaid
-flowchart LR
-    A[Endpoint] --> B[Dependency name: get_db]
-    B -->|Production| C[Production database]
-    B -->|Test override| D[Test database]
-```
-
-This is one of the strongest practical benefits of FastAPI dependency injection.
-
----
-
-# 19. Recommended Project Structure
-
-For a medium-sized application, organize dependencies by responsibility.
-
-```text
-app/
-├── main.py
-├── api/
-│   ├── dependencies.py
-│   └── routers/
-│       ├── users.py
-│       ├── products.py
-│       └── orders.py
-├── core/
-│   ├── config.py
-│   └── security.py
-├── db/
-│   ├── session.py
-│   └── models.py
-├── repositories/
-│   ├── users.py
-│   └── orders.py
-├── services/
-│   └── order_service.py
-└── tests/
-    ├── conftest.py
-    └── test_orders.py
-```
-
-## `db/session.py`
-
-```python
-def get_db():
-    ...
-```
-
-## `api/dependencies.py`
-
-```python
-DbSession = Annotated[Session, Depends(get_db)]
-CurrentUser = Annotated[User, Depends(get_current_user)]
-AdminUser = Annotated[User, Depends(require_admin)]
-Pagination = Annotated[PaginationParams, Depends()]
-```
-
-## `api/routers/orders.py`
-
-```python
-@router.get("/")
-def list_orders(
-    db: DbSession,
-    user: CurrentUser,
-    pagination: Pagination,
-):
-    ...
-```
-
-This structure separates:
-
-- Infrastructure creation
-- Request-level dependency wiring
-- Business services
-- Persistence logic
-- API transport code
-
----
-
-# 20. Practical Mini Design
-
-The following design combines authentication, tenant resolution, database access, and a service object.
-
-## Domain dependencies
-
-```python
-from dataclasses import dataclass
-from typing import Annotated
-
-from fastapi import Depends, Header, HTTPException
-from sqlalchemy.orm import Session
-
-@dataclass(frozen=True)
-class RequestContext:
-    user: User
-    tenant_id: str
-
-def get_tenant_id(
-    x_tenant_id: Annotated[str, Header()],
-) -> str:
-    if not x_tenant_id:
-        raise HTTPException(status_code=400, detail="Tenant ID is required")
-
-    return x_tenant_id
-
-def get_request_context(
-    user: CurrentUser,
-    tenant_id: Annotated[str, Depends(get_tenant_id)],
-) -> RequestContext:
-    if tenant_id not in user.allowed_tenants:
-        raise HTTPException(status_code=403, detail="Tenant access denied")
-
-    return RequestContext(
-        user=user,
-        tenant_id=tenant_id,
-    )
-
-RequestCtx = Annotated[
-    RequestContext,
-    Depends(get_request_context),
+DbSession = Annotated[
+    Session,
+    Depends(get_db),
 ]
 ```
 
-## Service dependency
+## 12.2 Current-user dependency
+
+```python
+def get_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+) -> User:
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authorization header",
+        )
+
+    user = authenticate(authorization)
+
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+        )
+
+    return user
+
+
+CurrentUser = Annotated[
+    User,
+    Depends(get_current_user),
+]
+```
+
+## 12.3 Service dependency
 
 ```python
 class OrderService:
     def __init__(
         self,
         db: Session,
-        context: RequestContext,
+        user: User,
     ) -> None:
         self.db = db
-        self.context = context
+        self.user = user
 
-    def list_orders(self) -> list[Order]:
+    def list_orders(self):
         return (
             self.db.query(Order)
-            .filter(Order.tenant_id == self.context.tenant_id)
+            .filter(Order.user_id == self.user.id)
             .all()
         )
 
+
 def get_order_service(
     db: DbSession,
-    context: RequestCtx,
+    user: CurrentUser,
 ) -> OrderService:
     return OrderService(
         db=db,
-        context=context,
+        user=user,
     )
+
 
 OrderServiceDep = Annotated[
     OrderService,
@@ -1284,7 +769,7 @@ OrderServiceDep = Annotated[
 ]
 ```
 
-## Endpoint
+## 12.4 Endpoint
 
 ```python
 @router.get("/orders")
@@ -1292,134 +777,100 @@ def list_orders(service: OrderServiceDep):
     return service.list_orders()
 ```
 
-## Complete dependency graph
+The endpoint has only one visible requirement, while FastAPI resolves the full graph:
 
 ```mermaid
 flowchart TD
     A[GET /orders] --> B[get_order_service]
     B --> C[get_db]
-    B --> D[get_request_context]
-    D --> E[get_current_user]
-    D --> F[get_tenant_id]
-    E --> G[Token validation]
-    F --> H[X-Tenant-ID header]
-    C --> I[Database session]
+    B --> D[get_current_user]
+    C --> E[Database Session]
+    D --> F[Authorization Header]
+    B --> G[OrderService]
+    G --> H[list_orders Endpoint]
 ```
 
-The endpoint only knows that it needs an `OrderService`; the graph above handles the database lifecycle, token validation, user loading, tenant validation, and service construction on its behalf.
-
-## Layer responsibility
+The responsibilities stay separated:
 
 ```mermaid
-flowchart TD
-    A[HTTP request] --> B[FastAPI dependencies]
-    B -->|"Authentication, tenant, session, service wiring"| C[Application service]
-    C -->|Business use case| D["Repository / ORM"]
-    D -->|Persistence| E[(Database)]
+flowchart LR
+    A[HTTP Request] --> B[Dependencies]
+    B --> C[Service]
+    C --> D[Repository / ORM]
+    D --> E[(Database)]
 ```
 
-This is a practical form of dependency injection without requiring a separate DI container.
+This is the form of dependency injection you will see frequently in production FastAPI applications.
 
 ---
 
-# 21. Design Guidelines
+# 13. Best-Practice Summary
 
-## Keep each dependency focused
+### Keep dependencies focused
 
-A dependency should have one clear responsibility.
+A dependency should resolve one clear concern:
 
-Good separation:
-
-```mermaid
-flowchart TD
-    A[extract_token] --> B[get_current_user]
-    B --> C[require_admin]
+```text
+token → current user → permission check
 ```
 
-Avoid one large dependency that parses headers, validates tokens, loads the user, checks permissions, creates a database session, and performs the business operation.
+Avoid mixing authentication, database creation, permission checks, and business operations into one large dependency.
 
-## Return meaningful typed objects
-
-Prefer a typed return value over loosely structured output:
+### Prefer typed return values
 
 ```python
-def get_current_user(...) -> User:  # Preferred
-    ...
-
-def get_current_user(...) -> dict:  # Avoid
+def get_current_user(...) -> User:
     ...
 ```
 
-Typed domain objects improve editor support and reduce key-name errors.
+Typed objects are clearer than loosely structured dictionaries.
 
-## Use dependencies for request-scoped wiring
-
-Dependencies are ideal for objects that are created or resolved per request:
-
-- Session
-- User
-- Tenant
-- Request context
-- Service
-- Repository
-
-Application-wide clients and connection pools are often better created during application lifespan and then exposed through lightweight dependencies.
-
-## Keep business logic out of dependency wiring
-
-A dependency may construct an `OrderService`, but the service should execute the order use case: the dependency creates or provides the required object, the service executes the business operation, and the endpoint translates HTTP input/output.
-
-## Prefer `Annotated` aliases for repeated dependencies
-
-Aliases such as `CurrentUser = Annotated[User, Depends(get_current_user)]` and `DbSession = Annotated[Session, Depends(get_db)]` reduce noisy endpoint signatures without hiding the injected value's type.
-
-## Use decorator dependencies when no value is needed
-
-Passing `dependencies=[Depends(verify_api_key)]` clearly communicates that the dependency is a gate or side-effect check.
-
-## Preserve request-level caching by default
-
-The default `use_cache=True` is appropriate for most dependencies.
-
-Disable it only when repeated execution within the same request is required.
-
-## Use `yield` for lifecycle-managed resources
+### Prefer `Annotated` aliases for repeated dependencies
 
 ```python
-def get_resource():
-    resource = open_resource()
-
-    try:
-        yield resource
-    finally:
-        resource.close()
+CurrentUser = Annotated[
+    User,
+    Depends(get_current_user),
+]
 ```
 
-This is appropriate for sessions, temporary clients, locks, and other resources requiring reliable cleanup.
+They keep route signatures readable without hiding the injected type.
 
-## Make dependencies easy to override
+### Use `yield` for lifecycle-managed resources
 
-Depend on stable named callables so tests can replace them:
+Use it for objects that need reliable cleanup, especially database sessions and temporary clients.
 
-```python
-Depends(get_payment_gateway)
+### Keep request wiring separate from business logic
 
-app.dependency_overrides[get_payment_gateway] = get_fake_gateway
-```
+Dependencies should **provide objects or validate request-level requirements**.
 
-Avoid hiding dependency construction inside endpoint bodies.
+Services should execute business use cases.
+
+### Preserve request caching unless repeated execution is intentional
+
+The default `use_cache=True` is correct for most dependencies such as users, sessions, tenant context, and service objects.
+
+### Use the narrowest dependency level
+
+Apply a dependency only where it belongs: endpoint, route, router, or application.
 
 ---
 
-# Official References
+## Final Mental Model
 
-- FastAPI Dependencies: <https://fastapi.tiangolo.com/tutorial/dependencies/>
-- Sub-dependencies: <https://fastapi.tiangolo.com/tutorial/dependencies/sub-dependencies/>
-- Dependencies with `yield`: <https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield/>
-- Classes as Dependencies: <https://fastapi.tiangolo.com/tutorial/dependencies/classes-as-dependencies/>
-- Dependencies in Path Operation Decorators: <https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-in-path-operation-decorators/>
-- Global Dependencies: <https://fastapi.tiangolo.com/tutorial/dependencies/global-dependencies/>
-- Advanced Dependencies: <https://fastapi.tiangolo.com/advanced/advanced-dependencies/>
-- Dependency Reference: <https://fastapi.tiangolo.com/reference/dependencies/>
-- Testing Dependency Overrides: <https://fastapi.tiangolo.com/advanced/testing-dependencies/>
-- Bigger Applications and `APIRouter`: <https://fastapi.tiangolo.com/tutorial/bigger-applications/>
+```mermaid
+flowchart TD
+    A[Incoming Request] --> B[FastAPI Dependency Graph]
+    B --> C[Request Data Validation]
+    B --> D[Authentication / Authorization]
+    B --> E[Database / Request Resources]
+    B --> F[Service Construction]
+    C --> G[Endpoint]
+    D --> G
+    E --> G
+    F --> G
+    G --> H[Response]
+    H --> I[Cleanup yield dependencies]
+```
+
+> **Remember:** `Depends` is not just a helper for calling functions. It is FastAPI's request-level dependency graph for validation, authentication, resource lifecycle, reusable services, and testable application wiring.

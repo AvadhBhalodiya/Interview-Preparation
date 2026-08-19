@@ -6,234 +6,197 @@ order: 9
 
 # Replication, Sharding & Partitioning
 
-> A practical guide to three database-scaling techniques that sound similar but solve different problems.
+> A practical, interview-focused guide to three database-scaling techniques that look similar but solve different problems.
 
-## In short
+## In Short
 
-- Replication copies the same data to more nodes for availability, read scaling and disaster recovery, but it does not scale writes while one primary accepts them all.
-- Partitioning splits one logical table into physical pieces inside a single database, and only helps queries when the partition key matches the filters so the optimizer can prune.
-- Sharding puts different subsets of data on different database nodes, and is the only one of the three that scales write throughput horizontally.
-- Asynchronous replication commits fast but can lose recently acknowledged transactions during failover; synchronous replication pays replica-acknowledgment latency on every commit.
-- The shard key decides everything: high cardinality, even data and traffic distribution, stability, and query locality so most requests reach one shard.
-- Cross-shard joins, transactions and global constraints are the real cost of sharding, so co-locate data that is read and written together.
-- The three layer together (shard by tenant, replicate each shard, partition large tables inside each shard) and sharding comes last, after indexing, pooling, caching, replicas and partitioning.
+- **Replication** keeps copies of the same data on multiple nodes. It is mainly used for **high availability, disaster recovery, and read scaling**.
+- **Partitioning** splits one logical table into smaller physical partitions. It mainly improves **manageability** and can improve query performance through **partition pruning**.
+- **Sharding** distributes different subsets of data across independent database nodes. It is mainly used to scale **data size and write workload horizontally**.
+- Primary–replica replication does **not** increase the write capacity of the primary.
+- The most important decision in sharding is the **shard key** because it controls data distribution, traffic distribution, and query locality.
+- Replication lag can cause **stale reads**, so consistency-sensitive reads may need to go to the primary.
+- These techniques can be combined: **shard by tenant, replicate each shard, and partition large tables inside each shard**.
+- Sharding usually comes last because it makes joins, transactions, uniqueness, routing, and operations more complex.
 
 ```mermaid
 flowchart LR
-    A[Application] --> B[Database Design]
+    A[Application] --> R[Replication]
+    A --> P[Partitioning]
+    A --> S[Sharding]
 
-    B --> C[Replication]
-    B --> D[Partitioning]
-    B --> E[Sharding]
+    R --> R1[Same data<br/>multiple nodes]
+    R --> R2[HA + read scaling]
 
-    C --> C1[Same data on multiple nodes]
-    C --> C2[High availability]
-    C --> C3[Read scaling]
+    P --> P1[One logical table]
+    P --> P2[Smaller physical partitions]
 
-    D --> D1[One logical table]
-    D --> D2[Multiple physical partitions]
-    D --> D3[Partition pruning and maintenance]
-
-    E --> E1[Different data on different nodes]
-    E --> E2[Horizontal write scaling]
-    E --> E3[Very large datasets]
+    S --> S1[Different data<br/>different nodes]
+    S --> S2[Horizontal data + write scale]
 ```
-
-**Interview answer:** Replication duplicates ownership, partitioning organizes storage, and sharding distributes ownership. Replication keeps the same rows on multiple nodes for availability and read scale, partitioning splits one logical table into physical pieces inside a single database so a huge table stays queryable and retention stays cheap, and sharding puts different rows on different database servers so data volume and writes scale horizontally. Only sharding adds write capacity, and it is also the only one that makes joins, transactions and global constraints genuinely harder.
-
-**Gotcha:** Reading from an asynchronous replica immediately after a write returns stale data, so consistency-sensitive reads must go to the primary.
 
 ---
 
-# 1. The Big Picture
+# 1. Big Picture
 
-Replication, partitioning and sharding all involve placing data in more than one physical location. The difference is **why** and **how** the data is divided.
+The easiest way to remember the difference is to ask **what is being distributed**.
 
-| Technique | Main Purpose | What Happens to Data? |
-|---|---|---|
-| **Replication** | Availability and read scaling | The same data is copied to multiple database nodes |
-| **Partitioning** | Manage a large table efficiently | One table is split into smaller physical sections |
-| **Sharding** | Scale data and writes across servers | Different subsets of data are stored on different database nodes |
+| Technique | Main Goal | Data Placement | Typical Result |
+|---|---|---|---|
+| **Replication** | Availability and read scaling | Same rows copied to multiple nodes | More copies |
+| **Partitioning** | Manage a large table | Rows divided into physical table partitions | Smaller storage units |
+| **Sharding** | Horizontal scale | Different rows stored on different database nodes | More ownership units |
 
-These techniques are not mutually exclusive. A production system may use all three:
+### Mental Model
 
-- The application data is sharded by `tenant_id`.
-- Each shard has a primary and two replicas.
-- Large event tables inside every shard are partitioned by month.
+```text
+Replication  → "Where are the copies?"
+Partitioning → "Which partition contains this row?"
+Sharding     → "Which database node owns this row?"
+```
+
+A production system can use all three at the same time.
+
+```text
+tenant_id decides the shard
+        ↓
+each shard has primary + replica
+        ↓
+large audit tables are partitioned by month
+```
 
 ---
 
 # 2. Replication
 
-Replication keeps copies of database data on multiple nodes.
+Replication maintains copies of database changes on one or more additional nodes.
 
-The node that accepts writes is commonly called the **primary**, **leader** or **source**. Nodes receiving copied changes are commonly called **replicas**, **followers** or **standbys**.
+A common relational setup is **primary–replica replication**:
+
+- The **primary** accepts writes.
+- The **replicas** receive changes from the primary.
+- Replicas may serve read-only traffic.
+- A replica can be promoted if the primary fails.
 
 ```mermaid
 flowchart LR
-    APP[Application] -->|INSERT / UPDATE / DELETE| P[(Primary)]
-    P -->|Replicate changes| R1[(Replica 1)]
-    P -->|Replicate changes| R2[(Replica 2)]
+    APP[Application] -->|Writes| P[(Primary)]
+    P -->|Replication stream| R1[(Replica 1)]
+    P -->|Replication stream| R2[(Replica 2)]
 
-    APP -->|Read queries| R1
-    APP -->|Read queries| R2
+    APP -->|Safe read traffic| R1
+    APP -->|Safe read traffic| R2
 ```
 
-## Why Replication Is Used
+## 2.1 Why Replication Is Used
 
-Replication commonly provides:
+Replication is commonly used for:
 
-- **High availability:** a replica can be promoted if the primary fails.
-- **Read scaling:** read-only traffic can be distributed across replicas.
-- **Disaster recovery:** a copy may be maintained in another availability zone or region.
-- **Maintenance flexibility:** backups and analytical queries can run on replicas.
-- **Data distribution:** selected data can be copied to reporting or integration systems.
+- **High availability** — another node can take over after failure.
+- **Read scaling** — read-only queries can be distributed across replicas.
+- **Disaster recovery** — replicas can be placed in another availability zone or region.
+- **Workload isolation** — reporting or backup work can run away from the primary.
 
-Replication does **not automatically scale write throughput** when all writes still go to one primary.
+Replication is **not a backup**. A bad `DELETE`, corrupted application write, or unwanted schema change can also replicate to the replicas.
+
+### Write Scaling Note
+
+With normal primary–replica architecture:
+
+```text
+Writes → Primary only
+Reads  → Primary or replicas
+```
+
+Adding more replicas therefore does not increase the write capacity of the primary.
+
+Multi-primary systems can accept writes on more than one node, but they introduce much harder conflict resolution and consistency rules.
 
 ---
 
-## 2.1 How Replication Works
+## 2.2 How Replication Works
 
-A typical replication flow is:
-
-1. A client commits a transaction on the primary.
-2. The primary records the change in a durable change log.
-3. Replicas receive the log records or logical row changes.
-4. Each replica replays or applies those changes.
-5. Read traffic may be served from replicas after the changes are applied.
-
-Examples of database change logs include:
-
-- PostgreSQL Write-Ahead Log, or WAL
-- MySQL binary log, or binlog
-- SQL Server transaction log
+A simplified PostgreSQL-style flow looks like this:
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant P as Primary
-    participant L as Change Log
+    participant W as WAL / Change Log
     participant R as Replica
 
-    C->>P: UPDATE account SET balance = ...
-    P->>L: Record transaction
-    P-->>C: Commit response
-    L->>R: Stream change
-    R->>R: Apply change
+    C->>P: COMMIT transaction
+    P->>W: Record durable changes
+    W->>R: Stream changes
+    R->>R: Replay changes
+    P-->>C: Commit result
 ```
 
-The exact commit timing depends on whether replication is synchronous or asynchronous.
+Relational databases commonly replicate from a change log:
+
+- PostgreSQL → **WAL**
+- MySQL → **binary log**
+- SQL Server → **transaction log**
+
+The exact point at which the client receives success depends on the replication mode.
 
 ---
 
-## 2.2 Replication Topologies
-
-### Primary–Replica
-
-One primary accepts writes and one or more replicas receive changes.
-
-```mermaid
-flowchart TD
-    W[Writes] --> P[(Primary)]
-    P --> A[(Replica A)]
-    P --> B[(Replica B)]
-    A --> R[Reads]
-    B --> R
-```
-
-This is the most common topology for relational databases.
-
-### Cascading Replication
-
-A replica forwards changes to another replica: `Primary ──▶ Replica A ──▶ Replica B`.
-
-This reduces the number of direct replication connections to the primary, but Replica B may have more lag.
-
-### Multi-Primary
-
-Multiple nodes accept writes: `Primary A ◀────────▶ Primary B`.
-
-This can improve regional write availability, but conflict handling becomes significantly more complex. The system must define what happens when two nodes modify the same record concurrently.
-
-### Multi-Region Replication
-
-Copies are placed in different regions.
-
-```mermaid
-flowchart LR
-    IN[(India Primary)] --> SG[(Singapore Replica)]
-    IN --> EU[(Europe Replica)]
-```
-
-This improves disaster recovery and regional reads, but network latency affects replication delay and synchronous commit latency.
-
----
-
-## 2.3 Synchronous vs Asynchronous Replication
+## 2.3 Asynchronous vs Synchronous Replication
 
 ### Asynchronous Replication
 
-The primary confirms the commit without waiting for a replica to acknowledge it.
+The primary can acknowledge a commit without waiting for a replica.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Primary
-    participant R as Replica
-
-    C->>P: Commit transaction
-    P-->>C: Success
-    P->>R: Send change later
-    R-->>P: Applied
+```text
+Client → Primary → Success
+                  ↓
+             Replica later
 ```
 
-**Advantages**
+**Benefits**
 
 - Lower write latency
-- Primary can continue if replicas are temporarily unavailable
-- Suitable when small replication delays are acceptable
+- Replica slowdown does not normally block every commit
 
 **Trade-off**
 
-If the primary fails before the latest changes reach a replica, recently acknowledged transactions may be lost during failover.
+A primary can fail before its latest committed changes reach a replica. A failover may therefore lose recently acknowledged writes.
 
 ### Synchronous Replication
 
-The primary waits for acknowledgment from one or more replicas before reporting success.
+The primary waits for the required standby acknowledgment before reporting success.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Primary
-    participant R as Synchronous Replica
-
-    C->>P: Commit transaction
-    P->>R: Replicate transaction
-    R-->>P: Acknowledged
-    P-->>C: Success
+```text
+Client
+  ↓
+Primary
+  ↓
+Synchronous Replica
+  ↓
+Primary returns success
 ```
 
-**Advantages**
+**Benefits**
 
 - Stronger durability across nodes
-- Lower risk of data loss during primary failure
+- Lower risk of losing acknowledged transactions during failover
 
 **Trade-offs**
 
-- Higher write latency
-- Slow or unavailable synchronous replicas can delay commits
-- Cross-region synchronous replication may be expensive in latency
+- Higher commit latency
+- A slow synchronous replica can affect application writes
+- Cross-region synchronous replication can add significant network latency
 
 ### Semi-Synchronous Replication
 
-Semi-synchronous replication sits between the two models. The source waits for at least one replica acknowledgment, but the exact acknowledgment point may not mean the transaction is already visible to queries on that replica.
+Some systems provide a middle ground. For example, MySQL can wait until at least one replica has received and durably logged the transaction without requiring that the replica has already executed it.
 
-| Mode | Commit Waits for Replica? | Typical Latency | Data-Loss Risk During Failover |
+| Mode | Wait for Replica? | Write Latency | Failover Data-Loss Risk |
 |---|---:|---:|---:|
-| Asynchronous | No | Lowest | Highest of the three |
-| Semi-synchronous | Partially | Medium | Lower |
-| Synchronous | Yes | Highest | Lowest when configured correctly |
+| Asynchronous | No | Lowest | Highest |
+| Semi-synchronous | Partial acknowledgment | Medium | Lower |
+| Synchronous | Required acknowledgment | Highest | Lowest when correctly configured |
 
 ---
 
@@ -241,331 +204,192 @@ Semi-synchronous replication sits between the two models. The source waits for a
 
 ### Physical Replication
 
-Physical replication copies low-level storage changes or database log records.
+Physical replication copies low-level database changes such as WAL records.
 
-**Characteristics**
+**Common use:** high availability and standby databases.
 
-- Usually replicates the whole database cluster or instance
-- Replica structure closely matches the primary
-- Efficient for high availability
-- Often requires compatible database versions and storage formats
-- Commonly used for hot standby replicas
-
-```mermaid
-flowchart TD
-    P[Primary storage changes] --> W[["WAL / transaction log"]]
-    W --> S[Standby replays low-level changes]
+```text
+Primary storage/WAL
+        ↓
+Replica replays low-level changes
 ```
 
 ### Logical Replication
 
-Logical replication copies higher-level changes such as inserted, updated and deleted rows.
+Logical replication sends higher-level data changes such as inserts, updates, and deletes.
 
-**Characteristics**
+**Common use:**
 
-- Can replicate selected tables
-- Can support data filtering in systems that provide the feature
-- Useful for migrations, integrations and analytics pipelines
-- May support replication between different major versions
-- Schema changes often require separate coordination
+- Selected-table replication
+- Data migration
+- Version upgrades
+- Integration pipelines
+- Analytics copies
 
-```mermaid
-flowchart TD
-    W["INSERT order<br/>UPDATE customer<br/>DELETE session"] --> S[[Logical change stream]]
-    S --> A[Subscriber applies row-level changes]
+```text
+INSERT / UPDATE / DELETE
+          ↓
+   Logical change stream
+          ↓
+      Subscriber
 ```
 
-| Area | Physical Replication | Logical Replication |
-|---|---|---|
-| Replication unit | Storage/log-level changes | Tables or row-level changes |
-| Typical purpose | HA and full standby | Migration, integration, selective replication |
-| Schema flexibility | Low | Higher, but schemas must remain compatible |
-| Cross-version use | Usually limited | Often more practical |
-| Replicate subset | Usually no | Often yes |
+In PostgreSQL, logical replication uses a **publisher/subscriber** model and can replicate a selected subset of data.
 
 ---
 
-## 2.5 Read Scaling and Consistency
+## 2.5 Replication Lag and Stale Reads
 
-An application may send writes to the primary and reads to replicas.
+Replication lag is the delay between a change being committed on the primary and becoming visible on a replica.
 
-```mermaid
-flowchart LR
-    U[User Request] --> ROUTER{Query type?}
-    ROUTER -->|Write| P[(Primary)]
-    ROUTER -->|Strong read| P
-    ROUTER -->|Stale-tolerant read| R[(Replica)]
+Example:
+
+```text
+1. User updates profile name.
+2. Primary commits successfully.
+3. Application immediately reads from a replica.
+4. Replica has not replayed the change yet.
+5. User sees the old name.
 ```
 
-This introduces an important problem: **read-after-write consistency**.
+This is a **stale read**.
 
-### Example
+### Practical Read Routing
 
-1. A user changes their profile name.
-2. The write succeeds on the primary.
-3. The application immediately reads from a lagging replica.
-4. The old name is returned.
-
-This is called a **stale read**.
-
-### Common Solutions
-
-- Read from the primary after a user performs a write.
-- Use session stickiness for a short period.
-- Wait until a replica reaches the required log position.
-- Route consistency-sensitive queries to the primary.
-- Use replicas only for workloads where small delays are acceptable.
-
-Good replica workloads include:
-
-- Product catalog browsing
-- Reports
-- Search indexing
-- Dashboard data with delayed freshness
-- Background jobs
-
-Primary reads are safer for:
+Send consistency-sensitive reads to the primary:
 
 - Payment confirmation
 - Inventory reservation
 - Permission changes
-- Account balance checks
-- Workflows that immediately depend on a previous write
+- Account balance
+- Anything immediately dependent on a previous write
+
+Replicas are usually safer for stale-tolerant workloads:
+
+- Reports
+- Search indexing
+- Product/catalog browsing
+- Background jobs
+- Dashboards where a small delay is acceptable
+
+```mermaid
+flowchart LR
+    REQ[Read Request] --> Q{Fresh data required?}
+    Q -->|Yes| P[(Primary)]
+    Q -->|No| R[(Replica)]
+```
 
 ---
 
-## 2.6 Failover and Replication Lag
+## 2.6 Failover
 
-### Failover
+Failover promotes a replica when the primary becomes unavailable.
 
-Failover promotes a replica to become the new primary after the current primary becomes unavailable.
+A reliable failover design must handle:
+
+- Failure detection
+- Replica promotion
+- Application reconnection
+- Preventing two writable primaries
+- Reconfiguring remaining replicas
+- Rejoining or rebuilding the old primary
 
 ```mermaid
 flowchart TD
-    P[(Primary - Failed)] -. unavailable .-> APP[Application]
-    R1[(Replica 1)] -->|Promote| NP[(New Primary)]
-    R2[(Replica 2)] -->|Follow| NP
-    APP --> NP
+    OLD[(Failed Primary)] -.-> APP[Application]
+    R1[(Replica)] -->|Promote| NEW[(New Primary)]
+    R2[(Replica)] -->|Follow| NEW
+    APP --> NEW
 ```
 
-A reliable failover process must handle:
-
-- Failure detection
-- Leader election or promotion
-- Client connection redirection
-- Prevention of two writable primaries
-- Recovery of the old primary
-- Replica reconfiguration
-- Validation of possible data loss
-
-### Split-Brain
-
-Split-brain happens when two nodes both believe they are the primary and accept conflicting writes.
-
-Prevent it with:
-
-- Quorum-based election
-- Fencing the old primary
-- Reliable consensus or cluster management
-- A single authoritative routing layer
-- Careful network-partition handling
-
-### Replication Lag
-
-Replication lag is the delay between a change being committed on the primary and applied on the replica.
-
-Lag may increase because of:
-
-- Heavy write traffic
-- Long-running transactions
-- Slow network links
-- Replica CPU or disk pressure
-- Locks on the replica
-- Large schema changes
-- A replica applying changes with insufficient parallelism
-
-Monitor both:
-
-- **Time lag:** approximately how many seconds behind
-- **Position lag:** difference in WAL, binlog or log sequence position
-
-A replica showing low time lag can still be unsafe if monitoring is inaccurate or replication is stopped. Monitor replication state as well as the lag value.
+The dangerous failure mode is **split-brain**, where two nodes accept writes as primary. Production systems use fencing, quorum, consensus, or a trusted cluster manager to prevent it.
 
 ---
 
 # 3. Partitioning
 
-Partitioning divides a logically large table into smaller physical pieces called **partitions**.
+Partitioning divides a large logical table into smaller physical tables called **partitions**.
 
-The application normally queries the parent table as if it were one table.
+The application normally continues querying the parent table.
 
 ```mermaid
 flowchart TD
-    Q[SELECT FROM orders] --> P[(Logical orders table)]
-
-    P --> P1[(orders_2026_01)]
-    P --> P2[(orders_2026_02)]
-    P --> P3[(orders_2026_03)]
+    Q[SELECT FROM orders] --> O[(Logical orders table)]
+    O --> J[(orders_2026_07)]
+    O --> A[(orders_2026_08)]
+    O --> S[(orders_2026_09)]
 ```
-
-Partitioning usually happens inside one logical database system. It improves table management and may improve queries when the database can avoid scanning irrelevant partitions.
-
-## Why Partition a Table?
 
 Partitioning is useful when:
 
-- A table is very large.
-- Queries usually access a predictable subset of rows.
-- Old data must be archived or deleted regularly.
-- Data is naturally grouped by date, region, tenant or category.
-- Different groups of data need different storage policies.
-- Indexes on a single huge table are becoming difficult to maintain.
+- One table becomes very large
+- Queries normally access a predictable subset of rows
+- Old data must be removed or archived by period
+- Indexes and maintenance on one giant table become expensive
 
-Partitioning is not automatically faster. Queries improve mainly when the partition key matches access patterns and the optimizer can perform partition pruning.
+Partitioning is **not automatically faster**. The important performance feature is **partition pruning**.
 
 ---
 
-## 3.1 Horizontal vs Vertical Partitioning
-
-### Horizontal Partitioning
-
-Rows are divided based on a key.
-
-```text
-orders_2026_h1 → rows from January to June
-orders_2026_h2 → rows from July to December
-```
-
-Each partition has the same columns but different rows.
-
-```text
-┌──────────┬────────────┬───────────┐
-│ order_id │ order_date │ amount    │
-├──────────┼────────────┼───────────┤
-│ 101      │ 2026-01-10 │ 120.00    │ ──▶ Partition: 2026 Q1
-│ 102      │ 2026-05-02 │ 350.00    │ ──▶ Partition: 2026 Q2
-│ 103      │ 2026-09-15 │ 210.00    │ ──▶ Partition: 2026 Q3
-└──────────┴────────────┴───────────┘
-```
-
-### Vertical Partitioning
-
-Columns are divided into separate tables, usually sharing the same identifier.
-
-```text
-users
-- user_id
-- name
-- email
-
-user_profiles
-- user_id
-- biography
-- avatar
-- preferences_json
-```
-
-Vertical partitioning is useful when:
-
-- Some columns are large and rarely needed.
-- Frequently accessed rows should remain narrow.
-- Sensitive columns need stricter access controls.
-- Different column groups have different storage or access patterns.
-
-This guide mainly focuses on **horizontal table partitioning**, because that is what SQL databases usually mean by declarative partitioning.
-
----
-
-## 3.2 Range, List and Hash Partitioning
+## 3.1 Common Partitioning Strategies
 
 ### Range Partitioning
 
-Rows are assigned based on value ranges.
-
-Common keys:
-
-- Date and timestamp
-- Numeric identifiers
-- Sequential business periods
+Rows are grouped by ranges.
 
 ```text
-orders_2026_01: 2026-01-01 <= order_date < 2026-02-01
-orders_2026_02: 2026-02-01 <= order_date < 2026-03-01
+July 2026   → orders_2026_07
+August 2026 → orders_2026_08
+September   → orders_2026_09
 ```
 
-**Best for**
+Common for:
 
-- Time-series data
-- Audit logs
 - Orders
 - Transactions
-- Events
-
-**Strength**
-
-Old partitions can be archived or removed efficiently.
-
-**Risk**
-
-A “current” partition can become a write hotspot while old partitions receive little traffic.
+- Audit logs
+- Time-series data
 
 ### List Partitioning
 
-Rows are assigned using explicit values.
+Rows are grouped by explicit values.
 
 ```text
-customers_india  → country_code = 'IN'
-customers_usa    → country_code = 'US'
-customers_europe → country_code IN ('DE', 'FR', 'IT', ...)
+IN → customers_india
+US → customers_usa
+EU → customers_europe
 ```
 
-**Best for**
-
-- Regions
-- Business units
-- Product categories
-- Regulatory boundaries
-
-**Risk**
-
-New values may not have a valid partition unless a default partition exists or DDL is updated.
+Useful for region, business unit, category, or regulatory grouping.
 
 ### Hash Partitioning
 
-The database hashes a key and distributes rows by remainder.
+The database hashes a key and places rows into buckets.
 
 ```text
 hash(customer_id) % 4
 
-Remainder 0 → partition_0
-Remainder 1 → partition_1
-Remainder 2 → partition_2
-Remainder 3 → partition_3
+0 → partition_0
+1 → partition_1
+2 → partition_2
+3 → partition_3
 ```
 
-**Best for**
+Useful when even distribution matters more than human-readable boundaries.
 
-- Even row distribution
-- Keys without meaningful ranges
-- Reducing concentration on a single partition
+| Strategy | Best Fit | Main Trade-off |
+|---|---|---|
+| Range | Time/range queries and retention | Current range can become hot |
+| List | Known regions/categories | New values require handling |
+| Hash | Even distribution | Harder range-based lifecycle operations |
 
-**Trade-off**
-
-Hash boundaries do not match human-readable business ranges, so operations such as deleting “all data before January” are less convenient.
-
-### Comparison
-
-| Type | Distribution Rule | Strong Use Case | Main Concern |
-|---|---|---|---|
-| Range | Value interval | Time-series and lifecycle management | Uneven traffic or hotspot |
-| List | Explicit values | Region or category | New/unmapped values |
-| Hash | Hash remainder | Even distribution | Harder range-based maintenance |
+> **Vertical partitioning** is different: it separates columns into multiple tables, usually to keep frequently read rows narrow. Declarative database partitioning normally refers to horizontal row partitioning.
 
 ---
 
-## 3.3 Partition Pruning
+## 3.2 Partition Pruning
 
-Partition pruning means the optimizer excludes partitions that cannot contain matching rows.
+Partition pruning allows the optimizer to skip partitions that cannot contain matching rows.
 
 Assume `orders` is partitioned by `order_date`.
 
@@ -576,45 +400,43 @@ WHERE order_date >= DATE '2026-07-01'
   AND order_date <  DATE '2026-08-01';
 ```
 
-The database may scan only the July 2026 partition.
+The database can potentially scan only:
 
 ```text
-Without pruning:
-Query → Scan Jan + Feb + Mar + ... + Jul + Aug + ...
-
-With pruning:
-Query → Scan Jul only
+orders_2026_07
 ```
 
-Partition pruning works best when:
+instead of:
 
-- The query filters directly on the partition key.
-- Data types match.
-- Predicates are simple enough for the optimizer.
-- Partition boundaries match normal query ranges.
+```text
+orders_2026_01
+orders_2026_02
+orders_2026_03
+...
+orders_2026_07
+...
+```
 
-A partitioned table can still perform badly when every query touches all partitions.
+### Important Rule
 
-### Good Predicate
+Queries benefit most when filters align with the partition key and boundaries.
+
+Prefer:
 
 ```sql
 WHERE created_at >= TIMESTAMP '2026-07-01 00:00:00'
   AND created_at <  TIMESTAMP '2026-08-01 00:00:00'
 ```
 
-### Less Helpful Predicate
+rather than hiding the key inside unnecessary expressions.
 
-```sql
-WHERE EXTRACT(MONTH FROM created_at) = 7
-```
-
-The second form may make pruning harder depending on the database and partition expression. Prefer filtering in a form aligned with partition boundaries.
+Use `EXPLAIN` or `EXPLAIN ANALYZE` to confirm that unrelated partitions are actually being pruned.
 
 ---
 
-## 3.4 PostgreSQL Partitioning Example
+## 3.3 PostgreSQL Range Partitioning Example
 
-The following example uses range partitioning by month.
+Create the logical parent table:
 
 ```sql
 CREATE TABLE orders (
@@ -639,17 +461,7 @@ PARTITION OF orders
 FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 ```
 
-Create indexes on frequently queried columns:
-
-```sql
-CREATE INDEX idx_orders_2026_07_customer
-    ON orders_2026_07 (customer_id);
-
-CREATE INDEX idx_orders_2026_08_customer
-    ON orders_2026_08 (customer_id);
-```
-
-Insert through the parent table:
+Insert through the parent:
 
 ```sql
 INSERT INTO orders (
@@ -668,17 +480,7 @@ VALUES (
 
 PostgreSQL routes the row to the matching partition.
 
-Query the parent table:
-
-```sql
-SELECT order_id, status, total_amount
-FROM orders
-WHERE order_date >= DATE '2026-07-01'
-  AND order_date <  DATE '2026-08-01'
-  AND customer_id = 501;
-```
-
-Inspect the execution plan:
+Verify pruning:
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)
@@ -689,198 +491,114 @@ WHERE order_date >= DATE '2026-07-01'
   AND customer_id = 501;
 ```
 
-Confirm that unrelated partitions are not scanned.
+### Operational Value
 
-### Default Partition
+For time-based data, dropping or detaching an old partition is usually much simpler than deleting millions of rows one by one.
 
-A default partition can capture rows that do not match existing boundaries.
-
-```sql
-CREATE TABLE orders_default
-PARTITION OF orders DEFAULT;
+```text
+Create future partition
+        ↓
+Write active data
+        ↓
+Query recent partitions
+        ↓
+Archive / detach old partition
+        ↓
+Drop when retention allows
 ```
 
-A default partition prevents immediate insert failures, but it should be monitored. Rows accumulating there often indicate missing partition creation or invalid data.
-
----
-
-## 3.5 Partition Lifecycle Management
-
-Time-based partitioning should be treated as an automated lifecycle.
-
-```mermaid
-flowchart LR
-    C[Create future partition] --> W[Write active data]
-    W --> Q[Query recent data]
-    Q --> A[Archive old partition]
-    A --> D[Detach or drop partition]
-```
-
-### Recommended Automation
-
-Before each period begins:
-
-1. Create future partitions.
-2. Create required indexes.
-3. Apply privileges.
-4. Apply constraints.
-5. Verify monitoring detects missing partitions.
-
-For old periods:
-
-1. Stop or verify writes to the partition.
-2. Detach the partition if it must remain queryable separately.
-3. Export or archive it when required.
-4. Drop it when retention rules allow.
-
-Dropping an old partition is usually much faster and operationally simpler than deleting millions of individual rows.
-
-### Partition Count
-
-More partitions are not always better.
-
-Too many partitions can increase:
-
-- Planning overhead
-- Metadata size
-- Maintenance complexity
-- Schema-change time
-- Operational risk
-
-Choose a granularity that matches:
-
-- Query windows
-- Data volume
-- Retention rules
-- Maintenance frequency
-
-For example:
-
-- Daily partitions for very high-volume event streams
-- Monthly partitions for order or audit tables
-- Yearly partitions for lower-volume historical records
+Avoid creating unnecessarily tiny partitions. Too many partitions increase planning and operational overhead.
 
 ---
 
 # 4. Sharding
 
-Sharding distributes different subsets of data across multiple independent database nodes.
-
-Each node stores only part of the total dataset.
+Sharding distributes different subsets of a logical dataset across independent database nodes.
 
 ```mermaid
 flowchart TD
-    APP[Application] --> ROUTER[Shard Router]
-
-    ROUTER -->|customer_id 1-1M| S1[(Shard 1)]
-    ROUTER -->|customer_id 1M-2M| S2[(Shard 2)]
-    ROUTER -->|customer_id 2M-3M| S3[(Shard 3)]
+    APP[Application] --> R[Shard Router]
+    R -->|tenant group A| S1[(Shard 1)]
+    R -->|tenant group B| S2[(Shard 2)]
+    R -->|tenant group C| S3[(Shard 3)]
 ```
 
-Sharding is a form of horizontal data distribution, but it normally crosses database-server boundaries.
+Sharding becomes relevant when a single writable database node is reaching limits such as:
 
-## Why Sharding Is Used
-
-Sharding becomes relevant when a single database node cannot comfortably handle:
-
-- Total data size
 - Write throughput
+- CPU
+- Memory
+- Storage size
+- Disk I/O
 - Index size
-- Active working set
-- Storage IOPS
-- CPU load
-- Maintenance windows
-- Tenant isolation requirements
+- Maintenance window
+- Tenant-isolation requirements
 
-Sharding adds major operational and application complexity. It should generally follow simpler scaling options such as:
-
-- Query optimization
-- Correct indexing
-- Connection pooling
-- Caching
-- Read replicas
-- Hardware scaling
-- Table partitioning
-- Archiving cold data
+Unlike partitioning, sharding normally means **independent ownership on different database nodes**.
 
 ---
 
-## 4.1 How Sharding Works
+## 4.1 Shard Routing
 
-A sharded system needs a deterministic way to answer:
+Every request needs a deterministic answer to:
 
-> Which shard owns this row?
+> Which shard owns this data?
 
-A shard mapping function may look like: `shard = hash(tenant_id) % number_of_shards`
+A simple strategy might be:
 
-For example, `hash(tenant_101) % 4 = 2`, so the router sends that tenant’s request to Shard 2.
+```text
+shard_number = hash(tenant_id) % number_of_shards
+```
 
 ```mermaid
 sequenceDiagram
     participant A as Application
-    participant R as Shard Router
+    participant R as Router
     participant M as Shard Map
     participant S as Target Shard
 
-    A->>R: Fetch orders for tenant 101
+    A->>R: Orders for tenant 101
     R->>M: Resolve tenant 101
     M-->>R: Shard 2
-    R->>S: SELECT ... WHERE tenant_id = 101
+    R->>S: Query Shard 2
     S-->>R: Result
     R-->>A: Result
 ```
 
-The routing logic may live in:
+Routing may live in:
 
-- Application code
-- A database proxy
+- Application data-access code
+- A proxy
+- Middleware
 - A distributed database coordinator
-- Middleware such as a sharding platform
-- A service-specific data-access layer
+
+Keep shard-routing rules centralized so different services do not disagree about data ownership.
 
 ---
 
-## 4.2 Sharding Strategies
+## 4.2 Common Sharding Strategies
 
 ### Range-Based Sharding
 
-Assign continuous key ranges to shards.
-
 ```text
-Shard 1 → customer_id 1 to 1,000,000
-Shard 2 → customer_id 1,000,001 to 2,000,000
-Shard 3 → customer_id 2,000,001 to 3,000,000
+Shard 1 → customer_id 1–1,000,000
+Shard 2 → customer_id 1,000,001–2,000,000
+Shard 3 → customer_id 2,000,001–3,000,000
 ```
 
-**Advantages**
-
-- Simple routing
-- Efficient range queries
-- Easy to understand
-
-**Trade-offs**
-
-- Sequential keys can create a hotspot on the newest shard.
-- Uneven ranges can produce uneven data volume.
-- Rebalancing may require moving large key ranges.
+**Good:** simple routing and range queries  
+**Risk:** sequential IDs can push most new writes to the newest shard.
 
 ### Hash-Based Sharding
 
-Hash the shard key to distribute rows, for example `shard_number = hash(customer_id) % 4`.
+```text
+hash(customer_id) % N → shard
+```
 
-**Advantages**
-
-- Usually produces more even distribution
-- Reduces sequential-key hotspots
-
-**Trade-offs**
-
-- Range queries may require contacting many shards.
-- Changing the shard count can move large amounts of data unless consistent hashing or virtual buckets are used.
+**Good:** usually better distribution  
+**Risk:** range queries may touch many shards, and changing shard count can move a lot of data.
 
 ### Directory-Based Sharding
-
-Maintain a lookup table that maps a key to a shard.
 
 ```text
 tenant_101 → shard_3
@@ -888,614 +606,72 @@ tenant_102 → shard_1
 tenant_103 → shard_3
 ```
 
-**Advantages**
-
-- Flexible placement
-- A tenant can be moved independently
-- Useful for tenant isolation and custom placement
-
-**Trade-offs**
-
-- The directory becomes critical infrastructure.
-- Routing adds a metadata lookup.
-- Mapping updates must be strongly controlled.
+**Good:** flexible placement and easier tenant migration  
+**Risk:** the shard map becomes critical infrastructure.
 
 ### Geography-Based Sharding
 
-Route data based on region.
-
 ```text
-India customers  → India shard
-EU customers     → EU shard
-US customers     → US shard
+India users → India shard
+EU users    → EU shard
+US users    → US shard
 ```
 
-**Advantages**
-
-- Lower regional latency
-- Supports data-residency requirements
-- Limits some cross-region traffic
-
-**Trade-offs**
-
-- Global users and cross-region workflows are harder.
-- Geographic load may be uneven.
-- Moving a customer between regions is operationally complex.
+Useful for latency and data-residency requirements, but global workflows become harder.
 
 ### Tenant-Based Sharding
 
-Use `tenant_id` as the main routing key.
-
 ```text
-Tenant A → Shard 1
-Tenant B → Shard 2
-Tenant C → Shard 1
+tenant_id → shard
 ```
 
-This is common in SaaS systems because most requests already belong to one tenant.
+This is a natural fit for many SaaS systems because most requests already belong to one tenant.
 
 ---
 
 ## 4.3 Choosing a Shard Key
 
-The shard key is one of the most important design decisions in a distributed database.
+The shard key determines both **data distribution** and **request distribution**.
 
-A strong shard key should provide:
+A strong shard key normally has:
 
-1. **High cardinality**  
-   It should have many distinct values.
+1. **High cardinality** — many distinct values
+2. **Even data distribution**
+3. **Even traffic distribution**
+4. **Query locality** — common requests identify one shard
+5. **Stability** — the value rarely changes
+6. **Business locality** — related data stays together
 
-2. **Even distribution**  
-   Data and traffic should spread across shards.
-
-3. **Query locality**  
-   Most queries should identify one shard.
-
-4. **Write distribution**  
-   Writes should not concentrate on one node.
-
-5. **Stability**  
-   The value should rarely change.
-
-6. **Business alignment**  
-   Related records should often live together.
-
-### Good SaaS Example
-
-Use `shard_key = tenant_id`. Related data can include:
-
-- Users
-- Orders
-- Invoices
-- Permissions
-- Audit events
-
-All records for a tenant can be routed to one shard.
-
-### Potentially Weak Example
-
-With `shard_key = created_at`, most new writes target the latest time range, causing a hot shard.
-
-### Compound Shard Key
-
-A compound key such as `(tenant_id, hashed_entity_id)` can improve distribution while preserving locality.
-
-This may be useful when a single tenant is too large for one shard, but it makes tenant-wide queries more distributed.
-
-### Shard-Key Evaluation Table
-
-| Question | Why It Matters |
-|---|---|
-| Does every common request contain the key? | Enables single-shard routing |
-| Are values evenly distributed? | Prevents storage imbalance |
-| Is traffic evenly distributed? | Prevents hot shards |
-| Can the key change? | Moving rows across shards is expensive |
-| Are joins usually within the same key? | Keeps joins local |
-| Can one key value become extremely large? | Prevents one tenant/entity from outgrowing a shard |
-
-Data distribution and traffic distribution are different. Tenants may occupy equal storage but receive very different request volumes.
-
----
-
-## 4.4 Routing Queries
-
-### Single-Shard Query
-
-The query contains the shard key.
-
-```sql
-SELECT order_id, status, total_amount
-FROM orders
-WHERE tenant_id = 101
-  AND order_id = 98765;
-```
-
-The router can send it directly to the correct shard: `Request → Resolve tenant_id 101 → Shard 2 → Execute`.
-
-### Scatter-Gather Query
-
-The query does not contain the shard key.
-
-```sql
-SELECT COUNT(*)
-FROM orders
-WHERE status = 'FAILED';
-```
-
-The router may need to:
-
-1. Send the query to every shard.
-2. Collect partial results.
-3. Combine them.
-4. Return the final count.
-
-```mermaid
-flowchart TD
-    Q[Global count query] --> R[Router]
-    R --> S1[(Shard 1)]
-    R --> S2[(Shard 2)]
-    R --> S3[(Shard 3)]
-    S1 --> AGG[Aggregate]
-    S2 --> AGG
-    S3 --> AGG
-    AGG --> RESULT[Final result]
-```
-
-Scatter-gather queries are more expensive because latency is affected by the slowest participating shard.
-
-### Routing Layer Responsibilities
-
-A routing layer may manage:
-
-- Shard-key extraction
-- Shard-map lookup
-- Connection pools per shard
-- Retries
-- Timeouts
-- Read/write splitting
-- Replica selection
-- Result aggregation
-- Resharding transitions
-
-Keep routing logic centralized rather than duplicating inconsistent rules throughout the application.
-
----
-
-## 4.5 Cross-Shard Operations
-
-Sharding makes operations across shard boundaries more difficult.
-
-### Cross-Shard Join
-
-Suppose customers are on one shard and orders are distributed differently.
-
-```sql
-SELECT c.name, o.total_amount
-FROM customers c
-JOIN orders o ON o.customer_id = c.customer_id;
-```
-
-If related records are on different shards, the system may need to move data over the network or execute multiple queries and join results outside the database.
-
-### Cross-Shard Transaction
-
-A transfer between accounts on different shards may require a distributed transaction.
+### Good SaaS Choice
 
 ```text
-Shard A: debit account 100
-Shard B: credit account 200
+shard key = tenant_id
 ```
 
-Possible approaches include:
-
-- Two-phase commit
-- Saga pattern
-- Transactional outbox
-- Idempotent retries
-- Compensating actions
-- A dedicated ledger service
-- Designing ownership so the operation remains on one shard
-
-### Prefer Local Transactions
-
-The best sharding design keeps most transactions within one shard.
+Then a tenant's related records can live together:
 
 ```text
-Good:
-tenant_id 101 users + orders + invoices → same shard
-
-Difficult:
-users sharded by user_id
-orders sharded by order_date
-invoices sharded by region
+Tenant 101
+├── users
+├── orders
+├── invoices
+├── permissions
+└── audit events
 ```
 
-Co-locate data that is frequently read or modified together.
+This keeps most reads, joins, and transactions local to one shard.
 
-### Global Constraints
-
-Database-wide constraints become harder:
-
-- Globally unique identifiers
-- Foreign keys across shards
-- Unique email addresses
-- Global sequence numbers
-- Aggregate limits
-- Referential integrity
-
-Common solutions:
-
-- UUID, ULID or Snowflake-style identifiers
-- A central uniqueness service
-- Application-level validation
-- A globally replicated lookup table
-- Reserving ID ranges per shard
-
----
-
-## 4.6 Rebalancing and Resharding
-
-As data grows, an existing shard may become too large or too busy.
-
-Resharding changes the distribution.
+### Weak Choice Example
 
 ```text
-Before:
-Shard A → 50%
-Shard B → 50%
-
-After:
-Shard A → 25%
-Shard B → 25%
-Shard C → 25%
-Shard D → 25%
+shard key = created_at
 ```
 
-### Typical Online Resharding Flow
-
-```mermaid
-flowchart LR
-    A[Create new shards] --> B[Copy existing data]
-    B --> C[Capture ongoing changes]
-    C --> D[Catch up new shards]
-    D --> E[Switch routing]
-    E --> F[Validate]
-    F --> G[Remove old ownership]
-```
-
-A safe resharding process normally needs:
-
-- Snapshot or bulk copy
-- Change-data capture during migration
-- Dual-read or validation phase
-- Controlled routing cutover
-- Rollback strategy
-- Duplicate-write protection
-- Data consistency checks
-
-### Virtual Buckets
-
-Instead of mapping every row directly to a physical shard, map rows to many logical buckets.
-
-```text
-hash(tenant_id) % 1024 → virtual bucket
-virtual bucket → physical shard
-```
-
-To rebalance, move selected buckets rather than changing the hashing rule for every row.
-
-```text
-Buckets 0-255   → Shard A
-Buckets 256-511 → Shard B
-Buckets 512-767 → Shard C
-Buckets 768-1023→ Shard D
-```
-
-This gives more controlled data movement.
-
----
-
-# 5. Replication vs Partitioning vs Sharding
-
-| Area | Replication | Partitioning | Sharding |
-|---|---|---|---|
-| Main goal | Availability and read scale | Large-table performance and manageability | Horizontal data and write scale |
-| Data placement | Same data copied | One table divided into pieces | Different subsets on different nodes |
-| Number of servers | Usually multiple | Often one database system | Multiple database nodes |
-| Write scaling | Usually no | Limited and database-dependent | Yes, when writes distribute well |
-| Read scaling | Yes | Can reduce scanned data | Yes, when queries target shards |
-| Failure recovery | Major benefit | Not its primary purpose | Requires per-shard HA |
-| Query complexity | Moderate read routing | Usually transparent to SQL | Often significant |
-| Cross-data joins | Normal on primary | Usually normal | Difficult across shards |
-| Key decision | Sync mode and topology | Partition key and boundaries | Shard key and routing |
-| Common risk | Lag and stale reads | Too many or poorly chosen partitions | Hot shards and distributed operations |
-
-## One-Line Difference
-
-```text
-Replication answers: “Where are the copies?”
-
-Partitioning answers: “Which physical partition contains this row?”
-
-Sharding answers: “Which database server owns this row?”
-```
-
----
-
-# 6. How They Work Together
-
-A scalable database architecture often layers the techniques.
-
-```mermaid
-flowchart TD
-    APP[Application] --> ROUTER[Shard Router]
-
-    ROUTER --> S1P[(Shard 1 Primary)]
-    ROUTER --> S2P[(Shard 2 Primary)]
-
-    S1P --> S1R1[(Shard 1 Replica)]
-    S1P --> S1R2[(Shard 1 Replica)]
-
-    S2P --> S2R1[(Shard 2 Replica)]
-    S2P --> S2R2[(Shard 2 Replica)]
-
-    S1P --> P11[Monthly Partitions]
-    S2P --> P21[Monthly Partitions]
-```
-
-### Responsibility of Each Layer
-
-- **Sharding:** selects the database group that owns the tenant or entity.
-- **Replication:** protects each shard and optionally scales reads.
-- **Partitioning:** organizes large tables inside each shard.
-
-### Request Flow
-
-```text
-1. Request contains tenant_id = 101.
-2. Router maps tenant 101 to Shard 2.
-3. Write is sent to Shard 2 primary.
-4. Shard 2 primary replicates the change to its replicas.
-5. The row is stored in the correct monthly partition.
-```
-
-Each layer solves a different bottleneck.
-
----
-
-# 7. Practical Architecture Examples
-
-## 7.1 Growing E-Commerce Application
-
-### Initial Stage
-
-One PostgreSQL database serves the whole application. Use:
-
-- Correct indexes
-- Query optimization
-- Connection pooling
-- Backups
-
-### Read-Heavy Stage
-
-The application now reads from a primary plus read replicas. Use replication for:
-
-- Catalog reads
-- Reporting
-- Non-critical dashboards
-
-Keep checkout and inventory reads on the primary when fresh state is required.
-
-### Large Orders Table
-
-Partition `orders` by month.
-
-Benefits:
-
-- Recent-order queries scan fewer partitions.
-- Old data can be archived by partition.
-- Retention operations become easier.
-
-### Very Large Scale
-
-Shard by `customer_id` or a stable account identifier, routing with `hash(customer_id) → shard`.
-
-Keep customer-owned data together where possible.
-
----
-
-## 7.2 Multi-Tenant SaaS Platform
-
-Use `tenant_id` as the primary routing key.
-
-```mermaid
-flowchart LR
-    REQ[Request with tenant_id] --> R[Router]
-    R -->|Tenant A and D| S1[(Shard 1)]
-    R -->|Tenant B and E| S2[(Shard 2)]
-    R -->|Tenant C and F| S3[(Shard 3)]
-```
-
-Inside every shard:
-
-- Partition audit events by month.
-- Replicate to a standby.
-- Route strongly consistent tenant reads to the primary.
-- Route safe reporting reads to a replica.
-
-### Why This Works
-
-Most business operations are tenant-local:
-
-```sql
-SELECT *
-FROM invoices
-WHERE tenant_id = :tenant_id
-  AND invoice_id = :invoice_id;
-```
-
-The application already knows the tenant, so routing is efficient.
-
-### Large Tenant Handling
-
-A very large tenant may eventually require:
-
-- A dedicated shard
-- Sub-sharding by entity
-- A compound shard key
-- Tenant migration using directory-based routing
-
----
-
-## 7.3 Event and Audit Platform
-
-Event tables grow quickly and are normally queried by time range.
-
-A practical design:
-
-```text
-Shard by tenant_id
-Partition each shard by event_date
-Replicate each shard for availability
-```
-
-Example query:
-
-```sql
-SELECT event_type, actor_id, occurred_at
-FROM audit_events
-WHERE tenant_id = 101
-  AND occurred_at >= TIMESTAMP '2026-07-01 00:00:00'
-  AND occurred_at <  TIMESTAMP '2026-08-01 00:00:00';
-```
-
-This request:
-
-1. Routes to one shard using `tenant_id`.
-2. Prunes partitions using `occurred_at`.
-3. May run on a replica when slight staleness is acceptable.
-
----
-
-# 8. Choosing the Right Technique
-
-Use the smallest technique that directly solves the current bottleneck.
-
-```mermaid
-flowchart TD
-    START[Database pressure] --> Q1{Need higher availability?}
-    Q1 -->|Yes| REP[Add replication and tested failover]
-    Q1 -->|No| Q2{Read workload too high?}
-
-    Q2 -->|Yes| READ[Read replicas, caching and query tuning]
-    Q2 -->|No| Q3{One table is operationally huge?}
-
-    Q3 -->|Yes| PART[Partition the table]
-    Q3 -->|No| Q4{Single node cannot handle data or writes?}
-
-    Q4 -->|Yes| SHARD[Evaluate sharding]
-    Q4 -->|No| TUNE[Optimize schema, queries, indexes and capacity]
-```
-
-## Decision Guide
-
-### Choose Replication When
-
-- Downtime must be reduced.
-- A standby is needed for failover.
-- Read traffic exceeds primary capacity.
-- Disaster recovery requires another copy.
-- Reporting should be isolated from the primary.
-
-### Choose Partitioning When
-
-- One table contains a very large number of rows.
-- Queries commonly filter by date, tenant or region.
-- Data retention is period-based.
-- Old data must be archived efficiently.
-- Index and maintenance operations need smaller units.
-
-### Choose Sharding When
-
-- A single node is reaching write, CPU, memory, storage or I/O limits.
-- Data volume cannot fit comfortably on one node.
-- Workloads can be divided by a stable key.
-- Most requests can target one shard.
-- The organization can operate distributed database infrastructure.
-
-## Scaling Order
-
-A practical progression is:
-
-```text
-1. Measure the bottleneck
-2. Fix inefficient queries and indexes
-3. Use connection pooling
-4. Add caching where appropriate
-5. Scale the database server vertically
-6. Add replicas for HA and read scaling
-7. Partition very large tables
-8. Archive cold data
-9. Shard only when one writable node remains the real limit
-```
-
-Do not choose sharding only because the dataset may become large in the future. Choose it when measurements and growth projections justify the added complexity.
-
----
-
-# 9. Operational Monitoring
-
-Scaling architecture is only reliable when monitored.
-
-## Replication Metrics
-
-Monitor:
-
-- Replica connection state
-- Replication lag in time and log position
-- WAL or binlog retention
-- Replication-slot growth
-- Apply errors
-- Replica replay throughput
-- Failover readiness
-- Read traffic per replica
-- Replica disk and CPU usage
-
-### Important Alert
-
-A disconnected replica may cause retained logs to grow until the primary disk fills. Monitor both replica health and retained-log volume.
-
-## Partitioning Metrics
-
-Monitor:
-
-- Rows and storage per partition
-- Missing future partitions
-- Rows entering a default partition
-- Partition-pruning behavior
-- Query-plan time
-- Index size per partition
-- Retention and archival jobs
-- Long-running operations blocking detach or drop
-
-## Sharding Metrics
-
-Monitor both cluster-wide and per-shard values:
-
-- Storage per shard
-- Read and write throughput
-- CPU, memory and disk I/O
-- Connection count
-- Query latency
-- Error rate
-- Hot keys or hot tenants
-- Scatter-gather query count
-- Cross-shard transaction count
-- Rebalancing progress
-- Shard-map availability
-- Data-distribution skew
+If all new writes target the newest time range, one shard can become a hotspot.
 
 ### Data Skew vs Traffic Skew
+
+These are different problems:
 
 ```text
 Data skew:
@@ -1505,135 +681,294 @@ Traffic skew:
 Shard B stores 20% of rows but receives 80% of requests.
 ```
 
-Both can overload a shard and require different solutions.
+A shard key must be evaluated against **both**.
 
 ---
 
-# 10. Best Practices
+## 4.4 Single-Shard vs Scatter-Gather Queries
 
-## Replication
+### Single-Shard Query
 
-- Use replication for availability only after failover is tested.
-- Define acceptable recovery point and recovery time objectives.
-- Route consistency-sensitive reads to the primary.
-- Monitor log retention so a broken replica cannot fill primary storage.
-- Use fencing or quorum controls to prevent split-brain.
-- Keep backups even when replicas exist; replication is not a backup.
-- Test promotion, application reconnection and old-primary recovery.
-
-## Partitioning
-
-- Choose a partition key used in common query filters.
-- Align partition boundaries with retention and reporting periods.
-- Automate creation of future partitions.
-- Verify pruning with the query execution plan.
-- Keep indexes focused on actual access patterns.
-- Avoid excessively fine partition granularity.
-- Monitor the default partition.
-- Test schema changes across all partitions.
-
-## Sharding
-
-- Prefer a stable, high-cardinality shard key.
-- Design for query locality.
-- Co-locate data used in the same transaction.
-- Avoid global joins in request-time paths.
-- Use globally safe identifiers.
-- Keep a strongly controlled shard map.
-- Plan resharding before the first shard becomes full.
-- Make migration and retry operations idempotent.
-- Operate high availability separately for every shard.
-- Design dashboards to reveal per-shard imbalance, not only cluster averages.
-
-## General Principle
-
-```text
-Replication increases copies.
-Partitioning increases physical table units.
-Sharding increases independent database ownership units.
-
-Every increase also increases operational responsibility.
+```sql
+SELECT order_id, status, total_amount
+FROM orders
+WHERE tenant_id = 101
+  AND order_id = 98765;
 ```
 
----
-
-# 11. Final Mental Model
-
-Consider an `orders` system.
-
-### Replication
+Because `tenant_id` is available, the router can directly choose one shard.
 
 ```text
-Primary orders database
-        │
-        ├── Replica A: same orders
-        └── Replica B: same orders
+Request → tenant_id 101 → Shard 2 → Result
 ```
 
-**Purpose:** availability and read scale.
+### Scatter-Gather Query
 
-### Partitioning
-
-```text
-One logical orders table
-        │
-        ├── orders_2026_07
-        ├── orders_2026_08
-        └── orders_2026_09
+```sql
+SELECT COUNT(*)
+FROM orders
+WHERE status = 'FAILED';
 ```
 
-**Purpose:** manage and query a large table efficiently.
-
-### Sharding
-
-```text
-Shard 1: customers A–H
-Shard 2: customers I–P
-Shard 3: customers Q–Z
-```
-
-**Purpose:** distribute data and writes across database servers.
-
-### Combined Production Design
+If the query does not include the shard key, it may need to run on every shard.
 
 ```mermaid
 flowchart TD
-    APP[Application] --> RT[Shard router]
-
-    RT --> S1[(Shard 1 primary)]
-    RT --> S2[(Shard 2 primary)]
-    RT --> S3[(Shard 3 primary)]
-
-    S1 --> R1[(Replicas)]
-    S2 --> R2[(Replicas)]
-    S3 --> R3[(Replicas)]
-
-    S1 --> P1[Monthly table partitions]
-    S2 --> P2[Monthly table partitions]
-    S3 --> P3[Monthly table partitions]
+    Q[Global Query] --> R[Router]
+    R --> S1[(Shard 1)]
+    R --> S2[(Shard 2)]
+    R --> S3[(Shard 3)]
+    S1 --> A[Aggregate Results]
+    S2 --> A
+    S3 --> A
+    A --> OUT[Final Result]
 ```
 
-The most important distinction is:
+Scatter-gather is more expensive because:
 
-> **Replication duplicates ownership, partitioning organizes storage, and sharding distributes ownership.**
-
----
-
-# 12. References
-
-The concepts and examples in this guide were checked against current official documentation available in July 2026:
-
-- [PostgreSQL 18 — Table Partitioning](https://www.postgresql.org/docs/18/ddl-partitioning.html)
-- [PostgreSQL 18 — High Availability, Load Balancing and Replication](https://www.postgresql.org/docs/18/high-availability.html)
-- [PostgreSQL 18 — Log-Shipping Standby Servers and Streaming Replication](https://www.postgresql.org/docs/18/warm-standby.html)
-- [PostgreSQL 18 — Logical Replication](https://www.postgresql.org/docs/18/logical-replication.html)
-- [MySQL 8.4 — Replication](https://dev.mysql.com/doc/refman/8.4/en/replication.html)
-- [MySQL 8.4 — Semi-Synchronous Replication](https://dev.mysql.com/doc/refman/8.4/en/replication-semisync.html)
-- [MySQL 8.4 — Partitioning](https://dev.mysql.com/doc/refman/8.4/en/partitioning.html)
-- [MongoDB — Sharding](https://www.mongodb.com/docs/manual/sharding/)
-- [MongoDB — Shard Keys](https://www.mongodb.com/docs/manual/core/sharding-shard-key/)
-- [Vitess — Sharding Guidelines](https://vitess.io/docs/25.0/user-guides/vschema-guide/sharding-guidelines/)
+- More nodes participate
+- More network traffic is required
+- Results must be merged
+- Latency can be limited by the slowest shard
 
 ---
 
-**End of guide**
+## 4.5 Cross-Shard Operations
+
+This is the main cost of sharding.
+
+### Cross-Shard Joins
+
+If related rows are placed on different shards, the database or application may need to fetch data from multiple nodes and combine it.
+
+### Cross-Shard Transactions
+
+Example:
+
+```text
+Shard A → debit account 100
+Shard B → credit account 200
+```
+
+Maintaining atomicity across both shards is much harder than a normal local transaction.
+
+Possible distributed approaches include:
+
+- Two-phase commit
+- Saga workflow
+- Transactional outbox
+- Idempotent operations
+- Compensating actions
+
+The best design is often to keep frequently modified data in the **same shard**.
+
+### Global Constraints
+
+Sharding also complicates:
+
+- Global uniqueness
+- Foreign keys across shards
+- Global sequence numbers
+- Database-wide aggregates
+
+Common approaches include globally safe identifiers such as UUIDs/ULIDs and application-level or dedicated services for constraints that must span shards.
+
+---
+
+## 4.6 Rebalancing and Resharding
+
+Eventually one shard may become too large or too busy.
+
+A typical online resharding flow is:
+
+```mermaid
+flowchart LR
+    A[Create target shards] --> B[Copy existing data]
+    B --> C[Capture ongoing changes]
+    C --> D[Catch up]
+    D --> E[Switch routing]
+    E --> F[Validate]
+    F --> G[Retire old ownership]
+```
+
+A safe migration needs:
+
+- Data copy
+- Change capture during migration
+- Controlled routing cutover
+- Consistency validation
+- Idempotent retries
+- Rollback strategy
+
+### Virtual Buckets
+
+Instead of mapping keys directly to physical shards:
+
+```text
+hash(tenant_id) % 1024 → virtual bucket
+virtual bucket → physical shard
+```
+
+Rebalancing can then move selected buckets between physical shards without redefining ownership for every row.
+
+---
+
+# 5. How the Three Work Together
+
+Use one practical SaaS example.
+
+Assume an application stores orders and audit events for many tenants.
+
+```mermaid
+flowchart TD
+    APP[Application] --> RT[Shard Router]
+
+    RT --> S1[(Shard 1 Primary)]
+    RT --> S2[(Shard 2 Primary)]
+
+    S1 --> R1[(Shard 1 Replica)]
+    S2 --> R2[(Shard 2 Replica)]
+
+    S1 --> P1[Monthly Audit Partitions]
+    S2 --> P2[Monthly Audit Partitions]
+```
+
+## Request Flow
+
+```text
+1. Request contains tenant_id = 101.
+2. Router maps tenant 101 to Shard 2.
+3. The write goes to Shard 2 primary.
+4. The primary replicates the change to its replica.
+5. If the target table is partitioned, PostgreSQL routes the row to the
+   correct monthly partition.
+```
+
+Each layer solves a different problem:
+
+| Layer | Responsibility |
+|---|---|
+| **Sharding** | Chooses which database group owns the tenant |
+| **Replication** | Protects that shard and can serve safe read traffic |
+| **Partitioning** | Organizes a very large table inside that shard |
+
+This combined design is common because the techniques are complementary rather than alternatives.
+
+---
+
+# 6. Choosing the Right Technique
+
+Start with the actual bottleneck instead of choosing a distributed architecture too early.
+
+```mermaid
+flowchart TD
+    START[Database pressure] --> A{Need better availability?}
+    A -->|Yes| REP[Replication + tested failover]
+    A -->|No| B{Read load too high?}
+    B -->|Yes| READ[Query tuning + cache + read replicas]
+    B -->|No| C{One table operationally huge?}
+    C -->|Yes| PART[Partition it]
+    C -->|No| D{Single writable node at real limit?}
+    D -->|Yes| SHARD[Evaluate sharding]
+    D -->|No| TUNE[Keep tuning current architecture]
+```
+
+## Practical Scaling Order
+
+```text
+1. Measure the bottleneck
+2. Fix inefficient queries
+3. Add correct indexes
+4. Use connection pooling
+5. Add caching where useful
+6. Scale the database vertically when reasonable
+7. Add replication for HA/read scale
+8. Partition very large tables
+9. Archive cold data
+10. Shard when one writable node is still the limiting factor
+```
+
+Sharding should normally be a measured decision, not a default design for an application that may become large someday.
+
+---
+
+# 7. Operational Best Practices
+
+## Replication
+
+- Monitor replica health and replication lag.
+- Route consistency-sensitive reads to the primary.
+- Test failover before calling the system highly available.
+- Protect against split-brain.
+- Monitor retained WAL/binlogs and replication slots.
+- Keep independent backups.
+
+## Partitioning
+
+- Choose a partition key that appears in common filters.
+- Align boundaries with retention and query windows.
+- Automate future partition creation.
+- Verify pruning with `EXPLAIN`.
+- Avoid unnecessarily large partition counts.
+- Monitor default partitions when used.
+
+## Sharding
+
+- Prefer stable, high-cardinality shard keys.
+- Keep related data and transactions on the same shard.
+- Minimize request-time scatter-gather queries.
+- Monitor per-shard CPU, storage, latency, and traffic.
+- Plan resharding before a shard becomes full.
+- Keep the shard map strongly controlled.
+- Design migrations and retries to be idempotent.
+- Provide high availability for every shard independently.
+
+---
+
+# 8. Final Mental Model
+
+```text
+REPLICATION
+Same data, more copies
+
+Primary
+ ├── Replica A
+ └── Replica B
+
+
+PARTITIONING
+One logical table, smaller physical sections
+
+orders
+ ├── orders_2026_07
+ ├── orders_2026_08
+ └── orders_2026_09
+
+
+SHARDING
+Different data, different database owners
+
+Shard 1 → Tenants A–H
+Shard 2 → Tenants I–P
+Shard 3 → Tenants Q–Z
+```
+
+The most useful interview-level distinction is:
+
+> **Replication duplicates data ownership for availability/read scale, partitioning organizes a large table into manageable physical units, and sharding distributes data ownership across database nodes for horizontal scale.**
+
+---
+
+# 9. References
+
+Checked against current official documentation available in August 2026:
+
+- PostgreSQL 18 — Table Partitioning: https://www.postgresql.org/docs/18/ddl-partitioning.html
+- PostgreSQL 18 — High Availability, Load Balancing, and Replication: https://www.postgresql.org/docs/18/high-availability.html
+- PostgreSQL 18 — Log-Shipping Standby Servers: https://www.postgresql.org/docs/18/warm-standby.html
+- PostgreSQL 18 — Logical Replication: https://www.postgresql.org/docs/18/logical-replication.html
+- MySQL 8.4 — Semi-Synchronous Replication: https://dev.mysql.com/doc/refman/8.4/en/replication-semisync.html
+- MySQL 8.4 — Partitioning: https://dev.mysql.com/doc/refman/8.4/en/partitioning.html
+- MongoDB — Sharding: https://www.mongodb.com/docs/manual/sharding/
+- MongoDB — Shard Keys: https://www.mongodb.com/docs/manual/core/sharding-shard-key/
+- Vitess — Sharding Concepts: https://vitess.io/docs/

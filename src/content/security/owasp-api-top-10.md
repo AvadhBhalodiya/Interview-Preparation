@@ -1505,24 +1505,3 @@ Security gates should be risk-based. A critical authorization regression should 
 Three items above carry disproportionate weight and are worth re-reading before any API design review: treat third-party API responses as untrusted input, keep an accurate inventory of every version, host, and environment, and test cross-user and cross-tenant access continuously — that last one is the only reliable way to catch BOLA, because no scanner knows who should own what.
 
 ---
-
-# 19. Official References
-
-- OWASP API Security Project: https://owasp.org/www-project-api-security/
-- OWASP API Security Top 10: https://owasp.org/API-Security/
-- OWASP API Security Top 10 — 2023: https://owasp.org/API-Security/editions/2023/en/0x11-t10/
-- API1 — Broken Object Level Authorization: https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
-- API2 — Broken Authentication: https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/
-- API3 — Broken Object Property Level Authorization: https://owasp.org/API-Security/editions/2023/en/0xa3-broken-object-property-level-authorization/
-- API4 — Unrestricted Resource Consumption: https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/
-- API5 — Broken Function Level Authorization: https://owasp.org/API-Security/editions/2023/en/0xa5-broken-function-level-authorization/
-- API6 — Unrestricted Access to Sensitive Business Flows: https://owasp.org/API-Security/editions/2023/en/0xa6-unrestricted-access-to-sensitive-business-flows/
-- API7 — Server-Side Request Forgery: https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/
-- API8 — Security Misconfiguration: https://owasp.org/API-Security/editions/2023/en/0xa8-security-misconfiguration/
-- API9 — Improper Inventory Management: https://owasp.org/API-Security/editions/2023/en/0xa9-improper-inventory-management/
-- API10 — Unsafe Consumption of APIs: https://owasp.org/API-Security/editions/2023/en/0xaa-unsafe-consumption-of-apis/
-- OWASP Cheat Sheet Series: https://cheatsheetseries.owasp.org/
-
----
-
-> This guide is an educational summary for development and interview preparation. Apply controls according to your application's architecture, threat model, regulatory requirements, and data sensitivity.

@@ -1593,25 +1593,3 @@ This demonstrates the main Redis design principle:
 > Choose a data structure based on the operation the application must perform, not only on the shape of the data.
 
 ---
-
-# 25. Official References
-
-- [Redis data types](https://redis.io/docs/latest/develop/data-types/)
-- [Compare Redis data types](https://redis.io/docs/latest/develop/data-types/compare-data-types/)
-- [Redis strings](https://redis.io/docs/latest/develop/data-types/strings/)
-- [Redis hashes](https://redis.io/docs/latest/develop/data-types/hashes/)
-- [Redis lists](https://redis.io/docs/latest/develop/data-types/lists/)
-- [Redis sets](https://redis.io/docs/latest/develop/data-types/sets/)
-- [Redis sorted sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/)
-- [Redis streams](https://redis.io/docs/latest/develop/data-types/streams/)
-- [Redis JSON](https://redis.io/docs/latest/develop/data-types/json/)
-- [Redis time series](https://redis.io/docs/latest/develop/data-types/timeseries/)
-- [Redis probabilistic structures](https://redis.io/docs/latest/develop/data-types/probabilistic/)
-- [Redis vector sets](https://redis.io/docs/latest/develop/data-types/vector-sets/)
-- [Redis arrays](https://redis.io/docs/latest/develop/data-types/arrays/)
-- [Redis 8.8 release notes](https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.8-release-notes/)
-- [Redis releases](https://github.com/redis/redis/releases)
-
----
-
-> **Version note:** The core concepts apply broadly across Redis 6, 7, and 8. This guide includes newer Redis 8.x capabilities such as arrays and notes from the Redis 8.10 release. Always check the commands supported by the Redis server and client-library versions used in your project.

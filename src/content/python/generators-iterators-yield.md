@@ -6,550 +6,218 @@ order: 10
 
 # Python Generators, Iterators, and `yield`
 
-> Iteration is Python's standard mechanism for processing values one at a time. An **iterable** provides an iterator, an **iterator** produces the next value, and a **generator** is a convenient way to create an iterator using `yield`.
+> Python iteration is built around three related concepts: **iterables provide iterators, iterators produce values one at a time, and generators are a concise way to create iterators using `yield`.**
 
-## In short
+## In Short
 
-- An **iterable** can hand out an iterator through `__iter__()`; an **iterator** returns one item at a time from `__next__()` and raises `StopIteration` when finished; a **generator** is an iterator created by `yield` or a generator expression.
-- An iterator returns *itself* from `__iter__()`, which is why it is normally single-pass and stays exhausted once consumed, while a reusable container such as a list builds a new iterator on every `iter()` call.
-- A `for` loop is just `iter()` followed by repeated `next()` inside a `try` that breaks on `StopIteration`, so application code should let the loop handle that exception rather than catching it.
-- Calling a generator function runs none of its body: it returns a generator object, and execution starts only when the first value is requested.
-- `yield` returns a value and pauses the function, preserving local variables and the execution position so the next call resumes immediately after that `yield`.
-- Generators are **lazy**: they store execution state instead of every result, which suits large files, streamed rows, paginated APIs, and infinite sequences, but lazy does not automatically mean faster.
-- `yield from` delegates to another iterable, captures its return value, and forwards `send()`, `throw()`, and `close()` to the delegated generator.
+- An **iterable** is something Python can loop over, such as a list, tuple, string, file, or custom collection.
+- An **iterator** keeps traversal state and returns the next value through `__next__()`.
+- A **generator** is an iterator created by a generator function or generator expression.
+- Calling a generator function **does not execute its body immediately**. It returns a generator object.
+- `yield` produces a value, pauses execution, and preserves local state for the next iteration.
+- Generators are **lazy and single-pass**. They are useful for files, database rows, paginated APIs, pipelines, and potentially large streams of data.
+- `yield from` delegates iteration to another iterable or generator.
+- Generators usually reduce memory usage, but laziness does **not** automatically make code faster.
 
 ```mermaid
 flowchart LR
-    A[Iterable] -->|iter iterable| B[Iterator]
-    B -->|next iterator| C[Next value]
-    C -->|more values| B
-    B -->|finished| D[StopIteration]
-    E[Generator function containing yield] -->|call function| F[Generator object]
+    A[Iterable] -->|iter()| B[Iterator]
+    B -->|next()| C[Value]
+    C -->|request next value| B
+    B -->|no values left| D[StopIteration]
+
+    E[Generator function] -->|call| F[Generator object]
     F --> B
 ```
-
-**Interview answer:** A generator is an iterator written as a function: any function containing `yield` returns a generator object instead of running, and each `next()` runs the body up to the next `yield`, then pauses with all local state preserved. That makes it a compact way to implement the iterator protocol without writing `__iter__()` and `__next__()` by hand. You reach for one when values can be produced and consumed one at a time — streaming a large file, walking a paginated API, or building a multi-stage pipeline — because only the current value and the generator's execution state stay in memory.
-
-**Gotcha:** A generator is single-pass. After `list(generator)` returns its values, a second `list(generator)` returns `[]` with no error at all, so a function that iterates the same generator twice silently sees nothing the second time; call the generator function again to get a fresh object.
 
 ---
 
 ## 1. Core Mental Model
 
-The following three terms are related, but they are not identical.
-
-| Concept | Meaning | Main methods/syntax | Can usually be reused? |
-|---|---|---|---|
-| **Iterable** | An object that can provide an iterator | `__iter__()` | Yes, depending on the object |
-| **Iterator** | An object that returns one item at a time | `__iter__()`, `__next__()` | No; normally one pass |
-| **Generator** | A special iterator created by a generator function or expression | `yield` or `(expression for item in iterable)` | No; normally one pass |
-
 ### 1.1 Iterable
 
-An **iterable** is an object whose elements can be processed one at a time.
+An **iterable** is an object that can provide an iterator.
 
-Common iterables include:
+Common examples are:
 
-- `list`
-- `tuple`
+- `list`, `tuple`, `set`, `dict`
 - `str`
-- `set`
-- `dict`
 - `range`
 - file objects
 - custom objects implementing `__iter__()`
 
-```python
-numbers = [10, 20, 30]
-
-for number in numbers:
-    print(number)
-```
-
-The list is iterable because Python can obtain an iterator from it with `iter(numbers)`.
-
-A reusable container usually creates a **new iterator** each time `iter()` is called.
-
-```python
-numbers = [10, 20, 30]
-
-first_iterator = iter(numbers)
-second_iterator = iter(numbers)
-
-print(first_iterator is second_iterator)  # False
-```
+A reusable container such as a list normally creates a **new iterator** each time `iter()` is called.
 
 ### 1.2 Iterator
 
-An **iterator** represents a stream of values. It tracks its current position and returns the next item when requested.
+An **iterator** represents an active traversal through values.
 
-```python
-numbers = [10, 20, 30]
-iterator = iter(numbers)
+It follows the iterator protocol:
 
-print(next(iterator))  # 10
-print(next(iterator))  # 20
-print(next(iterator))  # 30
-print(next(iterator))  # Raises StopIteration after the final item
-```
+- `__iter__()` returns the iterator itself.
+- `__next__()` returns the next value.
+- `__next__()` raises `StopIteration` when no values remain.
 
-An iterator is also iterable. Its `__iter__()` method returns the same iterator object.
-
-```python
-numbers = iter([10, 20, 30])
-
-print(iter(numbers) is numbers)  # True
-```
-
-This is why an iterator is generally **single-use**. After it has been consumed, it remains exhausted.
+Because the iterator itself stores the current position, it is normally **single-pass**.
 
 ### 1.3 Generator
 
-A **generator** is a special type of iterator. Python creates it from either:
+A **generator** is a special iterator created in one of two common ways:
 
-1. A generator function containing `yield`
-2. A generator expression
+1. A function containing `yield`
+2. A generator expression such as `(x * x for x in values)`
 
-```python
-def generate_numbers():
-    yield 10
-    yield 20
-    yield 30
+The important relationship is:
 
-numbers = generate_numbers()
-
-print(type(numbers))
-print(next(numbers))  # 10
+```text
+Iterable
+   │
+   └── provides ──> Iterator
+                       │
+                       └── Generator is a specialized iterator
 ```
 
-Calling `generate_numbers()` does not execute the function body immediately. It creates a generator object. Execution begins when Python requests the first value.
+| Concept | Purpose | Usually reusable? |
+|---|---|---|
+| **Iterable** | Provides values to iterate over | Often yes |
+| **Iterator** | Tracks traversal and returns one item at a time | No |
+| **Generator** | Implements lazy iteration using `yield` | No |
 
 ---
 
 ## 2. How Python Iteration Works
 
-### 2.1 `iter()` and `next()`
+A `for` loop uses the iterator protocol internally.
 
-Python iteration is mainly built on two built-in functions, written as `iterator = iter(iterable)` and `value = next(iterator)`:
+Conceptually:
 
-- `iter(object)` asks an iterable for an iterator.
-- `next(iterator)` asks that iterator for its next value.
-- When no values remain, the iterator raises `StopIteration`.
-
-You can provide a default value to `next()` to avoid handling `StopIteration` manually.
-
-```python
-iterator = iter([10])
-
-print(next(iterator, None))  # 10
-print(next(iterator, None))  # None
+```text
+iterable
+   │
+   │ iter()
+   ▼
+iterator
+   │
+   │ next()
+   ▼
+value
+   │
+   ├── more values ──> next()
+   │
+   └── finished ─────> StopIteration ──> loop ends
 ```
 
-Use a unique sentinel when `None` could be a valid item.
+A loop such as:
 
 ```python
-missing = object()
-iterator = iter([None])
-
-value = next(iterator, missing)
-
-if value is missing:
-    print("No value available")
-else:
-    print(value)  # None
+for item in values:
+    process(item)
 ```
 
-### 2.2 How a `for` Loop Works Internally
-
-This loop:
+behaves conceptually like:
 
 ```python
-for number in [10, 20, 30]:
-    print(number)
-```
-
-Conceptually behaves like this:
-
-```python
-iterator = iter([10, 20, 30])
+iterator = iter(values)
 
 while True:
     try:
-        number = next(iterator)
+        item = next(iterator)
     except StopIteration:
         break
 
-    print(number)
+    process(item)
 ```
 
-```mermaid
-sequenceDiagram
-    participant FL as for loop
-    participant Iterable
-    participant Iterator
-
-    FL->>Iterable: iter(iterable)
-    Iterable-->>FL: iterator
-    FL->>Iterator: next(iterator)
-    Iterator-->>FL: item 1
-    FL->>Iterator: next(iterator)
-    Iterator-->>FL: item 2
-    FL->>Iterator: next(iterator)
-    Iterator-->>FL: StopIteration
-    Note over FL: Loop ends normally
-```
-
-In normal application code, you should let the `for` loop handle `StopIteration` rather than catching it yourself.
-
-### 2.3 The Iterator Protocol
-
-A standard iterator implements `__iter__()` and `__next__()`. The responsibilities are:
-
-- `__iter__()` returns the iterator object.
-- `__next__()` returns the next value.
-- `__next__()` raises `StopIteration` when the sequence is complete.
+In normal application code, you usually let the `for` loop handle `StopIteration` rather than catching it yourself.
 
 ---
 
-## 3. Creating a Custom Iterator
-
-The following iterator counts down from a starting number.
-
-```python
-class Countdown:
-    def __init__(self, start: int) -> None:
-        if start < 0:
-            raise ValueError("start must be zero or greater")
-
-        self.current = start
-
-    def __iter__(self) -> "Countdown":
-        return self
-
-    def __next__(self) -> int:
-        if self.current == 0:
-            raise StopIteration
-
-        value = self.current
-        self.current -= 1
-        return value
-
-countdown = Countdown(3)
-
-for number in countdown:
-    print(number)  # 3, then 2, then 1
-```
-
-State changes after every call:
-
-```mermaid
-flowchart TD
-    A["Initial state: current = 3"] -->|"next()"| B["Return 3, store current = 2"]
-    B -->|"next()"| C["Return 2, store current = 1"]
-    C -->|"next()"| D["Return 1, store current = 0"]
-    D -->|"next()"| E[Raise StopIteration]
-```
-
-The same behavior is much shorter with a generator:
-
-```python
-def countdown(start: int):
-    if start < 0:
-        raise ValueError("start must be zero or greater")
-
-    while start > 0:
-        yield start
-        start -= 1
-```
-
-Generators are usually preferable when the iteration logic can be expressed naturally as sequential steps. A custom iterator class is still useful when iteration is part of a larger stateful object or when multiple related methods are required.
-
----
-
-## 4. Generator Functions and `yield`
+## 3. Generator Functions and `yield`
 
 A function becomes a **generator function** when its body contains `yield`.
 
-```python
-def generate_user_ids():
-    yield 101
-    yield 102
-    yield 103
-```
-
-Calling it returns a generator object: `generator = generate_user_ids()`.
-
-The body starts only when the generator is advanced.
-
-```python
-def generate_user_ids():
-    print("Generator started")
-    yield 101
-    print("Resumed after first yield")
-    yield 102
-
-generator = generate_user_ids()
-print("Object created")
-
-print(next(generator))
-print(next(generator))
-```
-
-Output:
-
-```text
-Object created
-Generator started
-101
-Resumed after first yield
-102
-```
-
-### 4.1 Execution Lifecycle
-
-A generator repeatedly moves between **running**, **suspended**, and **completed** states.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Created: Call generator function
-    Created --> Running: next() or send(None)
-    Running --> Suspended: yield value
-    Suspended --> Running: next() or send(value)
-    Running --> Completed: return or function ends
-    Completed --> Completed: next() raises StopIteration
-```
+Calling that function returns a generator object immediately. The function body starts only when the generator is advanced with `next()`, a `for` loop, or another generator operation.
 
 When execution reaches `yield`:
 
 1. A value is returned to the caller.
-2. The function pauses.
-3. Local variables and the current execution position are preserved.
-4. The next call resumes immediately after that `yield`.
+2. The generator pauses.
+3. Local variables are preserved.
+4. The execution position is preserved.
+5. The next iteration resumes immediately after that `yield`.
 
-```python
-def running_total(values):
-    total = 0
-
-    for value in values:
-        total += value
-        yield total
-
-for total in running_total([10, 20, 30]):
-    print(total)  # 10, then 30, then 60
+```mermaid
+stateDiagram-v2
+    [*] --> Created: call generator function
+    Created --> Running: next()
+    Running --> Suspended: yield value
+    Suspended --> Running: next()
+    Running --> Completed: return / function ends
+    Completed --> Completed: next() raises StopIteration
 ```
 
-The local variable `total` remains available between iterations.
-
-### 4.2 `return` vs `yield`
+### `return` vs `yield`
 
 | `return` | `yield` |
 |---|---|
-| Ends a normal function call | Pauses a generator |
-| Returns one final result | Produces one value at a time |
+| Finishes a normal function | Pauses a generator |
+| Returns a final result | Produces values incrementally |
 | Local execution state is discarded | Local execution state is preserved |
-| Calling the function executes it immediately | Calling the function creates a generator object |
+| Function work happens during the call | Generator work happens during iteration |
 
-A normal function beside its generator equivalent:
-
-```python
-def build_numbers() -> list[int]:  # Runs immediately, returns one list
-    return [1, 2, 3]
-
-def generate_numbers():            # Returns a generator, yields three values
-    yield 1
-    yield 2
-    yield 3
-```
-
-A `return` inside a generator means the generator is finished.
-
-```python
-def generate_numbers():
-    yield 1
-    return
-    yield 2  # Never reached
-```
-
-A generator may return a value, but that value becomes part of the internal `StopIteration` result. It is mainly useful with `yield from`, not with an ordinary `for` loop.
-
-```python
-def worker():
-    yield "working"
-    return "completed"
-
-generator = worker()
-print(next(generator))
-
-try:
-    next(generator)
-except StopIteration as exc:
-    print(exc.value)  # completed
-```
-
-### 4.3 Generator Exhaustion
-
-A generator does not restart automatically. Create a new generator object to iterate again.
-
-```python
-def generate_numbers():
-    yield 1
-    yield 2
-
-generator = generate_numbers()
-
-print(list(generator))  # [1, 2]
-print(list(generator))  # [] - the same object is now exhausted
-
-print(list(generate_numbers()))  # [1, 2]
-print(list(generate_numbers()))  # [1, 2] - a fresh object each time
-```
-
-When a function receives an arbitrary iterable, avoid consuming it during debugging or validation unless that is intentional.
-
-```python
-def process(values):
-    # Converting values to a list here would consume a generator.
-    for value in values:
-        print(value)
-```
+A `return` inside a generator ends the generator. Internally, its optional return value becomes the value carried by `StopIteration`, which is mainly relevant when using `yield from`.
 
 ---
 
-## 5. Generator Expressions
+## 4. Generator Expressions and `yield from`
 
-A generator expression is a compact way to create a generator.
+### 4.1 Generator Expressions
 
-```python
-squares = (number * number for number in range(5))
-
-print(next(squares))  # 0
-print(next(squares))  # 1
-print(next(squares))  # 4
-```
-
-Generator expressions work especially well with functions that already consume iterables, and the extra parentheses can be omitted when the generator expression is the only function argument, as in `sum(x * x for x in values)` or `max(user.score for user in users)`.
-
-A generator expression is the lazy counterpart of a list comprehension: it computes each result only when requested instead of building the whole collection up front. Which one to reach for depends on whether the completed collection is actually needed. See [List, Dictionary, and Set Comprehensions](comprehensions.md) for the full comparison of generator expressions against list comprehensions.
-
----
-
-## 6. `yield from`
-
-`yield from` delegates iteration to another iterable or generator.
-
-Without `yield from`:
+A generator expression is the lazy form of a comprehension:
 
 ```python
-def combined_values():
-    for value in [1, 2, 3]:
-        yield value
-
-    for value in [4, 5, 6]:
-        yield value
+(number * number for number in values)
 ```
 
-With `yield from`:
+It produces values only when requested instead of building the complete result in memory.
 
-```python
-def combined_values():
-    yield from [1, 2, 3]
-    yield from [4, 5, 6]
-```
+Use a generator expression when the consumer only needs to process values sequentially. Use a list comprehension when you actually need the complete collection, repeated access, indexing, or its length.
 
-It is useful for composing small generators.
+### 4.2 `yield from`
 
-```python
-def active_user_ids(users):
-    for user in users:
-        if user.is_active:
-            yield user.id
-
-def all_active_user_ids(teams):
-    for team in teams:
-        yield from active_user_ids(team.users)
-```
-
-It can also capture the return value of a subgenerator.
-
-```python
-def load_records():
-    yield "record-1"
-    yield "record-2"
-    return 2
-
-def run_import():
-    imported_count = yield from load_records()
-    print(f"Imported {imported_count} records")
-
-for record in run_import():
-    print(record)
-```
-
-Output:
-
-```text
-record-1
-record-2
-Imported 2 records
-```
+`yield from iterable` delegates value production to another iterable.
 
 Conceptually:
 
-```mermaid
-flowchart TD
-    CALLER[Caller] --> PARENT[Parent generator]
-    PARENT -->|yield from| CHILD["Child iterable/generator"]
-    CHILD --> VALUES[Yields values directly to caller]
-    CHILD --> RETVAL[Returns final value to parent generator]
+```text
+Caller
+  │
+  ▼
+Parent generator
+  │
+  │ yield from
+  ▼
+Child iterable / generator
+  │
+  └──────── values ────────> Caller
 ```
 
-`yield from` is more than a shorter `for` loop: it also delegates generator operations such as `send()`, `throw()`, and `close()` when supported by the delegated generator.
+It is useful when a generator is composed from smaller generators or nested iterable sources.
+
+For delegated generators, `yield from` also handles advanced generator communication such as `send()`, `throw()`, and `close()`.
 
 ---
 
-## 7. Practical Development Patterns
+## 5. Practical Example: Paginated API as One Stream
 
-### 7.1 Streaming a Large File
-
-File objects are iterators, so files can be processed one line at a time without loading the full content into memory.
-
-```python
-from collections.abc import Iterator
-from pathlib import Path
-
-def error_lines(path: Path) -> Iterator[str]:
-    with path.open(encoding="utf-8") as file:
-        for line in file:
-            if "ERROR" in line:
-                yield line.rstrip("\n")
-
-for line in error_lines(Path("application.log")):
-    print(line)
-```
-
-Flow:
-
-```mermaid
-flowchart TD
-    A[Open file] --> B[Read one line]
-    B --> C{Is it an error line?}
-    C -->|No| B
-    C -->|Yes| D[Yield line and pause]
-    D --> E[Caller processes it]
-    E --> F[Resume generator]
-```
-
-The file remains open while the generator is being consumed. The `with` block exits when the generator finishes, is closed, or encounters an exception.
-
-### 7.2 Processing API Pagination
-
-A generator can hide pagination details from the caller.
+A common backend use case is an API that returns users page by page. The application usually does not want pagination logic everywhere, so a generator can expose all users as one logical stream.
 
 ```python
 from collections.abc import Callable, Iterator
 from typing import Any
 
 PageFetcher = Callable[[str | None], dict[str, Any]]
+
 
 def iter_users(fetch_page: PageFetcher) -> Iterator[dict[str, Any]]:
     next_token: str | None = None
@@ -561,462 +229,241 @@ def iter_users(fetch_page: PageFetcher) -> Iterator[dict[str, Any]]:
             yield user
 
         next_token = response.get("next_token")
+
         if next_token is None:
             break
+
+
+for user in iter_users(fetch_page):
+    process(user)
 ```
 
-The caller sees one logical stream and simply writes `for user in iter_users(fetch_page)`. The pagination loop, continuation token, and page boundaries remain internal implementation details.
+### What happens here?
 
-### 7.3 Building Lazy Pipelines
-
-Generators can be connected into stages.
-
-```python
-from collections.abc import Iterable, Iterator
-
-def parse_numbers(lines: Iterable[str]) -> Iterator[int]:
-    for line in lines:
-        stripped = line.strip()
-        if stripped:
-            yield int(stripped)
-
-def positive_only(numbers: Iterable[int]) -> Iterator[int]:
-    for number in numbers:
-        if number > 0:
-            yield number
-
-def squared(numbers: Iterable[int]) -> Iterator[int]:
-    for number in numbers:
-        yield number * number
-
-lines = ["10", "-3", "", "4"]
-pipeline = squared(positive_only(parse_numbers(lines)))
-
-print(list(pipeline))  # [100, 16]
-```
+1. `iter_users(fetch_page)` returns a generator object.
+2. No API request is made until iteration starts.
+3. The first page is fetched only when the caller needs the first user.
+4. Each user is yielded one at a time.
+5. The generator pauses after every `yield`.
+6. When the current page is exhausted, it fetches the next page.
+7. When `next_token` becomes `None`, the generator finishes.
 
 ```mermaid
-flowchart LR
-    A[Raw lines] --> B[parse_numbers]
-    B --> C[positive_only]
-    C --> D[squared]
-    D --> E[Consumer]
+flowchart TD
+    A[Caller requests next user] --> B[Fetch current API page]
+    B --> C[Read one user]
+    C --> D[Yield user]
+    D --> E[Caller processes user]
+    E --> F{More users in page?}
+    F -->|Yes| C
+    F -->|No| G{Next token exists?}
+    G -->|Yes| B
+    G -->|No| H[Generator completes]
 ```
 
-Each stage requests values only as needed. This supports streaming and keeps transformation responsibilities separate.
+### Why this pattern is useful
 
-Python's `itertools` module provides optimized building blocks for many lazy pipelines, including `chain`, `islice`, `filterfalse`, `takewhile`, and `batched`.
+The caller works with a simple `for` loop while the generator owns:
 
-### 7.4 Processing Data in Batches
+- pagination
+- continuation tokens
+- lazy fetching
+- traversal state
 
-Batching is common when writing to databases, calling external APIs, or processing messages.
-
-For modern Python versions, `itertools.batched()` provides this behavior directly.
-
-```python
-from itertools import batched
-
-records = range(1, 11)
-
-for batch in batched(records, 3):
-    print(batch)  # (1, 2, 3), (4, 5, 6), (7, 8, 9), then the short final (10,)
-```
-
-A custom typed implementation is also useful when supporting environments without `itertools.batched()`.
-
-```python
-from collections.abc import Iterable, Iterator
-from itertools import islice
-from typing import TypeVar
-
-T = TypeVar("T")
-
-def batches(values: Iterable[T], size: int) -> Iterator[tuple[T, ...]]:
-    if size < 1:
-        raise ValueError("size must be at least 1")
-
-    iterator = iter(values)
-
-    while batch := tuple(islice(iterator, size)):
-        yield batch
-```
+It also allows the caller to stop early without first fetching every page.
 
 ---
 
-## 8. Advanced Generator Communication
+## 6. Important Generator Behavior
 
-Most generators only need `yield` and ordinary iteration. Generator objects also support two-way communication and controlled termination.
+### 6.1 Generators Are Single-Pass
 
-### 8.1 `send()`
-
-`send(value)` resumes a generator and makes `value` become the result of the suspended `yield` expression.
-
-```python
-def accumulator():
-    total = 0
-
-    while True:
-        value = yield total
-        total += value
-
-generator = accumulator()
-
-print(next(generator))      # 0: prime the generator
-print(generator.send(10))   # 10
-print(generator.send(5))    # 15
-```
-
-Flow:
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Gen as Generator
-
-    Caller->>Gen: next(generator)
-    Gen-->>Caller: yield total (0)
-    Caller->>Gen: send(10) sets value = 10
-    Gen->>Gen: total becomes 10
-    Gen-->>Caller: yield total (10)
-```
-
-A newly created generator must first be advanced to its initial `yield`. This is normally done with `next(generator)` or `generator.send(None)`.
-
-`send()` is useful for specialized state machines and coroutine-style designs. In most modern asynchronous application code, `async`/`await` is clearer.
-
-### 8.2 `throw()`
-
-`throw(exception)` raises an exception at the point where the generator is paused.
-
-```python
-def resilient_stream():
-    while True:
-        try:
-            yield "ready"
-        except ValueError as exc:
-            print(f"Handled: {exc}")
-
-generator = resilient_stream()
-print(next(generator))
-print(generator.throw(ValueError("invalid input")))
-```
-
-Use this only when the generator owns meaningful exception-handling behavior. Ordinary application code usually communicates errors by raising them normally.
-
-### 8.3 `close()`
-
-`close()` asks a generator to stop by raising `GeneratorExit` inside it.
-
-```python
-def managed_generator():
-    try:
-        yield 1
-        yield 2
-    finally:
-        print("Cleaning up")
-
-generator = managed_generator()
-print(next(generator))  # 1
-generator.close()       # Runs the finally block, printing "Cleaning up"
-```
-
-A `finally` block is the correct place for generator-owned cleanup. For external resources, context managers should still be used whenever possible.
-
----
-
-## 9. Type Hints
-
-Use abstract collection types from `collections.abc` for most public function signatures.
-
-```python
-from collections.abc import Iterable, Iterator
-
-def normalize_names(names: Iterable[str]) -> Iterator[str]:
-    for name in names:
-        cleaned = name.strip().lower()
-        if cleaned:
-            yield cleaned
-```
-
-This communicates that:
-
-- the function accepts any iterable of strings;
-- the result is an iterator of strings;
-- callers should not assume indexing, length, or repeated iteration.
-
-For a generator that only yields values, `Iterator[T]` is normally the clearest return type.
-
-```python
-from collections.abc import Iterator
-
-def numbers() -> Iterator[int]:
-    yield 1
-    yield 2
-```
-
-Use `typing.Generator` when `send()` and the generator's return value are important.
-
-```python
-from typing import Generator
-
-def accumulator() -> Generator[int, int, str]:
-    total = 0
-
-    while total < 100:
-        value = yield total
-        total += value
-
-    return "limit reached"
-```
-
-The type parameters mean:
+Once a generator has been consumed, it remains exhausted.
 
 ```text
-Generator[YieldType, SendType, ReturnType]
-Generator[int,       int,      str]
+generator created
+      │
+      ▼
+values consumed
+      │
+      ▼
+generator exhausted
+      │
+      └── iterating again produces no values
 ```
 
-For generator expressions and iterator-returning APIs, `Iterator[T]` is generally simpler and exposes fewer implementation details.
+If the values need to be processed again, create a **new generator object** or materialize them into a collection such as a list when appropriate.
 
----
+### 6.2 Execution Is Lazy
 
-## 10. Synchronous vs Asynchronous Generators
+Generator work happens during iteration, not necessarily when the generator object is created.
 
-A regular generator is defined with `def`, contains `yield`, and produces values for a normal `for` loop.
+This means:
 
-An asynchronous generator is defined with `async def` and contains `yield`. It produces values for an `async for` loop.
+- expensive work can be delayed until needed;
+- processing can stop early;
+- exceptions may also occur later, during consumption.
 
-```python
-from collections.abc import AsyncIterator
+That timing difference is important when debugging streaming code.
 
-async def stream_events(client) -> AsyncIterator[dict]:
-    while event := await client.next_event():
-        yield event
+### 6.3 Memory Efficient Does Not Mean Automatically Faster
 
-async def consume_events(client) -> None:
-    async for event in stream_events(client):
-        print(event)
-```
+A list stores all produced results.
 
-| Synchronous generator | Asynchronous generator |
-|---|---|
-| Defined with `def` | Defined with `async def` |
-| Consumed with `for` | Consumed with `async for` |
-| Uses `Iterator[T]` | Uses `AsyncIterator[T]` |
-| Suitable for synchronous lazy computation | Suitable for values arriving through asynchronous I/O |
+A generator mainly stores:
 
-An asynchronous generator may use `await`, but it cannot use `yield from`. Delegation must be written explicitly with `async for`.
+- its current execution state;
+- local variables;
+- the current yielded value.
 
----
-
-## 11. Performance and Memory
-
-Generators are **lazy**, but lazy does not automatically mean faster.
-
-### Memory behavior
-
-List construction with `squares = [number * number for number in range(1_000_000)]` stores every result. Generator construction with `squares = (number * number for number in range(1_000_000))` stores only the execution state and computes values incrementally.
+That usually gives generators a memory advantage for large streams.
 
 ```mermaid
 flowchart LR
     subgraph LIST[List]
-        L1[Input] --> L2[Compute all values]
-        L2 --> L3[Store all values]
-        L3 --> L4[Consume]
+        L1[Produce all values] --> L2[Store all values] --> L3[Consume]
     end
 
     subgraph GEN[Generator]
-        G1[Input] --> G2[Compute one value]
-        G2 --> G3[Consume]
-        G3 --> G4[Compute next value]
-        G4 --> G3
+        G1[Produce one value] --> G2[Consume] --> G3[Produce next]
+        G3 --> G2
     end
 ```
 
-### When generators help
-
-Generators are especially useful when:
-
-- processing large files;
-- streaming database rows;
-- consuming paginated APIs;
-- transforming message streams;
-- scanning until the first match;
-- building multi-stage data pipelines;
-- processing potentially infinite sequences.
-
-```python
-def natural_numbers():
-    number = 1
-
-    while True:
-        yield number
-        number += 1
-```
-
-An infinite generator is safe only when the consumer limits it.
-
-```python
-from itertools import islice
-
-print(list(islice(natural_numbers(), 5)))  # [1, 2, 3, 4, 5]
-```
-
-### When a list is better
-
-A list is often better when:
-
-- results must be reused multiple times;
-- random access is required;
-- the number of items is small;
-- errors should happen during construction rather than later consumption;
-- the complete snapshot must not change while being processed.
-
-Lazy execution can delay exceptions until iteration begins.
-
-```python
-def parse_numbers(values):
-    for value in values:
-        yield int(value)
-
-numbers = parse_numbers(["10", "invalid"])
-print("Generator created successfully")
-
-print(next(numbers))  # 10
-print(next(numbers))  # ValueError occurs here
-```
-
-That behavior is powerful, but callers should understand when work and errors occur.
+A list can still be the better choice when the data is small and the result must be reused, indexed, sorted repeatedly, or inspected as a complete snapshot.
 
 ---
 
-## 12. Best Practices
+## 7. Typing Generators
 
-Use an **iterable** when an object represents a collection or source of values, an **iterator** when you need explicit stateful traversal, and a **generator** when you want to express that traversal clearly, lazily, and with minimal boilerplate.
-
-### Prefer generators for sequential, lazy processing
-
-```python
-def matching_orders(orders, minimum_total):
-    for order in orders:
-        if order.total >= minimum_total:
-            yield order
-```
-
-This lets the caller decide whether to process every result, stop early, convert to a list, or pass the stream into another function.
-
-### Accept `Iterable`, return `Iterator`
+For normal generator functions, prefer abstract types from `collections.abc`.
 
 ```python
 from collections.abc import Iterable, Iterator
-
-def transform(values: Iterable[str]) -> Iterator[str]:
-    for value in values:
-        yield value.strip().upper()
 ```
 
-This keeps the input flexible and clearly communicates lazy output.
+A common API style is:
 
-### Keep generator responsibilities focused
-
-A generator should usually represent one clear stream transformation.
-
-```python
-def valid_emails(rows):
-    for row in rows:
-        email = row.get("email")
-        if email and "@" in email:
-            yield email.lower()
+```text
+accept Iterable[T]  →  return Iterator[T]
 ```
 
-Separate fetching, filtering, transformation, and persistence when they have different responsibilities.
+This communicates that the function:
 
-### Use built-in iterator tools
+- accepts any iterable source;
+- produces values lazily;
+- does not promise indexing or repeated iteration.
 
-Before writing a custom generator, check whether Python already provides the operation through:
+For most generator functions that only yield values, `Iterator[T]` is sufficient.
+
+`typing.Generator[YieldType, SendType, ReturnType]` is useful when advanced `send()` behavior or the generator's return value is part of the API.
+
+---
+
+## 8. Advanced Generator Methods
+
+Generator objects support several methods beyond normal iteration.
+
+| Method | Purpose |
+|---|---|
+| `next(generator)` | Resume until the next `yield` |
+| `generator.send(value)` | Resume and send a value into the suspended `yield` |
+| `generator.throw(exc)` | Raise an exception where the generator is paused |
+| `generator.close()` | Request generator termination using `GeneratorExit` |
+
+For normal backend development, `next()` and standard iteration cover most use cases. `send()`, `throw()`, and direct `close()` are more specialized and are mainly useful for state-machine, coroutine-style, or explicit resource-management designs.
+
+---
+
+## 9. Synchronous vs Asynchronous Generators
+
+A synchronous generator uses `def` and is consumed with `for`.
+
+An asynchronous generator uses `async def`, contains `yield`, and is consumed with `async for`.
+
+| Synchronous generator | Asynchronous generator |
+|---|---|
+| `def` + `yield` | `async def` + `yield` |
+| Consumed with `for` | Consumed with `async for` |
+| Usually typed as `Iterator[T]` | Usually typed as `AsyncIterator[T]` |
+| Best for synchronous lazy processing | Best for asynchronously arriving values |
+
+An asynchronous generator can use `await`, which makes it useful for streaming events, WebSocket messages, database cursors, or other async I/O sources.
+
+`yield from` is **not allowed** inside an asynchronous generator; delegation is normally written with `async for`.
+
+---
+
+## 10. When to Use Generators
+
+Generators are a strong fit for:
+
+- large files;
+- paginated APIs;
+- database row streaming;
+- message or event streams;
+- transformation pipelines;
+- batch processing;
+- early-exit searches;
+- potentially infinite sequences.
+
+Prefer a normal collection such as a list when:
+
+- the full result is small;
+- values must be reused multiple times;
+- indexing or slicing is required;
+- the total length is needed frequently;
+- the complete snapshot should exist before processing starts.
+
+---
+
+## 11. Best Practices
+
+### Prefer generators for clear sequential streaming
+
+A generator should usually represent one understandable flow of values rather than mixing unrelated responsibilities.
+
+### Accept `Iterable`, return `Iterator`
+
+This keeps function inputs flexible and clearly communicates lazy output.
+
+### Make lazy behavior obvious in API names
+
+Names such as:
+
+- `iter_users()`
+- `stream_events()`
+- `generate_batches()`
+
+make single-pass behavior clearer than a vague name such as `get_data()`.
+
+### Be aware of resource lifetime
+
+A suspended generator can keep local resources alive. If a generator owns a file, connection, or similar resource, structure cleanup carefully and use context managers where appropriate.
+
+### Use built-in iterator tools first
+
+Before writing custom iteration logic, check Python's built-ins and `itertools`, especially:
 
 - `enumerate()`
 - `zip()`
 - `map()`
 - `filter()`
-- `reversed()`
-- `iter()` with a callable and sentinel
-- `itertools`
+- `iter()`
+- `itertools.chain()`
+- `itertools.islice()`
+- `itertools.batched()`
 
-Example: read fixed-size blocks until the file returns `b""`.
-
-```python
-from functools import partial
-
-with open("payload.bin", "rb") as file:
-    blocks = iter(partial(file.read, 4096), b"")
-
-    for block in blocks:
-        process(block)
-```
-
-### Document single-pass behavior
-
-When an API returns an iterator, name and type it clearly, as in `def iter_transactions(account_id: int) -> Iterator[Transaction]`, so callers know it may be consumed only once.
-
-Names such as `iter_users()`, `stream_events()`, and `generate_batches()` communicate lazy behavior better than a vague name like `get_data()`.
-
-### Control resource lifetime explicitly
-
-A generator that opens a resource may keep that resource open while suspended.
-
-```python
-def lines(path):
-    with open(path, encoding="utf-8") as file:
-        yield from file
-```
-
-Consume it completely, close the generator when stopping early, or design the API so resource ownership is explicit.
-
-```python
-generator = lines("application.log")
-
-try:
-    print(next(generator))
-finally:
-    generator.close()
-```
-
-### Test both values and laziness
-
-```python
-def generate_values(events):
-    for event in events:
-        yield event.value
-
-def test_generate_values():
-    events = [Event(value=10), Event(value=20)]
-
-    result = generate_values(events)
-
-    assert iter(result) is result
-    assert list(result) == [10, 20]
-    assert list(result) == []
-```
-
-For streaming code, also test:
-
-- empty input;
-- early termination;
-- exceptions during iteration;
-- cleanup behavior;
-- large or infinite inputs with explicit limits.
+In current Python, `itertools.batched()` lazily groups values into tuples, and its `strict` option can require every batch to have exactly the requested size.
 
 ---
 
-## Official References
+## Interview Takeaway
 
-- [Python 3.14 Glossary: iterable, iterator, and generator](https://docs.python.org/3.14/glossary.html)
-- [Python Language Reference: Yield expressions](https://docs.python.org/3.14/reference/expressions.html#yield-expressions)
-- [Python Standard Types: Iterator types](https://docs.python.org/3.14/library/stdtypes.html#iterator-types)
-- [Python Tutorial: Iterators and generators](https://docs.python.org/3.14/tutorial/classes.html#iterators)
-- [Python Functional Programming HOWTO: Iterators and generators](https://docs.python.org/3.14/howto/functional.html)
-- [Python `itertools` module](https://docs.python.org/3.14/library/itertools.html)
-- [PEP 255: Simple Generators](https://peps.python.org/pep-0255/)
-- [PEP 342: Coroutines via Enhanced Generators](https://peps.python.org/pep-0342/)
-- [PEP 380: Syntax for Delegating to a Subgenerator](https://peps.python.org/pep-0380/)
+The most important idea is not simply that generators "save memory."
+
+A strong understanding is:
+
+> A generator is a specialized iterator whose execution can pause at `yield` and resume later with its local state preserved. It follows Python's iterator protocol, produces values lazily, and is normally consumed only once.
+
+For day-to-day backend development, the most useful applications are **streaming data, hiding pagination, processing large inputs, and building lazy pipelines**. Use generators when values naturally flow one at a time; use a concrete collection when the complete result needs to exist and be reused.

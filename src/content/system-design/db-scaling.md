@@ -1253,23 +1253,3 @@ flowchart TD
 Database execution time may be low while requests wait for connections or locks.
 
 ---
-
-# 22. Official References
-
-The following primary documentation was used to verify the current technical concepts:
-
-- [PostgreSQL — Using EXPLAIN](https://www.postgresql.org/docs/current/using-explain.html)
-- [PostgreSQL — Indexes](https://www.postgresql.org/docs/current/indexes.html)
-- [PostgreSQL — Table Partitioning](https://www.postgresql.org/docs/current/ddl-partitioning.html)
-- [PostgreSQL — High Availability, Load Balancing, and Replication](https://www.postgresql.org/docs/current/high-availability.html)
-- [PgBouncer — Pooling Features](https://www.pgbouncer.org/features.html)
-- [Amazon RDS — Working with Read Replicas](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ReadRepl.html)
-- [Amazon RDS — RDS Proxy Concepts](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.howitworks.html)
-- [Redis — Cache-Aside Pattern](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
-- [Amazon DynamoDB — Partition-Key Design](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html)
-- [Vitess — Sharding Overview](https://vitess.io/docs/faq/sharding/overview/)
-- [Vitess — What Is Vitess](https://vitess.io/docs/25.0/overview/whatisvitess/)
-
----
-
-> **Last reviewed:** August 3, 2026

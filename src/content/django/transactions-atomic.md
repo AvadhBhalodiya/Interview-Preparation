@@ -4,194 +4,105 @@ group: "ORM & Database"
 order: 7
 ---
 
-# Django Transactions: `transaction.atomic`
+# Django Transactions: `transaction.atomic()`
 
-> A database transaction groups multiple database operations into one reliable unit: either **all operations succeed**, or **all of them are rolled back**.
+> A **database transaction** groups related database operations into one unit: either **all operations succeed**, or **all database changes are rolled back**.
 
-## In short
+Django uses **autocommit mode by default**, meaning each query is committed immediately unless it runs inside a transaction. `transaction.atomic()` gives you an explicit transaction boundary.
 
-- Django runs in **autocommit** mode by default — every query commits on its own until you open an `atomic()` block.
-- `transaction.atomic()` works both as a context manager and as a decorator: it commits on a clean exit and rolls back when an exception **leaves** the block.
-- Catching the exception **inside** the same atomic block leaves the transaction marked for rollback, and the next query raises `TransactionManagementError`. Catch it outside the block, or wrap the risky statement in its own inner `atomic()`.
-- A nested `atomic()` is a **savepoint**, not a separate transaction: an inner rollback does not roll back the outer block, and an inner success is not a commit.
-- `transaction.on_commit()` is how you fire side effects — emails, Celery tasks, cache deletes — only after the data is durably committed.
-- `select_for_update()` locks the selected rows and must run inside a transaction; `F()` expressions push the arithmetic into the database and avoid the read-modify-write race entirely.
-- A rollback restores the database, not Python: model instances keep the values you assigned, so call `refresh_from_db()` after a rollback.
+---
 
-```mermaid
-flowchart TD
-    A[Outer atomic begins] --> B[Database transaction starts]
-    B --> C[Operation A]
-    C --> D[Inner atomic begins]
-    D --> E[Create savepoint]
-    E --> F[Operation B]
-    F --> G{Inner exception?}
-    G -- Yes --> H[Rollback to savepoint]
-    G -- No --> I[Release savepoint]
-    H --> J[Continue or re-raise]
-    I --> K[Operation C]
-    J --> K
-    K --> L{Outer block succeeds?}
-    L -- Yes --> M[Commit transaction]
-    L -- No --> N[Rollback complete transaction]
-```
+## Index
 
-**Interview answer:** `atomic()` opens a database transaction when the block is entered and commits it when the block exits normally; if an exception propagates out of the block, Django rolls the whole block back. Django is otherwise in autocommit mode, so `atomic()` is the only thing that turns several queries into one all-or-nothing unit. Nested blocks do not start new transactions — the outermost block owns the real `BEGIN`/`COMMIT` and every inner block is a savepoint, which is why only the outermost block truly commits and why `durable=True` exists to assert that a block is that outermost one.
-
-**Gotcha:** Catching the database exception inside the same `atomic()` block. The rollback is triggered by the exception crossing the block boundary, so a `try/except` placed inside keeps the block open with the transaction already marked for rollback, and the next query raises `TransactionManagementError` instead of the error you handled.
+1. Why Transactions Are Needed
+2. How `transaction.atomic()` Works
+   - Autocommit
+   - Context Manager
+   - Decorator
+   - Commit and Rollback
+3. Nested Transactions and Savepoints
+   - Exception Handling
+   - `durable=True`
+4. Transactions and Concurrency
+   - `select_for_update()`
+   - `F()` Expressions
+5. `transaction.on_commit()`
+6. `ATOMIC_REQUESTS`
+7. Async and Multiple Databases
+8. Testing Transactions
+9. Practical Order Example
+10. Production Best Practices
+11. Quick Reference
 
 ---
 
 # 1. Why Transactions Are Needed
 
-Consider an order-placement operation:
+Consider placing an order:
 
-1. Create an order.
-2. Reduce product stock.
-3. Create a payment record.
-4. Add an audit entry.
-
-These operations belong to one business action. If the payment record fails after the stock is reduced, the database can become inconsistent.
+```text
+1. Create order
+2. Reduce product stock
+3. Create payment record
+4. Create audit record
+```
 
 Without a transaction:
 
 ```text
-Order created           ✓
-Stock reduced           ✓
-Payment record created  ✗
-Audit entry created     Not executed
+Order created          ✓
+Stock reduced          ✓
+Payment creation       ✗
+Audit record           Not executed
 
-Result: incomplete and inconsistent data
+Database is now inconsistent.
 ```
 
 With a transaction:
 
 ```text
-Order created           ✓
-Stock reduced           ✓
-Payment record created  ✗
---------------------------------
-Entire operation rolled back
-```
-
-The database returns to its original state.
-
-## Transaction flow
-
-```mermaid
-flowchart TD
-    A[Start transaction] --> B[Create order]
-    B --> C[Reduce stock]
-    C --> D[Create payment]
-    D --> E{Any exception?}
-    E -- No --> F[Commit all changes]
-    E -- Yes --> G[Roll back all changes]
-```
-
-## Atomicity
-
-The main transaction property represented by `transaction.atomic()` is **atomicity**:
-
-> A group of operations is treated as one indivisible unit.
-
-It is commonly explained as:
-
-```text
-All operations succeed
-        OR
-No operation is permanently saved
-```
-
-Transactions also work with database features related to consistency, isolation, and durability. However, `atomic()` does not automatically solve every concurrency problem. Row locks, database constraints, or atomic SQL updates may still be required.
-
----
-
-# 2. How Django Handles Transactions
-
-Django runs in **autocommit mode** by default.
-
-This means that when no transaction is active, each database query is committed immediately.
-
-```python
-product = Product.objects.create(name="Keyboard")
-product.stock = 20
-product.save()
-```
-
-Conceptually:
-
-```text
-INSERT product  -> committed
-UPDATE product  -> committed
-```
-
-If the second operation fails, the first operation normally remains committed.
-
-Django does automatically use transactions or savepoints for some multi-query ORM operations, such as certain bulk deletes or updates, to preserve data integrity. You should still define explicit transaction boundaries for your own business operations.
-
-## Autocommit with `atomic()`
-
-When the same operations are wrapped in `atomic()`:
-
-```python
-from django.db import transaction
-
-with transaction.atomic():
-    product = Product.objects.create(name="Keyboard")
-    product.stock = 20
-    product.save()
-```
-
-Django starts a database transaction around the block:
-
-```text
 BEGIN
-    INSERT product
-    UPDATE product
-COMMIT
-```
 
-If an exception escapes the block:
+Create order
+Reduce stock
+Create payment  → Error
 
-```text
-BEGIN
-    INSERT product
-    UPDATE product -> error
 ROLLBACK
 ```
 
----
-
-# 3. Understanding `transaction.atomic`
-
-Import it from `django.db`: `from django.db import transaction`
-
-The API can be used in two common forms:
-
-```python
-with transaction.atomic():
-    ...
-```
-
-or:
-
-```python
-@transaction.atomic
-def some_function():
-    ...
-```
-
-Its simplified behavior is:
+The database returns to its previous state.
 
 ```mermaid
-flowchart TD
-    A[Enter block] --> B[Start transaction or savepoint]
-    B --> C[Execute database operations]
-    C -->|Normal exit| D["Commit or release savepoint"]
-    C -->|Exception| E[Rollback]
+flowchart LR
+    A[Start Transaction] --> B[Create Order]
+    B --> C[Reduce Stock]
+    C --> D[Create Payment]
+    D --> E{Success?}
+    E -->|Yes| F[COMMIT]
+    E -->|No| G[ROLLBACK]
 ```
 
-## Signature
+The main property provided here is **atomicity**:
+
+```text
+All changes succeed
+        OR
+No changes are permanently saved
+```
+
+However, a transaction alone does **not** automatically prevent concurrency problems such as two requests modifying the same row simultaneously.
+
+---
+
+# 2. How `transaction.atomic()` Works
+
+Import it using:
+
+```python
+from django.db import transaction
+```
+
+The common API is:
 
 ```python
 transaction.atomic(
@@ -201,14 +112,6 @@ transaction.atomic(
 )
 ```
 
-### Parameters
-
-| Parameter | Purpose |
-|---|---|
-| `using` | Chooses the database connection, such as `"default"` or `"analytics"` |
-| `savepoint` | Controls whether a nested block creates a savepoint |
-| `durable` | Requires the block to be the outermost atomic block |
-
 Most application code only needs:
 
 ```python
@@ -216,15 +119,68 @@ with transaction.atomic():
     ...
 ```
 
+Django supports `atomic()` as both a **context manager** and **decorator**. When the outermost block succeeds, Django commits the transaction; if an exception leaves the block, Django rolls it back. Nested blocks normally create savepoints instead of independent transactions.
+
 ---
 
-# 4. Using `atomic()` as a Context Manager
+## 2.1 Autocommit
 
-The context-manager form gives precise control over which statements belong to the transaction.
+Django normally runs in **autocommit mode**.
 
 ```python
-from django.db import transaction
+product = Product.objects.create(name="Keyboard")
 
+product.stock = 10
+product.save()
+```
+
+Conceptually:
+
+```text
+INSERT product → COMMIT
+UPDATE product → COMMIT
+```
+
+If the second operation fails, the first one is normally already committed.
+
+With `atomic()`:
+
+```python
+with transaction.atomic():
+    product = Product.objects.create(name="Keyboard")
+
+    product.stock = 10
+    product.save(update_fields=["stock"])
+```
+
+Conceptually:
+
+```text
+BEGIN
+
+INSERT product
+UPDATE product
+
+COMMIT
+```
+
+If an exception occurs:
+
+```text
+BEGIN
+INSERT product
+UPDATE product → ERROR
+
+ROLLBACK
+```
+
+---
+
+## 2.2 Context Manager
+
+The context-manager form is usually the clearest because the transaction boundary is visible.
+
+```python
 def transfer_balance(sender, receiver, amount):
     with transaction.atomic():
         sender.balance -= amount
@@ -234,108 +190,85 @@ def transfer_balance(sender, receiver, amount):
         receiver.save(update_fields=["balance"])
 ```
 
-Both balance updates are committed together.
+Both updates succeed together.
 
-If `receiver.save()` raises an exception, the sender update is rolled back.
-
-## Keep only related database work inside the block
-
-```python
-def create_report():
-    report_data = calculate_report_data()
-
-    with transaction.atomic():
-        report = Report.objects.create(status="processing")
-        ReportRow.objects.bulk_create(
-            ReportRow(report=report, **row)
-            for row in report_data
-        )
-
-    return report
-```
-
-The calculation is outside the transaction because it does not need a database lock or transaction boundary.
-
-This reduces transaction duration.
+If the receiver update fails, the sender update is also rolled back.
 
 ---
 
-# 5. Using `atomic()` as a Decorator
+## 2.3 Decorator
 
-You can apply `atomic()` to the complete function:
+When an entire service represents one database operation:
 
 ```python
 from django.db import transaction
 
+
 @transaction.atomic
-def create_customer_with_profile(customer_data, profile_data):
+def create_customer(customer_data, profile_data):
     customer = Customer.objects.create(**customer_data)
+
     CustomerProfile.objects.create(
         customer=customer,
         **profile_data,
     )
+
     return customer
 ```
 
-The complete function executes inside one transaction.
+Use:
 
-## Context manager vs decorator
-
-| Form | Best suited for |
+| Requirement | Preferred Form |
 |---|---|
-| `with transaction.atomic():` | Only part of a function must be transactional |
-| `@transaction.atomic` | The complete function represents one transaction |
+| Only part of function is transactional | `with transaction.atomic():` |
+| Whole service is transactional | `@transaction.atomic` |
 
-The context-manager form is often easier to read in service-layer code because the transaction boundary is visible exactly where it begins and ends.
+For larger service functions, the context-manager form often makes the transaction boundary easier to see.
 
 ---
 
-# 6. Commit and Rollback Behavior
+## 2.4 Commit and Rollback
 
-Django decides whether to commit or roll back by checking how the atomic block exits.
-
-## Successful exit
+Successful exit:
 
 ```python
 with transaction.atomic():
     Order.objects.create(customer=customer)
 ```
 
-No exception leaves the block: `COMMIT`
+Result:
 
-## Exception exit
+```text
+COMMIT
+```
+
+Exception:
 
 ```python
 with transaction.atomic():
     order = Order.objects.create(customer=customer)
-    Payment.objects.create(order=order, amount=None)
+
+    Payment.objects.create(
+        order=order,
+        amount=None,
+    )
 ```
 
-If the second query raises an exception: `ROLLBACK`
+If `Payment.objects.create()` raises a database exception:
 
-## The exception must leave the atomic block
-
-This distinction is important:
-
-```python
-try:
-    with transaction.atomic():
-        perform_database_work()
-except Exception:
-    handle_failure()
+```text
+ROLLBACK
 ```
 
-Django sees the exception crossing the atomic boundary and rolls back correctly.
+The important point is that the exception must be visible to the relevant `atomic()` block so Django knows it should roll back.
 
 ---
 
-# 7. Nested Transactions and Savepoints
+# 3. Nested Transactions and Savepoints
 
 `atomic()` blocks can be nested.
 
 ```python
-from django.db import transaction
-
 with transaction.atomic():
     customer = Customer.objects.create(name="Asha")
 
@@ -346,135 +279,77 @@ with transaction.atomic():
         )
 ```
 
-Django usually behaves like this:
+Conceptually:
 
-| Event | Effect |
-| --- | --- |
-| Outer atomic block | Starts transaction |
-| Inner atomic block | Creates savepoint |
-| Inner success | Releases savepoint |
-| Outer success | Commits transaction |
+```text
+BEGIN                      ← outer atomic
 
-## Inner rollback with outer continuation
+Create customer
 
-```python
-from django.db import IntegrityError, transaction
+SAVEPOINT                  ← inner atomic
+Create address
+RELEASE SAVEPOINT
 
-with transaction.atomic():
-    customer = Customer.objects.create(name="Asha")
-
-    try:
-        with transaction.atomic():
-            Coupon.objects.create(code="WELCOME")
-    except IntegrityError:
-        # Only the work after the inner savepoint is rolled back.
-        pass
-
-    CustomerLog.objects.create(
-        customer=customer,
-        message="Customer created",
-    )
+COMMIT                     ← outer atomic
 ```
 
-If the coupon code violates a unique constraint:
-
-- The inner block rolls back to its savepoint.
-- The outer transaction can continue.
-- The customer and log may still be committed.
-
-## An inner success is not a final commit
+An inner successful block is **not a permanent commit**.
 
 ```python
 with transaction.atomic():
+
     with transaction.atomic():
         Product.objects.create(name="Monitor")
 
     raise RuntimeError("Outer operation failed")
 ```
 
-Although the inner block completed successfully, the outer exception rolls back everything.
+Result:
 
 ```text
-Inner block success ≠ permanent database commit
+Product creation is rolled back.
 ```
 
-## `savepoint=False`
-
-A nested atomic block can skip savepoint creation:
-
-```python
-with transaction.atomic():
-    with transaction.atomic(savepoint=False):
-        perform_work()
-```
-
-This may slightly reduce savepoint overhead, but it changes error-handling behavior. An error inside the nested block marks the entire surrounding transaction for rollback.
-
-Use the default `savepoint=True` unless you have measured a real need and understand the consequences.
-
-## `durable=True`
-
-A durable block must be the outermost atomic block:
-
-```python
-with transaction.atomic(durable=True):
-    Payment.objects.create(...)
-```
-
-When the block exits successfully, Django ensures that its database changes are committed.
-
-Nesting a durable block inside another atomic block raises `RuntimeError`.
-
-```python
-with transaction.atomic():
-    with transaction.atomic(durable=True):  # RuntimeError
-        ...
-```
-
-This option is useful when a function must guarantee that it owns the final transaction boundary.
+The outermost transaction still controls the final commit.
 
 ---
 
-# 8. Correct Exception-Handling Pattern
+## 3.1 Correct Exception Handling
 
-Database exceptions should generally be caught **outside** the relevant atomic block.
-
-## Recommended pattern
+A database exception should normally be caught **outside the atomic block that should roll back**.
 
 ```python
 from django.db import IntegrityError, transaction
 
-def create_user(username):
-    try:
-        with transaction.atomic():
-            return User.objects.create(username=username)
-    except IntegrityError:
-        return None
+
+try:
+    with transaction.atomic():
+        User.objects.create(username="john")
+
+except IntegrityError:
+    handle_duplicate_user()
 ```
 
-Django sees the exception leave the block, rolls back the transaction, and then your application handles it.
-
-## Why catching inside the same block is risky
+Avoid:
 
 ```python
-from django.db import IntegrityError, transaction
-
 with transaction.atomic():
     try:
-        User.objects.create(username="duplicate-name")
+        User.objects.create(username="john")
+
     except IntegrityError:
-        # The transaction may now be marked as broken.
         pass
 
-    UserProfile.objects.create(...)  # May raise TransactionManagementError
+    UserProfile.objects.create(...)
 ```
 
-After a database error, Django may mark the transaction as requiring rollback. Additional database queries before leaving the atomic block can raise `TransactionManagementError`.
+After certain database errors, the transaction can be marked as requiring rollback. Continuing database queries inside that broken transaction may raise `TransactionManagementError`.
 
-## Use an inner block when partial recovery is required
+If only part of a larger transaction may fail, use an inner savepoint:
 
 ```python
 with transaction.atomic():
+
     order = Order.objects.create(customer=customer)
 
     try:
@@ -483,8 +358,10 @@ with transaction.atomic():
                 customer=customer,
                 code=discount_code,
             )
+
     except IntegrityError:
         discount_applied = False
+
     else:
         discount_applied = True
 
@@ -494,165 +371,70 @@ with transaction.atomic():
     )
 ```
 
-The inner savepoint provides a safe recovery boundary.
+The inner block rolls back while the outer transaction can continue.
 
 ---
 
-# 9. Database State vs Python Object State
+## 3.2 `durable=True`
 
-A transaction rollback restores database state, but it does not automatically restore values already changed on Python objects.
-
-```python
-product = Product.objects.get(pk=1)
-original_stock = product.stock
-
-try:
-    with transaction.atomic():
-        product.stock = 0
-        product.save(update_fields=["stock"])
-        raise RuntimeError("Failure")
-except RuntimeError:
-    pass
-```
-
-The database update is rolled back, but the in-memory object may still contain: `product.stock == 0`
-
-To synchronize it again: `product.refresh_from_db()`
-
-or restore the value manually: `product.stock = original_stock`
-
-## Practical rule
-
-After rollback, do not assume that:
-
-- Model instances are restored.
-- Cache entries are restored.
-- Global variables are restored.
-- External API calls are reversed.
-- Files written to storage are deleted.
-- Emails or messages already sent are cancelled.
-
-A database transaction controls database operations on the selected connection. It does not provide automatic rollback for unrelated systems.
-
----
-
-# 10. Running Work After Commit with `on_commit()`
-
-Use `transaction.on_commit()` for work that should run only after a successful commit.
+A durable transaction must be the **outermost** `atomic()` block.
 
 ```python
-from django.db import transaction
-
-def create_order(customer):
-    with transaction.atomic():
-        order = Order.objects.create(customer=customer)
-
-        transaction.on_commit(
-            lambda: send_order_confirmation(order.id)
-        )
-
-    return order
+with transaction.atomic(durable=True):
+    Payment.objects.create(...)
 ```
 
-The callback runs only after the outer transaction commits successfully.
-
-## Why this matters
-
-Sending an email inside an atomic block can create inconsistent behavior:
+Nesting it inside another transaction raises `RuntimeError`.
 
 ```python
 with transaction.atomic():
-    order = Order.objects.create(customer=customer)
-    send_order_confirmation(order.id)
-    raise RuntimeError("Later failure")
+
+    with transaction.atomic(durable=True):
+        ...
 ```
 
-Result:
-
-```text
-Email sent       ✓
-Order committed  ✗
-```
-
-Using `on_commit()`:
-
-```mermaid
-flowchart TD
-    A{Order committed?} -->|Yes| B[Send email]
-    A -->|No| C[Discard callback]
-```
-
-## Queueing background tasks after commit
-
-```python
-from functools import partial
-from django.db import transaction
-
-with transaction.atomic():
-    invoice = Invoice.objects.create(...)
-
-    transaction.on_commit(
-        partial(generate_invoice_pdf, invoice.id)
-    )
-```
-
-This is commonly used for:
-
-- Sending emails.
-- Enqueueing Celery or Django task-framework jobs.
-- Updating external search indexes.
-- Invalidating cache entries.
-- Publishing events.
-- Calling downstream systems.
-
-## `robust=True`
-
-```python
-transaction.on_commit(
-    lambda: run_optional_follow_up(),
-    robust=True,
-)
-```
-
-With `robust=True`, an exception in that callback is logged and does not prevent later robust callbacks from running.
-
-The callback is not part of the database transaction. At callback time, the transaction has already committed.
+Use this only when the function must guarantee that it owns the final transaction boundary.
 
 ---
 
-# 11. Preventing Race Conditions
+# 4. Transactions and Concurrency
 
-`transaction.atomic()` guarantees that your operations commit or roll back together, but it does not automatically prevent two transactions from reading the same old value.
-
-Consider inventory stock:
-
-```python
-def purchase(product_id):
-    with transaction.atomic():
-        product = Product.objects.get(pk=product_id)
-
-        if product.stock <= 0:
-            raise OutOfStockError
-
-        product.stock -= 1
-        product.save(update_fields=["stock"])
-```
-
-Two requests can execute concurrently:
+A common misconception is:
 
 ```text
-Request A reads stock = 1
-Request B reads stock = 1
-
-Request A writes stock = 0
-Request B writes stock = 0
+atomic() = protection from every race condition
 ```
 
-Both requests may believe they successfully purchased the last item.
+That is incorrect.
 
-This is a **race condition** or **lost update** problem.
+Consider:
 
-## Concurrency timeline
+```python
+with transaction.atomic():
+    product = Product.objects.get(pk=product_id)
+
+    if product.stock <= 0:
+        raise OutOfStockError
+
+    product.stock -= 1
+    product.save(update_fields=["stock"])
+```
+
+Two requests could execute:
+
+```text
+Request A             Request B
+---------             ---------
+Read stock = 1
+                      Read stock = 1
+
+Write stock = 0
+                      Write stock = 0
+```
+
+Both requests believe they purchased the last item.
+
+This is a **race condition / lost update**.
 
 ```mermaid
 sequenceDiagram
@@ -664,52 +446,56 @@ sequenceDiagram
     B->>DB: Read stock = 1
     A->>DB: Write stock = 0
     B->>DB: Write stock = 0
-    Note over A,B: Both requests think purchase succeeded
+
+    Note over A,B: Lost update / incorrect business result
 ```
 
-Common solutions include:
+Two common Django solutions are:
 
-1. Lock the row with `select_for_update()`.
-2. Perform an atomic conditional update.
-3. Use `F()` expressions.
-4. Enforce database constraints.
-5. Use optimistic concurrency with a version field.
+```text
+Complex read → validate → write
+        ↓
+select_for_update()
+
+Simple database-side update
+        ↓
+F() expression / conditional update
+```
 
 ---
 
-# 12. `select_for_update()` Row Locking
+## 4.1 `select_for_update()`
 
-`select_for_update()` asks the database to lock selected rows until the transaction ends.
+`select_for_update()` locks selected rows until the transaction completes.
 
 ```python
-from django.db import transaction
+with transaction.atomic():
+    product = (
+        Product.objects
+        .select_for_update()
+        .get(pk=product_id)
+    )
 
-def purchase(product_id):
-    with transaction.atomic():
-        product = (
-            Product.objects
-            .select_for_update()
-            .get(pk=product_id)
-        )
+    if product.stock <= 0:
+        raise OutOfStockError
 
-        if product.stock <= 0:
-            raise OutOfStockError
-
-        product.stock -= 1
-        product.save(update_fields=["stock"])
+    product.stock -= 1
+    product.save(update_fields=["stock"])
 ```
 
-Now the flow is:
+Now:
 
 ```text
-Request A locks product row
+Request A locks row
+        ↓
 Request B waits
-Request A updates and commits
-Request B acquires lock
-Request B reads latest stock
+        ↓
+Request A updates + commits
+        ↓
+Request B gets lock
+        ↓
+Request B reads latest data
 ```
-
-## Locking sequence
 
 ```mermaid
 sequenceDiagram
@@ -718,109 +504,68 @@ sequenceDiagram
     participant B as Request B
 
     A->>DB: SELECT ... FOR UPDATE
-    DB-->>A: Row locked, stock = 1
+    DB-->>A: Lock acquired
+
     B->>DB: SELECT ... FOR UPDATE
-    Note over B,DB: Request B waits
-    A->>DB: UPDATE stock = 0
+    Note over B,DB: Wait for lock
+
+    A->>DB: UPDATE stock
     A->>DB: COMMIT
-    DB-->>B: Lock acquired, stock = 0
-    B-->>B: Raise OutOfStockError
+
+    DB-->>B: Lock acquired
+    B->>DB: Read latest stock
 ```
 
-## It must run inside a transaction
+On databases supporting `SELECT ... FOR UPDATE`, it should be evaluated inside a transaction. Django raises `TransactionManagementError` when it is evaluated in autocommit mode on those backends. SQLite does not provide the same row-locking behavior, so `select_for_update()` has no locking effect there.
+
+Useful options include:
 
 ```python
-with transaction.atomic():
-    product = Product.objects.select_for_update().get(pk=product_id)
+.select_for_update(nowait=True)
 ```
 
-On database backends that support `SELECT ... FOR UPDATE`, evaluating it in autocommit mode raises `TransactionManagementError`.
-
-SQLite does not provide the same row-lock behavior; `select_for_update()` has no locking effect there. Production concurrency testing should use the same database engine as production, commonly PostgreSQL or MySQL.
-
-## `nowait=True`
-
-Instead of waiting for a lock, fail immediately:
+Fail instead of waiting for a locked row.
 
 ```python
-from django.db import DatabaseError, transaction
-
-try:
-    with transaction.atomic():
-        job = (
-            Job.objects
-            .select_for_update(nowait=True)
-            .get(pk=job_id)
-        )
-except DatabaseError:
-    handle_busy_job()
+.select_for_update(skip_locked=True)
 ```
 
-## `skip_locked=True`
-
-Skip rows currently locked by another transaction:
+Ignore locked rows, which can be useful when multiple workers claim jobs.
 
 ```python
-with transaction.atomic():
-    jobs = list(
-        Job.objects
-        .filter(status="pending")
-        .select_for_update(skip_locked=True)[:10]
-    )
-
-    for job in jobs:
-        job.status = "processing"
-
-    Job.objects.bulk_update(jobs, ["status"])
+.select_for_update(of=("self",))
 ```
 
-This pattern is useful for database-backed worker queues where multiple workers claim independent jobs.
+Control which selected model rows are locked.
 
-## `of=()`
-
-When joins are involved, control which model rows are locked:
+PostgreSQL additionally supports:
 
 ```python
-order = (
-    Order.objects
-    .select_related("customer")
-    .select_for_update(of=("self",))
-    .get(pk=order_id)
-)
+.select_for_update(no_key=True)
 ```
 
-This locks only the `Order` row rather than every selected related row supported by the database.
-
-## `no_key=True`
-
-PostgreSQL supports a weaker lock mode:
-
-```python
-order = (
-    Order.objects
-    .select_for_update(no_key=True)
-    .get(pk=order_id)
-)
-```
-
-This can allow other transactions to create rows that reference the locked row through a foreign key while still protecting the row from conflicting updates.
-
-## Lock only what you need
-
-Prefer: `Product.objects.select_for_update().get(pk=product_id)`
-
-over locking a large queryset: `Product.objects.select_for_update().all()`
-
-Large lock sets increase waiting, contention, and deadlock risk.
+for a weaker row lock.
 
 ---
 
-# 13. Using `F()` Expressions for Atomic Updates
+## 4.2 `F()` Expressions
 
-For simple counter changes, an `F()` expression can update a value directly in the database without first loading it into Python.
+For simple counters, let the database perform the calculation.
+
+Avoid:
+
+```python
+product = Product.objects.get(pk=product_id)
+
+product.stock -= 1
+product.save(update_fields=["stock"])
+```
+
+Prefer:
 
 ```python
 from django.db.models import F
+
 
 Product.objects.filter(pk=product_id).update(
     stock=F("stock") - 1
@@ -832,77 +577,113 @@ Conceptually:
 ```sql
 UPDATE product
 SET stock = stock - 1
-WHERE id = ...
+WHERE id = ...;
 ```
 
-This avoids the read-modify-write race condition.
+`F()` expressions avoid the classic Python read-modify-write race because the database calculates the new value from its current value.
 
-## Conditional atomic update
-
-A stronger inventory pattern updates only when stock is available:
+For inventory, a conditional update is even stronger:
 
 ```python
-from django.db.models import F
-
-updated_rows = (
+updated = (
     Product.objects
-    .filter(pk=product_id, stock__gt=0)
-    .update(stock=F("stock") - 1)
+    .filter(
+        pk=product_id,
+        stock__gte=quantity,
+    )
+    .update(
+        stock=F("stock") - quantity
+    )
 )
 
-if updated_rows == 0:
+if updated == 0:
     raise OutOfStockError
 ```
 
-This executes as one conditional database statement.
+This performs the check and update as one database operation.
 
-```text
-UPDATE product
-SET stock = stock - 1
-WHERE id = product_id
-  AND stock > 0
-```
+### Choosing Between Them
 
-Only one concurrent request can consume the last available unit successfully.
-
-## `F()` expression vs row lock
-
-| Requirement | Better starting point |
+| Requirement | Preferred Technique |
 |---|---|
-| Increment or decrement one field | `F()` expression |
-| Update only when a condition is true | Conditional `update()` |
-| Read several fields and apply complex rules | `select_for_update()` |
-| Update multiple related records together | `atomic()` plus suitable locks |
-| Ensure a value remains unique | Database constraint |
-
-You can combine techniques:
-
-```python
-with transaction.atomic():
-    product = (
-        Product.objects
-        .select_for_update()
-        .get(pk=product_id)
-    )
-
-    validate_business_rules(product)
-
-    Product.objects.filter(pk=product.pk).update(
-        stock=F("stock") - quantity
-    )
-
-    OrderItem.objects.create(
-        order=order,
-        product=product,
-        quantity=quantity,
-    )
-```
+| Increment/decrement a field | `F()` |
+| Update only when condition still holds | Conditional `update()` |
+| Read multiple values before deciding | `select_for_update()` |
+| Modify several related records together | `atomic()` + locks |
+| Guarantee uniqueness | Database constraint |
 
 ---
 
-# 14. `ATOMIC_REQUESTS`
+# 5. `transaction.on_commit()`
 
-Django can wrap each view in a transaction by setting `ATOMIC_REQUESTS=True` for a database.
+Database rollback cannot undo external side effects.
+
+Problem:
+
+```python
+with transaction.atomic():
+    order = Order.objects.create(customer=customer)
+
+    send_confirmation_email(order.id)
+
+    raise RuntimeError("Something failed")
+```
+
+Result:
+
+```text
+Email sent      ✓
+Order saved     ✗
+```
+
+Use `on_commit()`:
+
+```python
+with transaction.atomic():
+    order = Order.objects.create(customer=customer)
+
+    transaction.on_commit(
+        lambda: send_confirmation_email(order.id)
+    )
+```
+
+Flow:
+
+```mermaid
+flowchart LR
+    A[Database Work] --> B{Transaction Result}
+
+    B -->|Commit| C[Run on_commit Callback]
+    B -->|Rollback| D[Discard Callback]
+```
+
+Common use cases:
+
+- Send emails.
+- Queue Celery/background jobs.
+- Invalidate caches.
+- Publish events.
+- Update search indexes.
+- Trigger downstream processing.
+
+Callbacks registered inside nested savepoints execute after the outer transaction successfully commits; callbacks belonging to a rolled-back savepoint are discarded.
+
+Optional:
+
+```python
+transaction.on_commit(
+    run_optional_task,
+    robust=True,
+)
+```
+
+With `robust=True`, Django can continue processing later robust callbacks if one callback raises an exception.
+
+---
+
+# 6. `ATOMIC_REQUESTS`
+
+Django can automatically wrap each view in a transaction:
 
 ```python
 DATABASES = {
@@ -917,133 +698,54 @@ DATABASES = {
 Conceptually:
 
 ```mermaid
-flowchart TD
-    A[Request arrives] --> B[Start transaction]
-    B --> C[Execute view]
-    C -->|Response returned| D[Commit]
+flowchart LR
+    A[Request] --> B[Start Transaction]
+    B --> C[Execute View]
+    C -->|Success| D[Commit]
     C -->|Exception| E[Rollback]
 ```
 
-## What is included
+Important distinction:
 
-The view function is wrapped in the transaction.
+```text
+Middleware
+   ↓
+outside transaction
 
-Middleware runs outside the transaction.
+View
+   ↓
+inside transaction
 
-Template-response rendering also runs outside the transaction.
+Template response rendering
+   ↓
+outside transaction
+```
 
-## Excluding a view
+Exclude a view when needed:
 
 ```python
-from django.db import transaction
-
 @transaction.non_atomic_requests
 def health_check(request):
     ...
 ```
 
-For a specific database:
-
-```python
-@transaction.non_atomic_requests(using="analytics")
-def analytics_health_check(request):
-    ...
-```
-
-## Trade-off
-
-`ATOMIC_REQUESTS` is convenient, but it can keep transactions open longer than necessary.
-
-This may increase:
-
-- Lock duration.
-- Database connection usage.
-- Contention.
-- Deadlock probability.
-- Request latency under load.
-
-For high-throughput systems, explicit service-level atomic blocks often provide clearer and shorter transaction boundaries.
-
-## Streaming responses
-
-Be careful with `StreamingHttpResponse`.
-
-The view may finish before the response content is fully generated. Code that runs while streaming the response executes outside the view transaction.
-
-Avoid performing important database writes during response streaming.
+`ATOMIC_REQUESTS` is convenient, but explicit service-level transaction boundaries are often preferable because they keep transactions focused on the database work that actually needs protection.
 
 ---
 
-# 15. Transactions with Multiple Databases
+# 7. Async and Multiple Databases
 
-A transaction belongs to one database connection.
+## 7.1 Async Django
 
-```python
-from django.db import transaction
-
-with transaction.atomic(using="default"):
-    Customer.objects.using("default").create(name="Asha")
-```
-
-For another database:
-
-```python
-with transaction.atomic(using="analytics"):
-    AnalyticsEvent.objects.using("analytics").create(
-        event_type="customer_created",
-    )
-```
-
-## Separate transactions are not one distributed transaction
-
-```python
-with transaction.atomic(using="default"):
-    Customer.objects.using("default").create(name="Asha")
-
-    with transaction.atomic(using="analytics"):
-        AnalyticsEvent.objects.using("analytics").create(...)
-```
-
-A failure across two databases cannot generally be treated as one automatic all-or-nothing transaction by Django.
-
-Possible production approaches include:
-
-- Store the main business change first.
-- Use an outbox table in the same database transaction.
-- Process the outbox asynchronously.
-- Make downstream operations idempotent.
-- Add retry and reconciliation mechanisms.
-
-## Transactional outbox idea
-
-```mermaid
-flowchart LR
-    A[Business operation] --> B[Atomic transaction]
-    B --> C[Save business data]
-    B --> D[Save outbox event]
-    C --> E[Commit]
-    D --> E
-    E --> F[Background worker]
-    F --> G[Send event to another system]
-```
-
-The business record and outbox record commit together. A worker later delivers the event safely.
-
----
-
-# 16. Transactions in Async Django Code
-
-Django 6.0 supports many asynchronous ORM operations, but database transactions do not yet work directly in async mode.
-
-Put transactional ORM work inside one synchronous function:
+Django 6.0 supports many asynchronous ORM operations, but **transactions still do not work directly in async mode**.
 
 ```python
 from asgiref.sync import sync_to_async
 from django.db import transaction
 
+
 @transaction.atomic
 def create_order_sync(customer_id, product_id):
-    customer = Customer.objects.get(pk=customer_id)
     product = (
         Product.objects
         .select_for_update()
@@ -1051,340 +753,113 @@ def create_order_sync(customer_id, product_id):
     )
 
     return Order.objects.create(
-        customer=customer,
+        customer_id=customer_id,
         product=product,
     )
-```
 
-Call it from async code:
 
-```python
 async def create_order_view(request):
     order = await sync_to_async(
         create_order_sync,
         thread_sensitive=True,
     )(
-        customer_id=request.user.id,
-        product_id=request.POST["product_id"],
+        request.user.id,
+        request.POST["product_id"],
     )
 
     return JsonResponse({"order_id": order.id})
 ```
 
-Keep the complete transactional workflow inside the synchronous function rather than wrapping each individual query separately.
+Keep the **complete transaction inside the synchronous function**.
 
 ---
 
-# 17. Testing Transactional Code
+## 7.2 Multiple Databases
 
-Django provides two commonly used base test classes.
+Transactions belong to a particular database connection.
 
-## `TestCase`
+```python
+with transaction.atomic(using="default"):
+    Customer.objects.using("default").create(
+        name="Asha"
+    )
+```
+
+Another database requires another transaction:
+
+```python
+with transaction.atomic(using="analytics"):
+    AnalyticsEvent.objects.using("analytics").create(
+        event_type="customer_created"
+    )
+```
+
+These are separate transaction boundaries.
+
+For workflows spanning databases or external systems, a common architecture is the **transactional outbox pattern**:
+
+```mermaid
+flowchart LR
+    A[Business Service] --> B[Atomic Transaction]
+    B --> C[Business Record]
+    B --> D[Outbox Event]
+    C --> E[Commit]
+    D --> E
+    E --> F[Background Worker]
+    F --> G[External System]
+```
+
+---
+
+# 8. Testing Transactions
+
+For normal Django tests:
 
 ```python
 from django.test import TestCase
 ```
 
-`TestCase` wraps tests in transactions for speed and isolation.
-
-It is suitable for most model, service, and view tests.
-
-```python
-class TransferServiceTests(TestCase):
-    def test_transfer_updates_both_accounts(self):
-        ...
-```
-
-## `TransactionTestCase`
+For real transaction behavior:
 
 ```python
 from django.test import TransactionTestCase
 ```
 
-Use `TransactionTestCase` when you need to test real transaction behavior, including:
+Use `TransactionTestCase` when testing:
 
-- Commit and rollback boundaries.
+- Actual commit/rollback behavior.
 - Row locking.
-- Concurrent database connections.
-- `select_for_update()` behavior.
-- Code that depends on transaction completion.
+- `select_for_update()`.
+- Multiple database connections.
+- Concurrency-sensitive workflows.
+
+### Testing `on_commit()`
 
 ```python
-class InventoryLockTests(TransactionTestCase):
-    reset_sequences = True
-
-    def test_concurrent_purchase(self):
-        ...
-```
-
-`TransactionTestCase` is slower because it allows actual commits and uses database flushing for isolation.
-
-## Testing `on_commit()`
-
-`TestCase` normally rolls back its wrapping transaction, so callbacks may not execute naturally.
-
-Use `captureOnCommitCallbacks()`:
-
-```python
-from django.test import TestCase
-
 class OrderTests(TestCase):
-    def test_confirmation_is_registered(self):
-        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+
+    def test_confirmation_callback(self):
+        with self.captureOnCommitCallbacks(
+            execute=True
+        ) as callbacks:
             create_order(customer=self.customer)
 
         self.assertEqual(len(callbacks), 1)
 ```
 
-## Test with the production database engine
-
-SQLite transaction and locking behavior differs from PostgreSQL and MySQL.
-
-If production uses PostgreSQL, concurrency-sensitive tests should also run against PostgreSQL.
+For locking/concurrency tests, use the same database engine as production whenever possible.
 
 ---
 
-# 18. Performance and Production Best Practices
+# 9. Practical Order Example
 
-## 18.1 Keep transactions short
+This example combines the main concepts normally needed in production code:
 
-Good:
-
-```python
-payload = validate_and_prepare_payload(request.data)
-
-with transaction.atomic():
-    order = save_order(payload)
-```
-
-Less effective:
-
-```python
-with transaction.atomic():
-    payload = call_slow_external_api()
-    file_data = generate_large_pdf()
-    order = save_order(payload)
-```
-
-Long transactions retain locks and database resources for longer.
-
-## 18.2 Do external I/O outside the transaction
-
-Avoid doing the following inside an atomic block unless absolutely required:
-
-- HTTP API calls.
-- Email delivery.
-- Large file generation.
-- Cloud-storage uploads.
-- Long CPU-heavy calculations.
-- Waiting for user input.
-- Sleeping or retry delays.
-
-Use `on_commit()` to schedule follow-up work after successful persistence.
-
-## 18.3 Use database constraints
-
-Application checks alone are not enough under concurrency.
-
-Example:
-
-```python
-class CouponUsage(models.Model):
-    customer = models.ForeignKey(
-        Customer,
-        on_delete=models.CASCADE,
-    )
-    coupon = models.ForeignKey(
-        Coupon,
-        on_delete=models.CASCADE,
-    )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["customer", "coupon"],
-                name="unique_coupon_per_customer",
-            ),
-        ]
-```
-
-Then handle the possible integrity failure:
-
-```python
-from django.db import IntegrityError, transaction
-
-try:
-    with transaction.atomic():
-        CouponUsage.objects.create(
-            customer=customer,
-            coupon=coupon,
-        )
-except IntegrityError:
-    raise CouponAlreadyUsedError
-```
-
-The database is the final authority for uniqueness.
-
-## 18.4 Lock rows in a consistent order
-
-When locking multiple records, use a predictable order:
-
-```python
-account_ids = sorted([sender_id, receiver_id])
-
-with transaction.atomic():
-    accounts = list(
-        Account.objects
-        .select_for_update()
-        .filter(pk__in=account_ids)
-        .order_by("pk")
-    )
-```
-
-Consistent lock ordering reduces deadlock risk.
-
-## 18.5 Retry selected transient failures carefully
-
-Databases may abort transactions because of deadlocks or serialization failures.
-
-A safe retry requires:
-
-- A limited retry count.
-- A new transaction for each attempt.
-- Idempotent business behavior.
-- Logging and metrics.
-- Retrying only known transient database errors.
-
-Do not retry every exception blindly.
-
-## 18.6 Use `update_fields`
-
-When saving an existing model, update only the intended columns:
-
-```python
-product.stock -= quantity
-product.save(update_fields=["stock"])
-```
-
-This makes the write intent clearer and can reduce unnecessary column updates.
-
-## 18.7 Prefer service-layer transaction boundaries
-
-A service function often provides a clean location for business transactions:
-
-```python
-# services/orders.py
-
-from django.db import transaction
-
-@transaction.atomic
-def place_order(*, customer, items):
-    ...
-```
-
-Views, commands, background workers, and APIs can call the same service.
-
-```mermaid
-flowchart TD
-    A["View / API / Worker"] --> B[Business service]
-    B --> C[Transaction boundary]
-    C --> D[Models and database]
-```
-
-## 18.8 Avoid relying on model `save()` calls alone
-
-Several independent `save()` calls are not automatically one business transaction.
-
-```python
-order.save()
-payment.save()
-inventory.save()
-```
-
-Wrap related writes explicitly:
-
-```python
-with transaction.atomic():
-    order.save()
-    payment.save()
-    inventory.save()
-```
-
-## 18.9 Treat signals carefully
-
-Signals execute as part of the current call stack.
-
-If a signal performs database writes during an atomic block, those writes usually participate in the same transaction on the same database connection.
-
-However, hidden side effects can make transaction boundaries difficult to understand.
-
-Prefer explicit service calls for important business workflows, and use `on_commit()` for work that should happen only after successful persistence.
-
----
-
-# 19. Practical Order-Placement Example
-
-The following example combines:
-
-- A clear service layer.
-- `transaction.atomic()`.
+- Service-layer transaction.
 - Row locking.
-- Business validation.
-- Database updates.
-- `on_commit()` callbacks.
-
-## Models
-
-```python
-from django.conf import settings
-from django.db import models
-
-class Product(models.Model):
-    name = models.CharField(max_length=200)
-    stock = models.PositiveIntegerField(default=0)
-    price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-    )
-
-class Order(models.Model):
-    class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        CONFIRMED = "confirmed", "Confirmed"
-
-    customer = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-    )
-    status = models.CharField(
-        max_length=20,
-        choices=Status,
-        default=Status.PENDING,
-    )
-    total_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-class OrderItem(models.Model):
-    order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="items",
-    )
-    product = models.ForeignKey(
-        Product,
-        on_delete=models.PROTECT,
-    )
-    quantity = models.PositiveIntegerField()
-    unit_price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-    )
-```
-
-## Service
+- Stock validation.
+- Related database writes.
+- `on_commit()` side effect.
 
 ```python
 from dataclasses import dataclass
@@ -1394,20 +869,26 @@ from django.db import transaction
 
 from .models import Order, OrderItem, Product
 
+
 class InsufficientStockError(Exception):
     pass
 
+
 @dataclass(frozen=True)
-class OrderLineInput:
+class OrderLine:
     product_id: int
     quantity: int
 
-@transaction.atomic
-def place_order(*, customer, lines: list[OrderLineInput]) -> Order:
-    if not lines:
-        raise ValueError("At least one order line is required.")
 
-    product_ids = sorted({line.product_id for line in lines})
+@transaction.atomic
+def place_order(*, customer, lines: list[OrderLine]) -> Order:
+
+    if not lines:
+        raise ValueError("Order requires at least one item.")
+
+    product_ids = sorted(
+        {line.product_id for line in lines}
+    )
 
     products = {
         product.id: product
@@ -1424,24 +905,26 @@ def place_order(*, customer, lines: list[OrderLineInput]) -> Order:
             "One or more products do not exist."
         )
 
-    total = Decimal("0.00")
-    order_items: list[OrderItem] = []
-
     order = Order.objects.create(
         customer=customer,
-        status=Order.Status.PENDING,
         total_amount=Decimal("0.00"),
     )
 
+    total = Decimal("0.00")
+    order_items = []
+
     for line in lines:
+
         if line.quantity <= 0:
-            raise ValueError("Quantity must be positive.")
+            raise ValueError(
+                "Quantity must be positive."
+            )
 
         product = products[line.product_id]
 
         if product.stock < line.quantity:
             raise InsufficientStockError(
-                f"Insufficient stock for {product.name}."
+                f"Insufficient stock for {product.name}"
             )
 
         product.stock -= line.quantity
@@ -1458,93 +941,258 @@ def place_order(*, customer, lines: list[OrderLineInput]) -> Order:
 
     Product.objects.bulk_update(
         products.values(),
-        fields=["stock"],
+        ["stock"],
     )
 
     OrderItem.objects.bulk_create(order_items)
 
-    order.status = Order.Status.CONFIRMED
     order.total_amount = total
-    order.save(
-        update_fields=["status", "total_amount"]
-    )
+    order.save(update_fields=["total_amount"])
 
     transaction.on_commit(
-        lambda: send_order_confirmation_task(order.id)
+        lambda: send_order_confirmation_task(
+            order.id
+        )
     )
 
     return order
 ```
 
-## Execution flow
+### Execution Flow
 
 ```mermaid
 flowchart TD
-    A[Validate request structure] --> B[Start atomic transaction]
-    B --> C[Lock products in ID order]
-    C --> D[Validate product existence]
-    D --> E[Validate available stock]
-    E --> F[Create order]
-    F --> G[Reduce stock]
-    G --> H[Create order items]
-    H --> I[Confirm order]
-    I --> J[Register on_commit callback]
-    J --> K{Block completed?}
-    K -- Yes --> L[Commit database changes]
-    L --> M[Queue confirmation task]
-    K -- No --> N[Rollback all database changes]
+    A[place_order called] --> B[Start Transaction]
+
+    B --> C[Lock Product Rows]
+
+    C --> D[Validate Stock]
+
+    D --> E[Create Order]
+
+    E --> F[Reduce Stock]
+
+    F --> G[Create Order Items]
+
+    G --> H[Update Order Total]
+
+    H --> I[Register on_commit Callback]
+
+    I --> J{Success?}
+
+    J -->|Yes| K[COMMIT]
+    K --> L[Queue Confirmation Task]
+
+    J -->|No| M[ROLLBACK]
 ```
 
-## Why this design is reliable
+### Why This Design Works
 
-- Product rows are locked before checking stock.
-- Locks are acquired in a consistent order.
-- The order, items, and stock changes share one transaction.
-- Any validation or database failure rolls back all database writes.
-- The confirmation task is queued only after a successful commit.
-- The transactional workflow is reusable outside the HTTP view.
+```text
+Product rows
+    ↓
+locked before stock check
+
+Order + items + stock
+    ↓
+same transaction
+
+Database failure
+    ↓
+all writes rolled back
+
+Confirmation task
+    ↓
+runs only after commit
+```
 
 ---
 
-# 20. Choosing the Right Transaction Technique
+# 10. Production Best Practices
 
-Use this decision guide:
+## Keep Transactions Short
 
-```mermaid
-flowchart TD
-    A[Need to modify database data?] -->|No| B[No transaction required]
-    A -->|Yes| C{Multiple writes form one business action?}
-    C -->|Yes| D[Use transaction.atomic]
-    C -->|No| E{Simple counter or conditional update?}
-    E -->|Yes| F[Use F expression or conditional update]
-    E -->|No| G{Concurrent requests read then modify same row?}
-    G -->|Yes| H[Use select_for_update inside atomic]
-    G -->|No| I[Normal ORM write may be sufficient]
-    D --> J{External side effect after success?}
-    J -->|Yes| K[Register transaction.on_commit callback]
-    J -->|No| L[Complete transaction]
+Good:
+
+```python
+payload = validate_payload(request.data)
+
+with transaction.atomic():
+    order = save_order(payload)
 ```
 
-## Quick reference
+Avoid:
 
-| Need | Recommended tool |
+```python
+with transaction.atomic():
+    response = call_external_api()
+    pdf = generate_large_pdf()
+    order = save_order(response)
+```
+
+---
+
+## Keep External Side Effects Outside
+
+Prefer:
+
+```text
+Atomic block
+    ↓
+database writes
+    ↓
+COMMIT
+    ↓
+on_commit()
+    ↓
+email / Celery / external service
+```
+
+Do not expect database rollback to undo:
+
+- Emails.
+- HTTP API calls.
+- File uploads.
+- Cache changes.
+- Messages already published.
+
+---
+
+## Use Database Constraints
+
+```python
+class Meta:
+    constraints = [
+        models.UniqueConstraint(
+            fields=["customer", "coupon"],
+            name="unique_coupon_per_customer",
+        )
+    ]
+```
+
+Application checks provide user-friendly validation, but database constraints should protect important invariants under concurrency.
+
+---
+
+## Lock Only Required Rows
+
+Prefer:
+
+```python
+Product.objects.select_for_update().get(
+    pk=product_id
+)
+```
+
+rather than unnecessarily locking a large queryset.
+
+---
+
+## Use Consistent Lock Ordering
+
+```python
+account_ids = sorted(
+    [sender_id, receiver_id]
+)
+
+accounts = list(
+    Account.objects
+    .select_for_update()
+    .filter(pk__in=account_ids)
+    .order_by("pk")
+)
+```
+
+Predictable locking order helps reduce conflicting lock patterns between concurrent transactions.
+
+---
+
+## Prefer Service-Layer Transactions
+
+```text
+View / API / Worker
+        ↓
+Business Service
+        ↓
+transaction.atomic()
+        ↓
+Models / Database
+```
+
+Example:
+
+```python
+# services/orders.py
+
+@transaction.atomic
+def place_order(*, customer, items):
+    ...
+```
+
+---
+
+# 11. Quick Reference
+
+| Requirement | Use |
 |---|---|
-| Group several related writes | `transaction.atomic()` |
-| Roll back a subsection but continue outer work | Nested `atomic()` savepoint |
-| Execute code only after successful commit | `transaction.on_commit()` |
+| Group related database writes | `transaction.atomic()` |
+| Roll back part of an outer transaction | Nested `atomic()` |
+| Run work only after successful commit | `transaction.on_commit()` |
 | Lock rows during read-modify-write | `select_for_update()` |
-| Increment or decrement safely | `F()` expression |
-| Update only if a condition still holds | Filtered `QuerySet.update()` |
-| Enforce uniqueness or valid state | Database constraint |
-| Test real commit/locking behavior | `TransactionTestCase` |
-| Use transactions from async code | One sync function called with `sync_to_async()` |
-| Coordinate another system reliably | Transactional outbox pattern |
+| Increment/decrement safely | `F()` expression |
+| Perform condition + update atomically | Filtered `update()` |
+| Protect uniqueness/business invariants | Database constraints |
+| Wrap whole view automatically | `ATOMIC_REQUESTS` |
+| Test real transaction behavior | `TransactionTestCase` |
+| Test `on_commit()` in `TestCase` | `captureOnCommitCallbacks()` |
+| Use transactions from async code | One sync transactional function |
+| Coordinate external systems reliably | Transactional outbox |
 
 ---
 
-## Official References
+## Final Mental Model
 
-- [Django 6.0: Database transactions](https://docs.djangoproject.com/en/6.0/topics/db/transactions/)
-- [Django 6.0: QuerySet `select_for_update()`](https://docs.djangoproject.com/en/6.0/ref/models/querysets/#select-for-update)
-- [Django 6.0: Asynchronous support](https://docs.djangoproject.com/en/6.0/topics/async/)
-- [Django official downloads and supported versions](https://www.djangoproject.com/download/)
+```mermaid
+flowchart TD
+    A[Business Operation] --> B{Several writes belong together?}
+
+    B -->|Yes| C[transaction.atomic]
+    B -->|No| D[Normal ORM Operation]
+
+    C --> E{Concurrency on same data?}
+
+    E -->|Simple update| F[F Expression / Conditional Update]
+    E -->|Read then complex validation| G[select_for_update]
+
+    F --> H[Database Write]
+    G --> H
+
+    H --> I{Transaction Successful?}
+
+    I -->|No| J[ROLLBACK]
+    I -->|Yes| K[COMMIT]
+
+    K --> L{External Side Effect?}
+
+    L -->|Yes| M[on_commit]
+    L -->|No| N[Done]
+```
+
+```text
+atomic()
+    = transaction boundary
+
+nested atomic()
+    = savepoint
+
+select_for_update()
+    = row locking
+
+F()
+    = database-side atomic field update
+
+on_commit()
+    = side effect after successful persistence
+```
+
+`transaction.atomic()` provides **all-or-nothing database writes**, but reliable concurrent applications often combine it with **database constraints, row locks, or atomic SQL updates** depending on the business rule.

@@ -899,19 +899,3 @@ Verify that:
 - Metrics expose failures clearly.
 
 ---
-
-# 16. Official References
-
-- [Redis `DEL` command](https://redis.io/docs/latest/commands/del/)
-- [Redis `UNLINK` command](https://redis.io/docs/latest/commands/unlink/)
-- [Redis `EXPIRE` command](https://redis.io/docs/latest/commands/expire/)
-- [Redis `SET` command](https://redis.io/docs/latest/commands/set/)
-- [Redis cache-aside with redis-py](https://redis.io/docs/latest/develop/use-cases/cache-aside/redis-py/)
-- [Redis client-side caching](https://redis.io/docs/latest/develop/reference/client-side-caching/)
-- [Redis `CLIENT TRACKING`](https://redis.io/docs/latest/commands/client-tracking/)
-- [Redis keyspace notifications](https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/)
-- [Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/)
-- [Redis `DELEX` command](https://redis.io/docs/latest/commands/delex/)
-- [Redis `SCAN` command](https://redis.io/docs/latest/commands/scan/)
-- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
-- [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/)

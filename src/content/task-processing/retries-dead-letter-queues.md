@@ -6,1561 +6,756 @@ order: 4
 
 # Retry Strategies and Dead-Letter Queues (DLQ)
 
-> Understand how production systems retry failed tasks safely, isolate poison messages, and recover messages from a Dead-Letter Queue without creating duplicate work or retry storms.
->
-> **Reviewed against current official documentation:** July 2026
+> Understand how production systems retry failed work safely, avoid retry storms, isolate poison messages, and recover failed messages through a Dead-Letter Queue (DLQ).
+
+> **Reviewed against current official documentation:** August 2026
 
 ## In short
 
-- Classify the failure before retrying: retry transient errors (timeout, `429`, `502`/`503`/`504`, deadlock), never retry permanent ones (invalid payload, missing field, business rejection).
-- Exponential backoff with jitter and a maximum delay is the production default; without jitter, thousands of tasks that failed together retry in lockstep and produce a thundering herd.
-- Every retry policy needs a stopping condition: a maximum attempt count, a maximum elapsed time budget, and a per-attempt timeout.
-- Retries multiply across layers, so give one layer ownership of the broad retry window and keep the others small.
-- A DLQ isolates poison messages so they stop consuming worker slots; it does not fix them, and it needs alerting, an owner, and a redrive procedure.
-- Broker redelivery (an unacknowledged message reappearing) and application retry are separate mechanisms; count their combined effect.
-- Redrive is an operational recovery action, not a retry: fix the root cause, confirm the handler is idempotent, then replay a small batch with rate control.
+Retries are useful only when a failure may recover. A production retry design should therefore:
+
+- Retry **transient failures** such as timeouts, temporary network errors, `429`, `502`, `503`, `504`, and some database deadlocks.
+- Avoid retrying **permanent failures** such as malformed payloads, missing required fields, unsupported data, or business-rule rejection.
+- Use **exponential backoff with jitter** for distributed systems so failed tasks do not retry at the same moment.
+- Bound retries with **maximum attempts, a total time budget, and per-attempt timeouts**.
+- Keep retry ownership clear because retries at the task, HTTP-client, SDK, and broker layers can multiply.
+- Use a **DLQ** to isolate messages that cannot be processed successfully.
+- Treat **redrive** as controlled recovery after fixing the root cause, not as another automatic retry.
+- Make handlers **idempotent**, because brokers and workers commonly provide at-least-once processing rather than exactly-once execution.
 
 ```mermaid
 flowchart TD
-    T[Task processing] --> S{Did it succeed?}
-    S -->|Yes| A["ACK/Delete"]
-    S -->|No| R{Is error retryable?}
-    R -->|No| D1[[Dead-Letter Queue]]
-    R -->|Yes| AT{Attempts remaining?}
-    AT -->|Yes| DR[Delay and retry]
-    AT -->|No| D2[[Dead-Letter Queue]]
+    A[Message received] --> B[Process message]
+    B --> C{Successful?}
+
+    C -->|Yes| D[ACK / Delete]
+    C -->|No| E{Failure retryable?}
+
+    E -->|No| F[[DLQ]]
+    E -->|Yes| G{Attempts / time budget left?}
+
+    G -->|Yes| H[Backoff + jitter]
+    H --> A
+
+    G -->|No| F
 ```
 
-**Interview answer:** I classify the failure before retrying — transient errors get retried, permanent ones go straight to a failure path, because repetition will not make an invalid payload valid. Retries use exponential backoff with jitter and a capped delay, bounded by both a maximum attempt count and a total time budget so a task never outlives its business usefulness. When the attempts are exhausted the message goes to a dead-letter queue, which preserves the payload and failure context for diagnosis and controlled redrive instead of silently dropping the work.
-
-**Gotcha:** Retrying at every layer at once. Four task attempts wrapping three HTTP-client retries wrapping two SDK retries is 24 downstream calls per message, so a thousand queued messages become 24,000 requests against a dependency that is already failing.
-
 ---
 
-# 1. Why Failures Need a Strategy
+# 1. Why Retries Need a Strategy
 
-Background tasks fail for normal reasons:
+Background work fails for normal reasons:
 
-- A downstream API temporarily returns `503 Service Unavailable`.
-- A database connection is interrupted.
-- A network request times out.
-- A rate limit is exceeded.
-- A worker crashes during processing.
-- The message contains invalid or outdated data.
-- A code bug causes the same task to fail every time.
+- A downstream service temporarily returns `503 Service Unavailable`.
+- An API rate limit returns `429 Too Many Requests`.
+- A network call times out.
+- A database transaction hits a deadlock.
+- A worker crashes before acknowledging a message.
+- A message contains invalid data.
+- A code or configuration issue causes the same task to fail every time.
 
-A reliable system should not treat every failure in the same way.
+The key idea is simple:
 
-A temporary network error may succeed after a short delay. An invalid email address will not become valid merely because the task is attempted 100 times.
+> **Retry only when another attempt has a reasonable chance of succeeding.**
 
-The goal is therefore not simply **“retry every failed task.”** The real goal is:
+Retrying every exception is dangerous. If 5,000 tasks fail because a dependency is down and every task immediately retries, the retry traffic can make the dependency even less likely to recover.
 
-> Retry failures that may recover, stop retrying failures that cannot recover, and preserve unresolved messages for investigation or controlled recovery.
-
-This normally requires three related mechanisms: a `retry policy`, a `retry limit`, and `dead-letter handling`.
-
-Without these controls, a failed message may repeatedly consume worker capacity, overload a dependency, increase infrastructure cost, and block useful work.
-
----
-
-# 2. The Core Processing Model
-
-A typical asynchronous processing flow contains four major components:
-
-```mermaid
-flowchart LR
-    P[Producer<br/>Creates task] --> B[("Broker/Queue<br/>Stores task")]
-    B --> W[Worker<br/>Processes task]
-    W --> E["External dependency<br/>API / DB / service"]
-```
-
-For example, a checkout API publishes a "send order confirmation" message to an email queue, an email worker consumes it, and the worker calls the email provider.
-
-A task can finish in one of three meaningful states:
-
-| State | Meaning | Typical action |
-|---|---|---|
-| Success | Processing completed | Acknowledge/delete message |
-| Retryable failure | Failure may recover | Retry after a controlled delay |
-| Non-retryable or exhausted failure | Retrying is useless or limit reached | Send to DLQ or terminal-failure store |
-
-The important design decision is made at the failure boundary, shown in the diagram in "In short" above: succeed and acknowledge, fail permanently and dead-letter, or fail transiently and either delay-and-retry or dead-letter once the attempts run out.
-
----
-
-# 3. Classifying Failures Before Retrying
-
-Retry behavior should be based on the type of failure, not merely on the fact that an exception occurred.
-
-## 3.1 Transient failures
-
-A transient failure is temporary and may disappear without changing the message.
-
-Examples:
-
-- HTTP `408 Request Timeout`
-- HTTP `429 Too Many Requests`
-- HTTP `502 Bad Gateway`
-- HTTP `503 Service Unavailable`
-- Connection reset
-- Temporary DNS failure
-- Database deadlock
-- Short-lived broker or network interruption
-
-**Recommended action:** Retry with a delay, usually exponential backoff and jitter.
-
----
-
-## 3.2 Permanent failures
-
-A permanent failure is caused by input or business conditions that will not change through repetition.
-
-Examples:
-
-- Invalid email address
-- Unsupported file format
-- Missing required field
-- Unknown customer ID
-- Malformed JSON
-- Business rule rejection
-- HTTP `400 Bad Request`
-- HTTP `401 Unauthorized` caused by permanently invalid credentials
-- HTTP `404 Not Found` when the referenced entity is permanently absent
-
-**Recommended action:** Do not blindly retry. Record the failure and route the message to a DLQ, validation-failure queue, or business-rejection workflow.
-
----
-
-## 3.3 Unknown failures
-
-Some failures cannot be classified immediately.
-
-Examples:
-
-- Unexpected exception from application code
-- New third-party error code
-- Deserialization behavior changed after a deployment
-- Dependency returns an undocumented response
-
-A reasonable policy is:
-
-1. Retry a small number of times.
-2. Capture detailed context.
-3. Move the task to the DLQ when the retry limit is reached.
-4. Alert the owning team if the failure rate is abnormal.
-
----
-
-## 3.4 Failure-classification example
-
-```python
-from dataclasses import dataclass
-
-class RetryableTaskError(Exception):
-    """The operation may succeed later."""
-
-class PermanentTaskError(Exception):
-    """The same message should not be retried unchanged."""
-
-@dataclass(frozen=True)
-class HttpResult:
-    status_code: int
-    body: str
-
-def classify_http_result(result: HttpResult) -> None:
-    if 200 <= result.status_code < 300:
-        return
-
-    if result.status_code in {408, 425, 429, 500, 502, 503, 504}:
-        raise RetryableTaskError(
-            f"Temporary downstream failure: {result.status_code}"
-        )
-
-    raise PermanentTaskError(
-        f"Permanent request failure: {result.status_code}: {result.body}"
-    )
-```
-
-The exact classification depends on the dependency and business context. For example, a `404` may be permanent in one workflow but temporary in an eventually consistent system.
-
----
-
-# 4. Common Retry Strategies
-
-A retry strategy determines **when** the next attempt occurs.
-
-## 4.1 Immediate retry
-
-The task is retried without a meaningful delay: `Attempt 1 -> fail -> Attempt 2 -> fail -> Attempt 3`.
-
-### Suitable for
-
-- Extremely brief race conditions
-- Local optimistic-concurrency conflicts
-- Operations expected to recover in milliseconds
-
-### Risk
-
-Immediate retry can create a tight loop. If the dependency is already overloaded, immediate retries add more load precisely when the dependency needs less traffic.
-
-Use it only for a very small number of attempts and a clearly understood failure mode.
-
----
-
-## 4.2 Fixed-delay retry
-
-Every retry waits for the same duration: `Delay(n) = constant_delay`, giving `10s, 10s, 10s, 10s`.
-
-### Suitable for
-
-- A dependency that usually recovers within a predictable interval
-- Simple internal workflows
-- Low-volume systems where synchronized retries are not dangerous
-
-### Limitation
-
-Many failed tasks may become ready at the same time and produce a sudden traffic spike.
-
----
-
-## 4.3 Linear backoff
-
-The delay increases by a fixed amount after each attempt: `Delay(n) = base_delay × n`. With a five-second base delay that gives `5s, 10s, 15s, 20s, 25s`.
-
-### Suitable for
-
-- Moderate retry growth
-- Workflows where exponential delay would become too large too quickly
-
-### Limitation
-
-It still provides less protection than exponential backoff when a dependency has a major outage.
-
----
-
-## 4.4 Exponential backoff
-
-The delay grows exponentially after every failed attempt.
-
-A common formula is `Delay(n) = min(max_delay, base_delay × 2^(n - 1))`.
-
-With `base_delay = 2 seconds`:
-
-| Retry number | Delay |
-|---:|---:|
-| 1 | 2 seconds |
-| 2 | 4 seconds |
-| 3 | 8 seconds |
-| 4 | 16 seconds |
-| 5 | 32 seconds |
-| 6 | 64 seconds |
-
-If `max_delay = 60 seconds`, later retries stay capped at 60 seconds.
-
-### Why it works
-
-Exponential backoff gives a failing dependency increasing time to recover and prevents workers from continuously sending requests during an outage.
-
-### Limitation
-
-If thousands of tasks fail at the same time, they may still retry together at `2s`, `4s`, `8s`, and so on. This synchronized behavior is known as a **thundering herd**.
-
----
-
-## 4.5 Exponential backoff with jitter
-
-Jitter adds randomness to each retry delay. Instead of every task waiting exactly eight seconds, each task receives a different delay, which spreads the retry traffic across time.
-
-### Full jitter
+A reliable design separates failures into:
 
 ```text
-maximum = min(max_delay, base_delay × 2^(n - 1))
-actual_delay = random(0, maximum)
-```
-
-### Equal jitter
-
-```text
-maximum = min(max_delay, base_delay × 2^(n - 1))
-actual_delay = maximum / 2 + random(0, maximum / 2)
-```
-
-### Decorrelated jitter
-
-```text
-actual_delay = min(max_delay, random(base_delay, previous_delay × 3))
-```
-
-For most background-task systems, **exponential backoff with jitter and a maximum delay** is a strong default.
-
-```text
-No jitter
-
-0s      2s      4s          8s
-|-------|-------|------------|
-AAAA    AAAA    AAAA         AAAA
-
-With jitter
-
-0s      2s      4s          8s
-|-------|-------|------------|
- A A       A  A    A A   A        A
+Failure
+│
+├── Transient ───────────────> Retry with controlled delay
+│
+├── Permanent ───────────────> Terminal failure / DLQ
+│
+└── Unknown ─────────────────> Small retry budget, then DLQ + investigation
 ```
 
 ---
 
-# 5. Choosing Retry Limits and Time Budgets
+# 2. Classifying Failures
 
-A retry policy should include more than `max_attempts`.
+## 2.1 Transient failures
 
-Useful controls are:
+Transient failures are temporary conditions where repeating the same logical operation may work later.
 
-| Control | Purpose |
+Common examples:
+
+| Failure | Typical action |
 |---|---|
-| Maximum attempts | Stops infinite retries |
-| Maximum elapsed time | Stops retries after the business deadline |
-| Initial delay | Controls how quickly the first retry occurs |
-| Maximum delay | Prevents excessively long waits |
-| Jitter | Avoids synchronized retry traffic |
-| Per-attempt timeout | Prevents one attempt from hanging indefinitely |
-| Task expiration | Prevents stale work from executing later |
+| Network timeout | Retry |
+| Connection reset | Retry |
+| HTTP `408` | Usually retry |
+| HTTP `429` | Retry and respect `Retry-After` |
+| HTTP `502`, `503`, `504` | Retry |
+| Database deadlock | Usually retry transaction |
+| Temporary broker/network interruption | Redelivery or retry |
 
-## 5.1 Attempts versus retries
+For external dependencies, retry with a delay rather than immediately.
 
-Be precise with terminology: `1 initial attempt + 3 retries = 4 total attempts`.
+## 2.2 Permanent failures
 
-Some frameworks configure `max_retries`; others configure `max_attempts` or `max_receive_count`. These values do not always mean the same thing.
+Permanent failures do not become valid just because time passes.
+
+Examples:
+
+- Malformed JSON.
+- Missing mandatory fields.
+- Unsupported file format.
+- Invalid email address.
+- Business rule rejected the request.
+- Referenced entity is permanently absent.
+- Credentials were revoked and require operational intervention.
+
+Typical action:
+
+```text
+Permanent failure
+      │
+      ├── Record failure context
+      ├── Stop automatic retries
+      └── DLQ / terminal-failure workflow
+```
+
+## 2.3 Context matters
+
+HTTP status codes alone are not enough to determine retryability.
+
+For example:
+
+- `404` may be permanent when a customer does not exist.
+- The same `404` may be temporary when a newly created resource is still propagating through an eventually consistent system.
+- `401` may be recoverable if the application can refresh an expired token.
+- `401` is not recoverable by retrying the same permanently invalid credential.
+
+The application should classify errors using **business and dependency semantics**, not only exception type.
 
 ---
 
-## 5.2 Use a retry time budget
+# 3. Retry Strategies
 
-Suppose a payment-status synchronization task is useful only for five minutes.
+A retry strategy decides **when the next attempt should run**.
 
-A policy of `Retry forever every 10 minutes` is incorrect: the first retry lands after the business window has already closed.
+## 3.1 Immediate retry
+
+```text
+Attempt 1 -> fail -> Attempt 2 -> fail -> Attempt 3
+```
+
+Useful only for very short-lived local conflicts such as a small optimistic-concurrency race.
+
+Avoid repeated immediate retries against an unhealthy remote dependency.
+
+## 3.2 Fixed delay
+
+```text
+10s -> 10s -> 10s -> 10s
+```
+
+Simple and predictable, but many messages that fail together may also retry together.
+
+## 3.3 Linear backoff
+
+Delay grows by a fixed amount.
+
+```text
+5s -> 10s -> 15s -> 20s
+```
+
+Useful when retry delay should grow gradually.
+
+## 3.4 Exponential backoff
+
+A common formula is:
+
+```text
+delay = min(max_delay, base_delay × 2^(retry_number - 1))
+```
+
+Example with `base_delay = 2s`:
+
+| Retry | Delay |
+|---:|---:|
+| 1 | 2s |
+| 2 | 4s |
+| 3 | 8s |
+| 4 | 16s |
+| 5 | 32s |
+
+This reduces pressure on an unhealthy dependency.
+
+## 3.5 Exponential backoff with jitter
+
+Exponential backoff alone can still synchronize thousands of workers.
+
+Without jitter:
+
+```text
+2s        4s        8s
+│         │         │
+AAAA      AAAA      AAAA
+```
+
+With jitter:
+
+```text
+0-----2s------4s-----------8s
+ A A      A A    A   A  A
+```
+
+A common full-jitter approach is:
+
+```text
+cap = min(max_delay, base_delay × 2^(retry_number - 1))
+delay = random(0, cap)
+```
+
+For distributed background jobs, **exponential backoff + jitter + maximum delay** is a strong default.
+
+---
+
+# 4. A Complete Retry Policy
+
+`max_retries` alone is not enough.
+
+A production retry policy should usually define:
+
+| Control | Why it matters |
+|---|---|
+| Maximum attempts | Prevents infinite retries |
+| Maximum elapsed time | Stops retrying after the business deadline |
+| Per-attempt timeout | Prevents one request from hanging |
+| Initial/base delay | Controls first retry |
+| Maximum delay | Caps excessive waiting |
+| Jitter | Spreads distributed retries |
+| Task expiration | Prevents stale work from executing |
+| Retryable error set | Avoids retrying permanent failures |
+
+## Attempts vs retries
+
+Be precise:
+
+```text
+1 initial attempt + 3 retries = 4 total attempts
+```
+
+Some systems expose `max_retries`; others expose `max_attempts`, delivery count, receive count, or a similar setting. Their semantics are not always identical.
+
+## Retry time budget
+
+Suppose a payment-status synchronization task is useful for only five minutes.
 
 A better policy is:
 
 ```text
-Maximum attempts: 6
-Maximum elapsed time: 5 minutes
-Backoff: exponential with jitter
-Per-attempt HTTP timeout: 10 seconds
+Maximum attempts:       6
+Maximum elapsed time:   5 minutes
+HTTP timeout:           10 seconds
+Backoff:                exponential + jitter
+Maximum retry delay:    60 seconds
 ```
 
-The task should be abandoned or moved to a reconciliation workflow after the useful business window closes.
+A retry should not outlive the business usefulness of the operation.
 
----
+## Respect server retry guidance
 
-## 5.3 Consider dependency recovery time
-
-Different dependencies need different policies.
-
-| Dependency/failure | Example policy |
-|---|---|
-| Brief database deadlock | 2–3 quick retries with small jitter |
-| Rate-limited API | Respect `Retry-After`, then exponential backoff |
-| Email provider outage | Retry over minutes or hours |
-| Invalid payload | No retry; send to failure workflow |
-| Worker process crash | Broker redelivery, protected by idempotency |
-| Long external outage | Limited retries, then DLQ or scheduled reconciliation |
-
----
-
-## 5.4 Respect server guidance
-
-When a downstream service returns a valid `Retry-After` header or equivalent retry timestamp, prefer that guidance over a locally calculated delay, while still applying safety limits.
+When an API returns a valid `Retry-After`, prefer it when appropriate, while still applying your own upper bound.
 
 ```python
-retry_delay = min(
-    dependency_retry_after_seconds,
-    application_max_retry_delay,
-)
+delay = min(retry_after_seconds, application_max_delay)
 ```
-
-Validate the value before trusting it. A malformed or extremely large delay should not silently keep a message in an in-flight state forever.
 
 ---
 
-# 6. Dead-Letter Queue Fundamentals
+# 5. Dead-Letter Queue (DLQ)
 
-A **Dead-Letter Queue (DLQ)** is a separate queue or topic used to isolate messages that could not be processed successfully.
+A **Dead-Letter Queue** stores or routes messages that could not be processed successfully after the allowed processing policy.
 
-A message usually enters a DLQ because:
+Typical reasons include:
 
-- It exceeded the configured delivery or retry limit.
-- The consumer explicitly rejected it as non-retryable.
-- The message expired.
-- Queue-length or broker policies dead-lettered it.
-- A routing or processing policy intentionally diverted it.
+- Retry or delivery limit exhausted.
+- Consumer explicitly marks the message as non-retryable.
+- Message expires.
+- Broker dead-letter policy is triggered.
+- Payload is valid enough to preserve but cannot be processed safely.
 
 ```mermaid
-flowchart TD
-    M[[Main Queue]] -->|"delivery attempt 1<br/>delivery attempt 2<br/>delivery attempt 3"| D[[Dead-Letter Queue]]
+flowchart LR
+    Q[[Main Queue]] --> W[Worker]
+    W -->|Success| A[ACK / Delete]
+    W -->|Retryable| R[Retry path]
+    W -->|Permanent / exhausted| D[[DLQ]]
 ```
 
-A DLQ is not a trash bin. It is an operational safety mechanism.
+## What a DLQ provides
 
-Messages in a DLQ should have a defined lifecycle: `detect -> inspect -> classify -> fix -> redrive or discard -> audit`.
+A DLQ helps to:
 
----
+- Stop poison messages from consuming worker capacity forever.
+- Preserve failed work for investigation.
+- Separate healthy traffic from repeatedly failing messages.
+- Support controlled recovery after a fix.
 
-## 6.1 What a DLQ solves
-
-### Prevents poison-message loops
-
-A poison message is a message that repeatedly causes processing to fail. Without a retry limit it cycles `receive -> fail -> requeue` forever; with a DLQ the cycle terminates as `receive -> fail -> retry -> fail -> retry -> fail -> DLQ`.
-
-### Protects queue throughput
-
-A small set of bad messages should not continuously consume worker slots that could process healthy messages.
-
-### Preserves failed work
-
-Instead of deleting a failed message, the system retains it for diagnosis and recovery.
-
-### Improves debugging
-
-The team can inspect:
-
-- Original payload
-- Message ID
-- Correlation or trace ID
-- Attempt count
-- Failure type
-- Last error
-- First and last failure times
-- Producer and schema version
-
----
-
-## 6.2 What a DLQ does not solve
-
-A DLQ does not automatically:
-
-- Fix broken code
-- Correct invalid data
-- Prevent duplicate side effects
-- Decide whether redrive is safe
-- Guarantee that failure context is present
-- Replace monitoring and ownership
-
-A system with a DLQ but no alerts or recovery procedure merely stores failures more neatly.
-
----
-
-# 7. Complete Retry-to-DLQ Flow
-
-```mermaid
-flowchart TD
-    P["Producer/API"] -->|Publish task| M[[Main Queue]]
-    M -->|Deliver message| W[Worker]
-    W -->|Execute task| OK{Processing OK?}
-    OK -->|Yes| ACK["ACK/Delete"]
-    OK -->|No| CL[Classify error]
-    CL -->|Retryable| AT{Attempts left?}
-    CL -->|Permanent| DLQ1[[Dead-Letter Queue]]
-    AT -->|Yes| DL[Delay]
-    AT -->|No| DLQ2[[Dead-Letter Queue]]
-    DL --> RQ[["Main queue / retry queue"]]
-```
-
-A mature flow also records state:
+Useful failure context includes:
 
 ```text
-Task ID: order-email-8451
-Attempt: 3
-First seen: 2026-07-30T07:00:00Z
-Last error: ProviderTimeout
-Next attempt: 2026-07-30T07:01:18Z
-Trace ID: 15e4...
+message_id
+operation_id / idempotency_key
+correlation_id
+attempt_count
+failure_category
+last_error
+first_failed_at
+last_failed_at
+schema_version
 ```
 
----
+Avoid copying secrets, access tokens, passwords, card data, or unnecessary sensitive information into the DLQ.
 
-# 8. Acknowledgements, Visibility Timeouts, and Redelivery
+## A DLQ is not an automatic fix
 
-Retries are closely connected to how a broker decides that a message has been processed.
+A DLQ does **not** guarantee:
 
-## 8.1 Acknowledgement model
+- The payload is safe to replay.
+- A partial side effect did not already happen.
+- Duplicate processing cannot occur.
+- The current consumer can still understand the old schema.
+- The dependency can absorb a large redrive.
 
-In acknowledgement-based brokers, the worker generally performs one of these actions:
-
-| Worker action | Broker behavior |
-|---|---|
-| ACK | Mark message successfully processed and remove it |
-| NACK/reject with requeue | Return message for another delivery |
-| NACK/reject without requeue | Remove or dead-letter it, depending on configuration |
-| Worker disconnects before ACK | Message may be redelivered |
-
-The acknowledgement should normally happen **after** the required side effect has been committed.
-
-Acknowledging first — `ACK message -> update database -> worker crashes` — loses the work: the message is already gone, but the database operation may not have completed. The safer order is `update database -> commit transaction -> ACK message`.
-
-This still does not eliminate every duplicate scenario. A worker can commit the transaction and crash before acknowledging the message. The broker then redelivers it. This is why idempotency is necessary.
+It needs monitoring, ownership, and a defined recovery process.
 
 ---
 
-## 8.2 Visibility-timeout model
+# 6. ACK, Visibility Timeout, and Redelivery
 
-Amazon SQS uses a visibility timeout rather than a traditional AMQP ACK/NACK protocol.
+Retries are closely connected to how a broker decides whether processing finished.
+
+## 6.1 ACK-based brokers
+
+A simplified acknowledgement flow is:
+
+```text
+Receive message
+    ↓
+Perform business operation
+    ↓
+Commit side effect
+    ↓
+ACK message
+```
+
+Acknowledging before the business operation is committed can lose work.
+
+However, this sequence can still create duplicates:
+
+```text
+1. Worker updates database successfully.
+2. Worker crashes before ACK.
+3. Broker sees no ACK.
+4. Broker delivers the message again.
+```
+
+That is why retry-safe consumers must be idempotent.
+
+## 6.2 SQS visibility timeout
+
+Amazon SQS uses a visibility timeout rather than a traditional AMQP acknowledgement protocol.
 
 ```mermaid
 flowchart TD
-    R[Receive message] --> I[Message becomes temporarily invisible]
-    I -->|Processing succeeds| D[Delete message]
-    I -->|"Processing fails/crashes"| N[Do not delete]
-    N --> V[Visibility timeout expires]
-    V --> A[Message visible again]
+    A[Receive] --> B[Message becomes invisible]
+    B --> C{Processing completed?}
+
+    C -->|Yes| D[Delete message]
+    C -->|No / crash| E[Do not delete]
+
+    E --> F[Visibility timeout expires]
+    F --> G[Message becomes visible again]
 ```
 
-The timeout must be long enough for normal processing. If it is too short, another worker may receive the same message while the first worker is still processing it. If it is too long, recovery after a crash is delayed.
+The visibility timeout should normally be longer than expected processing time.
 
-For variable-duration tasks, use a heartbeat to extend visibility while the worker is still making progress.
+If processing legitimately takes longer, extend the visibility timeout while the worker is still making progress.
 
----
+## 6.3 Broker redelivery vs application retry
 
-## 8.3 Redelivery is not always application retry
+These are different mechanisms:
 
-Two retry mechanisms may exist:
+- **Broker redelivery:** The same message returns because it was not acknowledged or deleted.
+- **Application retry:** The application intentionally schedules another attempt.
 
-1. **Broker redelivery** because the message was not acknowledged or deleted.
-2. **Application retry** where the task code intentionally schedules another attempt.
-
-They should not be configured independently without thought. Otherwise, the total attempts can be much larger than expected: 3 application retries combined with 5 broker deliveries per application attempt allows up to 15 processing executions.
-
-Define one clear owner for the retry count or calculate the combined behavior explicitly.
-
----
-
-# 9. Idempotency: The Safety Net for Retries
-
-Every retry mechanism in this note assumes the handler is idempotent, because at-least-once delivery can execute the same message more than once — a worker can commit its transaction and crash before acknowledging.
-
-Recap of what a retry-safe handler needs:
-
-- A deduplication key that is **stable across retries** and unique to the logical operation, never regenerated per attempt.
-- The key reserved in the same transaction as the business effect (the **idempotent consumer** pattern), so a duplicate delivery finds the key already present and returns.
-- The same key passed to downstream providers, so a repeated call returns the original result instead of charging twice.
-- Key storage retained for at least the maximum possible redelivery period, which includes the DLQ retention window.
-
-Full treatment: [HTTP Idempotency](../api-design/idempotency-http-methods.md) for the general model and key design, and [Idempotency in Background Tasks](idempotency-background-tasks.md) for the worker-specific patterns — outbox/inbox, multi-step workflow state, and uncertain external outcomes.
-
----
-
-# 10. Retry at the Correct Layer
-
-A production request may pass through several layers: `task framework -> service client -> HTTP SDK -> load balancer -> downstream service`.
-
-Each layer may already retry. Uncoordinated retries multiply traffic.
+If both are configured without coordination, total executions can multiply.
 
 Example:
 
 ```text
-Celery task retries:        4 attempts
-HTTP client retries:        3 attempts each
-Downstream SDK retries:     2 attempts each
-
-Maximum downstream calls = 4 × 3 × 2 = 24
+4 task attempts × 3 HTTP-client attempts × 2 SDK attempts
+= 24 downstream calls
 ```
 
-During an outage, 1,000 task messages could create up to 24,000 downstream calls.
-
-## 10.1 Practical ownership model
-
-Use different retry scopes for different failures:
-
-| Layer | Retry responsibility |
-|---|---|
-| Network/SDK | Very short transport-level retries |
-| Task/application | Business-aware retries over seconds or minutes |
-| Broker | Redelivery after worker loss; final delivery limit/DLQ |
-| Scheduled reconciliation | Long-term recovery after extended outage |
-
-Keep low-level retries small, and let the application-level task policy control the broader time window.
+Give one layer ownership of the broad retry window and keep lower-level retries small.
 
 ---
 
-## 10.2 Circuit breaker interaction
+# 7. Idempotency Makes Retries Safe
 
-A circuit breaker temporarily stops calls to a failing dependency, moving `Closed -> failures cross threshold -> Open -> wait -> Half-open -> test request`.
+Retries and at-least-once delivery mean the same logical operation can run more than once.
 
-Retry and circuit breaker solve different problems:
+An idempotent handler should produce the same business outcome when the same operation is delivered again.
 
-- **Retry:** Reattempts an individual operation.
-- **Circuit breaker:** Protects the system from repeatedly calling a dependency that is broadly unhealthy.
-
-A good combination is:
+Example operation key:
 
 ```text
-Per request: timeout + small retry
-Across requests: circuit breaker
-Across task lifetime: exponential retry + DLQ
+order-confirmation:{order_id}
 ```
 
-When the circuit is open, the task should normally schedule a later retry rather than repeatedly calling the dependency.
+A common pattern is:
+
+```mermaid
+flowchart TD
+    A[Receive message] --> B{Operation key already completed?}
+
+    B -->|Yes| C[Return success / ACK]
+    B -->|No| D[Reserve operation key]
+    D --> E[Perform business effect]
+    E --> F[Store completed result]
+    F --> G[ACK]
+```
+
+Important principles:
+
+- Keep the idempotency key stable across retries.
+- Store the key close to the business transaction when possible.
+- Pass the same idempotency key to downstream providers that support it.
+- Retain deduplication state long enough to cover normal retries, broker redelivery, and possible DLQ recovery.
 
 ---
 
-# 11. Practical Python Retry Implementation
+# 8. Current Platform Behavior
 
-The following asynchronous helper includes:
+The high-level reliability model is shared, but each platform exposes different retry and dead-letter mechanisms.
 
-- Retryable exception filtering
-- Exponential backoff
-- Full jitter
-- Maximum delay
-- Maximum attempts
-- A total time budget
+## 8.1 Celery 5.6
 
-```python
-from __future__ import annotations
+Celery 5.6 supports:
 
-import asyncio
-import random
-import time
-from collections.abc import Awaitable, Callable
-from typing import TypeVar
+- `Task.retry()`
+- `autoretry_for`
+- `max_retries`
+- `retry_backoff`
+- `retry_backoff_max`
+- `retry_jitter`
 
-T = TypeVar("T")
+Current stable Celery documentation states that:
 
-class RetryExhaustedError(RuntimeError):
-    pass
+- `retry_backoff=True` enables exponential backoff.
+- `retry_backoff_max` defaults to `600` seconds.
+- `retry_jitter` defaults to `True`.
+- With jitter enabled, the calculated backoff becomes a maximum and the actual delay is randomized from zero to that maximum.
 
-async def retry_async(
-    operation: Callable[[], Awaitable[T]],
-    *,
-    retry_on: tuple[type[Exception], ...],
-    max_attempts: int = 5,
-    base_delay_seconds: float = 1.0,
-    max_delay_seconds: float = 30.0,
-    max_elapsed_seconds: float = 120.0,
-) -> T:
-    if max_attempts < 1:
-        raise ValueError("max_attempts must be at least 1")
-
-    started_at = time.monotonic()
-    last_exception: Exception | None = None
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return await operation()
-        except retry_on as exc:
-            last_exception = exc
-
-            if attempt == max_attempts:
-                break
-
-            exponential_cap = min(
-                max_delay_seconds,
-                base_delay_seconds * (2 ** (attempt - 1)),
-            )
-
-            # Full jitter: choose a random duration from zero to the cap.
-            delay = random.uniform(0, exponential_cap)
-            elapsed = time.monotonic() - started_at
-
-            if elapsed + delay > max_elapsed_seconds:
-                break
-
-            await asyncio.sleep(delay)
-
-    raise RetryExhaustedError(
-        f"Operation failed after {max_attempts} configured attempts"
-    ) from last_exception
-```
-
-Usage:
-
-```python
-import httpx
-
-async def fetch_inventory() -> dict:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get("https://inventory.internal/items/42")
-
-        if response.status_code in {429, 500, 502, 503, 504}:
-            raise RetryableTaskError(
-                f"Inventory service returned {response.status_code}"
-            )
-
-        response.raise_for_status()
-        return response.json()
-
-inventory = await retry_async(
-    fetch_inventory,
-    retry_on=(RetryableTaskError, httpx.TransportError),
-    max_attempts=5,
-    base_delay_seconds=1,
-    max_delay_seconds=20,
-    max_elapsed_seconds=60,
-)
-```
-
-In a real queue consumer, do not sleep inside a worker for long retry delays. Reschedule the message through the task system or a retry queue so the worker slot can process other work.
-
----
-
-# 12. Celery Retry Configuration
-
-Celery supports explicit retry through `Task.retry()` and automatic retry through task options.
-
-The examples below match the current stable Celery 5.6 documentation reviewed in July 2026.
-
-## 12.1 Explicit retry
+Example:
 
 ```python
 from celery import shared_task
 import httpx
 
-@shared_task(bind=True, max_retries=5)
-def synchronize_customer(self, customer_id: str) -> None:
-    try:
-        response = httpx.post(
-            "https://crm.example.com/sync",
-            json={"customer_id": customer_id},
-            timeout=10.0,
-        )
-        response.raise_for_status()
-
-    except (httpx.TimeoutException, httpx.NetworkError) as exc:
-        countdown = min(300, 2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
-```
-
-Important details:
-
-- A bound task receives `self`.
-- `self.request.retries` starts at zero.
-- `self.retry()` raises Celery's internal `Retry` exception.
-- Retried executions use the same Celery task ID and are sent to the same destination queue.
-
----
-
-## 12.2 Automatic retry with backoff and jitter
-
-```python
-from celery import shared_task
-import httpx
 
 @shared_task(
     autoretry_for=(httpx.TimeoutException, httpx.NetworkError),
     retry_kwargs={"max_retries": 5},
     retry_backoff=True,
-    retry_backoff_max=600,
+    retry_backoff_max=300,
     retry_jitter=True,
 )
-def synchronize_customer(customer_id: str) -> None:
+def sync_customer(customer_id: str) -> None:
     response = httpx.post(
-        "https://crm.example.com/sync",
+        "https://crm.example.com/customers/sync",
         json={"customer_id": customer_id},
         timeout=10.0,
     )
     response.raise_for_status()
 ```
 
-With Celery's automatic retry settings:
+Do not use `autoretry_for=(Exception,)` unless every exception produced by the task is genuinely retryable.
 
-- `retry_backoff=True` enables exponential backoff.
-- `retry_backoff_max` caps the delay in seconds.
-- `retry_jitter=True` randomizes delay to spread retry traffic.
-- `autoretry_for` should contain only exceptions that are safe to retry.
-
-Avoid this broad configuration unless every exception is genuinely retryable:
-
-```python
-@shared_task(autoretry_for=(Exception,))
-def process_message(payload: dict) -> None:
-    ...
-```
-
-It may repeatedly retry validation errors, programming bugs, and permanent business failures.
+Celery task retry and the underlying broker's DLQ/redelivery behavior are separate layers.
 
 ---
 
-## 12.3 Separate permanent and retryable failures
+## 8.2 Amazon SQS
 
-```python
-from celery import shared_task
-from pydantic import BaseModel, ValidationError
-import httpx
+Important concepts:
 
-class CustomerSyncPayload(BaseModel):
-    customer_id: str
-    email: str
+- A received message becomes temporarily invisible.
+- The consumer deletes it after successful processing.
+- If it is not deleted, it becomes visible again after the visibility timeout.
+- A redrive policy uses `maxReceiveCount` to decide when a repeatedly received message should move to a DLQ.
+- AWS recommends choosing a value high enough to tolerate normal transient failures.
+- For standard queues, the original enqueue timestamp is preserved when the message moves to a DLQ, so DLQ retention should generally be longer than source-queue retention.
+- For FIFO queues, the enqueue timestamp resets when the message moves to the DLQ.
+- Moving messages to a DLQ can affect strict business ordering for FIFO workflows.
 
-@shared_task(bind=True, max_retries=5)
-def synchronize_customer(self, raw_payload: dict) -> None:
-    try:
-        payload = CustomerSyncPayload.model_validate(raw_payload)
-    except ValidationError as exc:
-        record_terminal_failure(
-            payload=raw_payload,
-            reason="validation_error",
-            details=str(exc),
-        )
-        return
-
-    try:
-        send_to_crm(payload.model_dump())
-    except (httpx.TimeoutException, httpx.NetworkError) as exc:
-        raise self.retry(exc=exc, countdown=calculate_retry_delay(self.request.retries))
-```
-
-The task does not retry malformed input. It retries only temporary transport failures.
+SQS DLQ redrive supports controlled redrive velocity. Start with a small rate and increase gradually while monitoring the destination workload.
 
 ---
 
-## 12.4 Celery and a DLQ
+## 8.3 RabbitMQ 4.3
 
-Celery's `max_retries` marks a task as failed after the limit, but a broker-level DLQ is a separate concern.
+RabbitMQ uses a **Dead Letter Exchange (DLX)** to route dead-lettered messages to another exchange/queue.
 
-Common choices are:
+Messages can be dead-lettered for reasons such as:
 
-1. Record terminal task failures in an application failure table.
-2. Publish a sanitized failure envelope to a dedicated failure queue.
-3. Configure RabbitMQ dead-lettering for rejected messages.
-4. Configure the underlying SQS queue with an SQS DLQ.
+- Rejection according to consumer/broker semantics.
+- Expiration.
+- Queue limit behavior.
+- Quorum-queue delivery limit.
 
-A useful terminal-failure envelope:
+For quorum queues, RabbitMQ 4.0+ has a default delivery limit of `20` unless configured otherwise.
 
-```json
-{
-  "original_task_id": "be45e9ad-...",
-  "task_name": "customers.synchronize_customer",
-  "payload_reference": "s3://secure-bucket/tasks/be45e9ad.json",
-  "attempts": 6,
-  "failure_type": "crm_timeout",
-  "last_error": "ReadTimeout",
-  "failed_at": "2026-07-30T07:30:00Z",
-  "trace_id": "f7ac2d...",
-  "schema_version": 2
-}
-```
+### RabbitMQ 4.3 delayed retries
 
-Avoid copying secrets, access tokens, full card details, or sensitive personal data into the DLQ payload.
+RabbitMQ 4.3 adds **native delayed retries for quorum queues**.
 
----
-
-# 13. Amazon SQS with a DLQ
-
-Amazon SQS moves a repeatedly received message to a configured DLQ after its receive count exceeds the source queue's `maxReceiveCount` policy.
-
-```mermaid
-flowchart TD
-    M[[orders-main]] -->|receive count exceeds limit| D[[orders-dlq]]
-```
-
-## 13.1 Redrive policy example
-
-```json
-{
-  "deadLetterTargetArn": "arn:aws:sqs:us-east-1:123456789012:orders-dlq",
-  "maxReceiveCount": "5"
-}
-```
-
-Interpretation:
-
-- A consumer receives a message from `orders-main`.
-- If it is not deleted successfully, it becomes visible again after its visibility timeout.
-- The receive count increases with repeated deliveries.
-- After the configured threshold is exceeded, SQS moves it to `orders-dlq`.
-
-Do not set the value too low. A count of one would dead-letter a message after a single failed receive cycle, leaving little tolerance for transient worker or network failures.
-
----
-
-## 13.2 Consumer example with error classification
-
-```python
-from __future__ import annotations
-
-import json
-import logging
-from typing import Any
-
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
-
-logger = logging.getLogger(__name__)
-sqs = boto3.client("sqs")
-
-QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123456789012/orders-main"
-
-class PermanentMessageError(Exception):
-    pass
-
-def process_order(payload: dict[str, Any]) -> None:
-    if "order_id" not in payload:
-        raise PermanentMessageError("order_id is required")
-
-    # Perform idempotent business processing here.
-
-def consume_once() -> None:
-    response = sqs.receive_message(
-        QueueUrl=QUEUE_URL,
-        MaxNumberOfMessages=10,
-        WaitTimeSeconds=20,
-        AttributeNames=["ApproximateReceiveCount"],
-    )
-
-    for message in response.get("Messages", []):
-        receipt_handle = message["ReceiptHandle"]
-        receive_count = int(message["Attributes"]["ApproximateReceiveCount"])
-
-        try:
-            payload = json.loads(message["Body"])
-            process_order(payload)
-
-        except (json.JSONDecodeError, PermanentMessageError):
-            # Do not delete the message. It will eventually reach the broker DLQ
-            # through the redrive policy. Optionally shorten visibility to speed
-            # up terminal routing, but guard against a high-frequency hot loop.
-            logger.exception(
-                "Permanent message failure",
-                extra={"receive_count": receive_count},
-            )
-
-        except (BotoCoreError, ClientError, TimeoutError):
-            # Temporary failure: leave the message undeleted so SQS can redeliver it.
-            logger.exception(
-                "Retryable processing failure",
-                extra={"receive_count": receive_count},
-            )
-
-        else:
-            sqs.delete_message(
-                QueueUrl=QUEUE_URL,
-                ReceiptHandle=receipt_handle,
-            )
-```
-
-This simplified example relies on SQS redelivery. Production code should also include:
-
-- Per-operation timeouts
-- Visibility extension for long processing
-- Idempotency
-- Structured logs and tracing
-- Graceful shutdown
-- Batch partial-failure handling where applicable
-- An explicit approach for permanent failures instead of repeatedly burning through the receive limit
-
----
-
-## 13.3 Visibility timeout and backoff
-
-SQS visibility timeout acts as the processing lease. It is not automatically an exponential retry scheduler.
-
-A consumer may adjust visibility for a failed message:
-
-```python
-sqs.change_message_visibility(
-    QueueUrl=QUEUE_URL,
-    ReceiptHandle=receipt_handle,
-    VisibilityTimeout=next_retry_delay_seconds,
-)
-```
-
-Use this carefully:
-
-- Keep the delay within the SQS visibility constraints.
-- Do not hold messages invisible for longer than their business usefulness.
-- Remember that a received message is counted as in flight.
-- Use a heartbeat to extend visibility only while real processing is active.
-
-For complex retry schedules, teams often use dedicated retry queues, EventBridge Scheduler, Step Functions, or application scheduling rather than depending entirely on visibility changes.
-
----
-
-## 13.4 Retention behavior
-
-For SQS standard queues, a message's original enqueue timestamp is retained when it moves to a DLQ. Therefore, the DLQ retention period should generally be longer than the source queue retention period.
-
-For FIFO queues, the enqueue timestamp resets when the message moves to the DLQ.
-
-Also consider ordering: moving one failed FIFO message to a DLQ can allow later work to proceed and may break the business sequence expected by the application. Ordering-sensitive workflows require a deliberate recovery design.
-
----
-
-## 13.5 SQS redrive
-
-SQS can move DLQ messages back to a source queue or another destination queue through DLQ redrive.
-
-Redrive should be controlled because a large batch can overload the recovered service.
-
-A safe process is:
-
-```mermaid
-flowchart TD
-    A[Fix root cause] --> B[Test one message]
-    B --> C[Redrive a small batch]
-    C --> D[Monitor error and latency metrics]
-    D --> E[Gradually increase redrive velocity]
-```
-
-Do not redrive the entire queue merely because the deployment has completed.
-
----
-
-# 14. RabbitMQ Retry and Dead-Letter Exchanges
-
-RabbitMQ uses a **Dead Letter Exchange (DLX)**. A queue dead-letters a message to an exchange, and that exchange routes the message to one or more queues.
+Previously, delayed retry designs commonly required:
 
 ```text
-Main Queue --dead-letter--> DLX --> Dead-Letter Queue
+Main Queue -> Retry Queue with TTL -> DLX -> Main Queue
 ```
 
-A message may be dead-lettered when:
+RabbitMQ 4.3 can instead keep a returned message inside the quorum queue until its retry delay expires.
 
-- A consumer rejects or negatively acknowledges it with `requeue=false`.
-- The message expires.
-- The queue exceeds a length limit under the configured behavior.
-- A quorum queue message exceeds its delivery limit.
+The delay can use linear backoff:
+
+```text
+delay = min(delayed_retry_min × delivery_count, delayed_retry_max)
+```
+
+This reduces the need for TTL/DLX retry cycles for supported quorum-queue use cases.
+
+RabbitMQ 4.3 also separates `acquired-count` from `delivery-count`, so returning a message does not always count as a failed delivery. Poison-message handling remains tied to failed delivery counting.
+
+DLX is still the mechanism for terminal dead-letter routing.
 
 ---
 
-## 14.1 Basic DLX policy
+## 8.4 Google Cloud Pub/Sub
 
-Policies are generally preferable to hard-coded queue arguments because operations teams can update them without redeploying every producer or consumer.
-
-```bash
-rabbitmqctl set_policy orders-dlx \
-  '^orders\.main$' \
-  '{"dead-letter-exchange":"orders.dead","dead-letter-routing-key":"orders.failed"}' \
-  --apply-to queues
-```
-
-Topology:
-
-```mermaid
-flowchart TD
-    E[orders.exchange] --> M[[orders.main queue]]
-    M -->|"reject(requeue=false)"| DE[orders.dead exchange]
-    DE --> DQ[[orders.dlq queue]]
-```
-
----
-
-## 14.2 Consumer acknowledgement behavior
-
-```python
-import json
-import pika
-
-class PermanentMessageError(Exception):
-    pass
-
-def callback(channel, method, properties, body: bytes) -> None:
-    try:
-        payload = json.loads(body)
-        process_order(payload)
-
-    except PermanentMessageError:
-        # Reject without requeue. The DLX policy can route it to the DLQ.
-        channel.basic_nack(
-            delivery_tag=method.delivery_tag,
-            requeue=False,
-        )
-
-    except RetryableTaskError:
-        # Direct requeue is simple but can create a tight redelivery loop.
-        channel.basic_nack(
-            delivery_tag=method.delivery_tag,
-            requeue=True,
-        )
-
-    else:
-        channel.basic_ack(delivery_tag=method.delivery_tag)
-```
-
-Repeated immediate `requeue=True` calls are dangerous because the same message can circulate rapidly. Prefer delayed retry queues or a retry scheduler for recoverable failures.
-
----
-
-## 14.3 Delayed retry queues with TTL and DLX
-
-A common RabbitMQ design uses separate retry queues.
+Pub/Sub configures dead lettering on a **subscription**, not directly on the source topic.
 
 ```mermaid
 flowchart LR
-    M[[Main Queue]] --> W[Worker]
-    W -->|processing failure| RE[Retry Exchange]
-    RE --> RQ[["Retry Queue (no consumer)"]]
-    RQ -->|DLX after TTL| M
+    T[Source Topic] --> S[Subscription]
+    S --> C[Subscriber]
+    S -->|Delivery attempts exhausted| D[Dead-Letter Topic]
+    D --> DS[DLQ Subscription]
 ```
 
-Example retry tiers:
+Current Pub/Sub documentation states:
 
-```text
-orders.retry.10s
-orders.retry.1m
-orders.retry.10m
-```
-
-Each retry queue has:
-
-- A queue-level message TTL
-- A dead-letter exchange pointing back to the main exchange
-- No consumer
-
-When the TTL expires, RabbitMQ dead-letters the message back to the main route.
-
-Example arguments for a 60-second retry queue:
-
-```json
-{
-  "x-message-ttl": 60000,
-  "x-dead-letter-exchange": "orders.exchange",
-  "x-dead-letter-routing-key": "orders.process"
-}
-```
-
-Using delay buckets avoids keeping a worker asleep and provides predictable retry intervals.
+- Dead-letter maximum delivery attempts can be configured from `5` to `100`.
+- The default is `5`.
+- Delivery-attempt forwarding is best-effort, so the configured maximum is approximate.
+- A subscription should be attached to the dead-letter topic so failed messages can actually be consumed later.
+- Correct Pub/Sub service-account IAM permissions are required for dead-letter forwarding.
+- Subscription retry policies can use exponential backoff.
 
 ---
 
-## 14.4 Quorum queue delivery limits
+# 9. Safe DLQ Redrive
 
-RabbitMQ quorum queues track unsuccessful redelivery attempts in the `x-delivery-count` header.
+**Redrive** means moving failed messages from the DLQ back into processing after the underlying problem has been understood.
 
-In RabbitMQ 4.2 documentation, quorum queues have a default delivery limit of 20, introduced starting with RabbitMQ 4.0. When the limit is crossed, the message is dropped unless dead-lettering is configured.
-
-For that reason, configure a DLX for quorum queues that may contain important messages.
-
-Example policy:
-
-```bash
-rabbitmqctl set_policy qq-overrides \
-  '^orders\.' \
-  '{"delivery-limit":5,"dead-letter-exchange":"orders.dead"}' \
-  --priority 100 \
-  --apply-to quorum_queues
-```
-
-Do not disable delivery limits casually. Unlimited redelivery can preserve a poison-message loop and consume storage or worker capacity indefinitely.
-
----
-
-## 14.5 Avoid dead-letter cycles
-
-It is possible to route a dead-lettered message back into the same queue repeatedly.
-
-```text
-Queue A -> DLX -> Queue A -> DLX -> Queue A
-```
-
-Use explicit exchanges, routing keys, and topology tests. RabbitMQ can detect certain dead-letter cycles and drop messages, but the application should not depend on cycle detection as its retry policy.
-
----
-
-# 15. Google Cloud Pub/Sub Dead-Letter Topics
-
-Google Cloud Pub/Sub configures dead lettering on a **subscription**, not on the source topic itself.
+A safe sequence is:
 
 ```mermaid
-flowchart TD
-    T[Source Topic] --> S[Subscription]
-    S --> SUB[Subscriber]
-    S -->|delivery attempts exhausted| DT[Dead-Letter Topic]
-    DT --> DS[DLQ Subscription]
-    DS --> IW[Investigation worker]
+flowchart LR
+    A[Inspect failure] --> B[Fix root cause]
+    B --> C[Check idempotency]
+    C --> D[Replay one / small batch]
+    D --> E[Monitor]
+    E --> F[Increase redrive rate gradually]
 ```
 
-The current official documentation allows a maximum-delivery-attempt value from 5 to 100, with a default of 5 when dead lettering is configured.
+Before redrive, verify:
 
-Example command:
-
-```bash
-gcloud pubsub subscriptions create orders-subscription \
-  --topic=orders \
-  --dead-letter-topic=orders-dead-letter \
-  --max-delivery-attempts=10
-```
-
-Important operational detail: create a subscription on the dead-letter topic. A topic alone does not provide a consumer backlog that your investigation worker can read later.
-
-Pub/Sub subscription retry can use:
-
-- Immediate redelivery
-- Exponential backoff
-
-The service account used by Pub/Sub also needs permission to publish to the dead-letter topic and acknowledge forwarded messages on the source subscription.
-
----
-
-# 16. DLQ Redrive and Message Recovery
-
-**Redrive** means moving a failed message from the DLQ back into normal processing.
-
-Redrive is not equivalent to retrying. It is an operational recovery action taken after understanding the failure.
-
-## 16.1 Safe redrive process
-
-1. Detect DLQ growth.
-2. Inspect representative failures.
-3. Group messages by root cause.
-4. Fix code, configuration, credentials, or data.
-5. Validate the fix in a non-production environment where possible.
-6. Redrive one or a small sample.
-7. Confirm successful side effects.
-8. Redrive gradually with rate controls.
-9. Monitor main-queue age, failures, and dependency health.
-10. Close the incident with an audit record.
-
----
-
-## 16.2 Redrive options
-
-| Option | Suitable when |
-|---|---|
-| Redrive unchanged | Message was valid; code or dependency was fixed |
-| Transform then redrive | Schema or data requires a known correction |
-| Send to a dedicated recovery workflow | Manual review or enrichment is required |
-| Discard with audit record | Message is obsolete, invalid, or legally required to be removed |
-| Compensate instead of redrive | Original operation is no longer safe or useful |
-
----
-
-## 16.3 Do not redrive blindly
-
-Blind redrive can cause:
-
-- Duplicate payments
-- Duplicate emails or notifications
-- Repeated webhook delivery
-- Inventory double-decrement
-- Reopening completed workflows
-- Another retry storm
-
-Before redrive, confirm:
-
-- Is the operation idempotent?
-- Is the message still valid?
-- Has its business deadline expired?
+- Is the message still relevant?
 - Did part of the operation already succeed?
-- Can the dependency absorb the redrive rate?
-- Does the payload match the current schema?
+- Is the handler idempotent?
+- Does the message use an old schema?
+- Can the downstream dependency handle the replay rate?
+- Has the business deadline already passed?
 
----
+Useful recovery choices:
 
-## 16.4 Schema evolution
+| Situation | Recovery |
+|---|---|
+| Code/dependency fixed | Redrive unchanged |
+| Old but convertible schema | Transform, then replay |
+| Manual validation required | Recovery workflow |
+| Message no longer useful | Discard with audit record |
+| Original effect is unsafe to repeat | Compensating workflow |
 
-A DLQ message may remain stored across several deployments. Its payload may use an older schema.
-
-Include a schema version:
-
-```json
-{
-  "schema_version": 3,
-  "event_type": "order.confirmation.requested",
-  "order_id": "8451"
-}
-```
-
-At redrive time, use one of these approaches:
-
-- Support multiple schema versions in the consumer.
-- Transform the old payload to the current version.
-- Route old messages to a compatibility worker.
-- Reject versions that are no longer safe, with an auditable reason.
-
----
-
-## 16.5 Redrive identity
-
-Preserve the original logical operation identity during redrive.
-
-Useful fields:
+Preserve the original logical identity during redrive:
 
 ```text
 original_message_id
-original_task_id
+operation_id
 correlation_id
-causation_id
+schema_version
 first_enqueued_at
-first_failed_at
-redrive_batch_id
 redrive_count
+redrive_batch_id
 ```
 
-Do not lose the original ID and create a completely unrelated operation identity, especially when idempotency depends on that ID.
+---
+
+# 10. Practical Example: Order Confirmation
+
+Assume an order-confirmation worker must send an email after checkout.
+
+Requirements:
+
+- Provider timeout or `503` is retryable.
+- Invalid email is permanent.
+- Duplicate email should be avoided.
+- Failed messages must remain recoverable.
+
+## Flow
+
+```mermaid
+flowchart TD
+    A[Checkout Service] -->|order-confirmation event| Q[[Main Queue]]
+    Q --> W[Email Worker]
+
+    W --> V{Payload valid?}
+    V -->|No| D1[[DLQ]]
+    V -->|Yes| I{Already sent?}
+
+    I -->|Yes| ACK1[ACK]
+    I -->|No| P[Call email provider with idempotency key]
+
+    P -->|Success| S[Store sent result]
+    S --> ACK2[ACK]
+
+    P -->|Timeout / 429 / 5xx| R[Exponential retry + jitter]
+    R --> X{Retry budget left?}
+    X -->|Yes| Q
+    X -->|No| D2[[DLQ]]
+```
+
+## Example policy
+
+```text
+Logical operation key:   order-confirmation:{order_id}
+
+Attempt timeout:         10 seconds
+Maximum attempts:        6
+Backoff:                 exponential + jitter
+Maximum retry delay:     60 seconds
+Permanent validation:    no retry
+Exhausted transient:     DLQ
+Redrive:                 controlled small batches
+```
+
+The most important part is not the exact delay values. It is the combination of:
+
+```text
+failure classification
++ bounded retries
++ jitter
++ idempotency
++ DLQ
++ controlled redrive
+```
 
 ---
 
-# 17. Observability and Alerting
+# 11. Observability and Production Best Practices
 
-A retry and DLQ design is incomplete without metrics, logs, traces, and ownership.
+A retry system should be observable before the DLQ becomes large.
 
-## 17.1 Core metrics
+Useful metrics:
 
-| Metric | Why it matters |
+| Metric | What it tells you |
 |---|---|
-| Task success rate | Shows overall processing health |
-| Retry count/rate | Early warning before DLQ growth |
-| Attempts per successful task | Indicates dependency instability |
-| DLQ message count | Shows unresolved failures |
-| DLQ ingress rate | Detects active incidents |
-| Age of oldest DLQ message | Shows unresolved operational debt |
-| Main queue depth | Shows backlog |
-| Age of oldest main-queue message | Better than depth alone for user impact |
-| Processing latency | Measures task completion time |
-| Redrive success/failure rate | Confirms recovery quality |
-| Visibility extensions or NACK count | Indicates long or failing processing |
-| Failure count by exception/category | Helps find root cause quickly |
+| Success rate | Overall worker health |
+| Retry rate | Early dependency instability |
+| Attempts per successful task | Hidden retry cost |
+| Main queue depth | Current backlog |
+| Oldest main-queue message age | User-facing delay |
+| DLQ ingress rate | New unresolved failures |
+| DLQ message count | Failure backlog |
+| Oldest DLQ message age | Operational debt |
+| Failure count by category | Root-cause grouping |
+| Redrive success rate | Recovery quality |
 
----
-
-## 17.2 Useful structured log fields
+Useful structured log fields:
 
 ```json
 {
   "event": "task_retry_scheduled",
-  "task_name": "orders.send_confirmation",
   "message_id": "8ea7...",
-  "correlation_id": "checkout-8451",
+  "operation_id": "order-confirmation:8451",
   "attempt": 3,
   "max_attempts": 6,
-  "error_type": "EmailProviderTimeout",
+  "error_type": "ProviderTimeout",
   "retry_delay_seconds": 18.4,
-  "queue": "email-main",
-  "worker": "worker-email-07"
+  "queue": "email-main"
 }
 ```
 
-Do not rely only on a free-text exception stack. Structured fields make grouping and alerting practical.
+## Production rules to remember
+
+1. **Classify before retrying.**
+2. **Use backoff and jitter for distributed retries.**
+3. **Bound retries by attempts and elapsed time.**
+4. **Set timeouts for every external call.**
+5. **Avoid retry multiplication across layers.**
+6. **Make side-effecting consumers idempotent.**
+7. **ACK/delete only after the required business effect is safely committed.**
+8. **Treat DLQ growth as an operational signal, not normal storage.**
+9. **Fix the cause before redrive.**
+10. **Replay gradually and monitor downstream health.**
 
 ---
 
-## 17.3 Alert examples
+# 12. Quick Comparison
 
-| Severity | Condition |
-|---|---|
-| Urgent | DLQ ingress > 100 messages in 5 minutes AND failure type is `payment_processing_error` |
-| Warning | Retry rate > 10% for 15 minutes |
-| Operational debt | Oldest DLQ message age > 24 hours |
-
-A single DLQ message may be urgent for payment or security workflows but low priority for analytics enrichment. Alerts should reflect business impact, not only queue size.
-
----
-
-## 17.4 Trace retry attempts as one logical operation
-
-All attempts should share a stable correlation or trace relationship.
-
-```mermaid
-flowchart TD
-    T["Logical task: order-confirmation-8451"] --> A1["Attempt 1: timeout"]
-    T --> A2["Attempt 2: HTTP 503"]
-    T --> A3["Attempt 3: success"]
-```
-
-Preserve:
-
-- Logical task ID
-- Attempt-specific span ID
-- Original request trace ID
-- Retry number
-- Retry reason
-
-This helps distinguish one task retried five times from five unrelated tasks.
+| Technology | Retry / redelivery | Dead-letter mechanism | Key point |
+|---|---|---|---|
+| Celery 5.6 | `retry()`, `autoretry_for`, backoff/jitter | Depends on task handling and broker | Task retry and broker DLQ are separate |
+| Amazon SQS | Visibility timeout + redelivery / app scheduling | DLQ redrive policy | Delete only after successful processing |
+| RabbitMQ 4.3 | Requeue/return, native quorum delayed retries, app retry | Dead Letter Exchange | Quorum queues now support native delayed retry |
+| Google Pub/Sub | Immediate or exponential-backoff subscription retry | Dead-letter topic on subscription | Delivery-attempt maximum is approximate |
 
 ---
 
-# 18. Production Design Example
-
-Consider an order-confirmation workflow.
-
-## 18.1 Requirements
-
-- Confirmation should normally arrive within one minute.
-- Email-provider failures are retryable.
-- Invalid email addresses are permanent failures.
-- Duplicate emails should be avoided.
-- Failures must remain recoverable for seven days.
-
-## 18.2 Proposed design
-
-```mermaid
-flowchart TD
-    CS[Checkout Service] -->|event_id + order_id| Q[[Order Confirmation Queue]]
-    Q --> W[Email Worker]
-    W --> V[Validate payload]
-    V -->|invalid| DLQ1[["DLQ / failure queue"]]
-    V -->|valid| IC[Check idempotency record]
-    IC -->|already sent| ACK1[ACK]
-    IC -->|not sent| CALL[Call email provider with idempotency key]
-    CALL -->|success| ST[Store sent status]
-    ST --> ACK2[ACK]
-    CALL -->|"timeout / 429 / 5xx"| RT[Exponential retry with jitter]
-    RT -->|attempts exhausted| DLQ2[[Dead-Letter Queue]]
-```
-
-## 18.3 Suggested policy
+## Final mental model
 
 ```text
-Attempt 1: immediately
-Retry 1: 1–3 seconds
-Retry 2: 2–6 seconds
-Retry 3: 5–15 seconds
-Retry 4: 15–30 seconds
-Retry 5: 30–60 seconds
-Then: DLQ
+Receive work
+   ↓
+Process
+   ↓
+Failure?
+   ├── No  -> Commit -> ACK/Delete
+   │
+   └── Yes
+        ↓
+   Retryable?
+   ├── No  -> DLQ / terminal workflow
+   │
+   └── Yes
+        ↓
+   Retry budget left?
+   ├── Yes -> Backoff + jitter -> Retry
+   │
+   └── No  -> DLQ
+                  ↓
+             Diagnose + fix
+                  ↓
+             Controlled redrive
 ```
 
-The exact values must be load-tested and matched to provider rate limits.
-
-## 18.4 Idempotency table
-
-```sql
-CREATE TABLE email_delivery_operations (
-    operation_key TEXT PRIMARY KEY,
-    order_id UUID NOT NULL,
-    provider_message_id TEXT,
-    status TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-The operation key is `order-confirmation:{order_id}`.
-
-## 18.5 DLQ record
-
-```json
-{
-  "schema_version": 1,
-  "message_id": "93a2...",
-  "operation_key": "order-confirmation:8451",
-  "order_id": "8451",
-  "failure_category": "provider_unavailable",
-  "attempt_count": 6,
-  "first_attempt_at": "2026-07-30T07:00:00Z",
-  "last_attempt_at": "2026-07-30T07:01:02Z",
-  "last_error": "HTTP 503",
-  "trace_id": "b390..."
-}
-```
-
-## 18.6 Recovery
-
-When the provider recovers:
-
-1. Verify that no provider-side request succeeded without a local acknowledgement.
-2. Query by idempotency key or provider status where possible.
-3. Redrive a small batch.
-4. Confirm duplicate protection works.
-5. Increase redrive rate while watching provider errors and queue age.
-
----
-
-# 19. Decision Tables
-
-## 19.1 Retry or do not retry?
-
-| Failure | Retry? | Reason |
-|---|---:|---|
-| Network timeout | Yes | Usually transient |
-| HTTP 429 | Yes | Rate limit may clear; respect retry guidance |
-| HTTP 503 | Yes | Service may recover |
-| Database deadlock | Usually | Transaction can succeed on a later attempt |
-| Invalid JSON | No | Same payload will fail again |
-| Missing mandatory field | No | Requires data correction |
-| Authentication token expired | Yes, after refresh | Recoverable if credentials can be refreshed |
-| Credentials permanently revoked | No | Requires configuration or operational fix |
-| Business rule declined | Usually no | Repetition does not change the decision |
-| Unknown application exception | Limited | Small retry budget, then DLQ and alert |
-
----
-
-## 19.2 Retry strategy selection
-
-| Situation | Strategy |
-|---|---|
-| Very short concurrency conflict | Small immediate or jittered retry |
-| Predictable dependency recovery | Fixed delay |
-| Moderate gradual recovery | Linear backoff |
-| External service outage | Exponential backoff with jitter |
-| Provider gives `Retry-After` | Honor it within application limits |
-| Task no longer useful after deadline | Retry time budget plus expiration |
-| Large fleet fails simultaneously | Exponential backoff, jitter, rate limiting, circuit breaker |
-
----
-
-## 19.3 Main queue versus retry queue versus DLQ
-
-| Queue | Purpose | Consumer behavior |
-|---|---|---|
-| Main queue | Ready-to-process work | Normal workers consume it |
-| Retry queue | Work waiting for a future attempt | Usually delayed or TTL-based; often no direct consumer |
-| DLQ | Terminal or exhausted failures | Investigation/recovery worker or operator consumes it |
-
----
-
-## 19.4 Broker comparison
-
-| Technology | Retry mechanism | Dead-letter mechanism | Important detail |
-|---|---|---|---|
-| Celery | `retry()`, `autoretry_for`, countdown/backoff | Depends on result handling and underlying broker | Task retry and broker DLQ are separate layers |
-| Amazon SQS | Visibility timeout/redelivery, application scheduling | DLQ redrive policy with `maxReceiveCount` | Delete only after success; plan retention and redrive |
-| RabbitMQ | Requeue, retry queues, TTL/DLX, application scheduling | Dead Letter Exchange routes to DLQ | Avoid immediate requeue loops and DLX cycles |
-| Google Pub/Sub | Immediate redelivery or exponential-backoff retry policy | Dead-letter topic configured per subscription | Dead-letter topic needs its own subscription |
-
----
-
-## 19.5 Production checklist
-
-### Retry policy
-
-- [ ] Retry only known transient failures.
-- [ ] Use a maximum attempt count.
-- [ ] Use a total retry time budget.
-- [ ] Configure per-attempt network and database timeouts.
-- [ ] Use exponential backoff for external dependencies.
-- [ ] Add jitter for distributed workers.
-- [ ] Cap maximum delay.
-- [ ] Respect valid server retry guidance.
-- [ ] Prevent nested retry multiplication across layers.
-
-### Message safety
-
-- [ ] Make handlers idempotent.
-- [ ] Use stable message and operation IDs.
-- [ ] Acknowledge/delete only after successful commit.
-- [ ] Make visibility timeout longer than normal processing time.
-- [ ] Extend visibility for legitimately long work.
-- [ ] Handle worker shutdown without silently losing messages.
-
-### DLQ operations
-
-- [ ] Configure a DLQ or terminal-failure store.
-- [ ] Retain enough context to diagnose the failure.
-- [ ] Avoid storing secrets or unnecessary sensitive data.
-- [ ] Alert on DLQ ingress and oldest-message age.
-- [ ] Assign a team owner and response procedure.
-- [ ] Test redrive in a controlled batch.
-- [ ] Rate-limit redrive.
-- [ ] Preserve original identity and schema version.
-- [ ] Audit transformed, discarded, and redriven messages.
-
----
-
-# 20. Official References
-
-The following primary documentation was used to verify current platform behavior:
-
-1. [Celery 5.6 User Guide](https://docs.celeryq.dev/en/stable/userguide/)
-2. [Celery Tasks: Retrying](https://docs.celeryq.dev/en/stable/userguide/tasks.html#retrying)
-3. [Amazon SQS: Using Dead-Letter Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
-4. [Amazon SQS: Visibility Timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
-5. [Amazon SQS: Configuring DLQ Redrive](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-configure-dead-letter-queue-redrive.html)
-6. [RabbitMQ 4.2 Documentation](https://www.rabbitmq.com/docs/4.2)
-7. [RabbitMQ Quorum Queues: Poison Message Handling](https://www.rabbitmq.com/docs/4.2/quorum-queues#poison-message-handling)
-8. [RabbitMQ Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
-9. [RabbitMQ Reliability Guide](https://www.rabbitmq.com/docs/4.2/reliability)
-10. [Google Cloud Pub/Sub: Dead-Letter Topics](https://cloud.google.com/pubsub/docs/dead-letter-topics)
-11. [Google Cloud Pub/Sub: Subscription Retry Policy](https://cloud.google.com/pubsub/docs/subscription-retry-policy)
-
----
-
-> **Related topics:** Idempotency in Background Tasks, Message Brokers, Celery Architecture, Event-Driven Architecture, Outbox Pattern, Consumer Acknowledgements, Visibility Timeout, Circuit Breaker Pattern, and Distributed Tracing.
+A reliable retry system is not defined by how many times it retries. It is defined by **when it retries, when it stops, how safely duplicate execution is handled, and how failed work is recovered**.

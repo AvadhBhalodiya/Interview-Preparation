@@ -985,16 +985,3 @@ Patterns should reduce complexity, not add components without a clear need.
 - [ ] Is there operational capacity to run, monitor, and release the extra components?
 
 ---
-
-# 17. References
-
-The following primary and official references were reviewed for current terminology and guidance:
-
-1. [Amazon API Gateway Documentation](https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html)
-2. [Microsoft Azure Architecture Center — Backends for Frontends Pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends)
-3. [Google Cloud — API Gateway Architecture](https://docs.cloud.google.com/api-gateway/docs/architecture-overview)
-4. [IETF Draft — OAuth 2.0 for Browser-Based Applications](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps)
-5. [OWASP API Security Top 10 — 2023](https://owasp.org/API-Security/editions/2023/en/0x11-t10/)
-6. [Kubernetes Documentation — Gateway API](https://kubernetes.io/docs/concepts/services-networking/gateway/)
-
-> **Version note:** The IETF browser-based applications document referenced above was still an Internet-Draft when this guide was prepared on 3 August 2026. Confirm its current status before treating it as a finalized standard.

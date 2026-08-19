@@ -6,74 +6,56 @@ order: 4
 
 # DRF Permissions — Including Object-Level Permissions
 
-> Authentication identifies the caller. Permissions decide whether that caller is allowed to perform the requested operation.
+> Authentication tells DRF **who the caller is**. Permissions decide **what that caller is allowed to do**.
 
-## In short
+> **Updated for current DRF behavior (DRF 3.18.x, August 2026).**
 
-- A permission class has two hooks: `has_permission(request, view)` decides endpoint, role, method, and action access; `has_object_permission(request, view, obj)` decides access to one instance. Every class in `permission_classes` must allow the request.
-- `has_object_permission()` runs only when something calls `check_object_permissions()`. `self.get_object()` does that for you — a hand-written `Model.objects.get(pk=pk)` does not.
-- **List endpoints never run object checks.** DRF skips them for performance, so `get_queryset()` is the security boundary for `list`, not the permission class.
-- **Create has no object yet**, so `has_object_permission()` cannot protect `POST`. Assign owner or tenant in `perform_create()` and mark those fields read-only in the serializer.
-- Put each rule at the right layer: `permission_classes` for policy, `get_queryset()` for visibility, serializer validation for submitted values, `perform_create()` for server-controlled values.
-- `401` means credentials are required, `403` means authenticated but not allowed. A filtered queryset produces `404` instead, which also avoids confirming the object exists.
-- Classes compose with `&`, `|`, and `~`; a plain list of classes is already AND. Prefer a named class over a long expression.
+## Index
 
-```mermaid
-flowchart LR
-    A[Who are you?] --> B[Authentication]
-    B --> C[Can you access this action?]
-    C --> D[View-level permission]
-    D --> E[Which records may you see?]
-    E --> F[Queryset filtering]
-    F --> G[Can you access this object?]
-    G --> H[Object-level permission]
-    H --> I[Are submitted values valid?]
-    I --> J[Serializer and business validation]
-```
-
-**Interview answer:** DRF checks permissions in two passes. Before the view runs, every class's `has_permission()` must return `True` — that covers "is this caller authenticated, in the right role, using an allowed method or action". Then, for detail actions only, `get_object()` loads the instance and calls `check_object_permissions()`, which runs `has_object_permission()` — that is where ownership and tenancy live. The important consequence is that neither hook protects a list or a create: a list is protected by filtering `get_queryset()`, and a create is protected by assigning server-controlled fields in `perform_create()` rather than trusting the request body.
-
-**Gotcha:** Assuming an `IsOwnerOrReadOnly` permission also filters `GET /api/projects/`. It does not — DRF never calls `has_object_permission()` per row in a list response, so without a `get_queryset()` filter the endpoint returns every object in the table.
+1. Authentication vs Permissions
+2. How DRF Permission Checks Work
+3. Built-in Permission Classes
+4. Custom Permissions
+5. Object-Level Permissions
+6. List and Create Limitations
+7. Practical Production Pattern
+8. Action-Specific Permissions and Composition
+9. Permission Responses
+10. Best Practices and Key Takeaways
 
 ---
 
-# 1. Authentication vs Authorization
+# 1. Authentication vs Permissions
 
-Authentication and permissions solve different problems.
+Authentication and authorization solve different problems.
 
-| Concern | Main question | DRF examples |
+| Concern | Question | Common DRF Example |
 |---|---|---|
 | Authentication | Who is making the request? | Session, Token, JWT |
-| Permission | Is this caller allowed to perform the action? | `IsAuthenticated`, custom permissions |
-| Throttling | Is the caller making too many requests? | User or anonymous rate limits |
+| Permission | Can this caller perform this action? | `IsAuthenticated`, custom permissions |
+| Throttling | Is the caller making too many requests? | User/IP rate limits |
 
-### Simple request flow
+A valid JWT proves identity, but it does not automatically prove that the user may update a particular project, invoice, or tenant resource.
 
 ```mermaid
 flowchart LR
-    A[Incoming request] --> B[Authentication]
-    B --> C{Identity established?}
-    C -->|Yes| D[request.user and request.auth]
-    C -->|No| E[AnonymousUser]
-    D --> F[Permission checks]
-    E --> F
-    F -->|Allowed| G[View logic]
-    F -->|Denied| H[401 or 403 response]
+    A[Request] --> B[Authentication]
+    B --> C[request.user / request.auth]
+    C --> D[Permission checks]
+    D -->|Allowed| E[View logic]
+    D -->|Denied| F[401 or 403]
 ```
-
-Authentication does **not** automatically authorize a user.
-
-For example, a valid JWT may prove that a user is logged in, but it does not prove that the user owns the invoice they are trying to update.
 
 ---
 
 # 2. How DRF Permission Checks Work
 
-Permission classes inherit from: `from rest_framework.permissions import BasePermission`
-
-A custom permission can implement one or both methods:
+Custom permission classes inherit from `BasePermission` and normally use two hooks:
 
 ```python
+from rest_framework.permissions import BasePermission
+
+
 class ExamplePermission(BasePermission):
     def has_permission(self, request, view):
         """View-level permission."""
@@ -84,41 +66,66 @@ class ExamplePermission(BasePermission):
         return True
 ```
 
-## 2.1 Permission lifecycle
+## 2.1 `has_permission()` — View-Level Check
+
+Use it when the rule depends on the request or endpoint, not one particular database object.
+
+Typical checks:
+
+- User must be authenticated.
+- User must be staff or a manager.
+- Only specific HTTP methods are allowed.
+- A ViewSet action requires a special role.
+
+## 2.2 `has_object_permission()` — Object-Level Check
+
+Use it when the decision depends on one specific object.
+
+Typical checks:
+
+- User owns the project.
+- User belongs to the object's organization.
+- User may modify only records from their tenant.
+
+## 2.3 Permission Lifecycle
 
 ```mermaid
 flowchart TD
-    A[Request reaches DRF view] --> B[Authenticate request]
-    B --> C[Instantiate permission classes]
-    C --> D[Run has_permission]
-    D -->|Any permission returns False| E[Deny request]
-    D -->|All pass| F{Does action load one object?}
-    F -->|No: list or create| G[Continue without object check]
-    F -->|Yes: retrieve/update/delete| H[Load object]
+    A[Request reaches DRF] --> B[Authenticate request]
+    B --> C[Run has_permission]
+    C -->|Any permission fails| D[Deny request]
+    C -->|All pass| E{Single object needed?}
+    E -->|No| F[List/Create logic]
+    E -->|Yes| G[get_object]
+    G --> H[check_object_permissions]
     H --> I[Run has_object_permission]
-    I -->|Any returns False| E
-    I -->|All pass| J[Execute action]
+    I -->|Pass| J[Execute action]
+    I -->|Fail| D
 ```
 
-### Important behavior
-
-- Every permission class in `permission_classes` must allow the request.
-- `has_object_permission()` runs only after `has_permission()` passes.
-- Generic detail views call object-level checks through `get_object()`.
-- List endpoints do not automatically check every object.
-- Create actions do not yet have an object to check.
+When multiple classes are listed in `permission_classes`, they are effectively **ANDed**: every permission must allow the request.
 
 ---
 
-# 3. Configuring Permissions
+# 3. Built-in Permission Classes
 
-Permissions can be configured globally or per view.
+DRF provides several permissions that cover common API requirements.
 
-## 3.1 Global default permissions
+| Permission | Purpose |
+|---|---|
+| `AllowAny` | Allows authenticated and anonymous callers |
+| `IsAuthenticated` | Requires an authenticated user |
+| `IsAdminUser` | Requires `user.is_staff == True` |
+| `IsAuthenticatedOrReadOnly` | Anonymous users can read; authenticated users can write |
+| `DjangoModelPermissions` | Uses Django model permissions such as `add`, `change`, and `delete` |
+| `DjangoObjectPermissions` | Uses a backend that supports per-object Django permissions |
 
-Set default permissions in `settings.py`:
+## 3.1 Common Configuration
+
+A secure application commonly uses authenticated access globally and explicitly opens public endpoints.
 
 ```python
+# settings.py
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -126,192 +133,33 @@ REST_FRAMEWORK = {
 }
 ```
 
-This makes authentication required unless a view explicitly overrides the setting, and public endpoints then explicitly use `AllowAny`. That is safer than making every endpoint public by default.
-
----
-
-## 3.2 Per-view permissions
-
-Setting `permission_classes` on a view overrides the global default for that view. The attribute works identically on `APIView`, generic views, and ViewSets; function-based views use the matching decorator.
-
-```python
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.generics import RetrieveUpdateAPIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework.viewsets import ModelViewSet
-
-class ProfileView(APIView):
-    permission_classes = [IsAuthenticated]
-
-class ProfileDetailView(RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = ProfileSerializer
-    queryset = Profile.objects.all()
-
-class ProjectViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = ProjectSerializer
-    queryset = Project.objects.all()
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def account_summary(request):
-    return Response({"user": request.user.username})
-```
-
----
-
-# 4. Built-in Permission Classes
-
-DRF includes several commonly used permissions.
-
-## 4.1 `AllowAny`
-
-Allows authenticated and anonymous requests.
+Public endpoint:
 
 ```python
 from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
+
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
 ```
 
-Typical use cases:
-
-- Login
-- Registration
-- Password reset request
-- Public health-check endpoint
-
-Use it explicitly so the public nature of the endpoint is clear.
+Setting `permission_classes` directly on a view overrides the global default for that view.
 
 ---
 
-## 4.2 `IsAuthenticated`
+# 4. Custom Permissions
 
-Allows only authenticated users.
+Use custom permissions when the business rule is not covered by a built-in class.
 
-```python
-permission_classes = [IsAuthenticated]
-```
-
-Typical use cases:
-
-- User profile
-- Orders
-- Internal dashboards
-- Authenticated application APIs
-
----
-
-## 4.3 `IsAdminUser`
-
-Allows users whose `is_staff` value is `True`.
-
-```python
-from rest_framework.permissions import IsAdminUser
-
-class AdminReportView(APIView):
-    permission_classes = [IsAdminUser]
-```
-
-`IsAdminUser` checks `user.is_staff`. It does not check `is_superuser`.
-
----
-
-## 4.4 `IsAuthenticatedOrReadOnly`
-
-Allows:
-
-- Any caller to use safe methods
-- Only authenticated users to use write methods
-
-```python
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
-
-class ArticleViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticatedOrReadOnly]
-```
-
-The safe methods are `GET`, `HEAD`, and `OPTIONS`, exposed as `SAFE_METHODS` in `rest_framework.permissions`.
-
----
-
-## 4.5 `DjangoModelPermissions`
-
-Connects DRF authorization to Django model permissions.
-
-Default mappings include:
-
-| HTTP method | Django permission |
-|---|---|
-| `POST` | `app_label.add_modelname` |
-| `PUT` | `app_label.change_modelname` |
-| `PATCH` | `app_label.change_modelname` |
-| `DELETE` | `app_label.delete_modelname` |
-
-Example:
-
-```python
-from rest_framework.permissions import DjangoModelPermissions
-
-class DocumentViewSet(ModelViewSet):
-    permission_classes = [DjangoModelPermissions]
-    queryset = Document.objects.all()
-    serializer_class = DocumentSerializer
-```
-
-The view must provide `queryset` or `get_queryset()` so DRF can identify the model.
-
-By default, you may need to customize `perms_map` when `GET` requests should require Django's `view` permission.
-
----
-
-## 4.6 `DjangoModelPermissionsOrAnonReadOnly`
-
-`DjangoModelPermissionsOrAnonReadOnly` behaves like `DjangoModelPermissions`, while allowing anonymous read-only access.
-
----
-
-## 4.7 `DjangoObjectPermissions`
-
-Connects DRF to a Django authentication backend that supports per-object permissions.
-
-```python
-from rest_framework.permissions import DjangoObjectPermissions
-
-class ContractViewSet(ModelViewSet):
-    permission_classes = [DjangoObjectPermissions]
-    queryset = Contract.objects.all()
-    serializer_class = ContractSerializer
-```
-
-A compatible object-permission backend is required. A common option is `django-guardian`, although DRF is not limited to that package.
-
----
-
-# 5. Custom View-Level Permissions
-
-Use `has_permission()` when the decision does not depend on a specific model instance.
-
-Examples:
-
-- User must be authenticated.
-- User must belong to a particular role.
-- Endpoint is available only to internal staff.
-- Write operations require a verified account.
-- A custom ViewSet action has a special access rule.
-
-## 5.1 Role-based permission
+## 4.1 Role-Based Permission
 
 ```python
 from rest_framework.permissions import BasePermission
 
+
 class IsManager(BasePermission):
     message = "Manager access is required."
-    code = "manager_access_required"
 
     def has_permission(self, request, view):
         return (
@@ -323,64 +171,47 @@ class IsManager(BasePermission):
 Usage:
 
 ```python
-class TeamReportView(APIView):
+class ReportView(APIView):
     permission_classes = [IsManager]
 ```
 
----
+## 4.2 Safe Methods
 
-## 5.2 Read-only access for anonymous users
+`SAFE_METHODS` contains:
+
+```text
+GET, HEAD, OPTIONS
+```
+
+It is useful when reads and writes have different rules.
 
 ```python
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-class AuthenticatedWriteOnly(BasePermission):
+
+class ReadOnlyOrAuthenticated(BasePermission):
     def has_permission(self, request, view):
         if request.method in SAFE_METHODS:
             return True
-
         return request.user.is_authenticated
 ```
 
-This is conceptually similar to `IsAuthenticatedOrReadOnly`, but custom logic can be added later.
-
 ---
 
-## 5.3 Action-specific checks inside a permission
+# 5. Object-Level Permissions
 
-```python
-class CanPublishArticle(BasePermission):
-    message = "You are not allowed to publish articles."
-
-    def has_permission(self, request, view):
-        if getattr(view, "action", None) != "publish":
-            return True
-
-        return (
-            request.user.is_authenticated
-            and request.user.has_perm("articles.publish_article")
-        )
-```
-
-Use `getattr()` because not every DRF view has a ViewSet `action` attribute.
-
----
-
-# 6. Object-Level Permissions
-
-Object-level permissions decide whether the caller may act on one specific object.
+Object-level permissions protect one specific model instance.
 
 Example requirement:
 
-> Any authenticated user can view a project, but only the project owner can modify or delete it.
-
-## 6.1 Owner-or-read-only permission
+> Any authenticated user may read a project, but only its owner may modify it.
 
 ```python
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
+
 class IsOwnerOrReadOnly(BasePermission):
-    message = "Only the owner can modify this object."
+    message = "Only the owner can modify this project."
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
@@ -398,289 +229,145 @@ class ProjectViewSet(ModelViewSet):
     serializer_class = ProjectSerializer
 ```
 
-### Why compare IDs?
+## 5.1 How the Object Check Is Triggered
 
-Both `obj.owner_id == request.user.id` and `obj.owner == request.user` work, but the first is usually clearer and avoids dereferencing the related object.
+DRF generic detail views and standard `ModelViewSet` detail actions use `get_object()`, which performs the object permission check.
 
----
-
-## 6.2 Owner-or-admin permission
-
-```python
-class IsOwnerOrAdmin(BasePermission):
-    message = "You do not have permission to access this object."
-
-    def has_object_permission(self, request, view, obj):
-        return (
-            request.user.is_staff
-            or obj.owner_id == request.user.id
-        )
-```
-
-For read/write differentiation:
-
-```python
-class IsOwnerOrAdminOrReadOnly(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        if request.method in SAFE_METHODS:
-            return True
-
-        return (
-            request.user.is_staff
-            or obj.owner_id == request.user.id
-        )
-```
-
----
-
-## 6.3 Generic views automatically perform object checks
-
-DRF generic detail views and `ModelViewSet` actions call `self.check_object_permissions(request, obj)` through their standard `get_object()` implementation. Therefore, this works automatically for normal:
+This normally covers:
 
 - `retrieve`
 - `update`
 - `partial_update`
 - `destroy`
 
----
-
-## 6.4 Custom `get_object()` must call the check
-
-When overriding `get_object()`, do not forget the object-level permission call.
+For custom detail actions, prefer:
 
 ```python
-from django.shortcuts import get_object_or_404
-
-class ProjectDetailView(APIView):
-    permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
-
-    def get_object(self, project_id):
-        project = get_object_or_404(Project, id=project_id)
-
-        self.check_object_permissions(
-            self.request,
-            project,
-        )
-
-        return project
+project = self.get_object()
 ```
 
-Without `check_object_permissions()`, `has_object_permission()` will not run.
+If you manually fetch the object, you must explicitly run the check:
+
+```python
+project = get_object_or_404(Project, pk=pk)
+self.check_object_permissions(request, project)
+```
 
 ---
 
-## 6.5 Custom ViewSet action with an object
+# 6. List and Create Limitations
 
-Use `self.get_object()` where possible because it performs lookup and object-level permission checking.
+This is the most important part of object-level permissions to understand.
 
-```python
-from rest_framework.decorators import action
-from rest_framework.response import Response
+## 6.1 List Endpoints Do Not Check Every Object
 
-class ProjectViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
-    queryset = Project.objects.all()
-    serializer_class = ProjectSerializer
+For performance reasons, DRF does not call `has_object_permission()` for every row returned by a list endpoint.
 
-    @action(detail=True, methods=["post"])
-    def archive(self, request, pk=None):
-        project = self.get_object()
-        project.is_archived = True
-        project.save(update_fields=["is_archived"])
-
-        return Response({"status": "archived"})
-```
-
-Avoid calling `Project.objects.get(pk=pk)` directly inside the action unless you also run the object permission checks yourself.
-
----
-
-# 7. Important Object-Level Limitations
-
-Object-level permissions are powerful, but they do not cover every action automatically.
-
-## 7.1 List endpoints are not checked object by object
-
-For performance reasons, DRF does not call `has_object_permission()` for every object returned by a list endpoint.
-
-This permission:
+Therefore this:
 
 ```python
-class IsProjectMember(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        return obj.members.filter(id=request.user.id).exists()
+permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
 ```
 
-does **not** automatically filter: `GET /api/projects/`
+is **not enough** to restrict:
 
-You must filter the queryset.
+```text
+GET /api/projects/
+```
+
+Filter the queryset instead:
 
 ```python
 class ProjectViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticated, IsProjectMember]
+    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
     serializer_class = ProjectSerializer
 
     def get_queryset(self):
-        return Project.objects.filter(
-            members=self.request.user
-        ).distinct()
+        return Project.objects.filter(owner=self.request.user)
 ```
-
-### List-access model
 
 ```mermaid
 flowchart LR
-    A[Database objects] --> B[get_queryset]
-    B --> C[Only visible objects]
+    A[All projects] --> B[get_queryset]
+    B --> C[Only visible projects]
     C --> D[Serializer]
     D --> E[List response]
 ```
 
-For list endpoints, `get_queryset()` is usually the first security boundary.
+For list actions, `get_queryset()` is the main visibility boundary.
 
----
+## 6.2 Create Has No Object Yet
 
-## 7.2 Create actions have no object yet
+During `POST`, the new object does not exist when initial permission checks run. Therefore `has_object_permission()` cannot protect object creation.
 
-During `POST`, the target object does not exist when initial permissions run.
+Use:
 
-Therefore, `has_object_permission()` cannot protect creation.
-
-Use one or more of:
-
-- `has_permission()`
-- Serializer validation
-- `perform_create()`
-- A service-layer authorization check
+- `has_permission()` for create-level authorization.
+- Serializer validation for submitted values.
+- `perform_create()` for owner, tenant, creator, and other server-controlled fields.
 
 Example:
 
 ```python
 class ProjectViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
-    serializer_class = ProjectSerializer
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 ```
 
-The client should not be trusted to submit the owner:
-
-```json
-{
-  "name": "Secret Project",
-  "owner": 999
-}
-```
-
-Instead, assign ownership from `request.user`.
+The client should not control fields such as `owner` or `tenant_id` when those values are derived from authenticated context.
 
 ---
 
-## 7.3 Bulk operations need explicit authorization
+# 7. Practical Production Pattern
 
-A custom bulk endpoint may affect multiple objects without calling `get_object()`.
+A common production requirement is:
 
-```python
-@action(detail=False, methods=["post"])
-def bulk_archive(self, request):
-    project_ids = request.data.get("project_ids", [])
+> A user can only see and manage their own projects, and newly created projects must automatically belong to that user.
 
-    projects = self.get_queryset().filter(id__in=project_ids)
-
-    updated = projects.update(is_archived=True)
-
-    return Response({"updated": updated})
-```
-
-The filtered queryset must ensure the caller can modify every affected object.
-
-For complex bulk operations, load the objects, validate authorization, and then update them inside a transaction.
-
----
-
-# 8. Production Ownership Pattern
-
-A robust ownership design normally uses three layers:
+The clean solution uses multiple layers instead of putting everything inside one permission class.
 
 ```mermaid
 flowchart TD
-    A[Request] --> B[Global permission]
-    B --> C[Filter queryset by tenant or owner]
-    C --> D[Load object]
+    A[Authenticated request] --> B[View-level permission]
+    B --> C[Filter queryset]
+    C --> D[Load project]
     D --> E[Object-level permission]
     E --> F[Serializer validation]
-    F --> G[Create or update]
+    F --> G[Create / Update]
 ```
 
-## 8.1 Example model
-
-```python
-from django.conf import settings
-from django.db import models
-
-class Project(models.Model):
-    name = models.CharField(max_length=200)
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="projects",
-    )
-    is_archived = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-```
-
----
-
-## 8.2 Serializer
+## 7.1 Serializer
 
 ```python
 from rest_framework import serializers
 
-class ProjectSerializer(serializers.ModelSerializer):
-    owner = serializers.PrimaryKeyRelatedField(read_only=True)
 
+class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
-        fields = [
-            "id",
-            "name",
-            "owner",
-            "is_archived",
-            "created_at",
-        ]
-        read_only_fields = [
-            "id",
-            "owner",
-            "created_at",
-        ]
+        fields = ["id", "name", "owner", "created_at"]
+        read_only_fields = ["id", "owner", "created_at"]
 ```
 
-The owner is read-only because the server controls ownership.
-
----
-
-## 8.3 Permission
-
-Here read and write require the same thing, so there is no `SAFE_METHODS` branch to write:
+## 7.2 Permission
 
 ```python
 from rest_framework.permissions import BasePermission
 
-class IsProjectOwner(BasePermission):
-    message = "You do not have access to this project."
 
+class IsProjectOwner(BasePermission):
     def has_object_permission(self, request, view, obj):
         return obj.owner_id == request.user.id
 ```
 
----
-
-## 8.4 ViewSet
+## 7.3 ViewSet
 
 ```python
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.viewsets import ModelViewSet
+
 
 class ProjectViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated, IsProjectOwner]
@@ -697,529 +384,187 @@ class ProjectViewSet(ModelViewSet):
         serializer.save(owner=self.request.user)
 ```
 
-This design protects all common actions:
+## 7.4 What Protects Each Action?
 
-| Action | Protection |
+| Action | Main Protection |
 |---|---|
-| List | `get_queryset()` returns only owned projects |
-| Create | `IsAuthenticated` and server-assigned owner |
-| Retrieve | Filtered queryset plus object permission |
-| Update | Filtered queryset plus object permission |
-| Delete | Filtered queryset plus object permission |
+| List | `get_queryset()` |
+| Create | `IsAuthenticated` + `perform_create()` |
+| Retrieve | Filtered queryset + object permission |
+| Update/PATCH | Filtered queryset + object permission |
+| Delete | Filtered queryset + object permission |
 
-### Defense in depth
-
-The queryset and object permission may appear repetitive, but they solve different concerns:
-
-- Queryset filtering controls visibility and lookup scope.
-- Object permissions express the authorization policy.
-- Serializer rules protect input fields.
-- `perform_create()` safely assigns server-controlled values.
+This is a strong reusable pattern for ownership and multi-tenant APIs.
 
 ---
 
-## 8.5 Multi-tenant example
+# 8. Action-Specific Permissions and Composition
 
-For a tenant-based system, never trust a tenant ID provided only by the client.
+Different ViewSet actions can use different policies.
 
-```python
-class InvoiceViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticated, IsTenantMember]
-    serializer_class = InvoiceSerializer
-
-    def get_queryset(self):
-        return Invoice.objects.filter(
-            tenant_id=self.request.user.tenant_id
-        )
-
-    def perform_create(self, serializer):
-        serializer.save(
-            tenant_id=self.request.user.tenant_id,
-            created_by=self.request.user,
-        )
-```
-
-A stronger system may derive the active tenant from verified membership or request context rather than directly from a mutable user field.
-
----
-
-# 9. Permissions Based on ViewSet Actions
-
-Different ViewSet actions may require different policies.
-
-Example:
-
-- List and retrieve: authenticated users
-- Create: managers
-- Update and delete: administrators
+## 8.1 `get_permissions()`
 
 ```python
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 
-class ProjectViewSet(ModelViewSet):
-    queryset = Project.objects.all()
-    serializer_class = ProjectSerializer
 
+class ProjectViewSet(ModelViewSet):
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
-            permission_classes = [IsAuthenticated]
+            classes = [IsAuthenticated]
         elif self.action == "create":
-            permission_classes = [IsManager]
+            classes = [IsManager]
         else:
-            permission_classes = [IsAdminUser]
+            classes = [IsAdminUser]
 
-        return [
-            permission()
-            for permission in permission_classes
-        ]
+        return [permission() for permission in classes]
 ```
 
-## 9.1 Extra action permission
+The `action` attribute is useful for ViewSet-specific authorization such as `list`, `create`, `retrieve`, or custom actions.
 
-Permissions can also be declared directly on an `@action`.
+## 8.2 Custom `@action`
 
 ```python
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser
 
-class ProjectViewSet(ModelViewSet):
-    permission_classes = [IsAuthenticated]
 
-    @action(
-        detail=True,
-        methods=["post"],
-        permission_classes=[IsAdminUser],
-    )
-    def restore(self, request, pk=None):
-        project = self.get_object()
-        project.is_archived = False
-        project.save(update_fields=["is_archived"])
-
-        return Response({"status": "restored"})
+@action(
+    detail=True,
+    methods=["post"],
+    permission_classes=[IsAdminUser],
+)
+def restore(self, request, pk=None):
+    project = self.get_object()
+    project.is_archived = False
+    project.save(update_fields=["is_archived"])
+    return Response({"status": "restored"})
 ```
 
-The action-level `permission_classes` overrides the ViewSet-level configuration for that action.
+Action-level configuration can override the ViewSet-level permission configuration for that action.
+
+## 8.3 Permission Composition
+
+DRF supports:
+
+- `&` → AND
+- `|` → OR
+- `~` → NOT
+
+```python
+permission_classes = [IsAuthenticated & IsManager]
+```
+
+A plain list is already AND logic and is often easier to read:
+
+```python
+permission_classes = [IsAuthenticated, IsManager]
+```
+
+For complex policies, prefer a clearly named custom permission class over a long expression.
 
 ---
 
-# 10. Django Model and Object Permissions
+# 9. Permission Responses
 
-Django creates four standard model permissions — `add`, `change`, `delete`, and `view` — named `app_label.action_modelname`:
+Permission failures commonly result in `401 Unauthorized` or `403 Forbidden`.
+
+## 9.1 Authenticated but Not Allowed
+
+An authenticated request that fails permission checks receives:
 
 ```text
-projects.add_project
-projects.change_project
-projects.delete_project
-projects.view_project
+403 Forbidden
 ```
 
-## 10.1 Checking Django permissions manually
+## 9.2 Unauthenticated Request
 
-```python
-request.user.has_perm("projects.change_project")
+An unauthenticated denial may return `401` or `403` depending on the highest-priority authentication class and whether it provides a `WWW-Authenticate` header.
 
-# Object-aware backends accept the instance as a second argument.
-request.user.has_perm("projects.change_project", project)
+So do not treat `401 = unauthenticated` and `403 = authenticated` as an absolute DRF rule.
+
+## 9.3 Why Unauthorized Objects Often Return `404`
+
+If `get_queryset()` filters out records the caller cannot access, DRF cannot find that object during lookup and usually returns:
+
+```text
+404 Not Found
 ```
+
+For sensitive APIs, this also avoids revealing that another user's object exists.
 
 ---
 
-## 10.2 Requiring `view` permission for GET
+# 10. Best Practices and Key Takeaways
 
-A custom `DjangoModelPermissions` class can extend `perms_map`.
+## 10.1 Put Each Rule at the Correct Layer
 
-```python
-from rest_framework.permissions import DjangoModelPermissions
-
-class ViewDjangoModelPermissions(DjangoModelPermissions):
-    perms_map = {
-        **DjangoModelPermissions.perms_map,
-        "GET": ["%(app_label)s.view_%(model_name)s"],
-        "HEAD": ["%(app_label)s.view_%(model_name)s"],
-        "OPTIONS": ["%(app_label)s.view_%(model_name)s"],
-    }
-```
-
-Usage:
-
-```python
-class DocumentViewSet(ModelViewSet):
-    permission_classes = [ViewDjangoModelPermissions]
-    queryset = Document.objects.all()
-    serializer_class = DocumentSerializer
-```
-
----
-
-## 10.3 Object permissions with a backend
-
-`DjangoObjectPermissions` depends on an authentication backend that can answer object-specific permission checks — conceptually, `user.has_perm("documents.change_document", document)`.
-
-For list endpoints, object permission backends still do not automatically filter every result. Apply queryset filtering or use a compatible filtering integration.
-
----
-
-# 11. Combining Permission Classes
-
-DRF permission classes can be composed using:
-
-- `&` — AND
-- `|` — OR
-- `~` — NOT
-
-## 11.1 OR composition
-
-Allow authenticated users or read-only requests:
-
-```python
-from rest_framework.permissions import (
-    BasePermission,
-    IsAuthenticated,
-    SAFE_METHODS,
-)
-
-class ReadOnly(BasePermission):
-    def has_permission(self, request, view):
-        return request.method in SAFE_METHODS
-
-class ArticleViewSet(ModelViewSet):
-    permission_classes = [
-        IsAuthenticated | ReadOnly
-    ]
-```
-
----
-
-## 11.2 AND composition and grouping
-
-```python
-# Require authentication and manager access.
-permission_classes = [IsAuthenticated & IsManager]
-
-# Equivalent, and usually more readable: a plain list is already AND.
-permission_classes = [IsAuthenticated, IsManager]
-
-# Parentheses make a mixed policy explicit.
-permission_classes = [IsAuthenticated & (IsManager | IsAdminUser)]
-```
-
-For complex business rules, a named custom permission class is often easier to understand and test than a long expression.
-
----
-
-# 12. Permissions vs Querysets vs Serializers
-
-Authorization should be applied at the correct layer.
-
-| Layer | Best suited for |
+| Layer | Responsibility |
 |---|---|
-| `permission_classes` | Endpoint, action, role, and single-object authorization |
+| `permission_classes` | Endpoint, role, action, and single-object authorization |
 | `get_queryset()` | Which existing records the caller can see or target |
-| Serializer validation | Whether submitted field values are allowed |
-| `perform_create()` | Assigning owner, tenant, creator, or server-controlled values |
-| Service layer | Complex business authorization spanning multiple models |
+| Serializer | Validate submitted fields and keep protected fields read-only |
+| `perform_create()` | Set owner, tenant, creator, or other server-controlled values |
+| Service layer | Complex authorization spanning multiple models/workflows |
 
-## 12.1 Example decision
+## 10.2 Prefer Secure Defaults
 
-Requirement:
+For private APIs, use `IsAuthenticated` globally and explicitly apply `AllowAny` only to public endpoints.
 
-> A manager may approve an expense only when it belongs to the manager's department and is currently pending.
+## 10.3 Use `self.get_object()` for Detail Actions
 
-This rule depends on both authorization and business state.
+It keeps normal queryset filtering, lookup behavior, and object permission checks together.
 
-```python
-class CanApproveExpense(BasePermission):
-    message = "This expense cannot be approved by you."
+## 10.4 Filter Multi-Tenant Querysets
 
-    def has_object_permission(self, request, view, obj):
-        if getattr(view, "action", None) != "approve":
-            return True
+A tenant identifier from the request body should not be the source of truth for authorization.
 
-        return (
-            request.user.role == "manager"
-            and obj.department_id == request.user.department_id
-            and obj.status == Expense.Status.PENDING
-        )
-```
-
-Action:
-
-```python
-from django.db import transaction
-from rest_framework.decorators import action
-from rest_framework.response import Response
-
-class ExpenseViewSet(ModelViewSet):
-    permission_classes = [
-        IsAuthenticated,
-        CanApproveExpense,
-    ]
-
-    @action(detail=True, methods=["post"])
-    @transaction.atomic
-    def approve(self, request, pk=None):
-        expense = self.get_object()
-
-        expense.status = Expense.Status.APPROVED
-        expense.approved_by = request.user
-        expense.save(
-            update_fields=["status", "approved_by"]
-        )
-
-        return Response({"status": "approved"})
-```
-
-For concurrency-sensitive workflows, re-check mutable business state inside the transaction, potentially with row locking.
-
----
-
-# 13. Permission Error Responses
-
-A failed permission check results in `401 Unauthorized` or `403 Forbidden`, depending on authentication state and the authentication scheme.
-
-## 13.1 General meaning
-
-### `401 Unauthorized`
-
-Usually means valid authentication credentials are required.
-
-```json
-{
-  "detail": "Authentication credentials were not provided."
-}
-```
-
-### `403 Forbidden`
-
-Usually means the request was authenticated but the caller is not allowed.
-
-```json
-{
-  "detail": "You do not have permission to perform this action."
-}
-```
-
-The exact result can also depend on whether the highest-priority authentication class uses a `WWW-Authenticate` header.
-
----
-
-## 13.2 Custom permission message
-
-```python
-class IsAccountOwner(BasePermission):
-    message = "Only the account owner can perform this action."
-    code = "account_owner_required"
-
-    def has_object_permission(self, request, view, obj):
-        return obj.user_id == request.user.id
-```
-
-Keep messages clear without exposing sensitive internal details.
-
----
-
-# 14. Testing Permissions
-
-Permissions should be tested with multiple user types and request methods.
-
-## 14.1 Suggested test matrix
-
-| Scenario | Expected result |
-|---|---|
-| Anonymous user opens protected endpoint | Denied |
-| Authenticated owner retrieves object | Allowed |
-| Authenticated non-owner retrieves object | Denied or not found |
-| Owner updates object | Allowed |
-| Non-owner updates object | Denied |
-| Owner deletes object | Allowed |
-| Non-owner deletes object | Denied |
-| User lists objects | Only permitted records returned |
-| User submits another user's owner ID | Server ignores or rejects it |
-| Admin uses admin-only action | Allowed |
-| Normal user uses admin-only action | Denied |
-
----
-
-## 14.2 Example tests with `APITestCase`
-
-```python
-from django.contrib.auth import get_user_model
-from rest_framework import status
-from rest_framework.test import APITestCase
-
-User = get_user_model()
-
-class ProjectPermissionTests(APITestCase):
-    def setUp(self):
-        self.owner = User.objects.create_user(
-            username="owner",
-            password="test-pass-123",
-        )
-        self.other_user = User.objects.create_user(
-            username="other",
-            password="test-pass-123",
-        )
-        self.project = Project.objects.create(
-            name="Owner Project",
-            owner=self.owner,
-        )
-        self.url = f"/api/projects/{self.project.id}/"
-
-    DENIED = {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}
-
-    def test_owner_can_retrieve_project(self):
-        self.client.force_authenticate(self.owner)
-        response = self.client.get(self.url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-    def test_other_user_cannot_retrieve_project(self):
-        self.client.force_authenticate(self.other_user)
-        response = self.client.get(self.url)
-        self.assertIn(response.status_code, self.DENIED)
-
-    def test_other_user_cannot_update_project(self):
-        self.client.force_authenticate(self.other_user)
-        response = self.client.patch(
-            self.url, {"name": "Unauthorized Change"}, format="json"
-        )
-        self.assertIn(response.status_code, self.DENIED)
-```
-
-A filtered queryset often produces `404` because the unauthorized object is outside the user's lookup scope. A broad queryset followed by object permission denial commonly produces `403`.
-
----
-
-## 14.3 Test list visibility separately
-
-```python
-def test_list_returns_only_owned_projects(self):
-    Project.objects.create(name="Other Project", owner=self.other_user)
-    self.client.force_authenticate(self.owner)
-
-    response = self.client.get("/api/projects/")
-
-    returned_ids = {item["id"] for item in response.data}
-    self.assertEqual(returned_ids, {self.project.id})
-```
-
-Object-level permission tests alone do not prove that list filtering is correct.
-
----
-
-# 15. Best Practices
-
-## 15.1 Use a secure global default
-
-Prefer `DEFAULT_PERMISSION_CLASSES = ["rest_framework.permissions.IsAuthenticated"]`, then explicitly mark public endpoints with `AllowAny`.
-
----
-
-## 15.2 Filter querysets, and assign protected fields on the server
-
-Do not rely only on object permissions for list visibility, and never trust an owner or tenant field arriving in the request body.
+Prefer verified request context:
 
 ```python
 def get_queryset(self):
-    return Invoice.objects.filter(tenant=self.request.user.tenant)
-
-def perform_create(self, serializer):
-    serializer.save(owner=self.request.user)
+    return Invoice.objects.filter(
+        tenant_id=self.request.user.tenant_id
+    )
 ```
 
-Mark those fields read-only in the serializer as well.
+and assign the tenant on the server during creation.
+
+## 10.5 Keep Permission Classes Focused
+
+A permission should answer an authorization question. Complex workflow mutation usually belongs in the view/service layer, not inside `has_permission()` or `has_object_permission()`.
+
+## 10.6 Test Authorization Per Action
+
+For a ViewSet, verify at least:
+
+- list visibility
+- create ownership/tenant assignment
+- retrieve access
+- update/PATCH access
+- delete access
+- custom `@action` permissions
 
 ---
 
-## 15.3 Use `self.get_object()` in detail actions
-
-It performs standard queryset filtering, lookup, and object permission checks in one call.
-
----
-
-## 15.4 Keep permissions focused
-
-A permission should answer an authorization question.
-
-Avoid putting unrelated data mutation or complicated workflow logic directly inside permission methods.
-
----
-
-## 15.5 Make database checks efficient
-
-A permission may run for many requests.
-
-Prefer efficient checks such as:
-
-```python
-Membership.objects.filter(
-    user=request.user,
-    organization=obj.organization,
-    is_active=True,
-).exists()
-```
-
-Use queryset joins or annotations when that better fits the access model.
-
----
-
-## 15.6 Keep policies reusable and named clearly
-
-Good names communicate intent:
-
-```python
-IsOwnerOrReadOnly
-IsOrganizationMember
-CanApproveExpense
-HasActiveSubscription
-IsSupportAgent
-```
-
----
-
-## 15.7 Apply defense in depth
-
-A production API may use all of these together:
+# Final Mental Model
 
 ```mermaid
-flowchart TD
-    A[Authentication] --> B[Global permission]
-    B --> C[Queryset visibility]
-    C --> D[Object-level permission]
-    D --> E[Serializer validation]
-    E --> F["Business/service-layer checks"]
+flowchart LR
+    A[Who are you?] --> B[Authentication]
+    B --> C[Can you call this action?]
+    C --> D[has_permission]
+    D --> E[Which records can you target?]
+    E --> F[get_queryset]
+    F --> G[Can you access this object?]
+    G --> H[has_object_permission]
+    H --> I[Are submitted values allowed?]
+    I --> J[Serializer / service logic]
 ```
 
-Each layer protects a different part of the request.
+Remember the four most important rules:
 
----
-
-## 15.8 Avoid leaking object existence
-
-For sensitive resources, filtering the queryset can make unauthorized objects return `404` rather than confirming that the resource exists with a `403`.
-
-Choose this behavior intentionally and apply it consistently.
-
----
-
-## 15.9 Test every action, not just every endpoint
-
-A ViewSet can expose:
-
-- `list`
-- `create`
-- `retrieve`
-- `update`
-- `partial_update`
-- `destroy`
-- Custom `@action` methods
-
-Each action may have different authorization behavior.
-
----
-
-## Official References
-
-- [DRF Permissions](https://www.django-rest-framework.org/api-guide/permissions/)
-- [DRF Generic Views](https://www.django-rest-framework.org/api-guide/generic-views/)
-- [DRF ViewSets](https://www.django-rest-framework.org/api-guide/viewsets/)
-- [DRF Authentication and Permissions Tutorial](https://www.django-rest-framework.org/tutorial/4-authentication-and-permissions/)
+1. `has_permission()` protects the request/action.
+2. `has_object_permission()` protects one loaded object.
+3. `get_queryset()` protects list visibility and lookup scope.
+4. `perform_create()` and serializer rules protect ownership/tenant fields during creation.

@@ -1396,13 +1396,3 @@ A session-scoped mutable dictionary can leak changes across tests. Return fresh 
 Include only fields relevant to the behavior being tested. Large production-like payloads make tests noisy and harder to understand.
 
 ---
-
-## Official References
-
-- [pytest documentation](https://docs.pytest.org/en/stable/)
-- [How to use fixtures](https://docs.pytest.org/en/stable/how-to/fixtures.html)
-- [Fixtures reference](https://docs.pytest.org/en/stable/reference/fixtures.html)
-- [How to parametrize fixtures and test functions](https://docs.pytest.org/en/stable/how-to/parametrize.html)
-- [How to monkeypatch/mock modules and environments](https://docs.pytest.org/en/stable/how-to/monkeypatch.html)
-- [Python `unittest.mock` documentation](https://docs.python.org/3/library/unittest.mock.html)
-- [pytest on PyPI](https://pypi.org/project/pytest/)

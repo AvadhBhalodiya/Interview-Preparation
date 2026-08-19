@@ -7,250 +7,128 @@ updated: "July 27, 2026"
 
 # PostgreSQL Specifics: JSONB, Partial Indexes, and VACUUM
 
-> Three PostgreSQL features that come up in interviews: JSONB for document-style data, partial indexes for filtered queries, and VACUUM for reclaiming space under MVCC.
->
-> **Production baseline:** PostgreSQL 18.4
+> PostgreSQL-specific features that are useful in normal backend development and commonly discussed in interviews: **JSONB** for flexible data, **partial indexes** for selective indexing, and **VACUUM** for MVCC maintenance.
 
-## In short
+> **Production baseline:** PostgreSQL 18.6
 
-- `jsonb` stores a parsed binary document that can be searched and indexed; plain `json` only preserves the original text, key order, whitespace, and duplicate keys.
-- Keep relationally important fields (join keys, money, status, timestamps) in typed columns and put only genuinely variable attributes in JSONB.
-- GIN `jsonb_ops` covers key existence (`?`, `?|`, `?&`) plus containment; `jsonb_path_ops` is smaller but supports containment and JSONPath only.
-- For one frequently queried scalar path, a B-tree expression index on `(attributes ->> 'brand')` is cheaper than a whole-column GIN index.
-- A partial index stores entries only for rows matching its `WHERE` predicate, so it pays off when that subset is much smaller than the table and is queried often.
-- Partial unique indexes encode subset business rules — one active subscription per customer, unique email among non-deleted users — and stay safe under concurrency.
-- Under MVCC every `UPDATE`/`DELETE` leaves a dead row version, so VACUUM must reclaim that space, freeze old transaction IDs, and maintain the visibility map that makes index-only scans possible.
+## Index
 
-```mermaid
-flowchart LR
-    A[Application writes data] --> B[PostgreSQL table]
-    B --> C[JSONB stores flexible attributes]
-    B --> D[Partial indexes cover important rows]
-    B --> E[MVCC creates row versions]
-    E --> F[VACUUM reclaims reusable space]
-    F --> G[Healthy tables and indexes]
-```
-
-**Interview answer:** PostgreSQL never overwrites a row in place — an `UPDATE` writes a new tuple version and a `DELETE` only marks the old one, because concurrent transactions may still need to see the previous version under MVCC. Those dead tuples accumulate in the heap and in every index, so VACUUM exists to mark that space reusable, clean dead index entries, refresh the visibility map, and freeze sufficiently old rows before transaction ID wraparound. Autovacuum does this in the background once change counters cross a threshold, and long-running or `idle in transaction` sessions hold cleanup back because their snapshots may still need the old versions.
-
-**Gotcha:** Writing the query without the index predicate — `WHERE created_at < ...` instead of `WHERE status = 'PENDING' AND created_at < ...` — means the planner cannot prove the partial index applies, so it silently falls back to a sequential scan.
+1. [Big Picture](#1-big-picture)
+2. [JSONB](#2-jsonb)
+3. [Partial Indexes](#3-partial-indexes)
+4. [VACUUM and Autovacuum](#4-vacuum-and-autovacuum)
+5. [How They Work Together](#5-how-they-work-together)
+6. [Practical Example](#6-practical-example)
+7. [Quick Revision](#7-quick-revision)
 
 ---
 
 # 1. Big Picture
 
-Consider an e-commerce application that stores products, orders, payments, and webhook events.
-
-- Product specifications differ between categories, so some attributes may be stored in **JSONB**.
-- Most queries target active products or incomplete orders, so **partial indexes** can avoid indexing historical rows.
-- Products and orders are updated frequently. PostgreSQL creates new row versions instead of overwriting rows in place, so **VACUUM** must clean obsolete versions.
-
-A useful mental model is:
+These three features solve different PostgreSQL problems:
 
 ```text
-JSONB          = flexible data representation
-Partial index  = selective query acceleration
-VACUUM         = storage and MVCC maintenance
+JSONB         -> store flexible or semi-structured data
+Partial index -> index only the rows important to a query
+VACUUM        -> clean old row versions created by MVCC
 ```
+
+```mermaid
+flowchart LR
+    A[Application] --> B[PostgreSQL Table]
+    B --> C[JSONB<br/>Flexible attributes]
+    B --> D[Partial Index<br/>Important subset]
+    B --> E[MVCC<br/>Old row versions]
+    E --> F[VACUUM / Autovacuum]
+    F --> G[Reusable space + healthy visibility data]
+```
+
+A good PostgreSQL design normally combines relational columns with these features rather than replacing relational modeling with them.
 
 ---
 
 # 2. JSONB
 
-## 2.1 JSON vs JSONB
+## 2.1 What JSONB Is
 
-PostgreSQL provides two JSON data types, `json` and `jsonb`. Both accept valid JSON input, but they store it differently.
+PostgreSQL supports both `json` and `jsonb`.
+
+- `json` stores the original JSON text.
+- `jsonb` stores a parsed binary representation.
+- `jsonb` is usually better when the application needs to **filter, search, update, or index** JSON data.
+
+### JSON vs JSONB
 
 | Area | `json` | `jsonb` |
 |---|---|---|
-| Storage | Original JSON text | Decomposed binary representation |
-| Input cost | Lower | Slightly higher because PostgreSQL parses and converts it |
-| Read/query cost | Must reparse text | Usually faster to process |
+| Storage | Original input text | Parsed binary form |
 | Whitespace | Preserved | Not preserved |
-| Object key order | Preserved | Not preserved as input formatting |
-| Duplicate keys | Preserved in input text | Only the last value is retained |
-| Containment operators | Limited | Supported |
-| GIN indexing | Not normally used | Strong native support |
-| Typical application use | Preserve exact original JSON | Queryable application data |
-
-Example:
-
-```sql
-SELECT '{"name": "A", "name": "B"}'::json;
-
-SELECT '{"name": "A", "name": "B"}'::jsonb;
-```
-
-Conceptually, the `jsonb` result becomes:
-
-```json
-{
-  "name": "B"
-}
-```
+| Object key order | Preserved | Not preserved |
+| Duplicate keys | Preserved in input | Last value wins |
+| Query processing | Reparsed when processed | Faster to process |
+| GIN indexing | Not the normal choice | Strong native support |
+| Typical use | Preserve exact input | Application/query data |
 
 ### Practical rule
 
-Use `jsonb` for most application data that must be searched, filtered, updated, or indexed.
+Use `jsonb` for flexible application data.
 
-Use `json` when preserving the exact incoming text, key order, whitespace, or duplicate keys is a real requirement.
+Use normal typed columns for fields that are central to the relational model, such as:
+
+- IDs and foreign keys
+- status
+- money
+- timestamps
+- fields used in joins
+- uniqueness rules
+- values frequently sorted or aggregated
 
 ---
 
-## 2.2 When JSONB Is a Good Fit
+## 2.2 A Good Hybrid Design
 
-JSONB works well when the data has a stable core schema but also contains flexible attributes.
+Suppose products have common fields but category-specific attributes:
 
-### Good examples
+```sql
+CREATE TABLE products (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sku         text NOT NULL,
+    name        text NOT NULL,
+    category    text NOT NULL,
+    price       numeric(12, 2) NOT NULL,
+    is_active   boolean NOT NULL DEFAULT true,
+    attributes  jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
 
-- Product category-specific attributes
-- External API payloads
-- Webhook request bodies
-- Audit metadata
-- Feature configuration
-- User preferences
-- Event payloads
-- Integration-specific fields
+    CONSTRAINT products_attributes_object
+        CHECK (jsonb_typeof(attributes) = 'object')
+);
+```
 
-Example product data:
+Example `attributes` value:
 
 ```json
 {
   "brand": "Acme",
   "color": "black",
-  "dimensions": {
-    "width_cm": 20,
-    "height_cm": 10
-  },
-  "tags": ["portable", "wireless"]
+  "storage_gb": 256,
+  "features": ["5g", "wireless-charging"]
 }
 ```
 
-### Use normal columns when the field is relationally important
-
-A field usually belongs in a normal typed column when it is:
-
-- Required for most rows
-- Frequently filtered or sorted
-- Used in joins
-- Part of a foreign key
-- Part of a uniqueness rule
-- Used in financial or business calculations
-- Expected to have a consistent type
-
-A good hybrid table design is:
-
-```sql
-CREATE TABLE products (
-    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    sku          text NOT NULL UNIQUE,
-    name         text NOT NULL,
-    category_id  bigint NOT NULL REFERENCES categories(id),
-    price        numeric(12, 2) NOT NULL,
-    is_active    boolean NOT NULL DEFAULT true,
-    attributes   jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now()
-);
-```
-
-Here:
-
-- `sku`, `price`, and `category_id` remain strongly typed.
-- Category-specific attributes go into `attributes`.
-
-### Avoid the “everything in JSONB” model
-
-This structure is technically possible but usually weak:
-
-```sql
-CREATE TABLE products (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    data jsonb NOT NULL
-);
-```
-
-It makes constraints, joins, statistics, data validation, and query optimization harder.
+This is better than putting the entire product inside one JSONB column because PostgreSQL can still enforce normal relational constraints on important fields.
 
 ---
 
-## 2.3 Table Design
-
-### Default value
-
-Use an empty JSON object when the field represents properties: `attributes jsonb NOT NULL DEFAULT '{}'::jsonb`
-
-Use an empty array when the field represents a list: `tags jsonb NOT NULL DEFAULT '[]'::jsonb`
-
-### Basic validation with constraints
-
-Ensure the top-level JSON value is an object:
-
-```sql
-ALTER TABLE products
-ADD CONSTRAINT products_attributes_must_be_object
-CHECK (jsonb_typeof(attributes) = 'object');
-```
-
-Ensure a key has an expected JSON type when present:
-
-```sql
-ALTER TABLE products
-ADD CONSTRAINT products_weight_must_be_number
-CHECK (
-    NOT (attributes ? 'weight_kg')
-    OR jsonb_typeof(attributes -> 'weight_kg') = 'number'
-);
-```
-
-Require a key:
-
-```sql
-ALTER TABLE products
-ADD CONSTRAINT products_brand_required
-CHECK (attributes ? 'brand');
-```
-
-### Generated columns for important JSON values
-
-When a JSON value becomes frequently queried, expose it as a generated column:
-
-```sql
-ALTER TABLE products
-ADD COLUMN brand text
-GENERATED ALWAYS AS (attributes ->> 'brand') STORED;
-
-CREATE INDEX products_brand_idx ON products (brand);
-```
-
-This gives the value a clearer relational shape while preserving the source JSONB document.
-
----
-
-## 2.4 Reading JSONB Values
-
-Assume this row:
-
-```json
-{
-  "brand": "Acme",
-  "color": "black",
-  "dimensions": {
-    "width_cm": 20,
-    "height_cm": 10
-  },
-  "tags": ["portable", "wireless"]
-}
-```
+## 2.3 Reading and Filtering JSONB
 
 ### `->` returns JSON/JSONB
 
 ```sql
-SELECT attributes -> 'dimensions'
+SELECT attributes -> 'features'
 FROM products;
 ```
-
-Result: `{"width_cm": 20, "height_cm": 10}`
 
 ### `->>` returns text
 
@@ -259,93 +137,22 @@ SELECT attributes ->> 'brand'
 FROM products;
 ```
 
-Result: `Acme`
-
-### Nested traversal
-
-```sql
-SELECT attributes -> 'dimensions' ->> 'width_cm'
-FROM products;
-```
-
-Or use a path, where `#>` returns JSON/JSONB and `#>>` returns text:
+### Nested path
 
 ```sql
 SELECT attributes #>> '{dimensions,width_cm}'
 FROM products;
 ```
 
-### Convert text to the required SQL type
-
-`->>` returns text, so numeric comparison should cast it:
+### Containment with `@>`
 
 ```sql
 SELECT *
 FROM products
-WHERE (attributes ->> 'weight_kg')::numeric > 5;
-```
-
-Without a cast, PostgreSQL performs text comparison, which is not the same as numeric comparison.
-
-### Array element access
-
-```sql
-SELECT attributes -> 'tags' ->> 0 AS first_tag
-FROM products;
-```
-
-### Expand objects and arrays
-
-```sql
-SELECT key, value
-FROM products
-CROSS JOIN LATERAL jsonb_each(attributes)
-WHERE id = 100;
-```
-
-```sql
-SELECT tag
-FROM products
-CROSS JOIN LATERAL jsonb_array_elements_text(attributes -> 'tags') AS tag;
-```
-
-`LATERAL` allows each row's JSONB value to be expanded into a set of rows.
-
----
-
-## 2.5 Filtering JSONB Data
-
-### Containment: `@>`
-
-Find products whose attributes contain a specific key/value pair:
-
-```sql
-SELECT id, sku, name
-FROM products
 WHERE attributes @> '{"brand": "Acme"}'::jsonb;
 ```
 
-Nested containment:
-
-```sql
-SELECT id, name
-FROM products
-WHERE attributes @> '{
-  "dimensions": {
-    "width_cm": 20
-  }
-}'::jsonb;
-```
-
-Array containment:
-
-```sql
-SELECT id, name
-FROM products
-WHERE attributes @> '{"tags": ["wireless"]}'::jsonb;
-```
-
-### Key existence: `?`
+### Key existence with `?`
 
 ```sql
 SELECT *
@@ -353,176 +160,83 @@ FROM products
 WHERE attributes ? 'brand';
 ```
 
-This checks for a top-level key or a top-level array string element.
-
-### Any key exists: `?|`
+### JSONPath
 
 ```sql
 SELECT *
 FROM products
-WHERE attributes ?| ARRAY['brand', 'manufacturer'];
+WHERE attributes @? '$.features[*] ? (@ == "5g")';
 ```
 
-### All keys exist: `?&`
+### Numeric values need the correct SQL type
+
+`->>` returns text, so cast before numeric comparison:
 
 ```sql
 SELECT *
 FROM products
-WHERE attributes ?& ARRAY['brand', 'color'];
+WHERE (attributes ->> 'storage_gb')::integer >= 256;
 ```
 
-### JSONPath: `@?`
-
-Find products with a tag equal to `wireless`:
-
-```sql
-SELECT *
-FROM products
-WHERE attributes @? '$.tags[*] ? (@ == "wireless")';
-```
-
-### JSONPath predicate: `@@`
-
-```sql
-SELECT *
-FROM products
-WHERE attributes @@ '$.dimensions.width_cm > 15';
-```
-
-### SQL/JSON query functions
-
-PostgreSQL also supports SQL/JSON path functions. For example:
-
-```sql
-SELECT jsonb_path_query(
-    attributes,
-    '$.tags[*]'
-)
-FROM products;
-```
-
-The path begins with `$`, which represents the current JSON document.
+This is important because text comparison and numeric comparison are different operations.
 
 ---
 
-## 2.6 Updating JSONB Data
+## 2.4 Updating JSONB
 
-PostgreSQL does not modify a JSONB document in place at the storage level. An `UPDATE` creates a new row version under MVCC.
-
-### Replace the entire document
-
-```sql
-UPDATE products
-SET attributes = '{
-  "brand": "Acme",
-  "color": "blue"
-}'::jsonb
-WHERE id = 100;
-```
-
-### Add or replace a key with `jsonb_set`
+Use `jsonb_set()` when only one path needs to change:
 
 ```sql
 UPDATE products
 SET attributes = jsonb_set(
-    attributes,
-    '{color}',
-    '"blue"'::jsonb,
-    true
-)
+        attributes,
+        '{color}',
+        '"green"'::jsonb,
+        true
+    ),
+    updated_at = now()
 WHERE id = 100;
 ```
 
-The fourth argument controls whether a missing final key may be created.
-
-### Update a nested value
+Other useful operations:
 
 ```sql
+-- Merge top-level values
 UPDATE products
-SET attributes = jsonb_set(
-    attributes,
-    '{dimensions,width_cm}',
-    '25'::jsonb,
-    true
-)
+SET attributes = attributes || '{"warranty_years": 2}'::jsonb
 WHERE id = 100;
-```
 
-### Merge top-level objects with `||`
-
-```sql
-UPDATE products
-SET attributes = attributes || '{
-  "color": "green",
-  "warranty_years": 2
-}'::jsonb
-WHERE id = 100;
-```
-
-For duplicate top-level keys, the right-hand value replaces the left-hand value.
-
-### Remove a key
-
-```sql
+-- Remove a key
 UPDATE products
 SET attributes = attributes - 'temporary_flag'
 WHERE id = 100;
 ```
 
-### Remove a nested path
+### Important MVCC point
 
-```sql
-UPDATE products
-SET attributes = attributes #- '{dimensions,height_cm}'
-WHERE id = 100;
-```
+PostgreSQL does not modify the stored row in place. An `UPDATE` creates a new tuple version.
 
-### Prevent lost updates
+So even a small logical JSONB change can create storage and index work, especially when the JSON document is large.
 
-Two concurrent transactions can both read the same JSONB document, modify different keys in application code, and then overwrite each other.
-
-Prefer a single SQL expression that changes only the intended path:
-
-```sql
-UPDATE products
-SET attributes = jsonb_set(
-    attributes,
-    '{last_checked_at}',
-    to_jsonb(now()),
-    true
-)
-WHERE id = 100;
-```
-
-For stronger application-level optimistic locking, use a version column:
-
-```sql
-UPDATE products
-SET attributes = $1,
-    version = version + 1
-WHERE id = $2
-  AND version = $3;
-```
-
-The application checks whether exactly one row was updated.
+For frequently changing business fields, a normal column may be a better design.
 
 ---
 
-## 2.7 JSONB Indexing
+## 2.5 JSONB Indexing
 
-JSONB supports multiple indexing strategies. The correct index depends on the query shape.
+Choose the index from the query shape.
 
 ```mermaid
 flowchart TD
-    A[How is JSONB queried?] --> B{Whole-document containment or key search?}
-    B -->|Yes| C[GIN on JSONB column]
-    B -->|No| D{Specific path queried often?}
-    D -->|JSON array/object operators| E[GIN expression index]
-    D -->|Scalar equality/range/order| F[B-tree expression index]
-    D -->|No stable query pattern| G[Start without index and measure]
+    A[How do queries use JSONB?] --> B{Search whole document?}
+    B -->|Containment / key search| C[GIN index]
+    B -->|No| D{One scalar path used often?}
+    D -->|Equality / range / sort| E[B-tree expression index]
+    D -->|Array/object operator| F[GIN expression index]
+    D -->|No stable pattern| G[Measure before indexing]
 ```
 
-### General-purpose GIN index
+### General GIN index
 
 ```sql
 CREATE INDEX products_attributes_gin_idx
@@ -530,59 +244,16 @@ ON products
 USING gin (attributes);
 ```
 
-This is useful for the key-existence, containment, and JSONPath operators: `?`, `?|`, `?&`, `@>`, `@?`, and `@@`.
+The default `jsonb_ops` operator class supports:
 
-Example:
+- `?`
+- `?|`
+- `?&`
+- `@>`
+- `@?`
+- `@@`
 
-```sql
-SELECT *
-FROM products
-WHERE attributes @> '{"brand": "Acme"}'::jsonb;
-```
-
-### Verify the plan
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT *
-FROM products
-WHERE attributes @> '{"brand": "Acme"}'::jsonb;
-```
-
-A typical indexed plan may contain:
-
-```text
-Bitmap Heap Scan
-  -> Bitmap Index Scan on products_attributes_gin_idx
-```
-
-GIN indexes commonly produce bitmap scans because multiple index entries may match a document. For how to read plan nodes, costs, and timings in general, see [EXPLAIN and EXPLAIN ANALYZE](explain-analyze.md).
-
----
-
-## 2.8 GIN Operator Classes
-
-PostgreSQL provides two important JSONB GIN operator classes.
-
-### Default: `jsonb_ops`
-
-```sql
-CREATE INDEX products_attributes_ops_idx
-ON products
-USING gin (attributes);
-```
-
-Equivalent explicit form:
-
-```sql
-CREATE INDEX products_attributes_ops_idx
-ON products
-USING gin (attributes jsonb_ops);
-```
-
-Use it when the application has varied JSONB query patterns, especially key-existence queries.
-
-### Specialized: `jsonb_path_ops`
+### `jsonb_path_ops`
 
 ```sql
 CREATE INDEX products_attributes_path_idx
@@ -590,55 +261,19 @@ ON products
 USING gin (attributes jsonb_path_ops);
 ```
 
-It does **not** support the key-existence operators `?`, `?|`, and `?&`.
+`jsonb_path_ops` supports:
 
-Its index is often smaller and more specific for containment-heavy workloads.
+- `@>`
+- `@?`
+- `@@`
 
-### Comparison
+It does **not** support key-existence operators such as `?`, `?|`, and `?&`.
 
-| Area | `jsonb_ops` | `jsonb_path_ops` |
-|---|---|---|
-| Default | Yes | No |
-| `?`, `?|`, `?&` | Supported | Not supported |
-| `@>` | Supported | Supported |
-| `@?`, `@@` | Supported | Supported |
-| Index size | Usually larger | Usually smaller |
-| Flexibility | Higher | Lower |
-| Typical use | Mixed JSONB searches | Containment/path-heavy searches |
+It is often smaller and more specific for containment-heavy workloads.
 
-### Selection rule
+### Expression index for one scalar path
 
-Choose `jsonb_ops` when key-existence operators are needed, and consider `jsonb_path_ops` when the workload is mostly containment or JSONPath. When unsure, begin with `jsonb_ops` and measure real queries.
-
-Avoid creating both operator classes automatically. Each extra index consumes disk, memory, maintenance time, and write I/O.
-
----
-
-## 2.9 Expression and Scalar Indexes
-
-A full-column GIN index is not always the best solution. The indexes below are ordinary indexes built over an expression instead of a bare column — see [B-Tree Indexing](indexing-btree.md) for general B-tree and composite-index behavior.
-
-### GIN expression index for one JSON path
-
-Suppose queries frequently search tags:
-
-```sql
-SELECT *
-FROM products
-WHERE attributes -> 'tags' ? 'wireless';
-```
-
-Create an index on exactly that expression:
-
-```sql
-CREATE INDEX products_tags_gin_idx
-ON products
-USING gin ((attributes -> 'tags'));
-```
-
-The query expression should match the indexed expression.
-
-### B-tree expression index for scalar equality
+If the application often filters by brand:
 
 ```sql
 CREATE INDEX products_brand_idx
@@ -653,89 +288,21 @@ FROM products
 WHERE attributes ->> 'brand' = 'Acme';
 ```
 
-### Typed scalar index for range queries
+For a frequently queried scalar value, this B-tree expression index is usually more focused than indexing the entire JSONB document with GIN.
+
+### Typed expression index
 
 ```sql
-CREATE INDEX products_weight_idx
-ON products (((attributes ->> 'weight_kg')::numeric));
+CREATE INDEX products_storage_idx
+ON products (((attributes ->> 'storage_gb')::integer));
 ```
 
-Query:
+The query should use the same expression:
 
 ```sql
 SELECT *
 FROM products
-WHERE (attributes ->> 'weight_kg')::numeric BETWEEN 5 AND 10;
-```
-
-The indexed cast and query cast should match.
-
-### Partial expression index
-
-Index the brand only for active products:
-
-```sql
-CREATE INDEX active_products_brand_idx
-ON products ((attributes ->> 'brand'))
-WHERE is_active = true;
-```
-
-Query:
-
-```sql
-SELECT *
-FROM products
-WHERE is_active = true
-  AND attributes ->> 'brand' = 'Acme';
-```
-
-This combines JSONB extraction with a partial index.
-
----
-
-## 2.10 JSONB Design and Performance
-
-### JSONB is flexible, not schema-free
-
-The schema still exists; it is simply enforced through application code, constraints, generated columns, indexes, and conventions.
-
-### Large JSONB updates can be expensive
-
-A small logical change can create a new row version and may rewrite a large value, including TOAST-managed storage. Frequently changing fields may belong in normal columns or child tables.
-
-### Every JSONB index increases write cost
-
-On inserts and updates, PostgreSQL must maintain each affected index. GIN indexes are powerful but can be comparatively expensive to update.
-
-### Prefer query-specific indexes
-
-A narrow expression index can be smaller and cheaper than a broad GIN index when the application repeatedly queries one path.
-
-### Extract strongly typed business fields
-
-Do not leave `status`, `customer_id`, `created_at`, `amount`, or join keys buried in JSONB merely for convenience.
-
-### Keep JSON documents reasonably atomic
-
-One JSONB document should represent data normally updated together. Independent, high-frequency sub-entities often deserve their own rows.
-
-### Measure with real plans
-
-Run the real application queries under `EXPLAIN (ANALYZE, BUFFERS)` rather than assuming an index is used.
-
-Also inspect index usage:
-
-```sql
-SELECT
-    schemaname,
-    relname AS table_name,
-    indexrelname AS index_name,
-    idx_scan,
-    idx_tup_read,
-    idx_tup_fetch
-FROM pg_stat_user_indexes
-WHERE relname = 'products'
-ORDER BY idx_scan DESC;
+WHERE (attributes ->> 'storage_gb')::integer >= 256;
 ```
 
 ---
@@ -744,363 +311,162 @@ ORDER BY idx_scan DESC;
 
 ## 3.1 Core Idea
 
-A partial index contains entries only for rows that satisfy an index predicate.
-
-General syntax:
+A partial index stores entries only for rows that satisfy its `WHERE` predicate.
 
 ```sql
 CREATE INDEX index_name
-ON table_name (indexed_columns)
-WHERE predicate;
+ON table_name (column_name)
+WHERE condition;
 ```
 
 Example:
 
 ```sql
-CREATE INDEX active_products_sku_idx
+CREATE INDEX products_active_sku_idx
 ON products (sku)
 WHERE is_active = true;
 ```
 
 ```text
-Table rows:
-┌────┬──────────┬───────────┐
-│ id │ sku      │ is_active │
-├────┼──────────┼───────────┤
-│ 1  │ SKU-001  │ true      │  -> indexed
-│ 2  │ SKU-002  │ false     │  -> not indexed
-│ 3  │ SKU-003  │ true      │  -> indexed
-└────┴──────────┴───────────┘
+products table
+┌────┬───────────┬───────────┐
+│ id │ sku       │ is_active │
+├────┼───────────┼───────────┤
+│ 1  │ PHONE-001 │ true      │ -> indexed
+│ 2  │ PHONE-002 │ false     │ -> skipped
+│ 3  │ LAPTOP-01 │ true      │ -> indexed
+└────┴───────────┴───────────┘
 ```
 
-Benefits:
-
-- Smaller index
-- Less index storage
-- Better cache efficiency
-- Lower maintenance cost for excluded rows
-- Faster targeted queries in suitable workloads
-
-A partial index is most useful when the indexed subset is significantly smaller than the full table and is queried frequently.
+This can produce a smaller index and reduce index maintenance when only a small subset of rows is queried frequently.
 
 ---
 
-## 3.2 Common Use Cases
+## 3.2 When Partial Indexes Are Useful
 
-### Active rows
+Common development cases include:
+
+- active records
+- soft-deleted records
+- pending jobs
+- unprocessed events
+- rows where an optional value is not null
+- subset-specific uniqueness rules
+
+Example for soft deletion:
 
 ```sql
-CREATE INDEX active_users_email_idx
+CREATE INDEX users_live_email_idx
 ON users (email)
-WHERE status = 'ACTIVE';
-```
-
-### Soft-deleted rows
-
-```sql
-CREATE INDEX customers_not_deleted_email_idx
-ON customers (email)
 WHERE deleted_at IS NULL;
 ```
 
-### Pending jobs
-
-```sql
-CREATE INDEX jobs_ready_idx
-ON jobs (priority DESC, available_at)
-WHERE status = 'PENDING';
-```
-
-Query:
-
-```sql
-SELECT *
-FROM jobs
-WHERE status = 'PENDING'
-  AND available_at <= now()
-ORDER BY priority DESC, available_at
-LIMIT 100;
-```
-
-### Unprocessed events
-
-```sql
-CREATE INDEX webhook_events_unprocessed_idx
-ON webhook_events (created_at)
-WHERE processed_at IS NULL;
-```
-
-### Rows with non-null optional data
-
-```sql
-CREATE INDEX users_phone_idx
-ON users (phone_number)
-WHERE phone_number IS NOT NULL;
-```
-
-### Recent or time-based subsets
-
-Be careful with time-based predicates. Index predicates must use immutable expressions. A predicate such as this is not suitable:
-
-```sql
--- Not a valid stable partial-index design:
-WHERE created_at >= now() - interval '30 days'
-```
-
-`now()` changes over time, while index membership is decided when rows are inserted or updated. Use a stable business flag, partitioning, or periodically rebuilt indexes instead.
+The idea works best when the indexed subset is meaningfully smaller than the full table.
 
 ---
 
 ## 3.3 Partial Unique Indexes
 
-A partial unique index enforces uniqueness only within the indexed subset.
+A partial unique index enforces uniqueness only inside a subset.
 
-### Unique email for non-deleted users
+Example: only one active product may use a SKU:
 
 ```sql
-CREATE UNIQUE INDEX users_live_email_unique_idx
-ON users (lower(email))
-WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX products_active_sku_uidx
+ON products (sku)
+WHERE is_active = true;
 ```
 
-This allows an old soft-deleted account and a new active account to use the same email, while preventing two current accounts from sharing it.
-
-### Only one active subscription per customer
+Another common pattern is one active subscription per customer:
 
 ```sql
-CREATE UNIQUE INDEX subscriptions_one_active_per_customer_idx
+CREATE UNIQUE INDEX subscriptions_one_active_uidx
 ON subscriptions (customer_id)
 WHERE status = 'ACTIVE';
 ```
 
-### Only one primary address per user
-
-```sql
-CREATE UNIQUE INDEX addresses_one_primary_per_user_idx
-ON addresses (user_id)
-WHERE is_primary = true;
-```
-
-Partial unique indexes are valuable because they encode business rules directly in the database and remain safe under concurrency.
-
-An application-level “check then insert” is not enough because two transactions can pass the check simultaneously. A unique index resolves that race at the database level.
+This is safer than an application-level “check, then insert” because the database itself enforces the rule during concurrent writes.
 
 ---
 
-## 3.4 Predicate Matching
+## 3.4 Predicate Matching Matters
 
-PostgreSQL can use a partial index only when it can determine during planning that the query condition implies the index predicate.
+PostgreSQL can use a partial index only when the planner can determine that the query condition implies the index predicate.
 
 Index:
 
 ```sql
-CREATE INDEX orders_pending_created_idx
-ON orders (created_at)
-WHERE status = 'PENDING';
-```
-
-Query that can use it:
-
-```sql
-SELECT *
-FROM orders
-WHERE status = 'PENDING'
-  AND created_at < now() - interval '5 minutes';
-```
-
-Query that cannot safely use it:
-
-```sql
-SELECT *
-FROM orders
-WHERE created_at < now() - interval '5 minutes';
-```
-
-The second query may return orders with any status, but the index contains only pending orders.
-
-### Keep predicate syntax consistent
-
-Index:
-
-```sql
-CREATE INDEX orders_unbilled_idx
-ON orders (order_number)
-WHERE billed IS NOT TRUE;
-```
-
-Prefer matching query syntax:
-
-```sql
-SELECT *
-FROM orders
-WHERE billed IS NOT TRUE
-  AND order_number = 5001;
-```
-
-PostgreSQL recognizes some simple logical implications, but it is not a general-purpose theorem prover. Semantically equivalent but differently written expressions may not always match as expected.
-
-### Parameterized queries
-
-A generic prepared predicate may prevent the planner from proving that a partial index applies.
-
-Example index:
-
-```sql
-CREATE INDEX tasks_open_idx
-ON tasks (created_at)
-WHERE status = 'OPEN';
-```
-
-Generic query:
-
-```sql
-SELECT *
-FROM tasks
-WHERE status = $1
-ORDER BY created_at;
-```
-
-Because `$1` could represent any status, a generic plan cannot always assume the partial predicate is satisfied.
-
-This behavior depends on custom versus generic plan selection, but the safe design principle is to test the real prepared query path used by the application.
-
-Use:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT *
-FROM tasks
-WHERE status = 'OPEN'
-ORDER BY created_at;
-```
-
-Also test the actual ORM-generated or prepared SQL.
-
----
-
-## 3.5 Partial Indexes with JSONB
-
-Partial indexes and JSONB can be combined in several ways.
-
-### Partial GIN index
-
-Index JSONB attributes only for active products:
-
-```sql
-CREATE INDEX active_products_attributes_gin_idx
-ON products
-USING gin (attributes jsonb_path_ops)
+CREATE INDEX products_active_brand_idx
+ON products ((attributes ->> 'brand'))
 WHERE is_active = true;
 ```
 
-Query:
+Matching query:
 
 ```sql
 SELECT *
 FROM products
 WHERE is_active = true
-  AND attributes @> '{"brand": "Acme"}'::jsonb;
+  AND attributes ->> 'brand' = 'Acme';
 ```
 
-### Partial expression index
-
-```sql
-CREATE INDEX pending_orders_payment_provider_idx
-ON orders ((metadata ->> 'payment_provider'))
-WHERE status = 'PENDING';
-```
-
-Query:
+Query without the predicate:
 
 ```sql
 SELECT *
-FROM orders
-WHERE status = 'PENDING'
-  AND metadata ->> 'payment_provider' = 'stripe';
+FROM products
+WHERE attributes ->> 'brand' = 'Acme';
 ```
 
-### Partial unique JSONB-derived value
+The second query cannot rely on the partial index because inactive products are absent from that index.
 
-```sql
-CREATE UNIQUE INDEX active_integrations_external_id_idx
-ON integrations ((config ->> 'external_account_id'))
-WHERE is_active = true;
-```
+### Parameterized-query consideration
 
-This can enforce uniqueness for a JSONB-derived value within active integrations.
+Predicate matching happens at planning time. Generic parameterized conditions can prevent PostgreSQL from proving that a partial-index predicate applies.
 
-Before doing this, ensure the value has consistent type and presence. A generated column plus a normal unique partial index may be clearer for important identifiers.
+For important ORM or prepared queries, inspect the actual generated SQL and execution plan.
 
 ---
 
-## 3.6 Partial Index vs Other Options
+## 3.5 Do Not Use Volatile Time Predicates
 
-| Requirement | Usually prefer |
-|---|---|
-| Query a small, stable subset repeatedly | Partial index |
-| Query most rows across many values | Full index |
-| Filter and sort by multiple columns | Composite index |
-| Enforce uniqueness for a subset | Partial unique index |
-| Separate very large data ranges | Partitioning |
-| Many category-specific partial indexes | Usually composite index or partitioning |
-| One common JSON scalar path | Expression B-tree index |
-| Broad JSON containment search | GIN index |
-
-### Do not use many partial indexes as manual partitioning
-
-This pattern is usually weak:
+A moving predicate such as this is not a suitable partial-index definition:
 
 ```sql
-CREATE INDEX events_type_a_idx ON events (created_at) WHERE event_type = 'A';
-CREATE INDEX events_type_b_idx ON events (created_at) WHERE event_type = 'B';
-CREATE INDEX events_type_c_idx ON events (created_at) WHERE event_type = 'C';
+-- Do not design a partial index like this
+WHERE created_at >= now() - interval '30 days'
 ```
 
-A composite index may be simpler (see [B-Tree Indexing](indexing-btree.md) for column-order rules):
+Index membership must be based on a stable predicate.
 
-```sql
-CREATE INDEX events_type_created_idx
-ON events (event_type, created_at);
-```
+For rolling time windows, consider:
 
-For very large, naturally separated data, use declarative partitioning.
-
-### Recheck data distribution
-
-A partial index created when 2% of rows were pending may become less useful if 60% of rows later remain pending. Index design should follow current data distribution and workload, not old assumptions.
-
-Useful size query:
-
-```sql
-SELECT
-    indexrelname,
-    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size,
-    idx_scan
-FROM pg_stat_user_indexes
-WHERE relname = 'orders'
-ORDER BY pg_relation_size(indexrelid) DESC;
-```
+- partitioning
+- a stable business flag
+- periodically rebuilt indexes, when operationally justified
 
 ---
 
-# 4. VACUUM
+# 4. VACUUM and Autovacuum
 
 ## 4.1 Why PostgreSQL Needs VACUUM
 
-PostgreSQL uses Multi-Version Concurrency Control, or MVCC.
+PostgreSQL uses **MVCC — Multi-Version Concurrency Control**.
 
-An `UPDATE` normally creates a new row version instead of overwriting the existing version immediately. A `DELETE` marks a row version as deleted but cannot immediately remove it if another transaction might still need to see it.
+When a row is updated, PostgreSQL normally creates a new tuple version instead of immediately overwriting the old one.
 
 ```text
-Initial row:
+Before UPDATE
+Tuple v1 -> status = ACTIVE
 
-Tuple v1: status = PENDING
-
-After UPDATE:
-
-Tuple v1: status = PENDING   <- old/dead when no transaction needs it
-Tuple v2: status = PAID      <- current/live version
+After UPDATE
+Tuple v1 -> old version
+Tuple v2 -> status = INACTIVE
 ```
+
+The old tuple cannot be removed while another transaction might still need to see it.
+
+When no active transaction needs that version anymore, it becomes a **dead tuple**.
 
 ```mermaid
 sequenceDiagram
@@ -1109,244 +475,113 @@ sequenceDiagram
     participant T2 as Transaction 2
     participant V as VACUUM
 
-    T1->>DB: Read row version v1
+    T1->>DB: Read tuple v1
     T2->>DB: UPDATE row
-    DB->>DB: Create row version v2
-    Note over DB: v1 cannot be removed while T1 may need it
+    DB->>DB: Create tuple v2
+    Note over DB: v1 may still be visible to T1
     T1->>DB: COMMIT
-    V->>DB: Mark v1 space reusable
+    V->>DB: Reclaim v1 space for reuse
 ```
 
-VACUUM performs several important maintenance tasks:
+VACUUM is responsible for important maintenance work:
 
-1. Reclaims dead row-version space for reuse.
-2. Cleans dead index entries.
-3. Updates the visibility map.
-4. Supports index-only scans.
-5. Helps prevent transaction ID wraparound.
-6. Can update planner statistics when used with `ANALYZE`.
-
-### Dead tuples
-
-A dead tuple is an old row version that is no longer visible to any transaction.
-
-Common causes:
-
-- `UPDATE`
-- `DELETE`
-- Rolled-back modifications
-- High-churn queue/status tables
-- Repeated updates to JSONB documents
-
-### Long-running transactions delay cleanup
-
-VACUUM cannot remove a row version that may still be visible to an old transaction snapshot.
-
-Examples:
-
-- A connection left `idle in transaction`
-- A long-running report
-- An old replication slot retaining required history
-- Long-running logical decoding activity
+- reclaiming dead-tuple space for reuse
+- cleaning dead index entries
+- maintaining the visibility map
+- supporting efficient index-only scans
+- freezing old tuples to protect against transaction ID wraparound
 
 ---
 
-## 4.2 Standard VACUUM
+## 4.2 Standard VACUUM vs VACUUM FULL
 
-Run standard VACUUM with `VACUUM products;`, or `VACUUM (VERBOSE) products;` for a detailed per-table report.
+### Standard VACUUM
 
-Important behavior:
-
-- It marks dead-row space reusable inside PostgreSQL.
-- It normally does not shrink the operating-system file.
-- It can run while normal `SELECT`, `INSERT`, `UPDATE`, and `DELETE` operations continue.
-- It generates I/O and consumes resources.
-- It cannot run inside an explicit transaction block.
-
-### Space reuse vs file shrink
-
-```text
-Before VACUUM:
-[Live][Dead][Live][Dead][Free?]
-
-After standard VACUUM:
-[Live][Reusable][Live][Reusable][Free?]
-
-Operating-system file size usually remains similar.
-New rows can reuse the reusable space.
+```sql
+VACUUM products;
 ```
 
-Standard VACUUM is routine maintenance. Its goal is usually stable space reuse, not minimum file size.
+Standard `VACUUM`:
 
----
+- reclaims dead space for reuse inside PostgreSQL
+- normally does not shrink the table file on disk
+- can run alongside normal reads and writes
+- is the normal maintenance operation
 
-## 4.3 VACUUM FULL
+### VACUUM FULL
 
 ```sql
 VACUUM (FULL) products;
 ```
 
-`VACUUM FULL` rewrites the table into a new compact physical file.
+`VACUUM FULL`:
 
-Characteristics:
+- rewrites the table into a compact file
+- can return unused space to the operating system
+- requires an `ACCESS EXCLUSIVE` lock
+- blocks normal access while the table is rewritten
+- requires temporary extra disk space
 
-- Can return more disk space to the operating system
-- Requires an `ACCESS EXCLUSIVE` lock
-- Blocks normal access to the table while running
-- Requires temporary extra disk space for the rewritten copy
-- Rebuilds associated indexes as part of the rewrite process
-- Is much more disruptive than standard VACUUM
-
-Use it for exceptional situations, such as a one-time deletion of most rows where the table will remain permanently smaller.
-
-Do not use it as normal scheduled maintenance.
-
-### Alternatives for severe bloat
-
-Depending on the environment, consider:
-
-- Better autovacuum tuning
-- `REINDEX CONCURRENTLY` for index-specific bloat
-- Online rewrite tools such as `pg_repack`, where operational policy permits
-- Partition rotation or dropping old partitions
-- Creating a replacement table and controlled cutover
+Use `VACUUM FULL` only when reclaiming significant physical disk space is worth the operational impact. It is not routine maintenance.
 
 ---
 
-## 4.4 VACUUM ANALYZE
+## 4.3 VACUUM ANALYZE
 
 ```sql
 VACUUM (ANALYZE) products;
 ```
 
-This combines:
+This performs both:
 
-- `VACUUM`: dead-row and visibility maintenance
-- `ANALYZE`: planner statistics collection
+- `VACUUM` -> storage/MVCC maintenance
+- `ANALYZE` -> refresh planner statistics
 
-Run only ANALYZE when cleanup is not needed but statistics should be refreshed: `ANALYZE products;`
-
-Accurate statistics help PostgreSQL estimate:
-
-- Row counts
-- Value frequencies
-- Null fractions
-- Value distributions
-- Correlation
-- Join cardinality
-
-Poor estimates can produce inefficient plans even when the correct index exists.
-
-After a large bulk load, consider `ANALYZE products;`. After a large batch of updates or deletes, consider `VACUUM (ANALYZE) products;`.
-
-Autovacuum normally handles both automatically, but manual execution is useful after unusual bulk operations.
-
----
-
-## 4.5 Autovacuum
-
-Autovacuum is PostgreSQL's background maintenance system. It launches workers that automatically run `VACUUM` and `ANALYZE` when table activity crosses configured thresholds.
-
-```mermaid
-flowchart LR
-    A[INSERT / UPDATE / DELETE activity] --> B[Statistics counters increase]
-    B --> C{Threshold reached?}
-    C -->|No| D[Continue monitoring]
-    C -->|Yes| E[Autovacuum worker selected]
-    E --> F[VACUUM and/or ANALYZE]
-    F --> G[Dead space reusable]
-    F --> H[Statistics refreshed]
-    F --> I[Visibility map updated]
-```
-
-Keep autovacuum enabled in normal production systems.
-
-Disabling ordinary autovacuum does not remove all automatic protection: PostgreSQL can still force anti-wraparound vacuuming when necessary.
-
-### Inspect important settings
+Use only `ANALYZE` when statistics need refreshing but vacuuming is not necessary:
 
 ```sql
-SHOW autovacuum;
-SHOW autovacuum_max_workers;
-SHOW autovacuum_naptime;
-SHOW autovacuum_vacuum_threshold;
-SHOW autovacuum_vacuum_scale_factor;
-SHOW autovacuum_vacuum_max_threshold;
-SHOW autovacuum_analyze_threshold;
-SHOW autovacuum_analyze_scale_factor;
-SHOW autovacuum_freeze_max_age;
+ANALYZE products;
 ```
 
-Do not copy tuning values blindly. Table size, update rate, storage speed, workload shape, and service-level requirements all matter.
+This is useful after unusual bulk loads or large data changes.
 
 ---
 
-## 4.6 Autovacuum Trigger Logic
+## 4.4 Autovacuum
 
-For update/delete-driven vacuuming, the simplified PostgreSQL 18 trigger threshold is:
+In normal production systems, PostgreSQL automatically performs vacuuming and analyzing through **autovacuum**.
+
+Keep it enabled unless there is a carefully designed maintenance strategy.
+
+The simplified update/delete trigger is:
 
 ```text
-vacuum trigger = min(
+vacuum threshold =
     autovacuum_vacuum_threshold
-    + autovacuum_vacuum_scale_factor × table tuple count,
-    autovacuum_vacuum_max_threshold
-)
+    + autovacuum_vacuum_scale_factor × table size
 ```
 
-Default PostgreSQL 18 settings include:
+PostgreSQL 18 defaults include:
 
 ```text
-autovacuum_vacuum_threshold      = 50
-autovacuum_vacuum_scale_factor   = 0.2
-autovacuum_vacuum_max_threshold  = 100,000,000
-```
-
-For a table with 1,000,000 estimated tuples, that is `50 + 0.2 × 1,000,000 = 200,050` changed tuples, which may be too late for a high-write production table.
-
-For a table with 500,000,000 tuples the formula gives `50 + 0.2 × 500,000,000 = 100,000,050`, so the default maximum threshold caps the trigger around 100,000,000 updated/deleted tuples.
-
-### Analyze trigger
-
-Simplified formula:
-
-```text
-analyze trigger = autovacuum_analyze_threshold
-                + autovacuum_analyze_scale_factor × table tuple count
-```
-
-PostgreSQL 18 defaults:
-
-```text
+autovacuum_vacuum_threshold     = 50
+autovacuum_vacuum_scale_factor  = 0.2
 autovacuum_analyze_threshold    = 50
 autovacuum_analyze_scale_factor = 0.1
 ```
 
-### Insert-triggered vacuuming
-
-PostgreSQL can also trigger vacuum activity based on inserts, which is important for freezing and visibility-map maintenance on insert-heavy tables.
-
-Relevant settings:
-
-```sql
-SHOW autovacuum_vacuum_insert_threshold;
-SHOW autovacuum_vacuum_insert_scale_factor;
-```
-
-PostgreSQL 18 defaults:
+PostgreSQL 18 also has:
 
 ```text
-autovacuum_vacuum_insert_threshold    = 1000
-autovacuum_vacuum_insert_scale_factor = 0.2
+autovacuum_vacuum_max_threshold = 100000000
 ```
 
-The insert scale factor is based on unfrozen table pages, not simply the total tuple count.
+Large or high-churn tables may need more aggressive **per-table** settings.
 
-### Per-table tuning
-
-For a high-write orders table:
+Example:
 
 ```sql
-ALTER TABLE orders SET (
+ALTER TABLE products SET (
     autovacuum_vacuum_scale_factor = 0.02,
     autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0.01,
@@ -1354,430 +589,141 @@ ALTER TABLE orders SET (
 );
 ```
 
-Inspect table-specific options:
-
-```sql
-SELECT relname, reloptions
-FROM pg_class
-WHERE relname = 'orders';
-```
-
-Reset options:
-
-```sql
-ALTER TABLE orders RESET (
-    autovacuum_vacuum_scale_factor,
-    autovacuum_vacuum_threshold,
-    autovacuum_analyze_scale_factor,
-    autovacuum_analyze_threshold
-);
-```
+Do not copy these values blindly; tune from table size, write rate, storage performance, and observed dead tuples.
 
 ---
 
-## 4.7 Transaction ID Wraparound
+## 4.5 Long Transactions Can Block Cleanup
 
-PostgreSQL transaction IDs are finite 32-bit values. MVCC depends on comparing transaction ages correctly.
+VACUUM cannot remove an old tuple version if an active snapshot may still need it.
 
-Without freezing, sufficiently old rows could eventually be interpreted incorrectly after transaction IDs wrap around.
+Common causes:
 
-VACUUM protects the database by freezing old row versions so they remain visible to current and future transactions.
+- long-running transactions
+- sessions left `idle in transaction`
+- long analytical queries
+- replication slots retaining old transaction visibility
 
-```text
-Normal transaction IDs increase:
-
-... 100, 101, 102, ... very large value ... wrap to beginning
-
-VACUUM FREEZE marks sufficiently old tuples as permanently old/visible,
-preventing age comparison from making old data appear to be in the future.
-```
-
-Check database-level transaction age:
-
-```sql
-SELECT
-    datname,
-    age(datfrozenxid) AS xid_age
-FROM pg_database
-ORDER BY xid_age DESC;
-```
-
-Check table-level age:
-
-```sql
-SELECT
-    c.oid::regclass AS table_name,
-    age(c.relfrozenxid) AS xid_age,
-    c.relfrozenxid
-FROM pg_class AS c
-WHERE c.relkind IN ('r', 'm')
-ORDER BY xid_age DESC
-LIMIT 20;
-```
-
-Manual freeze operation: `VACUUM (FREEZE, VERBOSE) large_static_table;`
-
-Do not treat `VACUUM FREEZE` as a universal performance command. It is primarily related to tuple freezing and transaction-age management.
-
-Anti-wraparound autovacuum can run even when autovacuum is otherwise disabled. Preventing it from completing is dangerous.
-
----
-
-## 4.8 Visibility Map and Index-Only Scans
-
-PostgreSQL indexes do not normally store tuple visibility information. During a normal index scan, PostgreSQL may need to visit the table heap to confirm that each matching row is visible to the current transaction.
-
-VACUUM maintains a visibility map that records pages whose tuples are all visible.
-
-```mermaid
-flowchart TD
-    E[B-tree index entry] --> V{Visibility map says<br/>page is all-visible?}
-    V -->|Yes| S[Skip heap fetch]
-    V -->|No| H[Visit heap to check visibility]
-```
-
-When enough heap pages are marked all-visible, PostgreSQL may use an index-only scan efficiently.
-
-Example covering index:
-
-```sql
-CREATE INDEX orders_customer_created_cover_idx
-ON orders (customer_id, created_at DESC)
-INCLUDE (status, total_amount);
-```
-
-Query:
-
-```sql
-SELECT created_at, status, total_amount
-FROM orders
-WHERE customer_id = 1001
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-Check the plan:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT created_at, status, total_amount
-FROM orders
-WHERE customer_id = 1001
-ORDER BY created_at DESC
-LIMIT 20;
-```
-
-A plan may show:
-
-```text
-Index Only Scan using orders_customer_created_cover_idx
-Heap Fetches: 0
-```
-
-A high number of heap fetches can indicate that many relevant pages are not all-visible, often because of recent writes or delayed vacuuming.
-
----
-
-## 4.9 Monitoring VACUUM
-
-### Table health statistics
-
-```sql
-SELECT
-    schemaname,
-    relname,
-    n_live_tup,
-    n_dead_tup,
-    last_vacuum,
-    last_autovacuum,
-    vacuum_count,
-    autovacuum_count,
-    last_analyze,
-    last_autoanalyze
-FROM pg_stat_user_tables
-ORDER BY n_dead_tup DESC;
-```
-
-The values are estimates and should be interpreted with workload context.
-
-### Dead-tuple ratio
-
-```sql
-SELECT
-    schemaname,
-    relname,
-    n_live_tup,
-    n_dead_tup,
-    round(
-        100.0 * n_dead_tup
-        / NULLIF(n_live_tup + n_dead_tup, 0),
-        2
-    ) AS dead_tuple_percent,
-    last_autovacuum
-FROM pg_stat_user_tables
-ORDER BY dead_tuple_percent DESC NULLS LAST;
-```
-
-A high ratio is a signal to investigate, not automatic proof that `VACUUM FULL` is required.
-
-### Current VACUUM progress
-
-```sql
-SELECT
-    pid,
-    datname,
-    relid::regclass AS table_name,
-    phase,
-    heap_blks_total,
-    heap_blks_scanned,
-    heap_blks_vacuumed,
-    index_vacuum_count,
-    num_dead_item_ids
-FROM pg_stat_progress_vacuum;
-```
-
-### Running autovacuum sessions
-
-```sql
-SELECT
-    pid,
-    datname,
-    state,
-    wait_event_type,
-    wait_event,
-    query_start,
-    query
-FROM pg_stat_activity
-WHERE backend_type = 'autovacuum worker';
-```
-
-### Long-running transactions
+Check old transactions:
 
 ```sql
 SELECT
     pid,
     usename,
-    application_name,
     state,
     xact_start,
     now() - xact_start AS transaction_age,
-    wait_event_type,
-    wait_event,
     query
 FROM pg_stat_activity
 WHERE xact_start IS NOT NULL
 ORDER BY xact_start;
 ```
 
-Pay special attention to sessions reporting `state = 'idle in transaction'`.
+Keeping transactions short is an application-level PostgreSQL performance practice, not only a DBA concern.
 
-### Replication slots retaining old data
+---
+
+## 4.6 Visibility Map and Index-Only Scans
+
+An index may contain all columns needed by a query, but PostgreSQL still needs to know whether the referenced heap tuple is visible.
+
+VACUUM maintains the **visibility map**, which marks heap pages whose tuples are known to be visible to all transactions.
+
+```text
+Index entry
+    |
+    v
+Visibility map says page is all-visible?
+    |
+    +-- Yes -> heap visit may be skipped
+    |
+    +-- No  -> PostgreSQL checks the heap tuple
+```
+
+That is why healthy vacuuming can improve the effectiveness of index-only scans.
+
+---
+
+## 4.7 Useful Monitoring
+
+Check dead tuples and recent maintenance:
 
 ```sql
 SELECT
-    slot_name,
-    slot_type,
-    active,
-    xmin,
-    catalog_xmin,
-    restart_lsn
-FROM pg_replication_slots;
+    relname,
+    n_live_tup,
+    n_dead_tup,
+    last_autovacuum,
+    last_autoanalyze
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC;
 ```
 
-Old `xmin` or `catalog_xmin` values can delay tuple cleanup.
-
-### Table and index sizes
+Check vacuum progress:
 
 ```sql
 SELECT
-    c.oid::regclass AS relation,
-    pg_size_pretty(pg_relation_size(c.oid)) AS table_size,
-    pg_size_pretty(pg_indexes_size(c.oid)) AS indexes_size,
-    pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
-FROM pg_class AS c
-WHERE c.oid = 'orders'::regclass;
+    pid,
+    relid::regclass AS table_name,
+    phase,
+    heap_blks_total,
+    heap_blks_scanned,
+    heap_blks_vacuumed
+FROM pg_stat_progress_vacuum;
 ```
 
-Large size alone does not prove bloat. Compare expected live data, churn, dead tuples, free space, and long-term size trends.
+A high dead-tuple count is a signal to investigate workload, autovacuum behavior, and long-running transactions. It does not automatically mean `VACUUM FULL` is required.
 
 ---
 
-## 4.10 Tuning High-Write Tables
+# 5. How They Work Together
 
-High-write tables often need more aggressive table-specific settings than database defaults.
+Using the `products` table:
 
-Typical examples:
-
-- Job queues
-- Session tables
-- Webhook events
-- Order status tables
-- Frequently updated inventory
-- Tables with large, frequently changed JSONB documents
-
-### Tune earlier vacuum triggers
-
-```sql
-ALTER TABLE jobs SET (
-    autovacuum_vacuum_scale_factor = 0.01,
-    autovacuum_vacuum_threshold = 500,
-    autovacuum_analyze_scale_factor = 0.02,
-    autovacuum_analyze_threshold = 500
-);
+```text
+Product INSERT
+    |
+    v
+JSONB attributes stored
+    |
+    v
+Active-row partial indexes updated
+    |
+    v
+Product UPDATE
+    |
+    +--> new tuple version created by MVCC
+    |
+    +--> JSONB/index entries may need maintenance
+    |
+    v
+Old tuple eventually becomes dead
+    |
+    v
+Autovacuum reclaims reusable space
 ```
 
-### Consider fillfactor for update-heavy tables
+The important connection is:
 
-```sql
-ALTER TABLE jobs SET (fillfactor = 80);
-```
-
-A lower fillfactor leaves free room on heap pages for future row versions. This can support HOT updates when indexed columns are not changed.
-
-After changing fillfactor, existing pages are not automatically rewritten. The setting mainly affects future writes unless the table is rebuilt.
-
-### HOT updates
-
-A Heap-Only Tuple update may avoid creating new entries in regular indexes when:
-
-- No indexed column is changed.
-- The new row version fits on the same heap page.
-
-JSONB affects HOT eligibility when the JSONB column is indexed. Updating an indexed JSONB value generally requires corresponding index maintenance.
-
-### Keep transactions short
-
-Application practices matter:
-
-- Commit or roll back promptly.
-- Avoid waiting for network calls inside a transaction.
-- Avoid user interaction while holding a transaction open.
-- Set an appropriate `idle_in_transaction_session_timeout`.
-
-Example:
-
-```sql
-ALTER ROLE application_user
-SET idle_in_transaction_session_timeout = '60s';
-```
-
-Choose a timeout that matches application behavior.
-
-### Batch large deletes
-
-Instead of deleting tens of millions of rows in one transaction, controlled batches can reduce lock duration, WAL spikes, replication lag, and cleanup pressure.
-
-For time-series data, partitioning and dropping an old partition is usually more efficient than deleting every old row.
+- **JSONB** gives schema flexibility.
+- **Partial indexes** keep important query paths small.
+- **MVCC** makes writes concurrency-friendly by creating row versions.
+- **VACUUM** cleans obsolete versions so that high-write tables remain healthy.
 
 ---
 
-# 5. How the Three Features Work Together
+# 6. Practical Example
 
-Consider a webhook table:
-
-```sql
-CREATE TABLE webhook_events (
-    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    provider       text NOT NULL,
-    external_id    text,
-    event_type     text NOT NULL,
-    payload        jsonb NOT NULL,
-    status         text NOT NULL DEFAULT 'PENDING',
-    attempts       integer NOT NULL DEFAULT 0,
-    received_at    timestamptz NOT NULL DEFAULT now(),
-    processed_at   timestamptz
-);
-```
-
-### JSONB role
-
-`payload` stores provider-specific event data whose structure differs across integrations.
-
-### Partial index role
-
-Workers mostly query pending events:
+## 6.1 Insert Products
 
 ```sql
-CREATE INDEX webhook_pending_queue_idx
-ON webhook_events (received_at)
-WHERE status = 'PENDING';
-```
-
-The index remains small if most events become processed.
-
-### JSONB expression index role
-
-Suppose Stripe events are frequently searched by customer identifier:
-
-```sql
-CREATE INDEX stripe_pending_customer_idx
-ON webhook_events ((payload #>> '{data,object,customer}'))
-WHERE provider = 'stripe'
-  AND status = 'PENDING';
-```
-
-### VACUUM role
-
-Every status update creates a new row version:
-
-```sql
-UPDATE webhook_events
-SET status = 'PROCESSED',
-    processed_at = now()
-WHERE id = $1;
-```
-
-As events move from `PENDING` to `PROCESSED`:
-
-- Old row versions become dead.
-- Entries leave the pending partial index.
-- Table and index cleanup becomes necessary.
-- Autovacuum must keep pace with worker throughput.
-
-```mermaid
-flowchart LR
-    A[Webhook INSERT] --> B[JSONB payload stored]
-    B --> C[Pending partial index entry created]
-    C --> D[Worker reads event]
-    D --> E[Status updated to PROCESSED]
-    E --> F[Old tuple becomes dead]
-    E --> G[Row no longer belongs in pending index]
-    F --> H[Autovacuum cleans reusable space]
-    G --> H
-```
-
-This is a common PostgreSQL production pattern: flexible JSON input, a small operational subset, and high row-version churn.
-
----
-
-# 6. Practical End-to-End Example
-
-## 6.1 Create a Product Catalog
-
-```sql
-CREATE TABLE catalog_products (
-    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    sku         text NOT NULL,
-    name        text NOT NULL,
-    category    text NOT NULL,
-    is_active   boolean NOT NULL DEFAULT true,
-    attributes  jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at  timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT catalog_products_attributes_object
-        CHECK (jsonb_typeof(attributes) = 'object')
-);
-```
-
-## 6.2 Insert Sample Data
-
-```sql
-INSERT INTO catalog_products (sku, name, category, attributes)
+INSERT INTO products (sku, name, category, price, attributes)
 VALUES
 (
     'PHONE-001',
     'Acme Phone Pro',
     'phone',
+    799.00,
     '{
       "brand": "Acme",
       "color": "black",
@@ -1786,20 +732,10 @@ VALUES
     }'
 ),
 (
-    'LAPTOP-001',
-    'Acme Developer Laptop',
-    'laptop',
-    '{
-      "brand": "Acme",
-      "ram_gb": 32,
-      "storage_gb": 1024,
-      "features": ["backlit-keyboard", "usb-c"]
-    }'
-),
-(
     'PHONE-002',
     'Zen Phone Mini',
     'phone',
+    499.00,
     '{
       "brand": "Zen",
       "color": "blue",
@@ -1809,70 +745,57 @@ VALUES
 );
 ```
 
-## 6.3 Add Indexes Based on Queries
+## 6.2 Add Query-Specific Indexes
 
-General JSON containment search:
+Containment-heavy JSONB search:
 
 ```sql
-CREATE INDEX catalog_products_attributes_gin_idx
-ON catalog_products
+CREATE INDEX products_attributes_gin_idx
+ON products
 USING gin (attributes jsonb_path_ops);
 ```
 
-Active product SKU uniqueness:
+Active brand search:
 
 ```sql
-CREATE UNIQUE INDEX catalog_products_active_sku_uidx
-ON catalog_products (sku)
+CREATE INDEX products_active_brand_idx
+ON products ((attributes ->> 'brand'))
 WHERE is_active = true;
 ```
 
-Brand search only for active products:
+Subset uniqueness:
 
 ```sql
-CREATE INDEX catalog_products_active_brand_idx
-ON catalog_products ((attributes ->> 'brand'))
+CREATE UNIQUE INDEX products_active_sku_uidx
+ON products (sku)
 WHERE is_active = true;
 ```
 
-## 6.4 Query the Catalog
-
-Containment query:
+## 6.3 Query Active Acme Products
 
 ```sql
-SELECT sku, name
-FROM catalog_products
-WHERE attributes @> '{"features": ["5g"]}'::jsonb;
-```
-
-Active Acme products:
-
-```sql
-SELECT sku, name
-FROM catalog_products
+SELECT id, sku, name
+FROM products
 WHERE is_active = true
   AND attributes ->> 'brand' = 'Acme';
 ```
 
-Numeric JSON value:
+Inspect the actual plan:
 
 ```sql
-SELECT sku, name
-FROM catalog_products
-WHERE (attributes ->> 'storage_gb')::integer >= 256;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, sku, name
+FROM products
+WHERE is_active = true
+  AND attributes ->> 'brand' = 'Acme';
 ```
 
-For frequent numeric range queries, add a matching typed expression index:
+For a very small table, PostgreSQL may still choose a sequential scan because it is cheaper. An index existing does not mean PostgreSQL must use it.
+
+## 6.4 Update JSONB
 
 ```sql
-CREATE INDEX catalog_products_storage_gb_idx
-ON catalog_products (((attributes ->> 'storage_gb')::integer));
-```
-
-## 6.5 Update a JSONB Attribute
-
-```sql
-UPDATE catalog_products
+UPDATE products
 SET attributes = jsonb_set(
         attributes,
         '{color}',
@@ -1883,92 +806,35 @@ SET attributes = jsonb_set(
 WHERE sku = 'PHONE-001';
 ```
 
-This creates a new row version and makes the old row version eligible for cleanup when no transaction needs it.
+This creates a new tuple version under MVCC. Later, autovacuum can reclaim the obsolete tuple when no transaction needs it.
 
-## 6.6 Inspect the Plan
+---
 
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT sku, name
-FROM catalog_products
-WHERE is_active = true
-  AND attributes ->> 'brand' = 'Acme';
+# 7. Quick Revision
+
+| Concept | Remember |
+|---|---|
+| `json` | Preserves original JSON text |
+| `jsonb` | Parsed, queryable, indexable JSON |
+| `->` | Returns JSON/JSONB |
+| `->>` | Returns text |
+| `@>` | JSONB containment |
+| `?` | Top-level key/array-element existence |
+| GIN `jsonb_ops` | Flexible JSONB indexing, including key existence |
+| GIN `jsonb_path_ops` | Smaller/specific for containment and JSONPath; no `?`, `?|`, `?&` |
+| Expression B-tree | Best for one scalar JSON path used for equality/range/sort |
+| Partial index | Indexes only rows matching a stable predicate |
+| Partial unique index | Enforces uniqueness only within that subset |
+| MVCC | Updates create new row versions |
+| VACUUM | Reclaims dead tuple space for reuse and maintains visibility/freezing data |
+| VACUUM FULL | Rewrites and shrinks table; blocking and expensive |
+| Autovacuum | Background automatic VACUUM/ANALYZE maintenance |
+| Long transaction | Can prevent old tuple cleanup |
+
+## Final mental model
+
+```text
+Use JSONB for flexibility,
+use partial indexes for selective performance,
+and let autovacuum keep MVCC storage healthy.
 ```
-
-For a tiny table, PostgreSQL may correctly choose a sequential scan because reading the whole table is cheaper than using an index. Index usage becomes meaningful with realistic volume and selectivity.
-
-## 6.7 Inspect Table Maintenance
-
-```sql
-SELECT
-    relname,
-    n_live_tup,
-    n_dead_tup,
-    last_autovacuum,
-    last_autoanalyze
-FROM pg_stat_user_tables
-WHERE relname = 'catalog_products';
-```
-
-Manual maintenance after a large test load: `VACUUM (ANALYZE, VERBOSE) catalog_products;`
-
----
-
-# 7. Production Checklist
-
-## JSONB
-
-- [ ] Keep core relational fields in typed columns.
-- [ ] Use JSONB for truly flexible or integration-specific attributes.
-- [ ] Add `CHECK` constraints for top-level type and critical keys.
-- [ ] Choose indexes from real query patterns.
-- [ ] Use `jsonb_ops` when key-existence operators are needed.
-- [ ] Consider `jsonb_path_ops` for containment-heavy workloads.
-- [ ] Use B-tree expression indexes for scalar equality, range, and ordering.
-- [ ] Use generated columns when a JSON field becomes central to the schema.
-- [ ] Remember that JSONB updates create new row versions.
-- [ ] Measure storage, write cost, and query plans.
-
-## Partial indexes
-
-- [ ] Ensure the indexed subset is meaningfully smaller than the table.
-- [ ] Keep the predicate stable and aligned with application queries.
-- [ ] Test actual prepared and ORM-generated SQL.
-- [ ] Use partial unique indexes for subset-specific business rules.
-- [ ] Avoid volatile time expressions in predicates.
-- [ ] Do not create many partial indexes as a substitute for partitioning.
-- [ ] Re-evaluate selectivity as data distribution changes.
-- [ ] Monitor `idx_scan` and index size.
-
-## VACUUM
-
-- [ ] Keep autovacuum enabled.
-- [ ] Monitor high-churn tables separately.
-- [ ] Tune large or busy tables with per-table settings.
-- [ ] Investigate long-running and idle transactions.
-- [ ] Monitor replication slots that retain old snapshots.
-- [ ] Use standard VACUUM for routine maintenance.
-- [ ] Use `VACUUM FULL` only for exceptional table shrinking.
-- [ ] Run `ANALYZE` after unusual bulk loads.
-- [ ] Track transaction ID age.
-- [ ] Watch whether index-only scans still require many heap fetches.
-
----
-
-# 8. Official References
-
-This guide was checked against the PostgreSQL 18 current documentation and release information available on July 27, 2026.
-
-- PostgreSQL versioning policy: <https://www.postgresql.org/support/versioning/>
-- PostgreSQL 18 JSON types: <https://www.postgresql.org/docs/current/datatype-json.html>
-- PostgreSQL JSON functions and operators: <https://www.postgresql.org/docs/current/functions-json.html>
-- PostgreSQL partial indexes: <https://www.postgresql.org/docs/current/indexes-partial.html>
-- PostgreSQL routine vacuuming: <https://www.postgresql.org/docs/current/routine-vacuuming.html>
-- PostgreSQL `VACUUM` command: <https://www.postgresql.org/docs/current/sql-vacuum.html>
-- PostgreSQL vacuum configuration: <https://www.postgresql.org/docs/current/runtime-config-vacuum.html>
-- PostgreSQL monitoring statistics: <https://www.postgresql.org/docs/current/monitoring-stats.html>
-- PostgreSQL progress reporting: <https://www.postgresql.org/docs/current/progress-reporting.html>
-
----
-
-**End of document**

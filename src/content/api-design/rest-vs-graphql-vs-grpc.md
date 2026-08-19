@@ -1493,27 +1493,3 @@ Load-test realistic workflows
 The protocol does not fix poor domain boundaries, slow database queries, missing indexes, unsafe retries, or weak authorization.
 
 ---
-
-# 18. Official References
-
-The following official and standards-based sources were reviewed for this guide:
-
-1. [Roy Fielding — REST Architectural Style](https://roy.gbiv.com/pubs/dissertation/rest_arch_style.htm)
-2. [RFC 9110 — HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110.html)
-3. [HTTP Working Group Specifications](https://httpwg.org/specs/)
-4. [GraphQL Documentation](https://graphql.org/learn/)
-5. [GraphQL Queries](https://graphql.org/learn/queries/)
-6. [GraphQL Mutations](https://graphql.org/learn/mutations/)
-7. [GraphQL Subscriptions](https://graphql.org/learn/subscriptions/)
-8. [GraphQL Schema and Types](https://graphql.org/learn/schema/)
-9. [GraphQL over HTTP Working Draft](https://graphql.github.io/graphql-over-http/draft/)
-10. [gRPC Introduction](https://grpc.io/docs/what-is-grpc/introduction/)
-11. [gRPC Core Concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
-12. [gRPC Performance Best Practices](https://grpc.io/docs/guides/performance/)
-13. [Protocol Buffers Language Guide](https://protobuf.dev/programming-guides/proto3/)
-14. [Protocol Buffers Best Practices](https://protobuf.dev/best-practices/dos-donts/)
-15. [OpenAPI Specification](https://spec.openapis.org/oas/)
-
----
-
-> **Key takeaway:** REST, GraphQL, and gRPC are not universal replacements for one another. The best architecture uses the simplest approach that correctly matches the consumer, data shape, network pattern, and operational constraints.

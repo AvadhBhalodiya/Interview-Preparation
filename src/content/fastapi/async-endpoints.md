@@ -6,338 +6,197 @@ order: 5
 
 # Async Endpoints and Why FastAPI Is Fast
 
-> FastAPI is fast mainly because it runs on the asynchronous ASGI ecosystem and can serve other requests while one request is waiting for network or database I/O. However, writing `async def` alone does not make code faster. The complete call chain must avoid blocking the event loop.
+FastAPI handles I/O-heavy APIs efficiently because it is built on the **ASGI** ecosystem. An `async def` endpoint can pause while waiting for a database, Redis, or another API, allowing the event loop to work on other requests.
 
-## In short
+> **Key idea:** `async def` does not automatically make code faster. It helps when the work is **I/O-bound** and the libraries underneath support `await`.
 
-- FastAPI's speed comes from the ASGI stack (Uvicorn + Starlette) plus an event loop that keeps serving other requests while one is waiting on I/O, plus Rust-backed Pydantic validation — not from writing `async def` by itself.
-- Use `async def` when every I/O call underneath it is awaitable (async DB driver, `httpx.AsyncClient`, async Redis, and so on); use plain `def` when the endpoint calls blocking or sync-only libraries.
-- FastAPI/Starlette runs a `def` path operation or dependency in a bounded external thread pool (AnyIO, default 40 tokens), so it cannot directly stall the event loop.
-- A blocking call (`time.sleep`, `requests`, a sync DB session) made directly inside `async def` freezes that event loop for every other request on the same worker.
-- FastAPI does not auto-offload plain helper functions called from inside `async def` — only the path operations and dependencies it manages go to the thread pool; wrap manual calls in `run_in_threadpool()` or `asyncio.to_thread()`.
-- Run independent awaits concurrently with `asyncio.gather()` under a bounded semaphore; CPU-bound or long-running work still needs a process pool, external worker, or job queue, since async alone does not make it faster or durable.
+## Index
 
-```mermaid
-flowchart TD
-    A[What does the endpoint do?] --> B{Mostly waiting on I/O?}
-    B -->|Yes| C{Does the library support await?}
-    C -->|Yes| D[Use async def and await]
-    C -->|No| E[Use def or explicitly offload]
-    B -->|No| F{CPU-heavy?}
-    F -->|No| G[Keep computation small and simple]
-    F -->|Yes| H[Use process or external worker]
-    D --> I[Set timeouts and pool limits]
-    E --> J[Watch thread-pool saturation]
-    H --> K[Return job status when long-running]
-```
-
-**Interview answer:** FastAPI is fast mainly because it runs on ASGI (Uvicorn + Starlette): an `async def` endpoint executes as a coroutine, and when it awaits non-blocking I/O the event loop switches to other requests instead of leaving a thread idle, while Pydantic's Rust core keeps validation cheap. Use `async def` when the whole call chain (driver, client, cache) is awaitable; use plain `def` when the endpoint calls a blocking library, since FastAPI then runs it in a thread pool instead of stalling the loop.
-
-**Gotcha:** Calling a blocking library, or even a plain helper function, from inside `async def` does not become non-blocking just because it sits under `async def` — it still freezes the event loop for every other request on that worker until it returns.
+1. [Core Idea](#1-core-idea)
+2. [How FastAPI Async Execution Works](#2-how-fastapi-async-execution-works)
+3. [`def` vs `async def`](#3-def-vs-async-def)
+4. [Blocking the Event Loop](#4-blocking-the-event-loop)
+5. [Concurrent I/O](#5-concurrent-io)
+6. [Database and Connection Pools](#6-database-and-connection-pools)
+7. [CPU-Bound and Background Work](#7-cpu-bound-and-background-work)
+8. [Workers and Scaling](#8-workers-and-scaling)
+9. [Testing and Observability](#9-testing-and-observability)
+10. [Practical Example](#10-practical-example)
+11. [Interview-Ready Summary](#11-interview-ready-summary)
 
 ---
 
 # 1. Core Idea
 
-Most API requests spend a large amount of time **waiting**:
+Most API endpoints spend much of their time waiting for external systems:
 
-- Waiting for a database query
-- Waiting for another API
-- Waiting for Redis
-- Waiting for object storage
-- Waiting for a message broker
-- Waiting for the client to send or receive data
+- Database queries
+- Redis
+- External HTTP APIs
+- Object storage
+- Message brokers
+- Network responses
 
-During this waiting period, the CPU is usually not doing useful work.
+With synchronous code, a thread performing blocking I/O stays occupied until that operation finishes.
 
-With asynchronous programming, the endpoint can pause at an `await` expression. The event loop can then continue processing other requests. When the awaited operation finishes, the endpoint resumes from the same location.
-
-```python
-@app.get("/users/{user_id}")
-async def get_user(user_id: int):
-    user = await user_repository.get(user_id)
-    return user
-```
-
-The important line is: `user = await user_repository.get(user_id)`
-
-While the database is processing the query, the server can work on other requests.
-
-> **Key point:** Async does not remove waiting. It uses waiting time more efficiently.
-
----
-
-# 2. Synchronous vs Asynchronous Execution
-
-## 2.1 Synchronous execution
-
-In synchronous code, one operation normally completes before the next operation starts.
+With asynchronous code, the current coroutine can pause at `await`, and the event loop can run another ready task.
 
 ```text
-Request A: [database wait................][response]
-Request B:                               [database wait................][response]
+Request A: [run][-------- waiting --------][resume][response]
+Request B:      [run][---- waiting ----][resume][response]
+Request C:           [run][------ waiting ------][resume]
 ```
 
-If the same execution thread handles both requests, Request B cannot progress while Request A is blocking.
+The requests are **concurrent**: their waiting periods overlap.
 
-## 2.2 Asynchronous execution
+> Async does not remove waiting. It lets the server use waiting time more efficiently.
 
-In asynchronous code, a task can pause while waiting, allowing another task to run.
+## Concurrency vs Parallelism
 
-```text
-Request A: [start][wait...................][resume][response]
-Request B:        [start][wait.......][resume][response]
-Request C:              [start][wait.............][resume][response]
-```
-
-The requests are **concurrent**. Their execution overlaps, although they are not necessarily executing Python instructions at the exact same instant.
-
-## 2.3 Concurrency vs parallelism
-
-| Concept | Meaning | Common FastAPI use |
+| Concept | Meaning | Typical use |
 |---|---|---|
-| Concurrency | Multiple tasks make progress during overlapping time | Network calls, database queries, Redis, WebSockets |
-| Parallelism | Multiple tasks execute at the same instant on different CPU cores | Image processing, ML inference, data transformation |
-| Async I/O | One thread switches between tasks when they wait | High-concurrency API endpoints |
+| Concurrency | Multiple tasks make progress during overlapping time | HTTP calls, DB queries, Redis |
+| Parallelism | Work executes at the same time on multiple CPU cores | Image processing, ML inference |
+| Async I/O | Tasks yield control while waiting | High-concurrency APIs |
 | Multiprocessing | Multiple processes use multiple CPU cores | CPU-heavy workloads |
 
 ```mermaid
 flowchart LR
-    A[Concurrency] --> B[One event loop]
+    A[Concurrency] --> B[Event Loop]
     B --> C[Task A waits]
     B --> D[Task B runs]
     B --> E[Task C runs]
 
     F[Parallelism] --> G[CPU Core 1]
     F --> H[CPU Core 2]
-    F --> I[CPU Core 3]
 ```
-
-> `async` is mainly a concurrency mechanism. It does not automatically provide CPU parallelism.
 
 ---
 
-# 3. How an Async FastAPI Endpoint Works
+# 2. How FastAPI Async Execution Works
 
-A typical FastAPI application uses the following stack:
+A common FastAPI request path looks like this:
 
 ```mermaid
 flowchart TD
-    C[Client] --> U[Uvicorn or another<br/>ASGI server]
-    U --> L[ASGI event loop]
-    L --> S[Starlette]
-    S --> F["FastAPI routing, dependencies, validation"]
-    F --> E[Your endpoint]
-    E --> I["Database, Redis, external APIs, files, queues"]
+    C[Client] --> U[Uvicorn / ASGI Server]
+    U --> S[Starlette]
+    S --> F[FastAPI Routing + Dependencies + Validation]
+    F --> E[Endpoint]
+    E --> I[Database / Redis / External API]
 ```
 
-FastAPI is built on Starlette, while Uvicorn is commonly used as the ASGI server.
+FastAPI is built on **Starlette**, and applications are commonly served using **Uvicorn**.
 
-## 3.1 Request lifecycle
+When an async endpoint reaches an incomplete `await`:
+
+1. The coroutine is suspended.
+2. The event loop runs another ready task.
+3. The awaited operation finishes.
+4. The coroutine becomes ready again.
+5. Execution continues after the `await`.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant U as Uvicorn
+    participant A as ASGI Server
     participant F as FastAPI
-    participant E as Endpoint
     participant D as Database
-    participant O as Other Requests
 
-    C->>U: HTTP request
-    U->>F: ASGI request
-    F->>F: Route, dependencies, validation
-    F->>E: Call async endpoint
-    E->>D: await database query
-    Note over E,D: Endpoint is suspended
-    U->>O: Process other requests
-    D-->>E: Query result
-    E-->>F: Return data
-    F-->>U: Serialize response
-    U-->>C: HTTP response
+    C->>A: Request
+    A->>F: Run endpoint
+    F->>D: await query
+    Note over F,D: Endpoint is suspended
+    A->>A: Serve other requests
+    D-->>F: Result ready
+    F-->>A: Response
+    A-->>C: HTTP response
 ```
-
-## 3.2 The event loop
-
-The event loop manages asynchronous tasks. A task keeps running until it:
-
-- Reaches an `await` that is not immediately complete
-- Finishes
-- Raises an exception
-- Is cancelled
-
-When a task pauses at `await`, the loop can run another ready task.
-
-A simplified mental model is:
-
-```python
-while application_is_running:
-    ready_task = get_next_ready_task()
-    run_task_until_it_waits_or_finishes(ready_task)
-```
-
-The actual event loop is more sophisticated, but this model is useful for understanding endpoint behaviour.
 
 ---
 
-# 4. `def` vs `async def` in FastAPI
+# 3. `def` vs `async def`
 
 FastAPI supports both styles.
 
-## 4.1 Async endpoint
+## 3.1 Use `async def` for awaitable I/O
 
-```python
-@app.get("/products")
-async def list_products():
-    products = await product_repository.list_all()
-    return products
-```
+Use it when the important I/O calls underneath the endpoint provide async APIs.
 
-Use `async def` when the libraries called by the endpoint provide awaitable APIs.
+Common examples:
 
-Typical examples:
-
-- `httpx.AsyncClient`
 - SQLAlchemy `AsyncSession`
 - `asyncpg`
+- `httpx.AsyncClient`
 - Async Redis clients
-- Async message broker clients
-- Async cloud SDK operations
+- Async message-broker clients
 
-## 4.2 Synchronous endpoint
+```python
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    return await user_repository.get(user_id)
+```
+
+## 3.2 Use `def` for blocking libraries
+
+A normal FastAPI path operation declared with `def` is executed in a thread pool so that it does not directly block the main event loop.
 
 ```python
 @app.get("/legacy-report")
-def generate_legacy_report():
+def legacy_report():
     return legacy_sdk.generate_report()
 ```
 
-A normal `def` path operation is executed by FastAPI/Starlette in an external thread pool. This prevents the synchronous handler from directly blocking the main event loop.
+This is useful when a library has no async API.
 
-Use `def` when the endpoint mainly calls a blocking library that has no async API.
+## 3.3 Decision Guide
 
-## 4.3 Decision table
+| Work inside endpoint | Recommended approach |
+|---|---|
+| Async DB / HTTP / Redis client | `async def` + `await` |
+| Blocking DB driver or SDK | `def`, or explicitly offload |
+| Small in-memory calculation | Either |
+| Mixed async + blocking calls | `async def` + explicit thread offload |
+| Heavy CPU calculation | Process or external worker |
+| Long reliable job | Queue + worker |
 
-| Endpoint work | Recommended style | Reason |
-|---|---|---|
-| Async database driver | `async def` | The query can be awaited |
-| Async HTTP client | `async def` | Network waiting does not block the loop |
-| Blocking database driver | `def` | FastAPI runs the handler in a thread pool |
-| Blocking vendor SDK | `def` | Isolates blocking I/O from the event loop |
-| Small in-memory calculation | Either | Execution is brief |
-| Heavy CPU calculation | Neither alone is enough | Use a process, worker, or task queue |
-| Mixed async and blocking calls | `async def` plus explicit offloading | Keep the event loop unblocked |
+## 3.4 Important Helper-Function Rule
 
-## 4.4 Important detail about helper functions
+FastAPI automatically offloads **sync path operations and sync dependencies** that it manages.
 
-FastAPI automatically manages path operation functions and dependencies. It does not automatically inspect and offload every helper function you call.
+It does **not** inspect every helper function called from inside `async def`.
 
 ```python
-def blocking_helper() -> str:
-    # Blocking operation
+def blocking_helper():
     return legacy_client.fetch_data()
 
-@app.get("/data")
-async def get_data():
-    # Called directly on the event-loop thread: dangerous.
-    return blocking_helper()
+@app.get("/bad")
+async def bad():
+    return blocking_helper()  # still blocks the event-loop thread
 ```
 
-A normal helper called inside `async def` runs normally on the same thread. It is **not** automatically moved to FastAPI's thread pool.
+If that helper performs slow blocking I/O, explicitly offload it.
+
+```python
+import asyncio
+
+result = await asyncio.to_thread(blocking_helper)
+```
+
+Starlette also provides `run_in_threadpool()`.
 
 ---
 
-# 5. Why FastAPI Is Fast
+# 4. Blocking the Event Loop
 
-FastAPI's performance comes from several layers working together.
+This is the most important practical rule:
 
-## 5.1 ASGI architecture
+> Do not run slow blocking operations directly inside `async def`.
 
-ASGI supports asynchronous applications, long-lived connections, streaming, and WebSockets.
-
-Unlike the traditional synchronous WSGI model, an ASGI application can wait for I/O without dedicating one application thread to doing nothing for the entire wait.
-
-## 5.2 Efficient server layer
-
-Uvicorn is a lightweight ASGI server. It handles the network protocol and passes ASGI messages to the application.
-
-Depending on installation and platform, Uvicorn can use efficient event-loop and protocol implementations. The actual configuration must be measured in the target environment rather than assumed.
-
-## 5.3 Starlette
-
-FastAPI uses Starlette for the core web framework features, including:
-
-- ASGI request and response handling
-- Routing
-- Middleware
-- WebSockets
-- Streaming
-- Background tasks
-- Thread-pool integration
-
-Starlette is intentionally lightweight and designed for asynchronous web services.
-
-## 5.4 Async I/O concurrency
-
-FastAPI can keep many I/O-bound requests in progress without creating one operating-system thread for every request.
-
-This is especially valuable when request latency is dominated by external systems.
-
-For example, assume each request spends about 5 ms executing Python code and 95 ms waiting for a database or API. A synchronous design may keep a worker occupied for approximately 100 ms. An async design can use much of the 95 ms waiting period to progress other requests.
-
-## 5.5 Pydantic validation and serialization
-
-FastAPI uses Pydantic for request validation, response serialization, and schema generation. Modern Pydantic uses `pydantic-core`, whose core validation logic is implemented in Rust.
-
-This helps FastAPI provide strong validation without requiring a large amount of manually written parsing code.
-
-## 5.6 Low framework overhead
-
-FastAPI is built close to Starlette and Uvicorn. It adds API-oriented features such as:
-
-- Type-based request parsing
-- Dependency injection
-- Validation
-- OpenAPI generation
-- Response models
-
-These features add some overhead compared with raw Uvicorn or Starlette, but FastAPI remains one of the faster Python API frameworks in common benchmark suites.
-
-## 5.7 What “FastAPI is fast” does not mean
-
-FastAPI cannot make slow application logic disappear.
-
-The following can still make an application slow:
-
-- Unindexed database queries
-- N+1 queries
-- Slow downstream APIs
-- Blocking calls inside async endpoints
-- Excessive response validation
-- Large JSON payloads
-- CPU-heavy work
-- Connection-pool exhaustion
-- Too many retries
-- Logging large request or response bodies
-- Network latency
-
-> Framework performance matters, but application architecture and external dependencies normally matter more.
-
----
-
-# 6. Blocking the Event Loop
-
-The most important rule of async FastAPI development is:
-
-> Do not execute slow blocking operations directly inside `async def`.
-
-## 6.1 Incorrect: blocking sleep
+## Blocking
 
 ```python
 import time
-from fastapi import FastAPI
-
-app = FastAPI()
 
 @app.get("/bad")
 async def bad_endpoint():
@@ -345,15 +204,12 @@ async def bad_endpoint():
     return {"status": "done"}
 ```
 
-`time.sleep(5)` blocks the event-loop thread. During that time, other tasks assigned to that event loop cannot make normal progress.
+`time.sleep()` blocks the event-loop thread. Other tasks on that worker cannot make normal progress during the sleep.
 
-## 6.2 Correct: asynchronous sleep
+## Non-blocking
 
 ```python
 import asyncio
-from fastapi import FastAPI
-
-app = FastAPI()
 
 @app.get("/good")
 async def good_endpoint():
@@ -361,117 +217,292 @@ async def good_endpoint():
     return {"status": "done"}
 ```
 
-`asyncio.sleep()` suspends the current task and allows the loop to run other tasks.
+`asyncio.sleep()` suspends only the current coroutine.
 
-## 6.3 Blocking library inside an async endpoint
+### Common blocking calls to watch
 
-Suppose a legacy SDK is synchronous:
+- `requests.get(...)`
+- `time.sleep(...)`
+- Sync SQLAlchemy sessions
+- `psycopg2`
+- Sync Redis clients
+- `boto3` calls
+- Large file operations
+- `subprocess.run(...)`
+- Heavy Pandas transformations
 
-```python
-def fetch_customer_from_legacy_sdk(customer_id: int) -> dict:
-    return legacy_sdk.get_customer(customer_id)
-```
-
-You can explicitly offload it:
-
-```python
-from starlette.concurrency import run_in_threadpool
-
-@app.get("/customers/{customer_id}")
-async def get_customer(customer_id: int):
-    customer = await run_in_threadpool(
-        fetch_customer_from_legacy_sdk,
-        customer_id,
-    )
-    return customer
-```
-
-Another Python-level option is `asyncio.to_thread()`:
-
-```python
-import asyncio
-
-@app.get("/customers/{customer_id}")
-async def get_customer(customer_id: int):
-    customer = await asyncio.to_thread(
-        fetch_customer_from_legacy_sdk,
-        customer_id,
-    )
-    return customer
-```
-
-Use offloading deliberately. A thread pool has finite capacity and is not a solution for unlimited blocking work.
-
-## 6.4 Common blocking operations
-
-Be careful with:
-
-```python
-requests.get(...)
-time.sleep(...)
-subprocess.run(...)
-open(...).read()
-pandas.read_csv(...)
-boto3_client.some_operation(...)
-synchronous_database_session.execute(...)
-```
-
-Some operations are very quick for small inputs, but they are still synchronous. Their effect must be evaluated based on latency, input size, concurrency, and frequency.
-
-## 6.5 Async replacements
-
-| Blocking operation | Async-friendly alternative |
-|---|---|
-| `requests` | `httpx.AsyncClient` or `aiohttp` |
-| `time.sleep` | `asyncio.sleep` |
-| Sync SQLAlchemy session | SQLAlchemy `AsyncSession` |
-| `psycopg2` | `asyncpg` or an async SQLAlchemy-compatible driver |
-| Sync Redis client | Async Redis client |
-| Blocking helper | `run_in_threadpool()` or `asyncio.to_thread()` |
-| Heavy CPU calculation | Process pool or external worker |
+A blocking operation is not automatically safe just because it appears inside an `async def`.
 
 ---
 
-# 7. Async I/O in Real Applications
+# 5. Concurrent I/O
 
-## 7.1 Calling an external API
+Multiple `await` statements are sequential unless you explicitly schedule independent operations concurrently.
+
+## Sequential
 
 ```python
-import httpx
-from fastapi import FastAPI, HTTPException
-
-app = FastAPI()
-
-@app.get("/exchange-rates")
-async def get_exchange_rates():
-    timeout = httpx.Timeout(5.0)
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get("https://example.com/api/rates")
-
-    if response.is_error:
-        raise HTTPException(
-            status_code=502,
-            detail="Rate provider failed",
-        )
-
-    return response.json()
+user = await get_user(user_id)
+orders = await get_orders(user_id)
+pricing = await get_pricing(user_id)
 ```
 
-This works, but creating a new client for every request prevents effective connection reuse.
+If each independent call takes about 200 ms, total waiting can approach 600 ms.
 
-## 7.2 Reusing an HTTP client with lifespan
+## Concurrent
 
 ```python
+user, orders, pricing = await asyncio.gather(
+    get_user(user_id),
+    get_orders(user_id),
+    get_pricing(user_id),
+)
+```
+
+The total waiting time may be closer to the slowest operation.
+
+```mermaid
+gantt
+    title Sequential vs Concurrent I/O
+    dateFormat X
+    axisFormat %L ms
+
+    section Sequential
+    User    :0, 200
+    Orders  :200, 400
+    Pricing :400, 600
+
+    section Concurrent
+    User    :0, 200
+    Orders  :0, 200
+    Pricing :0, 200
+```
+
+## Bound concurrency
+
+Do not fan out thousands of tasks without limits.
+
+```python
+semaphore = asyncio.Semaphore(20)
+
+async def fetch_with_limit(item_id: int):
+    async with semaphore:
+        return await fetch_item(item_id)
+```
+
+The limit should reflect:
+
+- DB connection-pool size
+- HTTP connection-pool size
+- Downstream API capacity
+- Memory
+- Rate limits
+
+### `gather()` vs `TaskGroup`
+
+`asyncio.gather()` is widely used and simple.
+
+For Python 3.11+, `asyncio.TaskGroup` provides structured concurrency and stronger failure handling: if one child task fails, remaining child tasks are cancelled automatically when leaving the task group.
+
+---
+
+# 6. Database and Connection Pools
+
+Async database access improves concurrency, but it does not make inefficient queries fast.
+
+```python
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+async def find_active_users(session: AsyncSession):
+    result = await session.execute(
+        select(User).where(User.is_active.is_(True))
+    )
+    return result.scalars().all()
+```
+
+## Practical rules
+
+- Use an async-compatible database driver.
+- Use a session per request or unit of work.
+- Do not share one `AsyncSession` across unrelated concurrent tasks.
+- Keep transactions short.
+- Avoid N+1 queries.
+- Add indexes based on real query patterns.
+- Paginate large result sets.
+- Configure the connection pool intentionally.
+
+## Pool bottleneck
+
+An async API can accept many requests even when the database cannot execute all of them immediately.
+
+```mermaid
+flowchart TD
+    A[500 API Tasks] --> B[20 Tasks Use DB Connections]
+    A --> C[Remaining Tasks Wait for Pool]
+```
+
+Async makes waiting efficient. It does **not** increase database capacity.
+
+> The connection pool should protect the database, not simply match incoming request concurrency.
+
+---
+
+# 7. CPU-Bound and Background Work
+
+Async is mainly useful for **I/O-bound** workloads.
+
+CPU-heavy work includes:
+
+- Image processing
+- PDF rendering
+- Video conversion
+- Compression
+- Large data transformations
+- ML inference
+- Complex report generation
+
+Running CPU-heavy Python directly inside `async def` blocks the event loop.
+
+```mermaid
+flowchart TD
+    A[FastAPI Request] --> B{Work Type}
+    B -->|Async I/O| C[await it]
+    B -->|Blocking I/O| D[Thread / sync endpoint]
+    B -->|CPU-heavy| E[Process / Worker]
+    B -->|Long durable job| F[Queue + Worker]
+```
+
+## Thread vs Process
+
+- **Thread:** useful for blocking I/O.
+- **Process:** useful for CPU-heavy Python work.
+- **External worker / queue:** best when work is long-running, retryable, or must survive application restarts.
+
+FastAPI `BackgroundTasks` is useful for small in-process post-response work, but it is not a durable job system.
+
+Use an external queue when execution must be reliable.
+
+---
+
+# 8. Workers and Scaling
+
+Each worker process has its own:
+
+- Python interpreter
+- Event loop
+- Memory
+- Connection pools
+- In-memory cache
+- Application state
+
+```mermaid
+flowchart LR
+    LB[Load Balancer] --> W1[Worker 1]
+    LB --> W2[Worker 2]
+    LB --> W3[Worker 3]
+
+    W1 --> E1[Event Loop]
+    W2 --> E2[Event Loop]
+    W3 --> E3[Event Loop]
+```
+
+Multiple workers help use multiple CPU cores and provide process isolation.
+
+Example:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+Do not choose the worker count using a fixed formula only. Measure:
+
+- CPU
+- Memory
+- Request latency
+- DB limits
+- Blocking work
+- Payload size
+- Downstream capacity
+
+Also remember that four workers can create four separate database pools.
+
+---
+
+# 9. Testing and Observability
+
+Async behavior should be tested under both functional and load conditions.
+
+## Async endpoint test
+
+```python
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+@pytest.mark.anyio
+async def test_health():
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+```
+
+## Important production signals
+
+Monitor:
+
+- p50 / p95 / p99 latency
+- Error rate
+- In-flight requests
+- Event-loop lag
+- Thread-pool saturation
+- DB connection wait time
+- Downstream latency
+- Timeouts
+- Task cancellations
+- Worker restarts
+
+A service can have low CPU and still be overloaded because tasks are waiting on exhausted connection pools or slow downstream systems.
+
+### Thread-pool limit
+
+Starlette uses AnyIO for sync work. The documented default limiter is currently **40 tokens**, shared with other sync work that uses the same limiter.
+
+Do not increase it blindly. More threads may increase memory usage, context switching, DB pressure, and lock contention.
+
+---
+
+# 10. Practical Example
+
+The following endpoint demonstrates the most common real-world async pattern:
+
+- Reuse one async HTTP client.
+- Set timeouts.
+- Run independent calls concurrently.
+- Map downstream errors properly.
+
+```python
+import asyncio
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(5.0),
+        timeout=httpx.Timeout(
+            connect=2.0,
+            read=5.0,
+            write=5.0,
+            pool=1.0,
+        ),
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
@@ -483,712 +514,21 @@ async def lifespan(app: FastAPI):
     finally:
         await app.state.http_client.aclose()
 
+
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/catalog")
-async def get_catalog(request: Request):
-    client: httpx.AsyncClient = request.app.state.http_client
-    response = await client.get("https://example.com/api/catalog")
-    response.raise_for_status()
-    return response.json()
-```
 
-Benefits:
-
-- Reuses TCP connections
-- Reuses TLS sessions where possible
-- Controls connection-pool limits
-- Centralizes timeout configuration
-- Closes resources during shutdown
-
-## 7.3 Add explicit timeouts
-
-Never allow a downstream request to wait forever.
-
-```python
-timeout = httpx.Timeout(
-    connect=2.0,
-    read=5.0,
-    write=5.0,
-    pool=1.0,
-)
-```
-
-Different timeout types protect against different failures:
-
-| Timeout | Protects against |
-|---|---|
-| Connect | Slow or unreachable connection establishment |
-| Read | Downstream stops returning response data |
-| Write | Request upload stalls |
-| Pool | Waiting too long for a free connection |
-
----
-
-# 8. Running Independent Operations Concurrently
-
-Async code is not automatically concurrent just because it uses `await`.
-
-## 8.1 Sequential awaits
-
-```python
-user = await get_user(user_id)
-orders = await get_orders(user_id)
-recommendations = await get_recommendations(user_id)
-```
-
-If each operation takes 200 ms, the total waiting time may be approximately 200 ms + 200 ms + 200 ms = 600 ms. This is correct when later operations depend on earlier results.
-
-## 8.2 Concurrent independent operations
-
-```python
-import asyncio
-
-user, orders, recommendations = await asyncio.gather(
-    get_user(user_id),
-    get_orders(user_id),
-    get_recommendations(user_id),
-)
-```
-
-If the operations are independent and each takes around 200 ms, the combined waiting time may be closer to the slowest operation rather than their sum.
-
-```mermaid
-gantt
-    title Sequential vs Concurrent Waiting
-    dateFormat X
-    axisFormat %L ms
-
-    section Sequential
-    User            :0, 200
-    Orders          :200, 400
-    Recommendations :400, 600
-
-    section Concurrent
-    User            :0, 200
-    Orders          :0, 200
-    Recommendations :0, 200
-```
-
-Actual latency also includes scheduling, connection acquisition, serialization, network variation, and downstream processing.
-
-## 8.3 Do not create unbounded concurrency
-
-This is dangerous:
-
-```python
-results = await asyncio.gather(
-    *(fetch_item(item_id) for item_id in thousands_of_ids)
-)
-```
-
-It may create thousands of simultaneous operations and exhaust:
-
-- Database connections
-- HTTP connections
-- Memory
-- File descriptors
-- Downstream service capacity
-
-Use bounded concurrency:
-
-```python
-import asyncio
-
-semaphore = asyncio.Semaphore(20)
-
-async def fetch_with_limit(item_id: int):
-    async with semaphore:
-        return await fetch_item(item_id)
-
-results = await asyncio.gather(
-    *(fetch_with_limit(item_id) for item_id in item_ids)
-)
-```
-
-The correct limit depends on downstream capacity, connection pools, latency, and service-level objectives.
-
-## 8.4 Error behaviour
-
-By default, an exception from one `asyncio.gather()` operation is propagated to the caller.
-
-Handle failures based on business requirements:
-
-- Fail the entire request
-- Return partial results
-- Retry selected transient errors
-- Replace failed optional data with a fallback
-- Cancel unnecessary sibling operations
-
-Do not hide errors by using broad `except Exception` blocks without logging and a clear fallback policy.
-
----
-
-# 9. CPU-Bound Work
-
-Async performs best for I/O-bound workloads. It does not make CPU-heavy Python code non-blocking.
-
-Examples of CPU-bound work:
-
-- Image resizing
-- Video conversion
-- PDF rendering
-- Large data transformations
-- Compression
-- Password hashing with expensive settings
-- Machine-learning inference
-- Complex report generation
-- Large cryptographic operations
-
-## 9.1 Incorrect
-
-```python
-@app.post("/generate-report")
-async def generate_report(payload: ReportInput):
-    report = build_large_report(payload)  # CPU-heavy
-    return report
-```
-
-The CPU-heavy function blocks the event loop until it finishes.
-
-## 9.2 Better architectures
-
-### Small or occasional CPU work
-
-Use a process pool after measuring the overhead:
-
-```python
-import asyncio
-from concurrent.futures import ProcessPoolExecutor
-
-process_pool = ProcessPoolExecutor()
-
-@app.post("/generate-report")
-async def generate_report(payload: ReportInput):
-    loop = asyncio.get_running_loop()
-
-    report = await loop.run_in_executor(
-        process_pool,
-        build_large_report,
-        payload,
-    )
-
-    return report
-```
-
-### Long-running or business-critical work
-
-Use an external job system:
-
-```mermaid
-flowchart TD
-    A[FastAPI request] --> B[Validate input]
-    B --> C[Publish job to queue]
-    C --> D[Return 202 Accepted<br/>and job ID]
-    D --> E[Worker processes job]
-    E --> F[Store result and status]
-    F --> G[Client polls or<br/>receives notification]
-```
-
-Suitable technologies include task queues, message brokers, managed queues, and dedicated worker services.
-
-Advantages:
-
-- Durable execution
-- Retry policy
-- Independent scaling
-- Failure isolation
-- Job status tracking
-- Better request latency
-- Easier resource control
-
-> Threads help isolate blocking I/O. Processes or separate workers are normally better for CPU-heavy work.
-
----
-
-# 10. Dependencies and Async Resource Management
-
-FastAPI dependencies may also use `def` or `async def`.
-
-## 10.1 Async dependency
-
-```python
-from typing import Annotated
-
-from fastapi import Depends
-
-async def get_current_user(
-    token: Annotated[str, Depends(read_access_token)],
-):
-    return await user_service.find_by_token(token)
-```
-
-## 10.2 Sync dependency
-
-```python
-def read_settings() -> Settings:
-    return load_settings_from_legacy_source()
-```
-
-A synchronous dependency managed by FastAPI is run in the external thread pool.
-
-## 10.3 Dependency with `yield`
-
-Use an async dependency to acquire and release an async resource.
-
-```python
-from collections.abc import AsyncIterator
-from typing import Annotated
-
-from fastapi import Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-
-async def get_db_session() -> AsyncIterator[AsyncSession]:
-    async with async_session_factory() as session:
-        yield session
-
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
-```
-
-FastAPI runs the setup code before the endpoint and the cleanup code after the endpoint finishes.
-
-```mermaid
-flowchart LR
-    A[Request] --> B[Open async session]
-    B --> C[yield session]
-    C --> D[Run endpoint]
-    D --> E[Close session]
-    E --> F[Response completed]
-```
-
-## 10.4 Match the whole call chain
-
-An endpoint is only safely asynchronous when its important I/O dependencies are also async.
-
-```text
-async endpoint
-  ├── async dependency
-  ├── async database driver
-  ├── async HTTP client
-  └── async Redis client
-```
-
-A single slow blocking operation can still block the event loop.
-
----
-
-# 11. Database Considerations
-
-Async database access can increase concurrency, but it does not repair inefficient data access.
-
-## 11.1 Async SQLAlchemy example
-
-```python
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-async def find_active_users(
-    session: AsyncSession,
-) -> list[User]:
-    statement = select(User).where(User.is_active.is_(True))
-    result = await session.execute(statement)
-    return list(result.scalars().all())
-
-@app.get("/users", response_model=list[UserResponse])
-async def list_users(session: DbSession):
-    return await find_active_users(session)
-```
-
-## 11.2 Important database rules
-
-- Use an async-compatible database driver.
-- Create a session per request or unit of work.
-- Do not share one `AsyncSession` across unrelated concurrent tasks.
-- Configure the connection pool intentionally.
-- Keep transactions as short as practical.
-- Add indexes based on actual query patterns.
-- Avoid N+1 query patterns.
-- Paginate large result sets.
-- Select only required columns where appropriate.
-- Measure query execution time separately from API time.
-
-## 11.3 Connection-pool bottleneck
-
-Suppose the API accepts 500 concurrent requests but the database pool allows only 20 active connections.
-
-```mermaid
-flowchart TD
-    A[500 API tasks] --> B[20 tasks use<br/>database connections]
-    A --> C[480 tasks wait<br/>for the pool]
-```
-
-Async allows waiting tasks to avoid blocking the event loop, but it does not increase database capacity.
-
-The pool should protect the database, not simply match the number of incoming requests.
-
----
-
-# 12. Thread Pool Behaviour
-
-When a path operation or dependency is defined using normal `def`, FastAPI/Starlette runs it in a thread pool.
-
-```mermaid
-flowchart LR
-    A[ASGI Event Loop] --> B{Handler type}
-    B -->|async def| C[Run as coroutine]
-    B -->|def| D[Run in thread pool]
-    C --> E[Await async I/O]
-    D --> F[Blocking work occupies thread]
-```
-
-## 12.1 Thread-pool capacity is limited
-
-Starlette currently uses AnyIO's thread-pool limiter. Its documented default limit is 40 tokens, shared with other synchronous work using the same limiter.
-
-This means synchronous routes are not infinitely scalable. If many blocking handlers occupy all available thread slots, additional work must wait.
-
-Do not increase the limit blindly. More threads can increase:
-
-- Memory usage
-- Context switching
-- Downstream pressure
-- Database connections
-- Lock contention
-
-Measure first and prefer native async clients for high-volume I/O when practical.
-
-## 12.2 Thread pool and the GIL
-
-Thread-pool threads are still bound by the GIL, so CPU-bound work does not scale across them — see [The GIL](../python/gil.md).
-
----
-
-# 13. Background Tasks
-
-FastAPI supports in-process background tasks that run after the response is sent.
-
-```python
-from fastapi import BackgroundTasks, FastAPI
-
-app = FastAPI()
-
-def write_audit_record(user_id: int) -> None:
-    audit_repository.write(user_id)
-
-@app.post("/users/{user_id}/notify")
-async def notify_user(
-    user_id: int,
-    background_tasks: BackgroundTasks,
-):
-    background_tasks.add_task(write_audit_record, user_id)
-    return {"accepted": True}
-```
-
-Good use cases:
-
-- Small audit writes
-- Non-critical notification work
-- Lightweight cleanup
-- Small post-response actions
-
-Avoid using in-process background tasks for:
-
-- Long-running jobs
-- CPU-heavy processing
-- Tasks that must survive a process restart
-- Financial or transactional operations requiring guaranteed execution
-- Large batches
-- Complex retry workflows
-
-The task runs in the application process. If that process stops, unfinished work may be lost.
-
-Use a durable queue and separate worker when execution must be reliable.
-
----
-
-# 14. Workers, Event Loops, and Scaling
-
-One process normally has its own event loop and memory space.
-
-```mermaid
-flowchart LR
-    LB[Load balancer] --> W1[Worker process 1]
-    LB --> W2[Worker process 2]
-    LB --> W3[Worker process 3]
-    LB --> W4[Worker process 4]
-    W1 --> E1[Event loop 1]
-    W2 --> E2[Event loop 2]
-    W3 --> E3[Event loop 3]
-    W4 --> E4[Event loop 4]
-    E1 --> T1[Many concurrent tasks]
-    E2 --> T2[Many concurrent tasks]
-    E3 --> T3[Many concurrent tasks]
-    E4 --> T4[Many concurrent tasks]
-```
-
-## 14.1 Why use multiple workers?
-
-Multiple processes can:
-
-- Use multiple CPU cores
-- Isolate process failures
-- Increase capacity for mixed workloads
-- Reduce the effect of one blocked event loop
-
-Example: `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4`
-
-Current FastAPI documentation also describes worker support through the `fastapi` CLI.
-
-## 14.2 Workers are not free
-
-Each worker has separate:
-
-- Python interpreter
-- Event loop
-- Memory
-- Application state
-- Connection pools
-- In-memory caches
-- Model instances
-
-Four workers may create four independent database pools. Pool configuration must therefore be considered across all workers and all application replicas.
-
-## 14.3 Container environments
-
-In orchestrated environments, a common design runs one application process per container, with multiple container replicas providing scale. This allows the platform to manage replication, restarts, health checks, and scaling. The correct approach depends on the deployment platform and operational requirements.
-
-## 14.4 Measure instead of guessing
-
-Worker count depends on:
-
-- CPU cores
-- Memory
-- I/O wait
-- Blocking code
-- Database limits
-- Payload sizes
-- Downstream capacity
-- Required latency
-- Traffic pattern
-
-Load testing is more reliable than a fixed formula.
-
----
-
-# 15. Testing Async Endpoints
-
-FastAPI supports asynchronous tests using HTTPX.
-
-```python
-import pytest
-from httpx import ASGITransport, AsyncClient
-
-from app.main import app
-
-@pytest.mark.anyio
-async def test_health_endpoint():
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://test",
-    ) as client:
-        response = await client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-```
-
-Async tests are useful when the test must also await:
-
-- Async repository methods
-- Async fixture setup
-- Database operations
-- Message-broker operations
-- Async external-service mocks
-
-## 15.1 What to test
-
-Test more than successful responses:
-
-- Timeout handling
-- Downstream service failure
-- Cancellation
-- Connection-pool exhaustion
-- Concurrent requests
-- Partial failure in `gather`
-- Validation failures
-- Cleanup after exceptions
-- Transaction rollback
-- Application shutdown
-
-## 15.2 Load testing
-
-Unit tests cannot prove concurrency performance.
-
-Use load tests to measure:
-
-- Requests per second
-- p50, p95, and p99 latency
-- Error rate
-- Event-loop lag
-- Thread-pool saturation
-- Database pool wait time
-- CPU and memory
-- Downstream latency
-- Timeouts and retries
-
-Test realistic payloads and downstream behaviour.
-
----
-
-# 16. Performance and Reliability Practices
-
-## 16.1 Use async end to end
-
-```mermaid
-flowchart TD
-    R[async route] --> S[async service]
-    S --> P[async repository]
-    P --> D[async driver]
-```
-
-Avoid mixing in hidden blocking libraries.
-
-## 16.2 Set timeouts everywhere
-
-Apply timeouts to:
-
-- HTTP clients
-- Database queries where supported
-- Connection-pool acquisition
-- Redis
-- Message brokers
-- File storage
-- Internal service calls
-
-## 16.3 Reuse clients and pools
-
-Create long-lived clients during application startup and close them during shutdown.
-
-Examples:
-
-- HTTP client
-- Database engine
-- Redis pool
-- Message-broker connection
-
-Do not create an expensive network client for every request unless isolation is specifically required.
-
-## 16.4 Bound concurrency
-
-Protect downstream systems with:
-
-- Semaphores
-- Connection-pool limits
-- Queue limits
-- Rate limits
-- Server concurrency limits
-- Backpressure
-- Circuit breakers where appropriate
-
-## 16.5 Keep endpoints thin
-
-A clean structure is:
-
-```mermaid
-flowchart TD
-    E[Endpoint] --> S[Application service]
-    S --> R[Repository or external client]
-    R --> I[Infrastructure]
-```
-
-The endpoint should focus on HTTP concerns. Async decisions should be consistent across the service and infrastructure layers.
-
-## 16.6 Avoid unnecessary concurrency
-
-Do not use `gather()` when:
-
-- Operation B depends on Operation A
-- All tasks compete for the same locked resource
-- The downstream service cannot handle the fan-out
-- The result set is very large
-- Sequential execution is required by business rules
-
-## 16.7 Handle cancellation
-
-A client may disconnect or a timeout may cancel a task. Cleanup should use `finally`, context managers, or dependency cleanup.
-
-```python
-async def use_resource():
-    resource = await acquire_resource()
-
-    try:
-        return await perform_work(resource)
-    finally:
-        await resource.close()
-```
-
-Do not suppress `asyncio.CancelledError` unless there is a specific reason and cancellation is correctly propagated afterward.
-
-## 16.8 Observe event-loop health
-
-Useful production signals include:
-
-- Event-loop lag
-- Number of in-flight requests
-- Thread-pool queueing
-- Database connection wait
-- Downstream timeout counts
-- Task cancellations
-- Worker restarts
-- Request duration by route
-
-A service may show low CPU while still being overloaded because it is waiting on exhausted pools or downstream systems.
-
-## 16.9 Optimize only after measuring
-
-Recommended order:
-
-1. Measure endpoint latency.
-2. Separate application time from database and external-service time.
-3. Find blocking operations.
-4. Inspect query count and query plans.
-5. Check connection-pool waiting.
-6. Check CPU, memory, and event-loop lag.
-7. Change one bottleneck.
-8. Load test again.
-
----
-
-# 17. Practical Decision Guide
-
-| Situation | Recommended action |
-|---|---|
-| Awaitable network or database library | Use `async def` |
-| Synchronous blocking SDK | Use `def` or offload explicitly |
-| Blocking call accidentally inside `async def` | Replace it or move it to a thread |
-| Several independent async calls | Run concurrently with a safe limit |
-| Heavy CPU processing | Use processes or a worker service |
-| Long, durable task | Queue it and return a job ID |
-| Many sync endpoints | Monitor thread-pool capacity |
-| High API concurrency | Tune downstream pools and apply backpressure |
-| Slow API despite async | Profile database, network, serialization, and blocking code |
-
----
-
-# 18. Complete Example
-
-This reuses the shared `httpx.AsyncClient` from section 7.2's lifespan and the concurrent-call pattern from section 8.2, plus one detail not shown elsewhere: mapping each downstream failure to a distinct HTTP status code instead of one generic error.
-
-```python
-async def fetch_json(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
+async def fetch_json(
+    client: httpx.AsyncClient,
+    url: str,
+) -> dict:
     response = await client.get(url)
     response.raise_for_status()
     return response.json()
 
+
 @app.get("/products/{product_id}/summary")
-async def get_product_summary(product_id: int, request: Request):
+async def product_summary(product_id: int, request: Request):
     client: httpx.AsyncClient = request.app.state.http_client
     base_url = "https://example.com/internal"
 
@@ -1198,63 +538,68 @@ async def get_product_summary(product_id: int, request: Request):
             fetch_json(client, f"{base_url}/inventory/{product_id}"),
             fetch_json(client, f"{base_url}/pricing/{product_id}"),
         )
+
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status_code=504,
             detail="A downstream service timed out",
         ) from exc
+
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         raise HTTPException(
             status_code=502,
             detail="A downstream service failed",
         ) from exc
 
-    return {"product": product, "inventory": inventory, "pricing": pricing}
+    return {
+        "product": product,
+        "inventory": inventory,
+        "pricing": pricing,
+    }
 ```
 
-A timeout becomes a `504`; a bad status or an unreachable connection becomes a `502`. Returning one of these instead of a generic `500` is what distinguishes a production-ready error path from a merely working one.
+### Why this design works
+
+```mermaid
+flowchart TD
+    A[Request] --> B[Get Shared AsyncClient]
+    B --> C[Start 3 Independent Requests]
+    C --> D1[Product API]
+    C --> D2[Inventory API]
+    C --> D3[Pricing API]
+    D1 --> E[Wait Concurrently]
+    D2 --> E
+    D3 --> E
+    E --> F[Build Response]
+```
+
+The endpoint does not create a new HTTP client per request, the network calls are awaitable, independent calls overlap, and downstream failures are translated into meaningful HTTP responses.
 
 ---
 
-# 20. Official References
+# 11. Interview-Ready Summary
 
-Content reviewed against current official documentation on **July 27, 2026**.
+The main points to remember are:
 
-- FastAPI — Concurrency and `async` / `await`  
-  https://fastapi.tiangolo.com/async/
+- FastAPI uses the **ASGI** model, commonly with Uvicorn and Starlette.
+- `async def` is useful when the endpoint performs **awaitable I/O**.
+- Async improves **concurrency**, not CPU parallelism.
+- Slow blocking calls inside `async def` block the event loop.
+- Sync FastAPI routes and dependencies are executed through a thread pool.
+- FastAPI does not automatically offload arbitrary sync helper functions called inside an async route.
+- Use `asyncio.gather()` or `TaskGroup` for independent async operations, but keep concurrency bounded.
+- Async database access still depends on DB capacity and connection-pool limits.
+- Use threads for blocking I/O, processes for CPU-heavy Python work, and durable queues for long-running reliable jobs.
+- Reuse HTTP clients and connection pools, configure timeouts, and measure before tuning workers or concurrency.
 
-- FastAPI — Benchmarks  
-  https://fastapi.tiangolo.com/benchmarks/
+> **Best mental model:** Use `async` when your application spends time waiting for I/O and the full call chain can cooperate with the event loop.
 
-- FastAPI — Async Tests  
-  https://fastapi.tiangolo.com/advanced/async-tests/
+---
 
-- FastAPI — Dependencies  
-  https://fastapi.tiangolo.com/tutorial/dependencies/
+## Official References Checked
 
-- FastAPI — Dependencies with `yield`  
-  https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield/
-
-- FastAPI — Server Workers  
-  https://fastapi.tiangolo.com/deployment/server-workers/
-
-- FastAPI — Deployment Concepts  
-  https://fastapi.tiangolo.com/deployment/concepts/
-
-- Starlette — Thread Pool  
-  https://www.starlette.io/threadpool/
-
-- Starlette — Introduction  
-  https://www.starlette.io/
-
-- Uvicorn — ASGI  
-  https://www.uvicorn.org/concepts/asgi/
-
-- Uvicorn — Event Loop  
-  https://www.uvicorn.org/concepts/event-loop/
-
-- Python — `asyncio`  
-  https://docs.python.org/3/library/asyncio.html
-
-- Pydantic — Documentation  
-  https://docs.pydantic.dev/
+- FastAPI — Concurrency and `async` / `await`: https://fastapi.tiangolo.com/async/
+- Starlette — Thread Pool: https://www.starlette.io/threadpool/
+- Python — Coroutines and Tasks: https://docs.python.org/3/library/asyncio-task.html
+- Python — `asyncio`: https://docs.python.org/3/library/asyncio.html
+- Pydantic — Documentation: https://docs.pydantic.dev/
