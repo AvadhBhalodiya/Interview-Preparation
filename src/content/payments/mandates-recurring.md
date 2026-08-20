@@ -7,63 +7,70 @@ updated: "3 August 2026"
 
 # Mandates and Recurring Payments
 
-> How a customer's one-time approval becomes a mandate that authorizes future payments, and what a reliable recurring-billing system has to get right.
+> How customer consent becomes a reusable payment mandate, and how backend systems safely execute, retry, reconcile, and audit recurring payments.
 
-## In short
+## In Short
 
-- A **mandate** is standing permission to attempt a debit, not proof a payment succeeded; a **subscription** is the commercial agreement, an **invoice** is the amount owed for one cycle, and a **payment** (one or more **payment attempts**) is the collection itself — model them as separate entities, not one `subscriptions` table.
-- Recurring charges are merchant-initiated and off-session: an authenticated customer-initiated transaction (CIT) establishes the mandate, and later merchant-initiated transactions (MITs) reference it without repeated authentication.
-- Validate the mandate's status and amount limit before every attempt, execute with a deterministic idempotency key backed by a database unique constraint — application checks alone aren't safe under concurrent retries.
-- The synchronous API response is provisional; the webhook is the source of truth for the final state, and events can arrive out of order, so apply an allow-listed state-transition check rather than trusting delivery order.
-- Classify failures before retrying: transient issuer declines follow a dunning schedule (grace period, notifications, then suspension), but a revoked mandate or an amount above the mandate's cap must never be retried blindly.
-- Generate invoices with row-locked claims (`FOR UPDATE SKIP LOCKED`) and a unique constraint per billing period, not one large midnight cron job that times out and duplicates work on restart.
-- In India, transactions above the RBI AFA threshold (₹15,000 general; ₹1,00,000 for insurance, mutual funds, and credit-card bills) require fresh authentication, and the threshold must be versioned config, not hardcoded.
+- A **mandate** is permission to attempt future debits. It does not mean a payment has succeeded.
+- A **subscription** defines what and when to bill; an **invoice** represents what is owed; a **payment** represents collection; a **payment attempt** represents one provider request.
+- The initial customer-approved transaction or setup is normally **on-session / customer-initiated (CIT)**. Later renewals are commonly **off-session / merchant-initiated (MIT)**.
+- Before every recurring charge, validate mandate status, validity, currency, and amount limit.
+- Use deterministic **idempotency keys** and database unique constraints so retries cannot create duplicate charges.
+- Treat provider API responses as provisional when the payment rail is asynchronous; **webhooks and reconciliation** confirm final state.
+- Retry only recoverable failures. A revoked mandate, invalid payment method, or amount above the mandate limit needs customer action rather than blind retrying.
+- In India, the RBI's **Digital Payments – E-mandate Framework, 2026** applies to recurring payments through cards, PPIs, and UPI. General recurring transactions can be processed without fresh AFA up to ₹15,000, while insurance premiums, mutual-fund subscriptions, and credit-card bill payments have a ₹1,00,000 limit.
 
-```mermaid
-erDiagram
-    CUSTOMER ||--o{ SUBSCRIPTION : owns
-    CUSTOMER ||--o{ MANDATE : authorizes
-    SUBSCRIPTION ||--o{ INVOICE : generates
-    INVOICE ||--o{ PAYMENT : collected_by
-    PAYMENT ||--o{ PAYMENT_ATTEMPT : attempted_through
-    MANDATE ||--o{ PAYMENT_ATTEMPT : authorizes
-    PAYMENT_ATTEMPT ||--o| SETTLEMENT : produces
-```
+---
 
-**Interview answer:** A mandate is the customer's standing permission to be charged; a subscription is the commercial agreement describing what and when to bill; an invoice states what is owed for one billing cycle; and a payment, made up of one or more payment attempts, is the actual attempt to collect it — model these as separate entities rather than one `subscriptions` table. Because recurring charges are merchant-initiated and off-session, each attempt must validate the mandate's status and limit, execute with a deterministic idempotency key backed by a database unique constraint, and treat the webhook rather than the synchronous API response as the source of truth for the final state. Classify failures before retrying: a transient issuer decline goes back into a dunning schedule, but a revoked mandate or an amount above the mandate's limit must never be retried blindly.
+# Index
 
-**Gotcha:** A lost or timed-out response after the provider call is not proof the payment failed — the provider may have already succeeded. Retrying with a fresh idempotency key instead of reusing the same attempt's key is what turns that ambiguity into a duplicate charge.
+1. Overview
+2. Core Terminology
+3. Recurring Payment Models
+4. On-Session, Off-Session, CIT, and MIT
+5. End-to-End Recurring Payment Flow
+6. Mandate and Payment Lifecycles
+7. Recommended Domain Model
+8. Reliable Billing and Payment Execution
+9. Retries and Dunning
+10. Cancellation, Plan Changes, and Payment-Method Updates
+11. Reconciliation, Security, and Audit
+12. India-Specific Recurring Payments
+13. Practical Example
+14. Testing, Observability, and Production Practices
+15. References
 
 ---
 
 # 1. Overview
 
-A **recurring payment** is a payment collected repeatedly using previously approved customer instructions.
+A **recurring payment** is a payment collected repeatedly using instructions that the customer approved earlier.
 
-Common examples include:
+Common use cases include:
 
-- Monthly software subscriptions
+- SaaS and OTT subscriptions
 - Insurance premiums
 - Loan or EMI repayments
 - Utility bills
-- Mutual fund SIPs
+- Mutual-fund SIPs
 - Membership fees
-- Automatic wallet or transit-card top-ups
+- Automatic wallet or transit-card replenishment
 
-The most important idea is:
+The important design principle is:
 
-> A business should not repeatedly debit a customer merely because it has stored a payment method. It needs valid customer consent, represented by a mandate or equivalent agreement.
+> Storing a payment method is not the same as having permission to debit it repeatedly.
 
-A reliable recurring-payment system usually contains four separate concerns:
+A production system should separate customer consent, billing, payment execution, and settlement.
 
 ```mermaid
-flowchart TD
-    CONSENT[Customer consent] --> SETUP[Mandate or<br/>payment-method setup]
-    SETUP --> BILLING[Billing or<br/>obligation calculation]
-    BILLING --> EXEC[Payment execution<br/>and settlement]
+flowchart LR
+    C[Customer Consent] --> M[Mandate Setup]
+    M --> B[Billing]
+    B --> P[Payment Execution]
+    P --> S[Settlement & Reconciliation]
 ```
 
-These concerns should remain separate in the data model and application code.
+This separation makes retries, refunds, payment-method changes, reconciliation, and auditing much easier.
 
 ---
 
@@ -71,434 +78,329 @@ These concerns should remain separate in the data model and application code.
 
 ## 2.1 Mandate
 
-A **mandate** is the customer's authorization allowing a merchant or payment provider to initiate future payments.
+A **mandate** is the customer's authorization allowing future payment attempts.
 
-A mandate normally defines:
+Typical mandate data includes:
 
-- Customer or payer
-- Merchant or beneficiary
+- Customer
+- Merchant
 - Payment method
 - Fixed or variable amount
-- Maximum permitted amount
-- Frequency or payment conditions
-- Start and expiry dates
-- Purpose of the debit
-- Customer consent evidence
-- Cancellation or revocation rules
+- Maximum amount
+- Currency
+- Frequency or trigger
+- Valid-from and expiry time
+- Consent evidence
+- Provider mandate reference
+- Revocation status
 
-A mandate is permission to attempt a payment. It is **not** proof that a payment succeeded.
+A mandate answers:
 
----
+> **Are we allowed to attempt this debit?**
 
-## 2.2 Recurring Payment
+It does not answer whether the debit succeeded.
 
-A recurring payment is an individual debit performed under an active mandate or payment agreement.
+## 2.2 Subscription
 
-For example:
-
-```text
-Mandate:
-"Allow StreamBox to debit up to ₹999 monthly until cancelled."
-
-Recurring payments:
-1 January  → ₹499
-1 February → ₹499
-1 March    → ₹599 after plan upgrade
-```
-
-One mandate can therefore be associated with many payment attempts.
-
----
-
-## 2.3 Subscription
-
-A **subscription** is a commercial agreement for continued access to a product or service.
-
-It may contain:
+A **subscription** is the commercial agreement describing:
 
 - Plan
-- Billing frequency
-- Quantity
 - Price
-- Trial period
-- Renewal rules
-- Tax rules
-- Cancellation policy
+- Billing frequency
+- Trial
+- Renewal
+- Tax
+- Cancellation
 
-A subscription creates billing obligations. The mandate authorizes collection of those obligations.
+It answers:
 
----
+> **What should the customer be billed for, and when?**
 
-## 2.4 Invoice
+## 2.3 Invoice
 
-An **invoice** represents money owed for a billing period or event.
+An **invoice** represents money owed for one billing period or event.
 
-An invoice can exist even when:
+An invoice can exist even when automatic collection is unavailable or fails.
 
-- No mandate is available
-- The payment method has expired
-- Automatic collection fails
-- The customer must pay manually
+## 2.4 Payment and Payment Attempt
 
----
+A **payment** represents collection for an invoice.
 
-## 2.5 Payment Attempt
+A **payment attempt** represents one request to a PSP, bank, card network, or payment rail.
 
-A payment attempt is one request sent to a payment provider, bank, card network, or payment rail.
-
-A single invoice may have multiple attempts:
+One payment can have multiple attempts.
 
 ```text
-Invoice INV-1007: ₹999
-
-Attempt 1 → insufficient funds
-Attempt 2 → issuer unavailable
-Attempt 3 → succeeded
+Invoice
+  └── Payment
+       ├── Attempt 1 -> failed
+       ├── Attempt 2 -> failed
+       └── Attempt 3 -> succeeded
 ```
 
-Each attempt needs its own identifier, status, timestamps, and provider response.
+Each attempt should keep its own:
+
+- Attempt number
+- Idempotency key
+- Provider payment ID
+- Status
+- Failure category
+- Timestamps
+- Sanitized provider response
+
+## 2.5 Settlement
+
+**Payment success** and **settlement** are separate concepts.
+
+A payment may be authorized or marked successful before funds are finally settled to the merchant. Some rails can also return or reverse a payment later.
+
+Therefore, payment status and settlement status should be tracked separately.
 
 ---
 
-## 2.6 Settlement
+# 3. Recurring Payment Models
 
-**Payment success** and **settlement** are not always the same moment.
+Recurring arrangements usually vary across two dimensions: **amount** and **schedule**.
 
-- A card authorization may succeed immediately.
-- Capture may happen later.
-- Bank debit methods may remain pending.
-- A settled debit can sometimes be returned later.
-- Funds may reach the merchant after fees and settlement delays.
+| Model | Amount | Timing | Typical use |
+|---|---|---|---|
+| Fixed / Fixed | Fixed | Fixed | SaaS, gym, EMI |
+| Variable / Fixed | Variable | Fixed | Utility bill |
+| Fixed / Variable | Fixed | Event-driven | Auto-replenishment |
+| Variable / Variable | Variable | Event-driven | Usage-based billing |
 
-A production system should track payment status and settlement status separately.
+For variable payments, the mandate should usually include a customer-approved maximum amount.
 
----
-
-# 3. Mandate vs Subscription vs Payment
-
-| Concept | Main responsibility | Typical lifetime |
-|---|---|---|
-| Subscription | Defines what and when to bill | Months or years |
-| Mandate | Provides permission to collect | Until expiry or revocation |
-| Invoice | Represents an amount due | One billing cycle |
-| Payment | Transfers money for an invoice | One transaction |
-| Payment attempt | Records one execution attempt | Seconds to days |
-| Settlement | Records movement of funds to merchant | Days |
-
-A common design error is to store everything in a single `subscriptions` table. That makes retries, multiple payment methods, refunds, reconciliation, and auditing difficult.
-
----
-
-# 4. Types of Recurring Payment Arrangements
-
-Recurring arrangements can be classified by amount and timing.
-
-## 4.1 Fixed Amount and Fixed Schedule
-
-For example, ₹499 on the first day of every month.
-
-Typical use cases:
-
-- OTT subscription
-- Gym membership
-- Fixed EMI
-
-This is the simplest model.
-
----
-
-## 4.2 Variable Amount and Fixed Schedule
-
-For example, an electricity bill collected monthly, up to ₹10,000: the date is predictable, but the amount changes.
-
-The mandate should usually contain a maximum amount.
-
----
-
-## 4.3 Fixed Amount and Variable Schedule
-
-For example, topping up ₹500 whenever a FASTag balance falls below ₹200: the amount is known, but the execution date depends on an event.
-
-This is sometimes called:
-
-- Event-triggered payment
-- Unscheduled recurring payment
-- Automatic replenishment
-
----
-
-## 4.4 Variable Amount and Variable Schedule
-
-For example, charging actual cloud usage whenever outstanding usage reaches ₹5,000. This model needs the strongest controls because neither date nor amount is completely fixed.
-
-The consent text should clearly explain:
-
-- How the amount is calculated
-- Maximum amount
-- Trigger conditions
-- Notification rules
-- Cancellation process
-
----
-
-## 4.5 Installment Payments
-
-Installments have a known total and usually a fixed number of debits — for example, a ₹60,000 purchase paid as 6 monthly installments of ₹10,000.
-
-Installments differ from open-ended subscriptions:
+Installments are related but different from open-ended subscriptions:
 
 | Installment | Subscription |
 |---|---|
 | Usually has a fixed total | May continue indefinitely |
-| Has a defined number of payments | Ends when cancelled or expired |
-| Often linked to a loan or purchase | Linked to continued service |
+| Has a defined number of payments | Continues until cancelled or expired |
+| Often linked to a purchase or loan | Linked to continued service |
 
 ---
 
-# 5. On-Session and Off-Session Payments
+# 4. On-Session, Off-Session, CIT, and MIT
 
-## 5.1 On-Session Payment
+## 4.1 On-Session Payment
 
-The customer is actively using the application and can complete authentication.
-
-Example:
+The customer is actively present and can authenticate the transaction.
 
 ```mermaid
-flowchart TD
-    OPEN[Customer opens checkout] --> CARD[Selects a card]
-    CARD --> AUTH[Enters OTP or<br/>completes 3DS]
-    AUTH --> CONFIRM[Confirms payment]
+flowchart LR
+    U[Customer] --> C[Checkout]
+    C --> A[OTP / 3DS / UPI Authentication]
+    A --> P[Payment or Mandate Setup]
 ```
 
----
-
-## 5.2 Off-Session Payment
-
-The customer is not actively present when the payment is initiated.
-
-Example:
-
-```mermaid
-flowchart TD
-    JOB["01:00 AM subscription job"] --> DUE[Invoice becomes due]
-    DUE --> INIT[Backend initiates payment]
-    INIT --> ABSENT[Customer is not<br/>in the application]
-```
-
-Recurring payments are commonly off-session.
-
-An off-session payment normally requires:
-
-- Previously collected consent
-- A reusable token or payment-method reference
-- A valid mandate
-- Correct recurring-payment indicators
-- A recovery flow when authentication is required
-
----
-
-## 5.3 Why the Difference Matters
-
-Banks and networks treat an off-session charge differently because the customer cannot immediately authenticate it.
-
-A properly configured mandate helps the issuer understand:
-
-- The customer previously approved the arrangement
-- The merchant is initiating a permitted recurring debit
-- The payment belongs to an existing agreement
-
-Even with a valid mandate, an issuer can still decline the payment or request fresh authentication.
-
----
-
-# 6. Customer-Initiated and Merchant-Initiated Transactions
-
-## 6.1 Customer-Initiated Transaction — CIT
-
-A **CIT** is initiated while the customer is participating.
-
-Examples:
+Typical examples:
 
 - First subscription payment
-- Mandate registration with authentication
-- Customer manually pays an overdue invoice
-- Customer updates and verifies a card
+- Mandate registration
+- Manual payment of an overdue invoice
+- Payment-method update
 
----
+## 4.2 Off-Session Payment
 
-## 6.2 Merchant-Initiated Transaction — MIT
-
-An **MIT** is initiated by the merchant based on a previous customer agreement.
-
-Examples:
-
-- Subscription renewal
-- Delayed hotel charge
-- Usage-based cloud bill
-- Unscheduled top-up
-- Installment collection
-
-## Typical Relationship
+The merchant initiates the charge later when the customer is not actively using the application.
 
 ```mermaid
-flowchart TD
-    CIT[Initial authenticated CIT] --> SAVED[Payment method saved<br/>and mandate created]
-    SAVED --> MIT[Future MITs reference<br/>the previous agreement]
+flowchart LR
+    J[Billing Job] --> I[Invoice Due]
+    I --> V[Validate Mandate]
+    V --> P[Create Recurring Payment]
 ```
 
-The first transaction or setup flow should establish the consent and authentication required for later merchant-initiated payments.
+Off-session charging usually requires:
+
+- Previously collected consent
+- Reusable payment token or mandate reference
+- Active mandate
+- Correct recurring-payment indicators
+- Recovery flow when fresh authentication is required
+
+## 4.3 CIT and MIT
+
+A **Customer-Initiated Transaction (CIT)** occurs while the customer participates.
+
+A **Merchant-Initiated Transaction (MIT)** is initiated later by the merchant under an existing customer agreement.
+
+Typical relationship:
+
+```mermaid
+flowchart LR
+    CIT[Authenticated CIT / Setup] --> M[Mandate + Token]
+    M --> MIT1[Renewal MIT]
+    M --> MIT2[Later Renewal MIT]
+```
+
+The initial authenticated setup establishes the permission that later recurring transactions rely on.
 
 ---
 
-# 7. End-to-End Recurring Payment Flow
+# 5. End-to-End Recurring Payment Flow
+
+A clean recurring-payment flow has five stages.
 
 ```mermaid
 sequenceDiagram
     actor Customer
     participant App
     participant Billing
-    participant PSP as Payment Provider
-    participant Issuer as Bank/Issuer
+    participant PSP
+    participant Bank
 
-    Customer->>App: Select plan and accept mandate terms
-    App->>PSP: Create payment-method setup
-    PSP->>Issuer: Authenticate customer
-    Issuer-->>PSP: Authentication successful
-    PSP-->>App: Mandate/payment token created
-    App->>Billing: Activate subscription
+    Customer->>App: Accept recurring-payment terms
+    App->>PSP: Create mandate/setup
+    PSP->>Bank: Authenticate customer
+    Bank-->>PSP: Mandate confirmed
+    PSP-->>App: Mandate reference
 
-    Note over Billing: Later, billing date arrives
-
+    Note over Billing: Billing date arrives
     Billing->>Billing: Generate invoice
+    Billing->>Billing: Validate mandate
     Billing->>PSP: Create off-session payment
-    PSP->>Issuer: Request recurring debit
-    Issuer-->>PSP: Approved, declined, or action required
+    PSP->>Bank: Request debit
+    Bank-->>PSP: Result
     PSP-->>App: API response
-    PSP-->>App: Webhook with final state
-    App->>Billing: Mark invoice paid or start recovery
+    PSP-->>App: Webhook / final update
+    App->>Billing: Paid or recovery required
 ```
 
-## Main Phases
+## 5.1 Consent and Setup
 
-### Phase 1: Consent and Setup
+Capture:
 
-1. Show amount or amount-calculation method.
-2. Show frequency or trigger condition.
-3. Show cancellation policy.
-4. Collect explicit consent.
-5. Complete required authentication.
-6. Store provider references and consent evidence.
-7. Activate the mandate only after confirmation.
+- Amount or amount-calculation rule
+- Maximum amount when relevant
+- Frequency or trigger
+- Validity period
+- Cancellation/revocation policy
+- Authentication result
+- Consent version and timestamp
 
-### Phase 2: Billing
+Activate the mandate only after the provider confirms successful registration.
 
-1. Determine which subscriptions or obligations are due.
-2. Calculate subtotal, tax, discounts, credits, and proration.
-3. Generate an immutable invoice.
-4. Freeze the amount to be collected for that invoice.
+## 5.2 Billing
 
-### Phase 3: Payment Execution
+The billing layer should:
 
-1. Validate mandate status and limits.
-2. Create a payment record.
-3. send the provider request with an idempotency key.
-4. Treat the immediate response as provisional when required.
-5. Consume webhooks for authoritative updates.
+1. Find obligations that are due.
+2. Calculate subtotal, tax, discount, credit, and proration.
+3. Create an invoice.
+4. Freeze the invoice amount.
+5. Trigger collection separately.
 
-### Phase 4: Recovery
+## 5.3 Payment Execution
 
-1. Classify failures.
-2. Retry only recoverable failures.
-3. Ask the customer to authenticate when required.
-4. Request a new payment method when necessary.
-5. Suspend or cancel service according to business policy.
+Before contacting the provider:
 
-### Phase 5: Reconciliation
+1. Confirm the mandate is active.
+2. Check validity dates.
+3. Check currency.
+4. Check maximum amount.
+5. Create or reuse the correct payment attempt.
+6. Send a deterministic idempotency key.
+7. Persist provider references.
 
-1. Match internal payments with provider transactions.
-2. Match settlements, fees, refunds, disputes, and returns.
-3. Investigate unmatched records.
-4. Preserve an audit trail.
+## 5.4 Recovery
+
+When collection fails:
+
+- Classify the failure.
+- Retry only recoverable failures.
+- Bring the customer on-session if authentication is required.
+- Request a new payment method when necessary.
+- Apply grace-period or suspension rules.
+
+## 5.5 Reconciliation
+
+Later, match internal records against provider and bank data to catch missed webhooks, returns, manual changes, or settlement mismatches.
 
 ---
 
-# 8. Mandate Lifecycle
+# 6. Mandate and Payment Lifecycles
 
-A mandate should have an explicit state machine.
+## 6.1 Mandate Lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
     PENDING --> ACTIVE: setup confirmed
-    PENDING --> FAILED: registration failed
-    ACTIVE --> PAUSED: temporarily disabled
-    PAUSED --> ACTIVE: resumed
-    ACTIVE --> REVOKED: customer revokes
-    ACTIVE --> EXPIRED: validity ends
-    ACTIVE --> SUSPENDED: provider or risk restriction
-    SUSPENDED --> ACTIVE: restriction removed
+    PENDING --> FAILED: setup failed
+
+    ACTIVE --> PAUSED
+    PAUSED --> ACTIVE
+
+    ACTIVE --> SUSPENDED
+    SUSPENDED --> ACTIVE
+
+    ACTIVE --> REVOKED
+    ACTIVE --> EXPIRED
+
     FAILED --> [*]
     REVOKED --> [*]
     EXPIRED --> [*]
 ```
 
-## Recommended Statuses
+Useful states:
 
 | Status | Meaning |
 |---|---|
 | `pending` | Registration started but not confirmed |
-| `active` | Can authorize eligible recurring debits |
-| `paused` | Temporarily disabled by customer or merchant |
-| `suspended` | Disabled because of risk, compliance, or provider action |
-| `revoked` | Consent permanently withdrawn |
-| `expired` | Mandate validity has ended |
-| `failed` | Setup did not complete |
+| `active` | Eligible for permitted recurring debits |
+| `paused` | Temporarily disabled |
+| `suspended` | Disabled by provider, risk, or compliance control |
+| `revoked` | Customer permission withdrawn |
+| `expired` | Validity ended |
+| `failed` | Setup failed |
 
-## Important Rules
+Important rules:
 
-- Do not treat `pending` as permission to debit.
-- Revocation should stop new payment initiation immediately.
-- Expired mandates should never be silently reactivated.
-- A new consent event should create a new mandate version.
-- Preserve old mandates for audit rather than overwriting history.
+- Never debit under a `pending` mandate.
+- Revocation must stop new recurring attempts.
+- Do not silently reactivate expired or revoked mandates.
+- Preserve old mandate versions for audit.
 
----
-
-# 9. Recurring Payment Lifecycle
+## 6.2 Payment Lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> CREATED
-    CREATED --> PROCESSING: provider request sent
-    PROCESSING --> SUCCEEDED: confirmed success
-    PROCESSING --> FAILED: final failure
-    PROCESSING --> REQUIRES_ACTION: customer authentication needed
-    PROCESSING --> PENDING: asynchronous rail
-    PENDING --> SUCCEEDED: webhook confirms
-    PENDING --> FAILED: return or rejection
-    REQUIRES_ACTION --> PROCESSING: customer completes action
+    CREATED --> PROCESSING
+    PROCESSING --> PENDING
+    PROCESSING --> REQUIRES_ACTION
+    PROCESSING --> SUCCEEDED
+    PROCESSING --> FAILED
+    PENDING --> SUCCEEDED
+    PENDING --> FAILED
+    REQUIRES_ACTION --> PROCESSING
     FAILED --> PROCESSING: approved retry
-    SUCCEEDED --> REFUNDED: full refund
-    SUCCEEDED --> PARTIALLY_REFUNDED: partial refund
+    SUCCEEDED --> PARTIALLY_REFUNDED
+    SUCCEEDED --> REFUNDED
 ```
 
-Do not use only a Boolean such as `is_paid`.
-
-A Boolean cannot represent:
-
-- Pending bank debit
-- Authentication required
-- Partial refund
-- Return after apparent success
-- Multiple attempts
-- Dispute
-- Reversal
+Avoid a simple `is_paid` Boolean. It cannot represent pending payments, authentication requirements, multiple attempts, returns, disputes, or partial refunds.
 
 ---
 
-# 10. Recommended Domain Model
+# 7. Recommended Domain Model
 
-## 10.1 Main Entities
+Keep the important business concepts separate.
+
+```mermaid
+erDiagram
+    CUSTOMER ||--o{ SUBSCRIPTION : owns
+    CUSTOMER ||--o{ MANDATE : authorizes
+    SUBSCRIPTION ||--o{ INVOICE : generates
+    INVOICE ||--o{ PAYMENT : collected_by
+    PAYMENT ||--o{ PAYMENT_ATTEMPT : has
+    MANDATE ||--o{ PAYMENT_ATTEMPT : authorizes
+    PAYMENT_ATTEMPT ||--o| SETTLEMENT : produces
+```
+
+Typical entities:
 
 ```text
 Customer
@@ -515,136 +417,64 @@ WebhookEvent
 LedgerEntry
 ```
 
-## 10.2 Example Tables
+## 7.1 Important Database Constraints
 
-### `mandates`
+Examples:
 
 ```sql
-CREATE TABLE mandates (
-    id UUID PRIMARY KEY,
-    customer_id UUID NOT NULL,
-    provider VARCHAR(50) NOT NULL,
-    provider_mandate_id VARCHAR(255),
-    payment_method_id UUID NOT NULL,
+CREATE UNIQUE INDEX uq_payment_attempt_idempotency
+ON payment_attempts(idempotency_key);
+```
 
-    mandate_type VARCHAR(30) NOT NULL,
-    amount_type VARCHAR(20) NOT NULL,
-    fixed_amount_minor BIGINT,
-    maximum_amount_minor BIGINT,
-    currency CHAR(3) NOT NULL,
-
-    frequency VARCHAR(30),
-    start_at TIMESTAMPTZ,
-    expires_at TIMESTAMPTZ,
-
-    status VARCHAR(20) NOT NULL,
-    consent_text_version VARCHAR(50) NOT NULL,
-    consent_captured_at TIMESTAMPTZ NOT NULL,
-    consent_ip_hash VARCHAR(128),
-    provider_payload JSONB,
-
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL
+```sql
+ALTER TABLE invoices
+ADD CONSTRAINT uq_subscription_billing_period
+UNIQUE (
+    subscription_id,
+    billing_period_start,
+    billing_period_end
 );
 ```
 
-### `invoices`
+These constraints protect against concurrent workers and duplicate retries.
 
-```sql
-CREATE TABLE invoices (
-    id UUID PRIMARY KEY,
-    customer_id UUID NOT NULL,
-    subscription_id UUID,
-    invoice_number VARCHAR(50) UNIQUE NOT NULL,
+## 7.2 Store Money Safely
 
-    currency CHAR(3) NOT NULL,
-    subtotal_minor BIGINT NOT NULL,
-    tax_minor BIGINT NOT NULL DEFAULT 0,
-    discount_minor BIGINT NOT NULL DEFAULT 0,
-    total_minor BIGINT NOT NULL,
+Store money in integer minor units, not floating point.
 
-    due_at TIMESTAMPTZ NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    billing_period_start TIMESTAMPTZ,
-    billing_period_end TIMESTAMPTZ,
-
-    created_at TIMESTAMPTZ NOT NULL,
-    finalized_at TIMESTAMPTZ,
-    paid_at TIMESTAMPTZ
-);
+```text
+₹499.50 -> 49,950 paise
+$12.99  -> 1,299 cents
 ```
 
-### `payment_attempts`
-
-```sql
-CREATE TABLE payment_attempts (
-    id UUID PRIMARY KEY,
-    payment_id UUID NOT NULL,
-    attempt_number INTEGER NOT NULL,
-
-    provider VARCHAR(50) NOT NULL,
-    provider_payment_id VARCHAR(255),
-    idempotency_key VARCHAR(255) UNIQUE NOT NULL,
-
-    amount_minor BIGINT NOT NULL,
-    currency CHAR(3) NOT NULL,
-    status VARCHAR(30) NOT NULL,
-
-    failure_category VARCHAR(50),
-    failure_code VARCHAR(100),
-    failure_message TEXT,
-    requires_customer_action BOOLEAN NOT NULL DEFAULT FALSE,
-
-    requested_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ,
-    provider_payload JSONB,
-
-    UNIQUE (payment_id, attempt_number)
-);
-```
-
-## 10.3 Store Money in Minor Units
-
-Use integer minor units rather than floating-point numbers — `₹499.50` is `49950` paise, `$12.99` is `1299` cents. Avoid `amount = 499.50`; prefer `amount_minor = 49_950` with an explicit `currency = "INR"`.
-
-The number of minor units depends on the currency, so maintain currency metadata.
+Keep explicit currency metadata because currencies do not all use the same number of minor units.
 
 ---
 
-# 11. Scheduling and Invoice Generation
+# 8. Reliable Billing and Payment Execution
 
-## 11.1 Do Not Use a Single Large Cron Job
+## 8.1 Scheduler Design
 
-A simple implementation may begin as one midnight job that finds all due subscriptions and charges every customer.
+Avoid one large midnight cron job that charges every customer in one process.
 
-This becomes risky at scale because:
-
-- The job can time out.
-- A restart can duplicate work.
-- All traffic is concentrated at one time.
-- Failed records can block the batch.
-- Time-zone handling becomes difficult.
-
-## 11.2 Recommended Design
+A scalable design is:
 
 ```mermaid
 flowchart LR
-    Scheduler --> DueQuery[Find due billing records]
-    DueQuery --> Queue[Publish invoice jobs]
-    Queue --> Worker1[Billing worker]
-    Queue --> Worker2[Billing worker]
-    Queue --> Worker3[Billing worker]
-    Worker1 --> DB[(Database)]
-    Worker2 --> DB
-    Worker3 --> DB
-    Worker1 --> PSP[Payment provider]
-    Worker2 --> PSP
-    Worker3 --> PSP
+    S[Scheduler] --> Q[Due Billing Query]
+    Q --> MQ[Queue]
+    MQ --> W1[Worker]
+    MQ --> W2[Worker]
+    MQ --> W3[Worker]
+    W1 --> DB[(Database)]
+    W2 --> DB
+    W3 --> DB
+    W1 --> PSP[Payment Provider]
+    W2 --> PSP
+    W3 --> PSP
 ```
 
-## 11.3 Claim Work Safely
-
-In PostgreSQL, multiple workers can claim due records using row locking:
+With PostgreSQL, workers can safely claim work:
 
 ```sql
 SELECT id
@@ -656,224 +486,95 @@ FOR UPDATE SKIP LOCKED
 LIMIT 100;
 ```
 
-Within the transaction:
+Use the database transaction to claim/update work, then perform slow provider calls outside the long-running transaction.
 
-1. Lock due subscriptions.
-2. Advance `next_billing_at`.
-3. Create invoice-generation jobs or invoice records.
-4. Commit.
-5. Process provider calls outside long database transactions.
+## 8.2 Idempotency
 
-## 11.4 Unique Billing Constraint
+A payment provider call can succeed even when your application times out before receiving the response.
 
-Prevent duplicate invoices using a business key:
-
-```sql
-ALTER TABLE invoices
-ADD CONSTRAINT unique_subscription_period
-UNIQUE (
-    subscription_id,
-    billing_period_start,
-    billing_period_end
-);
-```
-
-Even if the scheduler runs twice, only one invoice can be created for the same period.
-
-## 11.5 Time-Zone Rules
-
-Store timestamps in UTC but retain the customer's billing time zone — for example, a billing rule of 09:00 Asia/Kolkata on the 5th maps to a calculated UTC execution instant.
-
-Be explicit about:
-
-- Month-end handling
-- Leap years
-- Daylight-saving changes
-- Failed execution on holidays
-- Billing date after a plan change
-
----
-
-# 12. Idempotency and Duplicate Prevention
-
-Recurring systems run in distributed environments where timeouts and retries are normal — a request can succeed at the provider even if your application never receives the response.
-
-> Idempotency keys let a client safely retry a request without creating a second
-> charge. The key is stored with a request fingerprint and the saved response, so
-> a replay returns the original result.
-> Full detail: [HTTP Idempotency](../api-design/idempotency-http-methods.md)
-
-## 12.1 Idempotency Key Design
-
-Use a deterministic key for one logical operation, such as `recurring-payment:{payment_id}:attempt:{attempt_number}` (for example, `recurring-payment:pay_7d19:attempt:1`).
-
-The same attempt must always reuse the same key.
-
-A new deliberate retry should normally have:
-
-- A new attempt record
-- A new attempt number
-- A new idempotency key
-
-## 12.2 Database Protection
-
-Use unique constraints as the final safety layer:
-
-```sql
-CREATE UNIQUE INDEX uq_payment_attempt_idempotency
-ON payment_attempts(idempotency_key);
-```
-
-Application checks alone are insufficient because concurrent requests can pass the check at the same time.
-
-## 12.3 Idempotent Event Handling
-
-Webhook events may be delivered more than once.
-
-```sql
-CREATE TABLE webhook_events (
-    provider VARCHAR(50) NOT NULL,
-    provider_event_id VARCHAR(255) NOT NULL,
-    event_type VARCHAR(100) NOT NULL,
-    payload JSONB NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL,
-    processed_at TIMESTAMPTZ,
-    PRIMARY KEY (provider, provider_event_id)
-);
-```
-
-Insert the provider event ID before processing. If the insert conflicts, the event has already been received.
-
----
-
-# 13. Webhooks and Asynchronous Processing
-
-## 13.1 Why Webhooks Matter
-
-The synchronous API response is not always the final payment result. A provider can respond `processing`, `pending`, `requires_action`, or `submitted` — the final state may arrive later through a webhook.
-
-## 13.2 Safe Webhook Flow
-
-```mermaid
-sequenceDiagram
-    participant Provider
-    participant Endpoint as Webhook endpoint
-    participant DB
-    participant Queue
-    participant Worker
-
-    Provider->>Endpoint: Signed event
-    Endpoint->>Endpoint: Verify signature
-    Endpoint->>DB: Insert event ID
-    alt Duplicate event
-        DB-->>Endpoint: Conflict
-        Endpoint-->>Provider: 200 OK
-    else New event
-        DB-->>Endpoint: Inserted
-        Endpoint->>Queue: Publish processing job
-        Endpoint-->>Provider: 200 OK
-        Queue->>Worker: Process event
-        Worker->>DB: Update payment state
-    end
-```
-
-## 13.3 Webhook Endpoint Responsibilities
-
-Signature verification (raw body, HMAC, timestamp tolerance) happens first — see [Webhooks](../api-design/webhooks.md). After that, the endpoint should:
-
-1. Store the event durably.
-2. Return quickly.
-3. Process business logic asynchronously.
-
-Avoid making slow external calls before returning the HTTP response.
-
-## 13.4 Events Can Arrive Out of Order
-
-For example, `payment.succeeded` might arrive at 10:00:02 and `payment.processing` two seconds later — blindly applying the second event would move the payment backward.
-
-Use one or more of:
-
-- Provider event creation time
-- State-transition validation
-- Provider object version
-- Current-state retrieval from provider
-- Monotonic status rules
-
-Example:
-
-```python
-ALLOWED_TRANSITIONS = {
-    "created": {"processing", "failed"},
-    "processing": {"pending", "succeeded", "failed", "requires_action"},
-    "pending": {"succeeded", "failed"},
-    "requires_action": {"processing", "failed"},
-    "succeeded": {"partially_refunded", "refunded", "disputed"},
-}
-```
-
----
-
-# 14. Retries, Dunning, and Recovery
-
-## 14.1 Not Every Failure Should Be Retried
-
-Classify failures.
-
-| Failure category | Example | Typical action |
-|---|---|---|
-| Temporary issuer failure | Issuer unavailable | Retry later |
-| Insufficient funds | Balance too low | Retry on a suitable date |
-| Authentication required | OTP/3DS required | Bring customer on-session |
-| Invalid payment method | Closed account | Request new method |
-| Expired card | Card expired | Request update or network refresh |
-| Mandate revoked | Consent withdrawn | Do not retry |
-| Amount exceeds mandate | Above customer cap | Reduce amount or obtain new consent |
-| Fraud or risk block | Provider rejection | Stop and review |
-| Duplicate request | Existing idempotent operation | Retrieve original result |
-
-## 14.2 Retry Schedule Example
-
-This is a dunning cadence measured in days, not the seconds-scale exponential backoff used for a single transient technical failure — see [Retries and Dead-Letter Queues](../task-processing/retries-dead-letter-queues.md) for that mechanic.
+Use one deterministic idempotency key per logical attempt:
 
 ```text
-Attempt 1: Due date
-Attempt 2: +1 day
-Attempt 3: +3 days
-Attempt 4: +5 days
-Then: mark uncollectible or require manual payment
+recurring-payment:{payment_id}:attempt:{attempt_number}
 ```
 
-The correct schedule depends on:
+Rules:
 
-- Payment rail
-- Product type
-- Customer expectations
-- Legal requirements
-- Provider rules
-- Typical salary or balance patterns
+- Retrying the **same attempt** must reuse the same key.
+- A deliberate **new attempt** gets a new attempt number and key.
+- Back the key with a database unique constraint.
 
-## 14.3 Dunning
+## 8.3 Webhooks
 
-**Dunning** is the recovery process for failed recurring payments.
+The immediate API response may only say:
 
-It may include:
+```text
+processing
+pending
+submitted
+requires_action
+```
 
-- Email, SMS, or in-app notifications
-- Smart retries
-- Payment-method update link
+The final state may arrive later.
+
+A safe webhook pipeline is:
+
+```mermaid
+flowchart LR
+    P[Provider] --> V[Verify Signature]
+    V --> D[Deduplicate Event ID]
+    D --> E[Persist Event]
+    E --> Q[Queue Processing]
+    Q --> S[Validate State Transition]
+    S --> U[Update Payment]
+```
+
+Webhook processing should:
+
+- Verify the signature against the raw body.
+- Deduplicate provider event IDs.
+- Persist the event before business processing.
+- Return HTTP success quickly.
+- Process business logic asynchronously.
+- Validate allowed state transitions.
+
+Events can arrive out of order, so never blindly replace the current status with the newest-delivered webhook.
+
+---
+
+# 9. Retries and Dunning
+
+Not every failure is retryable.
+
+| Failure | Typical action |
+|---|---|
+| Issuer/service temporarily unavailable | Retry later |
+| Insufficient funds | Retry according to dunning policy |
+| Authentication required | Bring customer on-session |
+| Expired/invalid payment method | Request update |
+| Mandate revoked | Stop |
+| Amount above mandate limit | Obtain new/updated consent |
+| Fraud/risk block | Stop and review |
+| Duplicate operation | Retrieve existing result |
+
+**Dunning** is the recovery process after failed recurring collection.
+
+It can include:
+
+- Retry schedule
+- Email/SMS/in-app notification
+- Payment-method update
 - Authentication recovery
 - Grace period
-- Service restriction
+- Service suspension
 - Final cancellation
-- Manual collection
 
-## 14.4 Use a Recovery State Machine
+Example recovery states:
 
 ```mermaid
 stateDiagram-v2
     [*] --> CURRENT
-    CURRENT --> PAST_DUE: payment failed
+    CURRENT --> PAST_DUE: payment fails
     PAST_DUE --> CURRENT: retry succeeds
     PAST_DUE --> ACTION_REQUIRED: authentication needed
     ACTION_REQUIRED --> CURRENT: customer completes payment
@@ -882,505 +583,228 @@ stateDiagram-v2
     SUSPENDED --> CANCELLED: recovery window ends
 ```
 
-Keep subscription status separate from payment status.
-
-A payment can fail while the subscription remains active during a grace period.
+Keep subscription status separate from payment status. A payment can fail while the subscription remains active during a grace period.
 
 ---
 
-# 15. Amount Changes, Plan Changes, and Proration
+# 10. Cancellation, Plan Changes, and Payment-Method Updates
 
-## 15.1 Fixed Mandate Amount
+## 10.1 Subscription Cancellation vs Mandate Revocation
 
-If the mandate permits only a fixed amount, increasing the price may require:
+They are different operations.
 
-- Fresh customer approval
-- Mandate modification
-- Additional authentication
-- A new mandate
+**Subscription cancellation**
+- Stops future commercial renewal.
 
-Do not assume that commercial acceptance of new pricing automatically updates payment authorization.
+**Mandate revocation**
+- Withdraws permission for future automatic debits.
 
-## 15.2 Variable Mandate with Maximum Limit
+A cancelled subscription can remain active until period end, while the mandate may still exist for outstanding obligations depending on the consent and business rules.
 
-A variable mandate may allow different charges up to a customer-defined maximum.
-
-Example:
+Use timestamps such as:
 
 ```text
-Current invoice: ₹799
+cancel_requested_at
+cancel_effective_at
+mandate_revoked_at
+```
+
+rather than only Boolean flags.
+
+## 10.2 Amount and Plan Changes
+
+A new invoice must remain within the mandate's permitted amount.
+
+```text
+Invoice amount:   ₹799
 Mandate maximum: ₹1,000
 Result: eligible
 
-New invoice: ₹1,099
+Invoice amount: ₹1,099
 Mandate maximum: ₹1,000
-Result: not eligible without mandate update
+Result: new/updated authorization required
 ```
 
-Validate the limit before calling the provider.
+For fixed-amount mandates, increasing the charge may require fresh customer approval or a new mandate.
 
-## 15.3 Proration Example
+## 10.3 Payment-Method Update
 
-A customer upgrades halfway through a 30-day cycle:
+Do not replace the current payment method before the new setup succeeds.
 
-```text
-Old plan: ₹600/month
-New plan: ₹1,200/month
-Remaining period: 15 days
-
-Unused old-plan credit:
-₹600 × 15/30 = ₹300
-
-New-plan charge:
-₹1,200 × 15/30 = ₹600
-
-Prorated amount due:
-₹600 - ₹300 = ₹300
+```mermaid
+flowchart LR
+    C[Customer Chooses Update] --> S[New Setup]
+    S --> A[Authenticate]
+    A --> M[New Mandate/Token Confirmed]
+    M --> D[Atomically Make Default]
+    D --> H[Keep Old Reference for Audit]
 ```
 
-Define a consistent policy for:
-
-- Inclusive or exclusive dates
-- Tax calculation
-- Rounding
-- Immediate vs next-cycle collection
-- Credits after downgrade
-- Refund vs account balance
+Some card-network/provider account-updater services can refresh reissued-card credentials, but the application should still support a customer-driven update flow.
 
 ---
 
-# 16. Cancellation and Revocation
+# 11. Reconciliation, Security, and Audit
 
-Cancellation has multiple meanings.
-
-## 16.1 Subscription Cancellation
-
-Stops future service renewals.
-
-It can be:
-
-- Immediate
-- At period end
-- After a notice period
-
-## 16.2 Mandate Revocation
-
-Withdraws permission for future automatic debits.
-
-A revoked mandate must block new recurring-payment initiation.
-
-## 16.3 Payment Cancellation
-
-Attempts to cancel an individual payment before it reaches a final state.
-
-This may not be possible after authorization, capture, or clearing.
-
-## 16.4 Recommended Behavior
-
-```mermaid
-flowchart TD
-    CANCEL[Customer cancels subscription<br/>at period end] --> KEEP[Keep subscription active<br/>until period end]
-    KEEP --> NOINV[Do not generate<br/>next renewal invoice]
-    NOINV --> REVOKE[Revoke or detach mandate<br/>according to consent policy]
-    REVOKE --> KEEPHIST[Preserve historical<br/>payments and invoices]
-```
-
-For immediate cancellation:
-
-```mermaid
-flowchart TD
-    STOP[Cancel service] --> REFUND[Calculate refund<br/>or credit policy]
-    REFUND --> JOBS[Stop pending billing jobs]
-    JOBS --> PERM[Revoke future<br/>collection permission]
-    PERM --> AUDIT[Record who performed<br/>the action and when]
-```
-
-Use effective timestamps rather than only a Boolean, such as `cancel_requested_at`, `cancel_effective_at`, and `mandate_revoked_at`.
-
----
-
-# 17. Payment Method Updates
-
-A recurring system should handle:
-
-- Expired cards
-- Reissued cards
-- Bank-account changes
-- UPI handle changes
-- Token rotation
-- Provider migration
-- Mandate re-authentication
-
-## Recommended Update Flow
-
-```mermaid
-flowchart TD
-    CHOOSE["Customer chooses Update payment method"] --> SETUP[Create new setup session]
-    SETUP --> AUTH[Authenticate new method]
-    AUTH --> CONF["Receive new mandate/token confirmation"]
-    CONF --> DEFAULT[Atomically make<br/>new method default]
-    DEFAULT --> KEEPOLD[Retain old reference for audit]
-    KEEPOLD --> OLDMANDATE[Optionally cancel old mandate]
-```
-
-Do not replace the current method before the new setup succeeds.
-
-## Card Reissue Consideration
-
-Some provider or network mechanisms can update card credentials or map mandates to reissued cards. Treat this as a provider capability, not a guarantee.
-
-Your system should still support a customer-driven update flow.
-
----
-
-# 18. Reconciliation and Settlement
-
-## 18.1 Why Reconciliation Is Necessary
+## 11.1 Reconciliation
 
 Internal state can differ from provider state because of:
 
 - Lost API responses
 - Missed webhooks
 - Duplicate events
-- Manual changes in provider dashboard
+- Provider-dashboard changes
 - Refunds
+- Returns
 - Chargebacks
-- Bank returns
-- Settlement fees
-- Timing differences
+- Settlement timing
+- Fees
 
-## 18.2 Three-Way Reconciliation
+Use three-way reconciliation where relevant:
 
 ```mermaid
 flowchart LR
-    A[Internal invoices and payments]
-    B[Provider transaction report]
-    C[Bank settlement statement]
-
-    A <--> B
-    B <--> C
-    A <--> C
+    I[Internal Invoices & Payments] <--> P[Provider Transactions]
+    P <--> B[Bank Settlement]
+    I <--> B
 ```
 
-## 18.3 Typical Matching Keys
-
-Use stable external references:
+Prefer stable matching references:
 
 - Provider payment ID
 - Provider mandate ID
-- Merchant order ID
 - Invoice number
+- Merchant order ID
 - Settlement batch ID
-- Bank reference number
-- UTR or rail-specific reference
+- Bank/rail reference
 
-Do not match only by amount and date because multiple transactions can have identical values.
+Do not reconcile only by amount and date.
 
-## 18.4 Reconciliation Outcomes
+## 11.2 Security
 
-| Outcome | Meaning |
-|---|---|
-| Matched | Internal and external records agree |
-| Missing internally | Provider has a transaction unknown to application |
-| Missing externally | Internal record has no provider transaction |
-| Amount mismatch | Values differ |
-| Status mismatch | One side says successful, another says failed |
-| Settlement mismatch | Net settlement or fee differs |
-| Duplicate | More than one external transaction for one obligation |
+Do not store:
 
-## 18.5 Ledger Consideration
-
-For a financial system, represent money movement using double-entry ledger records.
-
-Example for a successful ₹1,000 charge with a ₹20 provider fee:
-
-```text
-Dr Processor receivable       ₹1,000
-    Cr Customer collections revenue/payable  ₹1,000
-
-Dr Payment processing expense   ₹20
-    Cr Processor receivable      ₹20
-
-Dr Bank                         ₹980
-    Cr Processor receivable     ₹980
-```
-
-The exact accounts depend on whether the business is a merchant, marketplace, lender, insurer, or payment intermediary.
-
----
-
-# 19. Security and Compliance
-
-## 19.1 Do Not Store Raw Card Details
-
-Avoid storing:
-
-- Full PAN
+- Full card PAN
 - CVV
-- Sensitive authentication data
-- Raw bank credentials
-- OTPs
+- OTP
+- Raw banking credentials
+- Sensitive authentication secrets
 
-Use:
+Prefer:
 
 - Hosted payment pages
 - Provider SDKs
-- Network or provider tokens
+- Tokenized payment methods
 - Masked display values
-- Provider payment-method identifiers
+- Provider payment-method references
 
-## 19.2 Tokenization
+Mandates are security-sensitive because they represent permission to move money. Protect them using least-privilege access, encryption at rest, audit logging, and strict administrative authorization.
 
-Tokenization replaces sensitive payment credentials with a reference.
+## 11.3 Consent Evidence
 
-```mermaid
-flowchart TD
-    PAN[Raw card number] -->|tokenization| TOKEN["Provider token: pm_abcd1234"]
-    TOKEN --> STORE[Merchant stores token only]
-```
-
-Tokens reduce exposure but still require access control because they can authorize payments through your provider account.
-
-## 19.3 Protect Mandate Records
-
-A mandate is security-sensitive because it represents permission to move money.
-
-Protect:
-
-- Provider mandate ID
-- Maximum amount
-- Validity period
-- Customer identifier
-- Consent evidence
-- Revocation status
-- Audit events
-
-Use:
-
-- Encryption at rest
-- Least-privilege access
-- Immutable audit logs
-- Sensitive-field redaction
-- Strong administrative authorization
-- Alerting for unusual mandate changes
-
-## 19.4 Webhook Security
-
-> Verify the signature over the raw request body, honor timestamp tolerance,
-> and confirm event-ID uniqueness before trusting a payload — never trust a
-> payment ID sent by an unauthenticated request.
-> Full detail: [Webhooks](../api-design/webhooks.md)
-
-## 19.5 Consent Evidence
-
-Store enough evidence to show what the customer accepted:
+Keep enough information to prove what the customer accepted:
 
 ```text
-consent_text_version
-accepted_at
 customer_id
 mandate_reference
-amount rule
-frequency rule
-validity period
-cancellation policy version
-authentication result reference
+consent_text_version
+accepted_at
+amount_rule
+maximum_amount
+frequency_rule
+validity_period
+cancellation_policy_version
+authentication_reference
 ```
 
-Avoid storing unnecessary personal data.
+Avoid collecting unnecessary personal data.
 
 ---
 
-# 20. India-Specific Mandate Systems
+# 12. India-Specific Recurring Payments
 
-India commonly uses several mechanisms for recurring collection.
+## 12.1 Common Payment Rails
 
-## 20.1 UPI AutoPay
+### UPI AutoPay
 
-UPI AutoPay allows customers to approve recurring e-mandates through supported UPI applications.
+UPI AutoPay allows customers to create recurring e-mandates through supported UPI applications.
 
 Common uses include:
 
-- Mobile and electricity bills
-- EMI payments
+- Utility bills
 - OTT subscriptions
+- EMI payments
 - Insurance
 - Mutual funds
 
-A simplified flow is:
+NPCI supports customer controls such as pause, unpause, modify, and revoke.
 
-```mermaid
-sequenceDiagram
-    actor Customer
-    participant Merchant
-    participant PSP
-    participant UPIApp as UPI App
-    participant Bank
+### NACH / e-NACH
 
-    Customer->>Merchant: Select UPI AutoPay
-    Merchant->>PSP: Create mandate request
-    PSP->>UPIApp: Present approval request
-    Customer->>UPIApp: Approve with UPI authentication
-    UPIApp->>Bank: Register mandate
-    Bank-->>PSP: Mandate confirmed
-    PSP-->>Merchant: Mandate active
-```
-
-The merchant normally integrates through a payment service provider rather than directly with every bank.
-
----
-
-## 20.2 NACH and e-NACH
-
-The National Automated Clearing House supports high-volume, repetitive interbank transactions.
+NACH is designed for high-volume repetitive interbank transactions.
 
 Common debit use cases include:
 
 - Loan repayments
 - Insurance premiums
-- Mutual fund SIPs
-- Utility or institutional collections
+- Mutual-fund SIPs
+- Utility collections
 
-NACH-based collections may involve:
+Compared with instant payment methods, NACH processing can involve clearing cycles, returns, and settlement files, so asynchronous status handling and reconciliation are important.
 
-- Mandate registration
-- Sponsor bank
-- Destination bank
-- Batch or clearing cycles
-- Return reason codes
-- Settlement and reconciliation files
+### Card E-Mandates
 
-Compared with instant card or UPI experiences, bank-debit rails may have more asynchronous processing and return handling.
+Card e-mandates support recurring card transactions after an authenticated setup.
 
----
+Applications should use tokenized card references and the recurring-payment capabilities provided by the PSP/acquirer.
 
-## 20.3 Card E-Mandates
+## 12.2 RBI Digital Payments – E-mandate Framework, 2026
 
-A card e-mandate authorizes recurring card transactions.
-
-Typical flow:
-
-```mermaid
-flowchart TD
-    REG[Mandate registration with AFA] --> FIRST[First transaction with AFA]
-    FIRST --> LATER[Later eligible recurring debits<br/>without repeated AFA]
-    LATER --> NOTIFY[Pre-transaction notification]
-    NOTIFY --> OPTOUT[Customer opt-out or<br/>revocation facility]
-```
-
-The merchant should use tokenized card references and the provider's recurring-payment integration.
-
----
-
-## 20.4 Standing Instruction vs Mandate
-
-The terms are sometimes used interchangeably, but the implementation can differ.
-
-A standing instruction may be configured directly by a customer with a bank.
-
-A merchant mandate is usually created through:
-
-- Merchant
-- Acquirer or payment aggregator
-- Payment network
-- Issuer bank
-
-In system design, model the external authorization using a general `mandate` entity and store rail-specific details in provider metadata.
-
----
-
-# 21. RBI E-Mandate Framework 2026
-
-The **Digital Payments – E-mandate Framework, 2026**, issued on 21 April 2026, consolidates earlier RBI instructions.
-
-It applies to recurring domestic and cross-border transactions using:
+The RBI issued the **Digital Payments – E-mandate Framework, 2026** on **21 April 2026**. It consolidates earlier e-mandate instructions and applies to recurring domestic and cross-border transactions using:
 
 - Cards
-- Prepaid Payment Instruments
+- Prepaid Payment Instruments (PPIs)
 - UPI
 
-## 21.1 Registration
+### Registration and Authentication
 
-The customer must complete one-time registration with Additional Factor of Authentication.
+The framework requires authenticated mandate registration.
 
-A mandate should specify:
+The mandate should capture items such as:
 
 - Validity period
 - Fixed or variable amount
-- Maximum transaction amount for variable mandates
-- Notification preference
+- Maximum amount for variable mandates
+- Customer notification preference
 
-Modification or withdrawal requires issuer-side AFA validation.
+The first transaction requires AFA, with combined registration/first-transaction authentication possible when processed together.
 
-## 21.2 First and Subsequent Transactions
+### Pre-Transaction Notification
 
-- The first transaction requires AFA.
-- Registration and the first transaction can use combined authentication when processed together.
-- Later eligible recurring transactions may be processed without repeated AFA, subject to applicable limits.
+The issuer normally sends a pre-debit notification at least **24 hours before** the charge.
 
-## 21.3 Pre-Transaction Notification
+The customer should be able to opt out of the transaction or revoke the mandate.
 
-The issuer must normally send a notification at least 24 hours before debit.
+Auto-replenishment mandates for **FASTag** and **NCMC** are exempt from the normal pre-debit notification requirement.
 
-It should include:
+### AFA Limits
 
-- Merchant name
-- Amount
-- Debit date and time
-- Mandate reference
-- Reason for debit
+As of **20 August 2026**:
 
-The customer should be able to opt out of:
-
-- That particular transaction
-- The complete mandate
-
-Auto-replenishment mandates for FASTag and NCMC are exempt from the pre-transaction notification requirement.
-
-## 21.4 Post-Transaction Notification
-
-After the transaction, the issuer must send details including:
-
-- Merchant
-- Amount
-- Date and time
-- Transaction and mandate references
-- Reason
-- Grievance-redressal information
-
-## 21.5 Current AFA Limits
-
-As of 3 August 2026:
-
-| Category | Recurring amount allowed without AFA |
+| Category | Recurring amount allowed without fresh AFA |
 |---|---:|
 | General recurring transactions | Up to ₹15,000 per transaction |
 | Insurance premium | Up to ₹1,00,000 per transaction |
-| Mutual fund subscription | Up to ₹1,00,000 per transaction |
+| Mutual-fund subscription | Up to ₹1,00,000 per transaction |
 | Credit-card bill payment | Up to ₹1,00,000 per transaction |
 
-Transactions above the applicable limit require AFA.
+Transactions above the applicable threshold require AFA.
 
-These are regulatory ceilings for eligible processing. The customer, issuer, provider, mandate, or merchant may impose lower limits.
+These are regulatory ceilings. A provider, issuer, merchant, or customer mandate can impose a lower limit.
 
-## 21.6 Developer Impact
+### Backend Design Impact
 
-A backend serving Indian recurring payments should support:
-
-```text
-mandate validity
-fixed or variable amount
-customer-defined maximum amount
-pre-debit scheduling
-transaction-level opt-out
-mandate revocation
-AFA-required recovery
-domestic and cross-border classification
-post-payment notification references
-grievance and dispute references
-```
-
-Do not hard-code the limits throughout the codebase.
+Do not scatter hard-coded regulatory amounts across services.
 
 Use versioned configuration:
 
@@ -1395,544 +819,164 @@ AFA_LIMITS = {
 }
 ```
 
-For INR, ₹15,000 is 1,500,000 paise and ₹1,00,000 is 10,000,000 paise.
+A production system should also support:
 
-Regulatory rules should be configurable and versioned because limits and categories can change.
-
----
-
-# 22. API Design Example
-
-## 22.1 Create Mandate Setup
-
-```http
-POST /v1/mandates/setup
-Idempotency-Key: mandate-setup:customer-123:request-456
-Content-Type: application/json
-```
-
-```json
-{
-  "customer_id": "cus_123",
-  "payment_method_type": "upi",
-  "amount_type": "variable",
-  "maximum_amount_minor": 100000,
-  "currency": "INR",
-  "frequency": "monthly",
-  "valid_from": "2026-08-03T00:00:00Z",
-  "valid_until": "2027-08-02T23:59:59Z",
-  "purpose": "Software subscription"
-}
-```
-
-Response:
-
-```json
-{
-  "mandate_id": "man_123",
-  "status": "pending",
-  "provider_redirect_url": "https://provider.example/approve/abc",
-  "expires_at": "2026-08-03T12:30:00Z"
-}
-```
-
-## 22.2 Get Mandate
-
-```http
-GET /v1/mandates/man_123
-```
-
-```json
-{
-  "id": "man_123",
-  "status": "active",
-  "amount_type": "variable",
-  "maximum_amount_minor": 100000,
-  "currency": "INR",
-  "valid_until": "2027-08-02T23:59:59Z",
-  "provider": "example_psp",
-  "provider_mandate_id": "provider_man_987"
-}
-```
-
-## 22.3 Revoke Mandate
-
-```http
-POST /v1/mandates/man_123/revoke
-Idempotency-Key: revoke:man_123:req_789
-```
-
-Response:
-
-```json
-{
-  "id": "man_123",
-  "status": "revocation_pending"
-}
-```
-
-When the provider confirms revocation, update it to `revoked`.
-
-## 22.4 Retry Payment
-
-```http
-POST /v1/payments/pay_456/retry
-Idempotency-Key: payment-retry:pay_456:attempt-2
-```
-
-The endpoint should not allow a retry when:
-
-- Payment already succeeded
-- Mandate is revoked or expired
-- Invoice is void
-- Maximum retry count is reached
-- Failure is non-recoverable
+- Mandate validity
+- Customer-defined maximum amount
+- Pre-debit scheduling
+- Transaction-level opt-out
+- Mandate revocation
+- AFA-required recovery
+- Domestic/cross-border classification
+- Notification references
+- Dispute and grievance references
 
 ---
 
-# 23. Backend Implementation Example
+# 13. Practical Example
 
-The following Python example is provider-neutral.
+Consider a SaaS plan costing **₹799 per month**.
 
-```python
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import Enum
-from uuid import UUID
+The customer approves a variable UPI AutoPay mandate with a maximum of **₹1,000 per month**.
 
-class MandateStatus(str, Enum):
-    PENDING = "pending"
-    ACTIVE = "active"
-    PAUSED = "paused"
-    REVOKED = "revoked"
-    EXPIRED = "expired"
-    SUSPENDED = "suspended"
+```mermaid
+sequenceDiagram
+    actor Customer
+    participant App
+    participant Billing
+    participant PSP
 
-class PaymentStatus(str, Enum):
-    CREATED = "created"
-    PROCESSING = "processing"
-    PENDING = "pending"
-    REQUIRES_ACTION = "requires_action"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
+    Customer->>App: Approves mandate up to ₹1,000/month
+    App->>PSP: Register mandate with authentication
+    PSP-->>App: Mandate ACTIVE
 
-@dataclass(frozen=True)
-class Mandate:
-    id: UUID
-    status: MandateStatus
-    currency: str
-    maximum_amount_minor: int | None
-    valid_from: datetime
-    valid_until: datetime | None
-
-def validate_mandate(
-    mandate: Mandate,
-    amount_minor: int,
-    currency: str,
-    now: datetime | None = None,
-) -> None:
-    current_time = now or datetime.now(timezone.utc)
-
-    if mandate.status is not MandateStatus.ACTIVE:
-        raise ValueError("Mandate is not active")
-
-    if mandate.currency != currency:
-        raise ValueError("Currency does not match mandate")
-
-    if current_time < mandate.valid_from:
-        raise ValueError("Mandate is not valid yet")
-
-    if mandate.valid_until and current_time > mandate.valid_until:
-        raise ValueError("Mandate has expired")
-
-    if (
-        mandate.maximum_amount_minor is not None
-        and amount_minor > mandate.maximum_amount_minor
-    ):
-        raise ValueError("Amount exceeds mandate limit")
+    Note over Billing: Next month
+    Billing->>Billing: Create ₹799 invoice
+    Billing->>Billing: Validate ACTIVE mandate and ₹799 <= ₹1,000
+    Billing->>PSP: Charge ₹799 with idempotency key
+    PSP-->>App: processing
+    PSP-->>App: webhook payment.succeeded
+    App->>Billing: Mark payment/invoice paid
 ```
 
-## Payment Execution Service
+Later, the plan price becomes **₹1,099**.
 
-```python
-from dataclasses import dataclass
-from typing import Protocol
-
-@dataclass(frozen=True)
-class ProviderPaymentResult:
-    provider_payment_id: str
-    status: PaymentStatus
-    failure_code: str | None = None
-    action_url: str | None = None
-
-class PaymentProvider(Protocol):
-    def create_recurring_payment(
-        self,
-        *,
-        idempotency_key: str,
-        provider_mandate_id: str,
-        amount_minor: int,
-        currency: str,
-        invoice_reference: str,
-    ) -> ProviderPaymentResult:
-        ...
-
-class RecurringPaymentService:
-    def __init__(
-        self,
-        provider: PaymentProvider,
-        payment_repository,
-        mandate_repository,
-    ) -> None:
-        self.provider = provider
-        self.payment_repository = payment_repository
-        self.mandate_repository = mandate_repository
-
-    def execute(self, payment_id: UUID) -> None:
-        payment = self.payment_repository.get_for_update(payment_id)
-
-        if payment.status == PaymentStatus.SUCCEEDED:
-            return
-
-        mandate = self.mandate_repository.get(payment.mandate_id)
-
-        validate_mandate(
-            mandate=mandate,
-            amount_minor=payment.amount_minor,
-            currency=payment.currency,
-        )
-
-        attempt = self.payment_repository.get_or_create_attempt(
-            payment_id=payment.id,
-            attempt_number=payment.next_attempt_number,
-            idempotency_key=(
-                f"recurring-payment:{payment.id}:"
-                f"attempt:{payment.next_attempt_number}"
-            ),
-        )
-
-        if attempt.is_terminal:
-            return
-
-        self.payment_repository.mark_processing(attempt.id)
-
-        result = self.provider.create_recurring_payment(
-            idempotency_key=attempt.idempotency_key,
-            provider_mandate_id=mandate.provider_mandate_id,
-            amount_minor=payment.amount_minor,
-            currency=payment.currency,
-            invoice_reference=payment.invoice_number,
-        )
-
-        self.payment_repository.apply_provider_result(
-            attempt_id=attempt.id,
-            result=result,
-        )
-```
-
-In a real system:
-
-- Keep database transactions short.
-- Do not hold row locks during slow provider calls.
-- Use an outbox or workflow engine for reliable orchestration.
-- Let webhooks confirm asynchronous final states.
-- Record sanitized provider responses for support and audit.
-
----
-
-# 24. Observability and Operational Metrics
-
-Track metrics for each payment rail, provider, bank, and failure category.
-
-## 24.1 Core Metrics
+The subscription may allow the commercial price change, but the payment system must still compare the invoice against the mandate:
 
 ```text
-Mandate registration success rate
-Mandate activation latency
-Recurring payment success rate
-First-attempt success rate
-Recovery success rate
-Authentication-required rate
-Issuer decline rate
-Insufficient-funds rate
-Webhook processing latency
-Duplicate webhook count
-Payment pending duration
-Settlement delay
-Refund and dispute rate
-Reconciliation mismatch count
+Invoice: ₹1,099
+Mandate maximum: ₹1,000
 ```
 
-## 24.2 Useful Dimensions
+The system should **not** blindly attempt the debit. It should move the customer into an authorization/update flow first.
 
-Break metrics down by:
-
-- Provider
-- Payment method
-- Issuer or bank
-- Country
-- Currency
-- Merchant category
-- Subscription plan
-- Amount bucket
-- Retry attempt number
-- Error code
-- App version or integration version
-
-## 24.3 Structured Logging
-
-Example:
-
-```json
-{
-  "event": "recurring_payment_attempted",
-  "payment_id": "pay_456",
-  "attempt_id": "att_002",
-  "invoice_id": "inv_789",
-  "mandate_id": "man_123",
-  "provider": "example_psp",
-  "amount_minor": 99900,
-  "currency": "INR",
-  "status": "processing",
-  "idempotency_key_hash": "sha256:...",
-  "request_id": "req_abc"
-}
-```
-
-Do not log:
-
-- Full card number
-- CVV
-- OTP
-- Bank credentials
-- Raw authorization secrets
-- Unredacted webhook secrets
+This example shows why subscription rules and mandate rules must remain separate.
 
 ---
 
-# 25. Testing Strategy
+# 14. Testing, Observability, and Production Practices
 
-## 25.1 Unit Tests
+## 14.1 Testing
 
-Test pure business rules:
+### Unit Tests
 
-- Mandate is active
-- Validity period
+Focus on business rules:
+
+- Mandate state
+- Validity dates
 - Currency match
 - Maximum amount
 - Retry eligibility
+- State transitions
 - Proration
 - Next billing date
-- State transitions
-- AFA threshold selection
+- Regulatory-limit selection
 
-Example:
+### Integration Tests
 
-```python
-def test_rejects_amount_above_mandate_limit():
-    mandate = active_mandate(maximum_amount_minor=100_000)
+Cover:
 
-    with pytest.raises(ValueError, match="exceeds"):
-        validate_mandate(
-            mandate=mandate,
-            amount_minor=100_001,
-            currency="INR",
-        )
-```
-
-## 25.2 Integration Tests
-
-Test:
-
-- Database constraints
-- Worker locking
+- Database unique constraints
+- `FOR UPDATE SKIP LOCKED`
 - Outbox publishing
-- Provider adapters
+- Provider adapter
 - Webhook signature verification
 - Duplicate webhook handling
 - Transaction rollback
 - Reconciliation import
 
-## 25.3 Contract Tests
+### End-to-End Scenarios
 
-Verify assumptions against the provider sandbox:
-
-- Request fields
-- Status mapping
-- Error-code mapping
-- Webhook payload shape
-- Signature implementation
-- Idempotency behavior
-
-## 25.4 End-to-End Scenarios
-
-Cover at least:
+Important flows include:
 
 ```text
-Mandate setup succeeds
-Mandate setup fails
-First payment succeeds
-Off-session renewal succeeds
-Renewal requires authentication
-Insufficient funds and retry
-Mandate revoked before scheduled debit
+Mandate registration succeeds
+Recurring renewal succeeds
+Authentication is required
+Insufficient funds -> retry -> success
+Mandate revoked before debit
 Amount exceeds mandate limit
 Webhook delivered twice
-Webhook delivered out of order
-API timeout after provider success
-Payment remains pending
+Webhook arrives out of order
+API times out after provider success
+Payment stays pending
 Payment succeeds and is later returned
-Card or account is updated
-Subscription cancellation at period end
-Refund and reconciliation
+Payment method is updated
+Subscription cancels at period end
 ```
 
-## 25.5 Time-Based Tests
+Use a controllable clock for month-end, trial expiry, mandate expiry, and retry-schedule tests.
 
-Use a controllable clock rather than real sleeping, for example `clock.freeze("2026-08-03T00:00:00Z")` before calling `run_billing_scheduler()`.
+## 14.2 Observability
 
-This makes tests deterministic for:
+Useful metrics:
 
-- Month-end
-- Leap year
-- Grace period
-- Trial expiry
-- Retry schedule
-- Mandate expiry
+```text
+Mandate registration success rate
+Recurring payment success rate
+First-attempt success rate
+Recovery success rate
+Authentication-required rate
+Issuer decline rate
+Webhook processing latency
+Duplicate webhook count
+Pending-payment duration
+Settlement delay
+Reconciliation mismatch count
+Refund/dispute rate
+```
+
+Break metrics down by provider, payment method, issuer/bank, currency, amount bucket, retry number, and error code.
+
+## 14.3 Production Practices
+
+Keep these rules in mind:
+
+1. **Separate billing from collection.** Billing decides what is owed; payment decides how to collect it.
+2. **Use an outbox or durable workflow.** Do not rely on a database commit and queue publish succeeding independently.
+3. **Keep provider-specific states at the integration boundary.** Map them into stable internal statuses.
+4. **Prefer explicit state transitions.** Use operations such as `activate_mandate()` and `schedule_retry()` rather than arbitrary status assignment.
+5. **Preserve financial history.** Do not rewrite failed attempts into successful ones; create a new attempt.
+6. **Keep regulatory rules configurable and versioned.**
+7. **Design for provider downtime.** Use timeouts, circuit breakers, bounded retries, queue back-pressure, and reconciliation after recovery.
+8. **Provide audited operations tools.** Support safe webhook replay, provider resync, eligible retry, mandate inspection, and reconciliation.
 
 ---
 
-# 26. Production Best Practices
+# 15. References
 
-## 26.1 Separate Billing from Collection
+Official/current references used for this topic:
 
-The billing service should determine what is owed; the payment service should determine how to collect it. This supports manual payments, multiple providers, credits, and payment-method fallback.
-
-## 26.2 Treat Provider Responses as External State
-
-Do not expose provider-specific statuses everywhere.
-
-Map them to internal states:
-
-```python
-PROVIDER_STATUS_MAP = {
-    "requires_confirmation": "created",
-    "processing": "processing",
-    "requires_action": "requires_action",
-    "succeeded": "succeeded",
-    "canceled": "failed",
-}
-```
-
-Keep the raw provider status for diagnostics.
-
-## 26.3 Use an Outbox Pattern
-
-When invoice creation must trigger a payment job:
-
-```text
-Database transaction:
-1. Create invoice
-2. Insert outbox event
-3. Commit
-
-Publisher:
-4. Read unpublished outbox events
-5. Publish to queue
-6. Mark event published
-```
-
-This prevents the database commit and queue publication from becoming inconsistent.
-
-## 26.4 Make Regulatory Rules Configurable
-
-Store rules by:
-
-- Jurisdiction
-- Payment rail
-- Category
-- Effective date
-- Currency
-- Transaction limit
-
-Avoid scattered conditions such as a bare `if amount <= 15000:` repeated throughout the codebase.
-
-## 26.5 Build Manual Operations
-
-Operations teams need safe tools to:
-
-- Inspect mandate state
-- Replay a webhook
-- Resync provider state
-- Retry eligible payments
-- Cancel scheduled attempts
-- View consent evidence
-- Start reconciliation
-- Add an internal note
-
-Every manual action should be authorized and audited.
-
-## 26.6 Prefer Explicit State Transitions
-
-Use commands such as:
-
-```text
-activate_mandate()
-revoke_mandate()
-finalize_invoice()
-mark_payment_succeeded()
-schedule_retry()
-```
-
-Avoid arbitrary status updates such as `record.status = request.data["status"]`.
-
-## 26.7 Preserve History
-
-Financial records should be append-oriented.
-
-Do not rewrite a failed attempt into a successful attempt. Create a new attempt.
-
-Do not delete revoked mandates. Mark them revoked and keep audit data.
-
-## 26.8 Design for Provider Downtime
-
-Use:
-
-- Timeouts
-- Circuit breakers
-- Bounded retries
-- Queue back-pressure
-- Provider health metrics
-- Safe failover rules
-- Reconciliation after recovery
-
-Failing over to another provider may require compatible payment tokens and mandates. It is not always possible to route an existing mandate to a different provider.
-
----
-
-# 27. References
-
-The following official resources were used to validate the current concepts and India-specific rules:
-
-1. Reserve Bank of India — Digital Payments – E-mandate Framework, 2026  
+1. Reserve Bank of India — **Digital Payments – E-mandate Framework, 2026**, issued 21 April 2026  
    https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=13374
 
-2. Reserve Bank of India — Processing of e-mandates for recurring transactions, August 22, 2024  
+2. Reserve Bank of India — **Processing of e-mandates for recurring transactions**, 22 August 2024  
    https://www.rbi.org.in/scripts/bs_circularindexdisplay.aspx/Scripts/BS_CircularIndexDisplay.aspx?Id=12722
 
-3. NPCI — UPI AutoPay  
+3. NPCI — **UPI AutoPay**  
    https://www.npci.org.in/product/autopay
 
-4. NPCI — National Automated Clearing House  
-   https://www.npci.org.in/product/nach
+4. NPCI — **NACH**  
+   https://www.npci.org.in/product/nach/about-nach
 
-5. Stripe Documentation — Setup Intents  
-   https://docs.stripe.com/payments/setup-intents
-
-6. Stripe Documentation — Off-session payments  
-   https://docs.stripe.com/payments/off-session-payments
-
-7. Stripe Documentation — Subscription lifecycle  
-   https://docs.stripe.com/billing/subscriptions/overview
-
-> Regulatory and payment-network requirements can change. Validate production behavior against the latest RBI, NPCI, provider, acquirer, issuer, and card-network documentation applicable to your business.
+> Payment and regulatory requirements change over time. Production integrations should always be checked against the current RBI, NPCI, acquirer, issuer, PSP, and card-network documentation.

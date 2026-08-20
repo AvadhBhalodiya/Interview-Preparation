@@ -7,30 +7,30 @@ updated: "August 2026"
 
 # Unit vs Integration vs End-to-End (E2E) Tests
 
-> The three test levels, what each is actually for, and why a team should define its own boundaries instead of arguing about the labels.
+> Understand test types by their **boundary**, not only by their folder name or tool.
 
-## In short
+## In Short
 
-- A test's level is decided by its **boundary** — how much of the system it executes and which dependencies are real — not by the folder it lives in.
-- **Unit:** one behaviour with collaborators replaced by mocks or fakes. Fast, precise failures, the largest group of tests.
-- **Integration:** two or more real components together (API + service + database, consumer + broker). It is the only level that catches wrong SQL, missing wiring, serialization mismatches, and broken contracts.
-- **E2E:** a complete user journey through the deployed system. Highest realism, slowest, flakiest — reserve it for critical journeys.
-- The pyramid is guidance about cost per unit of confidence, not a fixed 70/20/10 split. The shape to avoid is the inverted one, the ice-cream cone.
-- The labels mean different things in different teams, so document the boundaries your project actually uses instead of arguing about names.
-- Test each risk at the **lowest level that can confidently detect it**.
+- **Unit test** → verifies one small behavior with dependencies controlled or replaced.
+- **Integration test** → verifies that real components work together correctly.
+- **E2E test** → verifies a complete user workflow through the application.
+- Use the **smallest test boundary that can confidently catch the production risk**.
+- Keep many fast lower-level tests and fewer broad E2E tests.
+- Test names differ between teams, so define what **unit**, **integration**, and **E2E** mean in your project.
 
 ```mermaid
 flowchart TD
-    START[What risk are you testing?]
-    LOGIC{Pure business logic<br/>or edge case?}
-    BOUNDARY{Does correctness depend on<br/>DB, queue, framework, or API wiring?}
-    JOURNEY{Must a complete user<br/>workflow be proven?}
+    RISK[What risk do I need to verify?]
 
-    UNIT[Write a Unit Test]
-    INT[Write an Integration Test]
-    E2E[Write an E2E Test]
+    LOGIC{Pure logic or<br/>business rule?}
+    BOUNDARY{Depends on DB, framework,<br/>queue, cache, or API wiring?}
+    JOURNEY{Must the complete user<br/>journey work?}
 
-    START --> LOGIC
+    UNIT[Unit Test]
+    INT[Integration Test]
+    E2E[E2E Test]
+
+    RISK --> LOGIC
     LOGIC -- Yes --> UNIT
     LOGIC -- No --> BOUNDARY
     BOUNDARY -- Yes --> INT
@@ -39,50 +39,11 @@ flowchart TD
     JOURNEY -- No --> UNIT
 ```
 
-**Interview answer:** The three levels differ by boundary. A unit test exercises one behaviour with its collaborators replaced, so it runs in milliseconds and the failure points straight at the cause. An integration test runs several real components together — typically router, service, repository, and a real test database — because that is the only way to catch wrong SQL, unregistered routes, or a broken contract. An E2E test drives the deployed system the way a user does, which buys the most realism at the highest cost and flakiness, so it is reserved for critical journeys. The working rule is to prove each risk at the lowest level that can confidently detect it.
-
-**Gotcha:** Pushing coverage upward — proving every discount, validation rule, and permission branch through the browser. That produces the ice-cream cone: slow builds, flaky failures, and diagnosis that starts from a screenshot instead of a stack trace. Broad tests should prove the journey; the variations belong at unit level.
-
 ---
 
-# 1. Why We Need Multiple Test Levels
+# 1. The Main Difference: Test Boundary
 
-A production application contains different types of risk:
-
-- A calculation may be incorrect.
-- A service may send the wrong data to a repository.
-- A database query may not match the actual schema.
-- Two microservices may disagree about an API contract.
-- A user may be unable to complete checkout in the browser.
-
-No single test type handles all these risks efficiently.
-
-A healthy test suite uses different levels of testing:
-
-```mermaid
-flowchart LR
-    A[Unit Tests<br/>Is one behavior correct?]
-    B[Integration Tests<br/>Do components work together?]
-    C[E2E Tests<br/>Can the user complete the journey?]
-
-    A --> B --> C
-```
-
-The levels provide different kinds of confidence:
-
-- **Unit tests** give fast and precise feedback.
-- **Integration tests** find problems at component boundaries.
-- **E2E tests** prove that important workflows work through the deployed system.
-
----
-
-# 2. The Main Difference: Test Boundary
-
-The easiest way to classify a test is to ask:
-
-> **How much of the system does this test execute, and which dependencies are real?**
-
-Consider an order placement flow:
+Suppose an order flow looks like this:
 
 ```mermaid
 flowchart LR
@@ -91,323 +52,184 @@ flowchart LR
     SERVICE[Order Service]
     DB[(PostgreSQL)]
     PAYMENT[Payment Provider]
-    QUEUE[Message Queue]
 
-    UI --> API
-    API --> SERVICE
+    UI --> API --> SERVICE
     SERVICE --> DB
     SERVICE --> PAYMENT
-    SERVICE --> QUEUE
 ```
 
-The same feature can be tested with different boundaries:
+The same feature can be tested at different boundaries:
 
-```mermaid
-flowchart TB
-    subgraph UNIT[Unit test]
-        OS[Order Service<br/>discount calculation]
-        MOCKREPO[Mock repository]
-        FAKEPAY[Fake payment client]
-        OS --> MOCKREPO
-        OS --> FAKEPAY
-    end
+```text
+Unit
+OrderService + mocked/fake dependencies
 
-    subgraph INT[Integration test]
-        IAPI[API]
-        ISVC[Service]
-        IDB[(Real test database)]
-        IAPI --> ISVC --> IDB
-    end
+Integration
+API + Service + Repository + real test database
 
-    subgraph E2E[E2E test]
-        BROWSER[Browser]
-        EAPI[API]
-        ESVC[Service]
-        EDB[(Database)]
-        RESULT[Result in UI]
-        BROWSER --> EAPI --> ESVC --> EDB --> RESULT
-    end
+E2E
+Browser + Frontend + API + Service + Database
 ```
 
-The labels are sometimes used differently across teams. Therefore, teams should document their test boundaries instead of relying only on names.
+The important question is:
+
+> **How much real application behavior must execute for this test to detect the failure I care about?**
 
 ---
 
-# 3. Unit Tests
+# 2. Unit Tests
 
-## 3.1 What Is a Unit Test?
+## 2.1 What They Verify
 
-A unit test verifies one small unit of behavior in isolation.
+A unit test checks a small piece of behavior in a controlled boundary.
 
-A unit may be:
-
-- A function
-- A method
-- A class
-- A domain object
-- A small service with controlled dependencies
-
-The important point is not that the test contains only one function. The important point is that the test has a **small, controlled boundary** and failures are easy to diagnose.
-
-## 3.2 Typical Characteristics
-
-| Characteristic | Unit Test |
-|---|---|
-| Scope | Small behavior or component |
-| Dependencies | Usually mocked, stubbed, or replaced with fakes |
-| Database | Normally not used |
-| Network | Normally not used |
-| Speed | Very fast |
-| Failure diagnosis | Usually easy |
-| Quantity | Usually the largest number of tests |
-
-## 3.3 Unit Test Example with `pytest`
-
-### Production code
-
-```python
-# pricing.py
-from decimal import Decimal
-
-def calculate_final_price(
-    price: Decimal,
-    discount_percent: Decimal,
-) -> Decimal:
-    if price < 0:
-        raise ValueError("Price cannot be negative")
-
-    if not Decimal("0") <= discount_percent <= Decimal("100"):
-        raise ValueError("Discount must be between 0 and 100")
-
-    discount = price * discount_percent / Decimal("100")
-    return (price - discount).quantize(Decimal("0.01"))
-```
-
-### Unit tests
-
-```python
-# tests/unit/test_pricing.py
-from decimal import Decimal
-
-import pytest
-
-from pricing import calculate_final_price
-
-def test_calculates_discounted_price() -> None:
-    result = calculate_final_price(
-        price=Decimal("100.00"),
-        discount_percent=Decimal("20"),
-    )
-
-    assert result == Decimal("80.00")
-
-def test_rejects_negative_price() -> None:
-    with pytest.raises(ValueError, match="Price cannot be negative"):
-        calculate_final_price(
-            price=Decimal("-1.00"),
-            discount_percent=Decimal("10"),
-        )
-```
-
-This is a unit test because it executes only the pricing behavior. It does not start an API server, connect to a database, or call an external service.
-
-## 3.4 Unit Test with a Mocked Dependency
-
-```python
-# order_service.py
-from dataclasses import dataclass
-from decimal import Decimal
-from typing import Protocol
-
-class PaymentGateway(Protocol):
-    def charge(self, customer_id: str, amount: Decimal) -> str:
-        """Return the payment transaction ID."""
-
-@dataclass
-class OrderService:
-    payment_gateway: PaymentGateway
-
-    def pay(self, customer_id: str, amount: Decimal) -> str:
-        if amount <= 0:
-            raise ValueError("Amount must be positive")
-
-        return self.payment_gateway.charge(customer_id, amount)
-```
-
-```python
-# tests/unit/test_order_service.py
-from decimal import Decimal
-from unittest.mock import Mock
-
-from order_service import OrderService
-
-def test_pay_charges_customer() -> None:
-    gateway = Mock()
-    gateway.charge.return_value = "txn-123"
-    service = OrderService(payment_gateway=gateway)
-
-    transaction_id = service.pay("customer-1", Decimal("499.00"))
-
-    assert transaction_id == "txn-123"
-    gateway.charge.assert_called_once_with(
-        "customer-1",
-        Decimal("499.00"),
-    )
-```
-
-The payment gateway is mocked because the unit test is checking the service logic, not the real payment integration.
-
-## 3.5 Best Use Cases
-
-Unit tests are ideal for:
+Typical targets:
 
 - Business rules
+- Calculations
 - Validation logic
-- Pricing and tax calculations
 - Permission decisions
 - Data transformations
 - State transitions
 - Error handling
 - Edge cases
-- Utility functions
 
-## 3.6 What Unit Tests Do Not Prove
+Example:
 
-A passing unit test does not prove that:
+```python
+from decimal import Decimal
 
-- SQL queries work with PostgreSQL.
+
+def calculate_total(subtotal: Decimal, is_premium: bool) -> Decimal:
+    if subtotal < 0:
+        raise ValueError("Subtotal cannot be negative")
+
+    if is_premium:
+        return (subtotal * Decimal("0.90")).quantize(Decimal("0.01"))
+
+    return subtotal.quantize(Decimal("0.01"))
+```
+
+```python
+from decimal import Decimal
+
+import pytest
+
+
+def test_premium_customer_receives_ten_percent_discount() -> None:
+    result = calculate_total(
+        subtotal=Decimal("1000.00"),
+        is_premium=True,
+    )
+
+    assert result == Decimal("900.00")
+
+
+def test_rejects_negative_subtotal() -> None:
+    with pytest.raises(ValueError, match="Subtotal cannot be negative"):
+        calculate_total(
+            subtotal=Decimal("-1.00"),
+            is_premium=False,
+        )
+```
+
+## 2.2 Typical Characteristics
+
+| Area | Unit Test |
+|---|---|
+| Scope | Small behavior |
+| Database | Normally not used |
+| Network | Normally not used |
+| Dependencies | Mocks, stubs, or fakes when needed |
+| Speed | Very fast |
+| Failure diagnosis | Easy |
+| Best for | Logic and edge cases |
+
+## 2.3 What Unit Tests Cannot Prove
+
+A passing unit test does **not** prove that:
+
+- SQL works against the real database.
 - Dependency injection is configured correctly.
 - API routes are registered.
-- JSON is serialized as expected.
-- External APIs accept the generated request.
-- The complete user journey works.
+- Serialization matches the real contract.
+- Infrastructure configuration is correct.
+- The complete workflow works for the user.
 
-These risks require wider test boundaries.
+Those require wider boundaries.
 
 ---
 
-# 4. Integration Tests
+# 3. Integration Tests
 
-## 4.1 What Is an Integration Test?
+## 3.1 What They Verify
 
-An integration test verifies that two or more components work together correctly.
+An integration test checks whether multiple real components collaborate correctly.
 
-Common integration boundaries include:
+Common boundaries:
 
 - API route + service
 - Service + repository
-- Repository + database
+- Repository + PostgreSQL
 - Application + Redis
 - Producer + message broker
 - Consumer + database
-- Service + external API sandbox
+- Application + external-service sandbox or stub
 
-An integration test should use the real dependency when that dependency's behavior is important to the risk being tested.
-
-## 4.2 Typical Characteristics
-
-| Characteristic | Integration Test |
-|---|---|
-| Scope | Multiple connected components |
-| Dependencies | Mix of real and controlled dependencies |
-| Database | Often a real test database |
-| Network | May use local containers, sandbox services, or test servers |
-| Speed | Slower than unit tests |
-| Failure diagnosis | Moderate difficulty |
-| Quantity | Fewer than unit tests, usually more than E2E tests |
-
-## 4.3 Integration Test Example: FastAPI + Database
-
-Assume this endpoint creates a user and checks that the email is unique.
-
-```python
-# tests/integration/test_create_user.py
-import pytest
-from httpx import ASGITransport, AsyncClient
-
-from app.main import app
-
-@pytest.mark.asyncio
-async def test_create_user_persists_user(test_database) -> None:
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://test",
-    ) as client:
-        response = await client.post(
-            "/users",
-            json={
-                "name": "Asha Patel",
-                "email": "asha@example.com",
-            },
-        )
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["email"] == "asha@example.com"
-
-    saved_user = await test_database.fetch_user_by_email(
-        "asha@example.com"
-    )
-    assert saved_user is not None
-```
-
-This test may execute:
-
-```mermaid
-flowchart TD
-    REQ[HTTP request]
-    ROUTER[FastAPI router]
-    VALIDATION[Pydantic validation]
-    SERVICE[Service]
-    REPO[Repository]
-    DB[(Real test database)]
-
-    REQ --> ROUTER --> VALIDATION --> SERVICE --> REPO --> DB
-```
-
-It is an integration test because several real application layers are working together.
-
-## 4.4 Repository Integration Test
-
-A repository test should normally use the same database engine as production when database-specific behavior matters.
-
-```python
-@pytest.mark.asyncio
-async def test_repository_filters_active_users(user_repository) -> None:
-    await user_repository.create(
-        name="Active User",
-        email="active@example.com",
-        is_active=True,
-    )
-    await user_repository.create(
-        name="Inactive User",
-        email="inactive@example.com",
-        is_active=False,
-    )
-
-    users = await user_repository.list_active()
-
-    assert [user.email for user in users] == ["active@example.com"]
-```
-
-This can reveal issues that a mocked repository cannot detect:
-
-- Wrong column name
-- Invalid SQL
-- Incorrect join
-- Database constraint failure
-- Transaction behavior
-- PostgreSQL-specific type handling
-
-## 4.5 Integration Testing with Containers
-
-For dependencies such as PostgreSQL, Redis, RabbitMQ, or Kafka, teams commonly start temporary containers during tests.
+Example boundary:
 
 ```mermaid
 flowchart LR
-    TEST[Test Process]
+    REQ[HTTP Request]
+    ROUTER[FastAPI Router]
+    SERVICE[Service]
+    REPO[Repository]
+    DB[(Real Test DB)]
+
+    REQ --> ROUTER --> SERVICE --> REPO --> DB
+```
+
+## 3.2 Example
+
+```python
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_order_api_saves_discounted_total(client, database) -> None:
+    response = await client.post(
+        "/orders",
+        json={
+            "customer_id": "premium-customer-1",
+            "subtotal": "1000.00",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["total"] == "900.00"
+
+    order = await database.get_order(response.json()["id"])
+
+    assert order.total == Decimal("900.00")
+```
+
+This test can detect problems that a mocked repository cannot:
+
+- Invalid SQL
+- Wrong column names
+- Broken joins
+- Database constraints
+- Incorrect transaction behavior
+- Serialization mismatches
+- Route or dependency wiring problems
+
+## 3.3 Use Real Dependencies Where Their Behavior Matters
+
+For PostgreSQL, Redis, RabbitMQ, Kafka, and similar infrastructure, temporary test containers are commonly useful:
+
+```mermaid
+flowchart LR
+    TEST[Test Runner]
     APP[Application]
     DB[(PostgreSQL Container)]
     CACHE[(Redis Container)]
@@ -417,430 +239,290 @@ flowchart LR
     APP --> CACHE
 ```
 
-This gives higher realism than mocks while keeping the environment disposable and repeatable.
+Use the same database engine as production when database-specific behavior matters. SQLite is not a perfect substitute for PostgreSQL when queries, types, constraints, or transactions depend on PostgreSQL behavior.
 
-## 4.6 External Service Integration Tests
+For third-party APIs, prefer:
 
-Suppose the application integrates with Stripe, an identity provider, or another third-party API.
+- Provider sandbox/test mode
+- Official emulator
+- Local stub server
+- Contract tests
 
-Possible approaches:
-
-1. Use the provider's sandbox or test mode.
-2. Run a local emulator when officially supported.
-3. Use a stub server that validates expected requests and returns realistic responses.
-4. Add contract tests to verify the API structure independently.
-
-Do not call real production services from automated tests.
-
-## 4.7 What Integration Tests Do Not Always Prove
-
-A backend integration test may pass while:
-
-- The frontend sends the wrong field name.
-- Authentication cookies are not configured correctly in the browser.
-- A reverse proxy routes the request incorrectly.
-- The deployed environment has missing variables.
-- The user cannot find or click the required button.
-
-That is where E2E testing adds value.
+Avoid calling production services from automated tests.
 
 ---
 
-# 5. End-to-End Tests
+# 4. End-to-End Tests
 
-## 5.1 What Is an E2E Test?
+## 4.1 What They Verify
 
-An end-to-end test validates a complete workflow through the application from an external user's point of view.
+An E2E test verifies an important workflow from the system's external point of view.
 
-For a web application, an E2E test commonly executes:
+For a web application:
 
 ```mermaid
-flowchart TD
+flowchart LR
     BROWSER[Browser]
     FRONTEND[Frontend]
     API[Backend API]
-    SERVICES[Business services]
+    SERVICE[Business Logic]
     DB[(Database)]
-    RESPONSE[Response]
-    UI[Updated browser UI]
+    RESULT[Visible Result]
 
-    BROWSER --> FRONTEND --> API --> SERVICES --> DB
-    DB --> RESPONSE --> UI
+    BROWSER --> FRONTEND --> API --> SERVICE --> DB
+    DB --> RESULT
 ```
 
-The test should focus on observable behavior rather than internal implementation details.
+E2E tests provide the highest realism, but they also have the highest execution and maintenance cost.
 
-## 5.2 Typical Characteristics
+Good candidates include:
 
-| Characteristic | E2E Test |
-|---|---|
-| Scope | Complete system or major user workflow |
-| Dependencies | Mostly real application components |
-| Database | Usually a dedicated test database |
-| Browser | Real browser or browser engine |
-| Speed | Slowest of the three levels |
-| Failure diagnosis | Harder because many components are involved |
-| Quantity | Smallest number of tests |
+- Login
+- Registration
+- Password reset
+- Checkout
+- Payment
+- Document upload
+- Insurance claim submission
+- Multi-step onboarding
+- Approval workflows
 
-## 5.3 E2E Example with Playwright
+Do **not** use browser tests to exhaustively cover every validation rule, calculation variation, or permission branch. Those variations usually belong at lower levels.
+
+## 4.2 Playwright Example
 
 ```typescript
-// tests/e2e/checkout.spec.ts
 import { test, expect } from '@playwright/test';
 
-test('customer completes checkout', async ({ page }) => {
-  await page.goto('/products');
-
-  await page.getByRole('link', { name: 'Noise-Cancelling Headphones' }).click();
-  await page.getByRole('button', { name: 'Add to cart' }).click();
-  await page.getByRole('link', { name: 'Cart' }).click();
-  await page.getByRole('button', { name: 'Proceed to checkout' }).click();
-
-  await page.getByLabel('Email').fill('asha@example.com');
-  await page.getByLabel('Address').fill('Ahmedabad, Gujarat');
-  await page.getByRole('button', { name: 'Place order' }).click();
-
-  await expect(
-    page.getByRole('heading', { name: 'Order confirmed' })
-  ).toBeVisible();
-
-  await expect(page.getByText(/Order ID:/)).toBeVisible();
-});
-```
-
-This test checks the workflow in the same general way a user performs it.
-
-Modern browser-testing guidance recommends locating elements through user-visible roles, labels, and text rather than fragile implementation details such as CSS class names.
-
-## 5.4 Good E2E Test Candidates
-
-E2E tests are most valuable for critical journeys such as:
-
-- Login and logout
-- User registration
-- Password reset
-- Checkout and payment
-- Creating and approving an order
-- Uploading a required document
-- Submitting an insurance claim
-- Completing a multi-step onboarding process
-- A role-based approval workflow
-
-## 5.5 Poor E2E Test Candidates
-
-Avoid using E2E tests to exhaustively cover:
-
-- Every validation edge case
-- Every discount combination
-- Every permission branch
-- Every possible API error
-- Small formatting functions
-- Internal algorithms
-
-Those cases are normally faster and clearer at unit or integration level.
-
-## 5.6 Test Isolation
-
-Each E2E test should be independently executable.
-
-A test should not depend on another test to:
-
-- Create its user
-- Create its order
-- Log in first
-- Prepare shared browser state
-- Leave records in a particular order
-
-A reliable structure is:
-
-```text
-Arrange: create required test data
-Act: perform the user workflow
-Assert: verify the observable outcome
-Cleanup: remove or expire test data
-```
-
-Playwright provides a fresh browser context per test by default, giving each test isolated cookies, local storage, and session storage.
-
----
-
-# 6. Unit vs Integration vs E2E Comparison
-
-| Area | Unit | Integration | E2E |
-|---|---|---|---|
-| Main purpose | Verify isolated behavior | Verify component collaboration | Verify complete user workflow |
-| Typical boundary | Function, class, domain service | API + service + DB, service + queue | Browser to backend and back |
-| Real database | No | Often | Usually |
-| External services | Mock or fake | Sandbox, emulator, container, or stub | Test environment integrations |
-| Execution speed | Milliseconds | Milliseconds to seconds | Seconds to minutes |
-| Feedback precision | High | Medium | Lower |
-| Maintenance cost | Low | Medium | High |
-| Realism | Low to medium | Medium to high | Highest |
-| Flakiness risk | Low | Medium | Highest |
-| Best for | Logic and edge cases | Boundaries and infrastructure | Critical business journeys |
-| Typical CI frequency | Every change | Every change or pull request | Pull request, deployment, scheduled suite |
-
-## Confidence vs Cost
-
-```mermaid
-quadrantChart
-    title Test Level Trade-off
-    x-axis Lower execution cost --> Higher execution cost
-    y-axis Lower system realism --> Higher system realism
-    quadrant-1 High realism, high cost
-    quadrant-2 High realism, low cost
-    quadrant-3 Low realism, low cost
-    quadrant-4 Low realism, high cost
-    Unit: [0.18, 0.25]
-    Integration: [0.52, 0.62]
-    E2E: [0.85, 0.90]
-```
-
-The goal is not to choose the test type with the highest realism for every case. The goal is to obtain enough confidence at the lowest reasonable cost.
-
----
-
-# 7. One Feature Tested at All Three Levels
-
-Consider this business requirement:
-
-> A premium customer receives a 10% discount, but the order total must never become negative.
-
-## 7.1 Unit Test
-
-Test the discount rule directly:
-
-```python
-def test_premium_customer_receives_ten_percent_discount() -> None:
-    total = calculate_order_total(
-        subtotal=Decimal("1000.00"),
-        is_premium=True,
-    )
-
-    assert total == Decimal("900.00")
-```
-
-**Risk covered:** Business rule implementation.
-
-## 7.2 Integration Test
-
-Call the order API and verify the persisted total:
-
-```python
-@pytest.mark.asyncio
-async def test_order_api_saves_discounted_total(client, database) -> None:
-    response = await client.post(
-        "/orders",
-        json={
-            "customer_id": "premium-customer-1",
-            "items": [{"product_id": "p-1", "quantity": 1}],
-        },
-    )
-
-    assert response.status_code == 201
-    assert response.json()["total"] == "900.00"
-
-    order = await database.get_order(response.json()["id"])
-    assert order.total == Decimal("900.00")
-```
-
-**Risk covered:** API, service, repository, and database integration.
-
-## 7.3 E2E Test
-
-Log in as the premium customer and place the order through the UI:
-
-```typescript
-test('premium customer sees discount during checkout', async ({ page }) => {
-  await loginAsPremiumCustomer(page);
-  await addProductToCart(page, 'Professional Monitor');
-  await page.getByRole('link', { name: 'Checkout' }).click();
+test('premium customer completes discounted checkout', async ({ page }) => {
+  await page.goto('/checkout');
 
   await expect(page.getByText('Premium discount: 10%')).toBeVisible();
   await expect(page.getByText('Total: ₹900.00')).toBeVisible();
 
   await page.getByRole('button', { name: 'Place order' }).click();
-  await expect(page.getByText('Order confirmed')).toBeVisible();
+
+  await expect(
+    page.getByRole('heading', { name: 'Order confirmed' })
+  ).toBeVisible();
 });
 ```
 
-**Risk covered:** The complete user-visible flow.
+Prefer user-facing locators such as:
 
-## 7.4 Why All Three Are Useful
+```typescript
+page.getByRole('button', { name: 'Place order' });
+page.getByLabel('Email');
+page.getByText('Order confirmed');
+```
+
+Avoid brittle DOM-dependent selectors when possible:
+
+```typescript
+page.locator('.checkout > div:nth-child(2) > button.primary');
+```
+
+Playwright locators provide auto-waiting and retry behavior, and Playwright Test creates an isolated browser context for each test by default.
+
+---
+
+# 5. One Feature Across All Three Levels
+
+Requirement:
+
+> A premium customer receives a 10% discount, and the final total must be saved and shown correctly during checkout.
 
 ```mermaid
 flowchart TB
-    UNIT[Unit Test<br/>Discount formula is correct]
-    INT[Integration Test<br/>Correct total is saved and returned]
-    E2E[E2E Test<br/>Customer sees and completes discounted order]
+    UNIT[Unit<br/>Is the discount calculation correct?]
+    INT[Integration<br/>Does the API save and return the correct total?]
+    E2E[E2E<br/>Can the customer see and complete the discounted checkout?]
 
     UNIT --> INT --> E2E
 ```
 
-The E2E test alone could prove the happy path, but it would be expensive to use it for every percentage, rounding case, and invalid value. Those variations belong mainly in unit tests.
+| Test Level | What It Proves |
+|---|---|
+| Unit | `1000 × 90% = 900` and edge cases behave correctly |
+| Integration | API, service, repository, and DB store/return `900.00` correctly |
+| E2E | The user sees the discount and successfully places the order |
+
+The E2E test proves the important journey once. It should **not** repeat every discount percentage, rounding case, and invalid subtotal scenario already covered by unit tests.
 
 ---
 
-# 8. Mocks, Fakes, Stubs, and Real Dependencies
+# 6. Unit vs Integration vs E2E
 
-## 8.1 Test Double Overview
+| Area | Unit | Integration | E2E |
+|---|---|---|---|
+| Main purpose | Verify isolated behavior | Verify component collaboration | Verify complete workflow |
+| Typical boundary | Function/class/service | API + service + DB | Browser through deployed app |
+| Real DB | No | Often | Usually |
+| External dependencies | Mock/fake | Real test dependency, sandbox, emulator, or stub | Test-environment integrations |
+| Speed | Fastest | Medium | Slowest |
+| Failure diagnosis | Easiest | Moderate | Hardest |
+| Realism | Lowest | Medium/high | Highest |
+| Maintenance cost | Low | Medium | High |
+| Typical quantity | Most | Moderate | Fewest |
+
+A useful rule:
+
+> **Move upward only when the lower level cannot give enough confidence.**
+
+---
+
+# 7. Test Doubles: Mock, Stub, Fake, Spy
 
 A **test double** replaces a real dependency during testing.
 
 | Type | Purpose | Example |
 |---|---|---|
-| Stub | Returns predefined data | Payment client always returns success |
-| Mock | Verifies interaction | Assert `send_email()` was called once |
-| Fake | Working but simplified implementation | In-memory repository |
-| Spy | Records calls to a real or wrapped object | Track emitted events |
+| Stub | Returns predefined data | Payment API always returns success |
+| Mock | Verifies an interaction | Assert `send_email()` was called once |
+| Fake | Simplified working implementation | In-memory repository |
+| Spy | Records calls for later inspection | Track emitted events |
 
-## 8.2 Dependency Choice by Test Level
+Typical use by level:
 
 ```text
-Unit
-Application code + mocks/fakes
-
-Integration
-Application code + selected real dependencies
-
-E2E
-Complete application + mostly real test environment
+Unit        -> application code + mocks/fakes
+Integration -> application code + selected real dependencies
+E2E         -> complete application + mostly real test environment
 ```
 
-## 8.3 Avoid Over-Mocking
+### Avoid Over-Mocking
 
-A test can pass while production fails when the mock behaves differently from the real dependency.
+If your mock behaves differently from the real dependency, the test may pass while production fails.
 
-Example:
-
-```python
-# Weak mock: returns any shape the test author invented.
-payment_client.charge.return_value = {"ok": True}
-```
-
-But the real provider may return:
-
-```json
-{
-  "status": "succeeded",
-  "transaction_id": "txn_123"
-}
-```
-
-Reduce this risk with:
+Reduce that risk with:
 
 - Typed interfaces
-- Provider test fixtures
+- Realistic fixtures
+- Schema validation
 - Contract tests
 - Sandbox integration tests
-- Realistic response samples
-- Schema validation
 
-## 8.4 Do Not Mock the Subject Under Test
+Also, do not mock the subject you are trying to test.
 
-If testing `OrderService`, mock its external collaborators—not `OrderService` itself.
-
-```mermaid
-flowchart LR
-    subgraph RIGHT[Correct]
-        OS[OrderService] --> MPG[MockPaymentGateway]
-    end
-
-    subgraph WRONG[Incorrect]
-        MOS[MockOrderService] --> AV[Assert mocked value]
-    end
-```
-
-The second test verifies only the mock configuration.
+If testing `OrderService`, keep `OrderService` real and replace only its external collaborators when isolation is required.
 
 ---
 
-# 9. Testing Pyramid and Modern Test Strategy
+# 8. Test Pyramid
 
-## 9.1 Traditional Testing Pyramid
-
-The traditional test pyramid recommends:
-
-- Many fast, focused tests at the bottom
-- Fewer integration tests in the middle
-- A small number of broad E2E tests at the top
-
-```mermaid
-flowchart TB
-    E2E[Small number of E2E tests]
-    INT[Moderate number of integration tests]
-    UNIT[Large number of unit tests]
-
-    E2E --- INT
-    INT --- UNIT
-```
-
-Conceptually:
+The test pyramid is guidance about **cost and granularity**, not a mandatory percentage such as `70/20/10`.
 
 ```text
              /\
-            /E2E\          Few, slow, broad
+            /E2E\          Few, broad, expensive
            /------\
           /Integration\    Moderate
          /------------\
-        /  Unit Tests   \   Many, fast, focused
+        /  Unit Tests  \   Many, fast, focused
        /________________\
 ```
 
-## 9.2 The Pyramid Is Guidance, Not a Fixed Percentage
+The practical idea is:
 
-There is no universal correct split such as 70% unit, 20% integration, and 10% E2E.
+1. Write many fast, focused tests.
+2. Add integration tests where real boundaries matter.
+3. Keep broad E2E coverage focused on critical journeys.
 
-The right distribution depends on the system:
-
-- A calculation-heavy library may have mostly unit tests.
-- A CRUD API may gain more confidence from API and database integration tests.
-- A frontend application may emphasize component integration tests.
-- A microservice platform may add contract tests around service boundaries.
-- A workflow product may need a focused set of E2E tests for critical journeys.
-
-Use the pyramid's underlying principle:
-
-> Test behavior at the lowest level that gives sufficient confidence.
-
-## 9.3 Avoid the Ice-Cream Cone
-
-An unhealthy test suite often has many manual and E2E tests but few lower-level tests.
+Avoid the **ice-cream cone**:
 
 ```text
-       Manual testing
-    ───────────────────
-       Many E2E tests
-      ───────────────
-    Few integration tests
-       ───────────
-       Few unit tests
-          ─────
+       Many manual / E2E tests
+      -------------------------
+         Few integration tests
+          -----------------
+            Few unit tests
+             -----------
 ```
 
-This commonly results in:
+Too many broad tests usually create:
 
 - Slow feedback
-- Difficult debugging
-- High maintenance
-- Flaky builds
-- Developers ignoring failures
+- More flaky failures
+- Harder debugging
+- Higher maintenance cost
+- Duplicate coverage
 
-## 9.4 A Practical Balanced Strategy
-
-For most backend or full-stack applications:
-
-1. Put business-rule variations in unit tests.
-2. Test repositories against a real database.
-3. Test important API flows with real application wiring.
-4. Test external boundaries with contract or sandbox tests.
-5. Keep E2E coverage focused on critical user journeys.
+The exact shape depends on the application. A CRUD API may benefit from more integration tests, while a calculation-heavy library may naturally contain mostly unit tests.
 
 ---
 
-# 10. Where Tests Run in CI/CD
+# 9. Reliable Test Design
 
-A common pipeline runs faster tests first and stops early when they fail.
+## 9.1 Test Behavior, Not Implementation
+
+Prefer:
+
+```python
+assert calculate_total(Decimal("1000"), True) == Decimal("900.00")
+```
+
+over checking private implementation details.
+
+A refactor that preserves behavior should not require rewriting unrelated tests.
+
+## 9.2 Keep Tests Independent
+
+Each test should create the state it needs.
+
+```text
+Bad
+Test 1 creates user
+Test 2 assumes that user exists
+Test 3 assumes Test 2 created an order
+
+Good
+Every test prepares its own required state
+```
+
+For browser tests, Playwright provides a fresh browser context per test by default. Reusable authenticated storage state can speed up login-heavy suites, but the state file may contain sensitive cookies and should not be committed.
+
+## 9.3 Prefer Deterministic Inputs
+
+Control unstable values such as:
+
+- Time
+- Randomness
+- External responses
+- Generated IDs where relevant
+- Background jobs
+- Shared test data
+
+## 9.4 Avoid Fixed Sleeps
+
+Avoid:
+
+```typescript
+await page.waitForTimeout(5000);
+```
+
+Prefer waiting for the actual expected condition:
+
+```typescript
+await expect(page.getByText('Order confirmed')).toBeVisible();
+```
+
+## 9.5 Use Arrange, Act, Assert
+
+A readable test usually follows:
+
+```text
+Arrange -> prepare required state
+Act     -> execute the behavior
+Assert  -> verify the observable result
+```
+
+Keep each test focused on one behavior even if that behavior needs multiple assertions.
+
+---
+
+# 10. CI/CD Placement
+
+Run cheap and precise checks before broad expensive tests.
 
 ```mermaid
 flowchart LR
@@ -856,83 +538,48 @@ flowchart LR
     COMMIT --> STATIC --> UNIT --> BUILD --> INT --> DEPLOY --> E2E --> RELEASE
 ```
 
-## 10.1 Suggested Execution Strategy
+A practical strategy:
 
-| Stage | Tests |
+| Stage | Typical Tests |
 |---|---|
-| Local development | Relevant unit and focused integration tests |
-| Pre-commit or fast check | Linting, formatting, selected unit tests |
-| Pull request | Full unit suite + integration suite + critical E2E tests |
+| Local development | Relevant unit + focused integration tests |
+| Pull request | Full unit + integration + critical E2E |
 | Main branch | Full automated suite |
-| Post-deployment | Smoke E2E tests against deployed environment |
-| Scheduled run | Broader browser, device, and regression coverage |
+| Post-deployment | Smoke E2E tests |
+| Scheduled runs | Broader regression/browser coverage |
 
-## 10.2 Fail Fast
-
-Run tests in roughly this order:
-
-```mermaid
-flowchart TD
-    FAST[Fast and precise]
-    UNIT[Unit tests]
-    INT[Integration tests]
-    E2E[E2E tests]
-    SLOW[Slow and broad]
-
-    FAST --> UNIT --> INT --> E2E --> SLOW
-```
-
-There is little value in spending 20 minutes on E2E tests when a unit test can identify the failure in seconds.
-
-## 10.3 Parallel Execution
-
-Tests can run safely in parallel only when they are isolated.
-
-Use:
-
-- Unique test identifiers
-- Independent database records
-- Separate schemas or databases where needed
-- Fresh browser contexts
-- No dependence on execution order
-- Controlled shared resources
+Tests can run in parallel only when their data and shared resources are isolated.
 
 ---
 
-# 11. How to Decide Which Test to Write
+# 11. Choosing the Right Test Level
 
-Start from the risk and pick the smallest boundary that can expose it. The decision flow is the diagram in **In short** at the top of this note.
+Start with the production failure you want to prevent.
 
-## 11.1 Decision Examples
-
-| Requirement | Best Starting Level | Reason |
-|---|---|---|
-| Calculate GST and discount | Unit | Pure deterministic logic |
-| Verify unique email constraint | Integration | Database constraint matters |
-| Confirm API returns validation error | Integration | Framework validation and route wiring matter |
-| Verify repository transaction rollback | Integration | Real transaction behavior matters |
-| Confirm user can reset password | E2E | Multi-step user workflow |
-| Check button text appears after state change | Component/integration | User-visible component behavior without full system |
-| Test all invalid coupon combinations | Unit | Many edge cases, fast feedback required |
-| Verify payment provider request schema | Contract/integration | External boundary matters |
-| Confirm checkout works after deployment | E2E smoke test | Full deployed path matters |
-
-## 11.2 Ask These Questions
+| Risk | Best Starting Level |
+|---|---|
+| Discount calculation is wrong | Unit |
+| Validation/business rule fails | Unit |
+| SQL query does not match schema | Integration |
+| Transaction rollback is incorrect | Integration |
+| API route or dependency wiring is broken | Integration |
+| Redis/queue integration is incorrect | Integration |
+| External request schema is wrong | Contract / Integration |
+| User cannot complete checkout | E2E |
+| Deployed login flow is broken | E2E smoke |
 
 Before writing a test, ask:
 
-1. What production failure am I trying to prevent?
-2. What is the smallest boundary that can expose that failure?
-3. Which dependencies must be real?
+1. What failure am I trying to detect?
+2. What is the smallest boundary that can detect it?
+3. Which dependencies need to be real?
 4. Can the test run independently?
-5. Will the assertion survive an internal refactor?
-6. Will a failure clearly explain what broke?
+5. Does it assert observable behavior?
+6. Will the failure clearly indicate what broke?
 
 ---
 
 # 12. Practical Project Structure
-
-A Python backend with a JavaScript frontend may use:
 
 ```text
 project/
@@ -940,53 +587,39 @@ project/
 │   ├── app/
 │   └── tests/
 │       ├── unit/
-│       │   ├── services/
-│       │   └── domain/
 │       ├── integration/
-│       │   ├── api/
-│       │   ├── repositories/
-│       │   └── messaging/
 │       ├── conftest.py
 │       └── factories/
 │
 ├── frontend/
-│   ├── src/
 │   └── tests/
 │       ├── unit/
 │       └── integration/
 │
 ├── e2e/
 │   ├── tests/
-│   ├── fixtures/
 │   └── playwright.config.ts
 │
 └── compose.test.yml
 ```
 
-## 12.1 Pytest Markers
-
-Markers allow suites to be selected independently.
+With pytest, custom markers can separate suites:
 
 ```python
 import pytest
 
+
 @pytest.mark.unit
 def test_calculates_total() -> None:
     ...
+
 
 @pytest.mark.integration
 async def test_saves_order_to_database() -> None:
     ...
 ```
 
-Run them separately:
-
-```bash
-pytest -m unit
-pytest -m integration
-```
-
-Example `pyproject.toml` configuration:
+Register custom markers:
 
 ```toml
 [tool.pytest.ini_options]
@@ -996,144 +629,38 @@ markers = [
 ]
 ```
 
-## 12.2 Test Naming
+Run them independently:
 
-Use names that describe observable behavior.
-
-```python
-# Weak
-def test_calculate():
-    ...
-
-# Better
-def test_premium_customer_receives_ten_percent_discount():
-    ...
-
-# Better for error behavior
-def test_rejects_coupon_when_expiry_date_has_passed():
-    ...
+```bash
+pytest -m unit
+pytest -m integration
 ```
-
-A useful naming pattern is: `test_<behavior>_when_<condition>`
 
 ---
 
-# 13. Reliable Test Design Principles
-
-These apply at every level. For what makes an individual test strong — assertion quality, naming, boundary cases, and how to judge a coverage number — see [Coverage & Good Tests](test-coverage-good-tests.md).
-
-## 13.1 Test Behavior, Not Implementation
-
-A test should remain valid when internal code is refactored without changing behavior.
-
-Weak assertion: `service._discount_percentage == 10`
-
-Better assertion: `assert service.calculate_total(Decimal("100")) == Decimal("90")`
-
-For UI tests, prefer accessible user-facing selectors: `page.getByRole('button', { name: 'Place order' })`
-
-Avoid fragile selectors when possible: `page.locator('.btn.primary.checkout-button:nth-child(2)')`
-
-## 13.2 Keep Tests Independent
-
-Each test should prepare its own required state.
+# Key Takeaway
 
 ```text
-Bad:
-Test 1 creates user
-Test 2 assumes that user exists
-Test 3 assumes Test 2 created an order
+Unit
+"Is this behavior correct?"
 
-Good:
-Each test creates exactly the state it needs
+Integration
+"Do these real components work together?"
+
+E2E
+"Can the user complete the important workflow?"
 ```
 
-## 13.3 Use Deterministic Data
-
-Control unstable inputs such as:
-
-- Current time
-- Random values
-- Generated IDs
-- External responses
-- Background jobs
-- Network timing
-
-Example with an injected clock:
-
-```python
-from datetime import UTC, datetime
-
-def test_coupon_is_expired() -> None:
-    fixed_now = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
-
-    assert is_coupon_expired(
-        expiry=datetime(2026, 8, 2, 23, 59, tzinfo=UTC),
-        now=fixed_now,
-    )
-```
-
-## 13.4 Avoid Fixed Sleeps
-
-Weak E2E code: `await page.waitForTimeout(5000);`
-
-Better: `await expect(page.getByText('Order confirmed')).toBeVisible();`
-
-Wait for the required condition, not an assumed duration.
-
-## 13.5 Keep Assertions Focused
-
-A test may contain multiple assertions when they verify one behavior.
-
-```python
-def test_creates_active_user() -> None:
-    user = create_user("asha@example.com")
-
-    assert user.email == "asha@example.com"
-    assert user.is_active is True
-    assert user.created_at is not None
-```
-
-Avoid combining unrelated workflows in one long test because failure diagnosis becomes difficult.
-
-## 13.6 Use Realistic Test Data, but Keep It Minimal
-
-Use the smallest dataset that exposes the behavior.
-
-Do not load a complete production-like database when the test requires only:
-
-- One customer
-- Two products
-- One order
-
-Small datasets make tests easier to understand and maintain.
-
-## 13.7 Treat Flaky Tests as Defects
-
-A flaky test sometimes passes and sometimes fails without a relevant code change.
-
-Common causes include:
-
-- Shared state
-- Test-order dependency
-- Fixed sleeps
-- Race conditions
-- Uncontrolled time
-- Unstable external services
-- Non-unique test data
-- Incorrect asynchronous handling
-
-Retries may provide temporary diagnostics, but repeated retries should not replace fixing the root cause.
+Choose the **lowest test level that gives sufficient confidence**, then use broader tests only for risks that lower-level tests cannot prove.
 
 ---
 
 # References
 
-- Martin Fowler — *The Practical Test Pyramid*: https://martinfowler.com/articles/practical-test-pyramid.html
-- Martin Fowler — *Test Pyramid*: https://martinfowler.com/bliki/TestPyramid.html
-- pytest — Latest documentation: https://docs.pytest.org/en/latest/
-- Playwright — Introduction: https://playwright.dev/docs/intro
-- Playwright — Test isolation: https://playwright.dev/docs/browser-contexts
-- Playwright — Best practices: https://playwright.dev/docs/best-practices
-- Testing Library — Guiding principles: https://testing-library.com/docs/guiding-principles/
-
+- pytest — Documentation: https://docs.pytest.org/en/stable/
+- Playwright — Best Practices: https://playwright.dev/docs/best-practices
+- Playwright — Locators: https://playwright.dev/docs/locators
+- Playwright — Test Isolation: https://playwright.dev/docs/browser-contexts
+- Playwright — Authentication: https://playwright.dev/docs/auth
+- Martin Fowler — The Practical Test Pyramid: https://martinfowler.com/articles/practical-test-pyramid.html
+- Martin Fowler — Test Pyramid: https://martinfowler.com/bliki/TestPyramid.html

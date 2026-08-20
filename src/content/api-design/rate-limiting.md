@@ -7,824 +7,377 @@ order: 5
 # Rate Limiting in API Design & REST
 
 > **Interview preparation guide for intermediate backend developers**  
-> **Updated:** July 2026
+> **Updated:** August 2026
 
 ---
 
 ## In short
 
-- Rate limiting caps how many requests a client may make in a period; beyond the cap the API rejects instead of degrading for everyone.
-- Choose the identity key first — IP, user ID, API key, tenant, or a composite such as `tenant + user + route + method` — because the algorithm only counts what the key partitions.
-- Enforce in layers: coarse IP limits at the CDN or WAF, API-key and route limits at the gateway, business and per-tenant limits in the application.
-- Algorithm shortlist: fixed window is simplest but bursts at boundaries, sliding log is exact but stores a timestamp per request, sliding counter approximates a rolling window cheaply, token bucket allows controlled bursts and weighted costs, leaky bucket smooths output, and a concurrency limiter caps active long-running work.
-- Reject with `429 Too Many Requests` carrying `Retry-After` and `RateLimit-*` headers; keep `503 Service Unavailable` for whole-service overload.
-- Per-process counters under-count in a multi-instance API: keep state in a shared store such as Redis and make every check-and-increment atomic, typically with a Lua script.
-- Clients should back off exponentially with jitter, and send an idempotency key before retrying a non-idempotent operation.
+- **Rate limiting** controls how much API capacity a client can consume in a period.
+- Decide the **identity/scope first**: IP, user, API key, tenant, route, or a composite key.
+- Enforce limits in layers: **CDN/WAF → API gateway → application → downstream dependency**.
+- **Fixed window** is simplest, **sliding window** is smoother, and **token bucket** is a strong general-purpose choice because it supports controlled bursts.
+- For expensive long-running work, add a **concurrency limit**; requests-per-minute alone is not enough.
+- In multi-instance systems, store limiter state in a shared system such as **Redis** and update it **atomically**.
+- A client that exceeds its allocation normally receives **`429 Too Many Requests`** with `Retry-After`.
+- Use **`503 Service Unavailable`** for general service saturation rather than a client-specific quota violation.
+- Clients should respect `Retry-After`, use exponential backoff with jitter, and use an **idempotency key** before retrying non-idempotent operations.
 
 ```mermaid
 flowchart LR
     A[Client] --> B[CDN / WAF]
-    B --> C[Load Balancer]
-    C --> D[API Gateway]
-    D --> E[Application]
-    E --> F[Database / External APIs]
+    B --> C[API Gateway]
+    C --> D[Application]
+    D --> E[Database / External API]
 
     B -. Coarse IP protection .-> B
-    D -. User and API-key limits .-> D
-    E -. Business-operation limits .-> E
+    C -. API key / plan limits .-> C
+    D -. Tenant / business limits .-> D
 ```
-
-**Interview answer:** Identify the client by API key or user ID, run a token-bucket or sliding-window-counter limiter whose counters live in Redis so every instance shares one view, and enforce as early as possible — IP limits at the edge, plan limits at the gateway, business limits in the application. Rejections return `429 Too Many Requests` with `Retry-After` and documented `RateLimit-*` headers, so clients can retry with exponential backoff plus jitter. For expensive long-running work I add a concurrency limit too, because a requests-per-minute limit alone does not stop one tenant from occupying every worker.
-
-**Gotcha:** Counting in process memory instead of one shared atomic counter — ten instances each enforcing `100 per minute` quietly allow 1,000.
 
 ---
 
 ## 1. What Is Rate Limiting?
 
-**Rate limiting controls how many requests a client can make to an API during a defined period.**
+**Rate limiting controls how frequently, or how much, a client may use an API.**
 
-For example: `Maximum 100 requests per minute per authenticated user`
+Example policy:
 
-When the client remains within the limit, the API processes the requests normally. When the client exceeds the limit, the API temporarily rejects additional requests.
-
-```mermaid
-flowchart LR
-    A[Client] --> B{Rate limit available?}
-    B -- Yes --> C[Process request]
-    B -- No --> D[Return HTTP 429]
-    C --> E[API response]
-    D --> F[Client waits and retries]
+```text
+100 requests per minute per authenticated user
 ```
 
-Rate limiting is not only about blocking abusive users. It is a normal API design mechanism used to:
+If the client stays within the limit, requests are processed normally. When the allocation is exhausted, additional requests are temporarily rejected.
 
-- protect infrastructure;
-- share capacity fairly;
-- control operational cost;
-- prevent accidental traffic spikes;
-- enforce plan-based API quotas;
-- keep downstream services stable.
+Rate limiting is commonly used to:
 
-### Simple Example
+- protect CPU, memory, workers, database connections, and network capacity;
+- prevent accidental retry loops or traffic spikes;
+- share capacity fairly between customers;
+- protect expensive endpoints such as reports, search, file processing, and AI inference;
+- enforce API plans and quotas;
+- avoid exceeding third-party API limits.
 
-Assume the policy is: `5 requests per 10 seconds per user`
+### Rate Limit vs Related Controls
 
-| Request | Result |
-|---|---|
-| Request 1 | Allowed |
-| Request 2 | Allowed |
-| Request 3 | Allowed |
-| Request 4 | Allowed |
-| Request 5 | Allowed |
-| Request 6 | Rejected with 429 Too Many Requests |
+| Control | What it limits | Example |
+|---|---|---|
+| Rate limit | Requests or units over time | `100 requests/minute` |
+| Quota | Usage over a longer period | `1,000,000 requests/month` |
+| Concurrency limit | Work executing at the same time | `5 active exports/tenant` |
+| Load shedding | Work accepted when the service is overloaded | Reject during system saturation |
 
-After sufficient capacity becomes available again, the user can continue making requests.
+A mature API often uses more than one of these controls together.
 
 ---
 
-## 2. Why APIs Need Rate Limiting
+## 2. Choose the Identity and Scope First
 
-### 2.1 Protect Server Resources
+The algorithm can only limit what its **key** represents.
 
-Every request may consume:
+### Common Keys
 
-- CPU;
-- memory;
-- database connections;
-- network bandwidth;
-- thread or worker capacity;
-- third-party API quota;
-- LLM tokens or other paid resources.
+| Identity | Typical use |
+|---|---|
+| IP address | Public or unauthenticated endpoints |
+| User ID | Authenticated application traffic |
+| API key / OAuth client | Public APIs and machine-to-machine access |
+| Tenant / organisation | Multi-tenant SaaS |
+| Route + method | Expensive operations |
+| Composite key | `tenant + user + method + route` |
 
-Without rate limiting, one client can consume a large portion of the available capacity.
+Example:
 
-### 2.2 Prevent Accidental Overload
-
-A client bug can create an infinite loop:
-
-```python
-while True:
-    requests.get("https://api.example.com/orders")
+```text
+rl:tenant:42:user:8842:POST:/reports
 ```
 
-The client may not be malicious, but the effect on the API can be similar to an attack.
+### Practical Rules
 
-### 2.3 Provide Fair Usage
+- Prefer a verified **user ID, tenant ID, or API key** after authentication.
+- Use IP-based limits mainly for unauthenticated traffic and edge protection.
+- Do not blindly trust `X-Forwarded-For`; trust proxy headers only when your infrastructure sanitizes them.
+- Normalize routes before building keys.
 
-Suppose an API can safely process 10,000 requests per minute. Without per-client limits, one customer may consume most of that capacity and increase latency for everyone else.
+Use:
 
-### 2.4 Enforce Commercial Plans
+```text
+GET:/users/{user_id}
+```
 
-| Plan | Limit |
-|---|---|
-| Free | 100 requests/hour |
-| Standard | 1,000 requests/hour |
-| Enterprise | 10,000 requests/hour |
+instead of creating separate limiter keys for:
 
-This is commonly called a **quota**, although quota and rate are not exactly the same concept.
+```text
+GET:/users/101
+GET:/users/102
+GET:/users/103
+```
 
-### 2.5 Protect Expensive Endpoints
-
-Not every request has the same cost.
-
-| Request | Relative cost |
-|---|---|
-| `GET /users/123` | Inexpensive |
-| `POST /reports/generate` | Expensive |
-| `POST /ai/analyse` | Very expensive |
-
-A good API can apply stricter or weighted limits to expensive operations.
+This keeps Redis key cardinality under control.
 
 ---
 
-## 3. Rate Limiting vs Related Concepts
+## 3. Where Should Rate Limiting Be Enforced?
 
-### 3.1 Rate Limiting vs Throttling
+Reject traffic as early as practical, but keep business-specific rules close to the application.
 
-These terms are often used interchangeably, but a useful distinction is:
+### Edge / CDN / WAF
 
-- **Rate limiting** defines the allowed rate.
-- **Throttling** is the action taken when traffic approaches or exceeds that rate.
+Useful for:
 
-Throttling may reject requests, delay them, reduce concurrency, or degrade optional functionality.
+- abusive IP traffic;
+- bots;
+- broad unauthenticated limits;
+- volumetric protection.
 
-### 3.2 Rate Limit vs Quota
+### API Gateway
 
-A **rate limit** normally controls short-term request frequency.
-
-```text
-10 requests per second
-```
-
-A **quota** normally controls total usage over a longer period.
-
-```text
-100,000 requests per month
-```
-
-Production systems often enforce both:
-
-```text
-Burst protection: 20 requests/second
-Daily quota:       50,000 requests/day
-```
-
-### 3.3 Rate Limiting vs Concurrency Limiting
-
-Rate limiting controls requests over time, for example `100 requests per minute`. Concurrency limiting controls how many requests may be executing simultaneously, for example a maximum of `10 active report-generation requests`.
-
-Concurrency limits are important for long-running operations because a client may stay under its request-per-minute limit while still occupying all workers.
-
-### 3.4 Rate Limiting vs Load Shedding
-
-- **Rate limiting** usually applies a policy to a known client or traffic partition.
-- **Load shedding** rejects work because the system itself is overloaded.
-
-An overloaded service may return `503 Service Unavailable`, while a client that exceeds its assigned limit normally receives `429 Too Many Requests`.
-
-### 3.5 Rate Limiting vs Authentication and Authorization
-
-Rate limiting is not access control.
-
-```text
-Authentication: Who are you?
-Authorization:  Are you allowed to perform this operation?
-Rate limiting:  How frequently may you perform it?
-```
-
-A request may be authenticated and authorized but still be rate-limited.
-
----
-
-## 4. Where Rate Limiting Fits in an API
-
-Rate limiting should usually happen as early as possible so rejected requests do not consume expensive backend resources. A request travels from the client through the CDN or WAF, the load balancer, the API gateway, and the application before it reaches the database or an external API, and each of those hops can carry its own policy: coarse IP protection at the edge, user and API-key limits at the gateway, and business-operation limits inside the application.
-
-### Common Enforcement Layers
-
-### Edge, CDN, or WAF
-
-Best for:
-
-- obvious abusive IP traffic;
-- bot protection;
-- volumetric protection;
-- broad per-IP limits.
-
-### API Gateway or Reverse Proxy
-
-Best for:
+Useful for:
 
 - API-key limits;
-- route-based limits;
-- customer-plan limits;
-- centralized policies across services.
+- customer plan limits;
+- route-level policies;
+- shared rules across multiple services.
 
 ### Application Layer
 
-Best for:
+Useful for:
 
-- business-specific limits;
-- per-tenant rules;
-- operation cost awareness;
-- role-based policies;
-- limits based on database or billing state.
+- tenant-specific limits;
+- role or subscription rules;
+- weighted operations;
+- business actions such as report generation.
 
-### Recommended Layered Approach
+### Downstream Protection
 
-| Layer | Responsibility |
-|---|---|
-| Edge limit | Protect the public entry point |
-| Gateway limit | Enforce general API policies |
-| Application limit | Enforce business-specific policies |
-| Downstream limit | Protect expensive dependencies |
+A service may also rate-limit its own calls to:
 
-One limiter is rarely sufficient for a large production system.
+- payment providers;
+- email/SMS vendors;
+- AI providers;
+- partner APIs.
 
----
-
-## 5. Choosing the Rate-Limit Identity and Scope
-
-Before choosing an algorithm, decide **who or what is being limited**.
-
-### 5.1 Common Identity Keys
-
-#### IP Address
-
-A key such as `rate-limit:ip:203.0.113.10` is useful for unauthenticated endpoints, but imperfect because:
-
-- many users can share one NAT address;
-- mobile IPs change frequently;
-- attackers can rotate IPs;
-- proxy configuration may expose the wrong address.
-
-Never blindly trust `X-Forwarded-For`. Trust it only when it is inserted or sanitized by infrastructure you control.
-
-#### Authenticated User ID
-
-A key such as `rate-limit:user:8842` is usually better than IP-based limiting after authentication.
-
-#### API Key or OAuth Client
-
-A key such as `rate-limit:api-key:key_abc123` is common for public developer APIs and machine-to-machine access.
-
-#### Tenant or Organisation
-
-A key such as `rate-limit:tenant:acme-corp` is important in multi-tenant SaaS because many users may share one customer-level subscription.
-
-#### Endpoint or Operation
-
-A key such as `rate-limit:user:8842:POST:/reports` is useful when endpoints have different operational costs.
-
-#### Composite Key
-
-A practical key may combine multiple dimensions — `tenant + user + route + HTTP method` — which produces a key like `rl:tenant:42:user:8842:POST:/reports/generate`.
-
-### 5.2 Avoid High-Cardinality Abuse
-
-A malicious client could generate unlimited fake identifiers and force the rate-limit store to create many keys.
-
-Mitigations include:
-
-- rate-limit unauthenticated traffic by trusted client IP;
-- validate API keys before creating user-specific counters;
-- set TTLs on all temporary keys;
-- normalize route templates rather than storing raw URLs.
-
-Use: `GET:/users/{user_id}`
-
-Instead of:
-
-```text
-GET:/users/123
-GET:/users/456
-GET:/users/789
+```mermaid
+flowchart TD
+    A[Incoming request] --> B{Edge limit}
+    B -- Rejected --> X[429 / drop traffic]
+    B -- Allowed --> C{Gateway limit}
+    C -- Rejected --> X
+    C -- Allowed --> D{Business limit}
+    D -- Rejected --> X
+    D -- Allowed --> E[Process request]
 ```
 
 ---
 
-## 6. Core Rate-Limiting Algorithms
+## 4. Core Rate-Limiting Algorithms
 
-### 6.1 Fixed Window Counter
+### 4.1 Fixed Window Counter
 
-The fixed-window algorithm divides time into fixed periods and counts requests inside each period.
-
-Example policy: `100 requests per minute`
+Split time into fixed windows and count requests inside each window.
 
 ```text
 12:00:00 - 12:00:59 -> Window 1
 12:01:00 - 12:01:59 -> Window 2
 ```
 
-#### How It Works
+**Advantages:** simple, fast, low memory.
 
-1. Build a key from the client identity and current window.
-2. Increment the counter.
-3. Allow the request if the counter is within the limit.
-4. Reject it if the counter exceeds the limit.
+**Main limitation:** a boundary burst can occur. A client may send 100 requests at `12:00:59` and another 100 just after `12:01:00`.
 
-```text
-Key: rl:user:42:2026-07-30T12:00
-Value: 76
-```
+Use it when simplicity matters more than perfectly smooth traffic.
 
-#### Pseudocode
+### 4.2 Sliding Window Log
 
-```python
-def allow_request(client_id, now, limit, window_seconds):
-    window_id = now // window_seconds
-    key = f"rate:{client_id}:{window_id}"
+Store the timestamp of every accepted request and count only timestamps inside the current rolling window.
 
-    count = increment(key)
-    set_expiry_if_new(key, window_seconds)
+**Advantages:** precise rolling-window behavior.
 
-    return count <= limit
-```
+**Trade-off:** more memory and cleanup work because every request creates an entry.
 
-#### Advantage
+Useful for strict, lower-volume limits.
 
-Simple, fast, and memory-efficient.
+### 4.3 Sliding Window Counter
 
-#### Main Problem: Boundary Burst
-
-A client can send 100 requests near the end of one window and another 100 immediately after the next window begins.
+Approximate a rolling window by combining the previous fixed-window count with the current one.
 
 ```text
-12:00:59.500 -> 100 requests
-12:01:00.100 -> 100 requests
+estimated usage =
+previous count × remaining fraction
++ current count
 ```
 
-The API receives 200 requests in less than one second even though the configured limit is 100 per minute.
+It is smoother than a fixed window and much cheaper than storing every timestamp.
+
+### 4.4 Token Bucket
+
+A bucket holds tokens.
+
+- tokens refill at a fixed rate;
+- each request consumes one or more tokens;
+- requests are allowed while enough tokens remain;
+- the bucket has a maximum capacity.
 
 ```mermaid
 flowchart LR
-    A[End of Window 1<br/>100 requests] --> B[Boundary]
-    B --> C[Start of Window 2<br/>100 requests]
-    C --> D[200-request burst]
+    A[Refill tokens] --> B[(Token bucket)]
+    C[Request] --> D{Enough tokens?}
+    B --> D
+    D -- Yes --> E[Consume tokens and allow]
+    D -- No --> F[Reject / retry later]
 ```
-
-Use fixed windows when simplicity is more important than precise smoothing.
-
----
-
-### 6.2 Sliding Window Log
-
-The sliding-window log stores the timestamp of every accepted request.
-
-For a 60-second window, when a request arrives at `12:01:30`, the limiter counts requests after `12:00:30`.
-
-#### How It Works
-
-1. Remove timestamps older than the active window.
-2. Count the remaining timestamps.
-3. Reject if the count has reached the limit.
-4. Otherwise, add the current timestamp.
-
-```text
-Window: last 60 seconds
-Stored timestamps:
-12:00:45
-12:01:02
-12:01:18
-12:01:29
-```
-
-#### Pseudocode
-
-```python
-def allow_request(client_id, now, limit, window_seconds):
-    remove_timestamps_before(client_id, now - window_seconds)
-
-    if count_timestamps(client_id) >= limit:
-        return False
-
-    add_timestamp(client_id, now)
-    return True
-```
-
-#### Advantages
-
-- precise;
-- no fixed-window boundary spike;
-- easy to reason about.
-
-#### Disadvantages
-
-- stores one record per request;
-- more memory usage;
-- cleanup and counting are more expensive;
-- very high traffic can produce large sorted sets.
-
-Use it when limits are relatively small and accuracy is more important than storage cost.
-
----
-
-### 6.3 Sliding Window Counter
-
-The sliding-window counter approximates a true sliding window by combining the previous fixed window with the current window.
-
-Assume:
-
-```text
-Limit: 100 requests/minute
-Previous window count: 80
-Current window count: 30
-Current window is 25% complete
-```
-
-Estimated usage:
-
-```text
-Previous contribution = 80 × 75% = 60
-Current contribution  = 30
-Estimated total       = 90
-```
-
-#### Formula
-
-```text
-estimated_count =
-    previous_count × remaining_fraction_of_previous_window
-    + current_count
-```
-
-#### Advantages
-
-- smoother than fixed window;
-- uses much less memory than a sliding log;
-- practical for high-volume APIs.
-
-#### Disadvantages
-
-- approximate rather than exact;
-- slightly more complex than a fixed counter.
-
-This is a strong general-purpose choice when exact per-request timestamps are unnecessary.
-
----
-
-### 6.4 Token Bucket
-
-The token-bucket algorithm maintains a bucket containing tokens.
-
-- Tokens are added at a fixed refill rate.
-- Each request consumes one or more tokens.
-- A request is allowed only when enough tokens are available.
-- The bucket has a maximum capacity.
 
 Example:
 
 ```text
-Bucket capacity: 10 tokens
-Refill rate:     2 tokens/second
-Request cost:    1 token
+Refill rate:  2 tokens/second
+Capacity:     10 tokens
+Normal cost:  1 token/request
 ```
 
-```mermaid
-flowchart LR
-    A[Token refill<br/>2 per second] --> B[(Bucket<br/>Maximum 10)]
-    C[Incoming request] --> D{Enough tokens?}
-    B --> D
-    D -- Yes --> E[Consume token and allow]
-    D -- No --> F[Reject or wait]
-```
+An idle client can accumulate up to 10 tokens and make a short burst, while the long-term average remains controlled.
 
-#### Why It Handles Bursts Well
+Token bucket is especially useful when:
 
-If a client has been idle, tokens accumulate up to the bucket capacity. The client may then make a short burst without violating the long-term average rate.
+- small bursts are acceptable;
+- requests have different costs;
+- you want a stable long-term rate.
+
+### 4.5 Leaky Bucket
+
+Incoming work enters a bounded queue and leaves at a steady rate.
 
 ```text
-Long-term rate: 2 requests/second
-Allowed burst:  up to 10 requests
+Bursty traffic -> bounded queue -> constant drain rate -> backend
 ```
 
-#### Refill Calculation
+It is useful when the goal is **traffic shaping**, especially for background jobs or a fragile downstream system.
+
+### 4.6 Concurrency Limiter
+
+A concurrency limiter controls active work rather than requests over time.
 
 ```text
-elapsed_time = now - last_refill_time
-new_tokens = elapsed_time × refill_rate
-available_tokens = min(capacity, old_tokens + new_tokens)
+Maximum active report jobs per tenant: 2
 ```
 
-#### Pseudocode
-
-```python
-def allow_request(bucket, now, cost=1):
-    elapsed = now - bucket.last_refill
-    refilled = elapsed * bucket.refill_rate
-
-    bucket.tokens = min(
-        bucket.capacity,
-        bucket.tokens + refilled,
-    )
-    bucket.last_refill = now
-
-    if bucket.tokens < cost:
-        return False
-
-    bucket.tokens -= cost
-    return True
-```
-
-#### Advantages
-
-- supports controlled bursts;
-- enforces a stable average rate;
-- supports weighted requests;
-- widely useful for APIs.
-
-#### Disadvantages
-
-- requires atomic token calculations;
-- clock handling matters;
-- configuration requires both refill rate and capacity.
-
-For many real-world REST APIs, token bucket is the most flexible default.
-
----
-
-### 6.5 Leaky Bucket
-
-The leaky-bucket model places incoming requests into a queue and processes them at a constant rate.
-
-```mermaid
-flowchart LR
-    A[Bursty incoming traffic] --> B[(Request queue)]
-    B --> C[Constant drain rate]
-    C --> D[Backend service]
-    B -- Queue full --> E[Reject request]
-```
-
-#### Behaviour
-
-```text
-Incoming rate: variable
-Processing rate: fixed
-Queue capacity: limited
-```
-
-#### Advantages
-
-- smooth output traffic;
-- protects downstream systems from bursts;
-- useful for jobs and asynchronous processing.
-
-#### Disadvantages
-
-- adds queueing latency;
-- requests may wait even when they could otherwise run;
-- requires a maximum queue size and timeout policy.
-
-#### Token Bucket vs Leaky Bucket
-
-```text
-Token bucket -> Allows controlled bursts
-Leaky bucket -> Smooths traffic to a steady output rate
-```
-
----
-
-### 6.6 Concurrency Limiter
-
-A concurrency limiter tracks currently active operations rather than requests over a time window.
-
-```text
-Maximum active exports per tenant: 5
-```
-
-#### Flow
-
-1. Request begins.
-2. Atomically acquire a permit.
-3. Reject or wait if no permit is available.
-4. Release the permit in a `finally` block when processing finishes.
-
-```python
-acquired = acquire_permit(tenant_id)
-if not acquired:
-    raise TooManyRequests()
-
-try:
-    return generate_export()
-finally:
-    release_permit(tenant_id)
-```
-
-Concurrency limiting is especially useful for:
+This matters for long-running operations such as:
 
 - report generation;
-- file processing;
 - AI inference;
-- database-heavy searches;
-- third-party calls with connection limits.
+- file conversion;
+- database-heavy exports.
+
+A client can remain below `100 requests/minute` and still consume every worker if each request runs for several minutes.
+
+### Algorithm Comparison
+
+| Algorithm | Memory | Burst behavior | Typical use |
+|---|---:|---|---|
+| Fixed window | Low | Boundary burst possible | Simple APIs |
+| Sliding log | High | Very accurate | Strict low-volume limits |
+| Sliding counter | Low | Smooth approximation | General API limiting |
+| Token bucket | Low | Controlled bursts | Public APIs, weighted cost |
+| Leaky bucket | Queue-dependent | Smooth output | Traffic shaping |
+| Concurrency limiter | Low | Limits active work | Long-running operations |
+
+For normal backend development, **token bucket or sliding-window counter** are strong defaults, while a **concurrency limiter** is often added for expensive operations.
 
 ---
 
-## 7. Algorithm Comparison
+## 5. HTTP Response Design
 
-| Algorithm | Accuracy | Memory | Burst Handling | Complexity | Best Use |
-|---|---:|---:|---:|---:|---|
-| Fixed window | Medium | Low | Weak at boundaries | Low | Simple quotas |
-| Sliding log | High | High | Good | Medium | Strict low-volume limits |
-| Sliding counter | Medium-High | Low | Good | Medium | General API limits |
-| Token bucket | High | Low | Excellent and configurable | Medium | Most public APIs |
-| Leaky bucket | High | Queue-dependent | Smooths bursts | Medium-High | Downstream traffic shaping |
-| Concurrency limiter | Not time-based | Low | Controls active work | Medium | Long-running operations |
+### 5.1 `429 Too Many Requests`
 
-### Practical Selection Guide
+Use `429` when a particular client has exceeded its assigned rate or quota.
 
-| Requirement | Algorithm |
-|---|---|
-| The simplest counter | Fixed window |
-| Exact rolling-window enforcement | Sliding window log |
-| A memory-efficient rolling approximation | Sliding window counter |
-| Controlled bursts with a stable average rate | Token bucket |
-| Constant downstream traffic | Leaky bucket |
-| Protection for long-running workers | Concurrency limiter |
-
-A mature API may use more than one algorithm at the same time.
-
----
-
-## 8. HTTP and REST Response Design
-
-### 8.1 Use HTTP 429 for Client Rate-Limit Violations
-
-When a client has sent too many requests in a given period, return: `HTTP/1.1 429 Too Many Requests`
-
-A useful response should explain what happened and provide retry guidance.
-
-#### Recommended Response
+A practical response:
 
 ```http
 HTTP/1.1 429 Too Many Requests
 Content-Type: application/problem+json
-Retry-After: 30
-Cache-Control: no-store
+Retry-After: 20
+RateLimit-Policy: "user-minute";q=100;w=60
+RateLimit: "user-minute";r=0;t=20
 
 {
   "type": "https://api.example.com/problems/rate-limit-exceeded",
   "title": "Rate limit exceeded",
   "status": 429,
-  "detail": "Too many requests were sent for this API key.",
-  "instance": "/orders",
-  "retry_after_seconds": 30
+  "detail": "Too many requests were sent for this user."
 }
 ```
 
-`application/problem+json` follows the standard HTTP Problem Details structure and gives clients a predictable error shape.
+`Retry-After` may contain either:
 
-### 8.2 Retry-After Header
+```text
+Retry-After: 20
+```
 
-`Retry-After` tells the client how long it should wait before making a follow-up request.
-
-It can contain delta seconds: `Retry-After: 30`
-
-Or an HTTP date: `Retry-After: Thu, 30 Jul 2026 12:30:00 GMT`
+or an HTTP date.
 
 Delta seconds are usually easier for API clients.
 
-### 8.3 Current RateLimit Header Standardisation
+### 5.2 `429` vs `503`
 
-As of July 2026, the active IETF Internet-Draft proposes two response fields:
+```text
+Client exceeded its allocation -> 429 Too Many Requests
+Service itself is overloaded   -> 503 Service Unavailable
+```
+
+Both may include `Retry-After`.
+
+### 5.3 RateLimit Headers — Current Status
+
+As of **August 2026**, the active IETF work is:
+
+```text
+draft-ietf-httpapi-ratelimit-headers-11
+```
+
+It defines:
 
 ```http
 RateLimit-Policy: "basic";q=100;w=60
 RateLimit: "basic";r=60;t=58
 ```
 
-Meaning:
+Important parameters:
 
 ```text
-Policy name:       basic
-Quota (q):         100 units
-Window (w):        60 seconds
-Remaining (r):     60 units
-Effective time (t): 58 seconds
+q = quota allocated by the policy
+w = policy window in seconds
+r = currently available quota
+t = effective window in seconds
 ```
 
-The draft is still a work in progress, so production APIs must treat its exact syntax as version-sensitive.
+The draft is still **work in progress**, so treat its exact syntax as version-sensitive.
 
-#### Widely Deployed Legacy Convention
-
-Many APIs still use non-standard or earlier-draft headers:
+Many existing APIs still expose legacy conventions such as:
 
 ```http
 X-RateLimit-Limit: 100
 X-RateLimit-Remaining: 60
-X-RateLimit-Reset: 1753878600
+X-RateLimit-Reset: 1750000000
 ```
 
-Some use names without the `X-` prefix:
-
-```http
-RateLimit-Limit: 100
-RateLimit-Remaining: 60
-RateLimit-Reset: 30
-```
-
-These formats remain common, but clients should follow the exact contract documented by the API provider.
-
-### 8.4 429 vs 503
-
-Use `429 Too Many Requests` when the rejection is associated with the client's rate or quota.
-
-Use `503 Service Unavailable` when the service is temporarily unable to handle traffic because of general overload, maintenance, or dependency failure.
-
-```text
-One client exceeded its allocation -> 429
-The entire service is overloaded    -> 503
-```
-
-Both responses may include `Retry-After`.
-
-### 8.5 Do Rejected Requests Count?
-
-This is an API policy decision and should be documented.
-
-Common approaches:
-
-- rejected requests do not consume additional quota;
-- every attempt consumes quota to discourage aggressive retries;
-- only requests that reach application processing consume quota;
-- request cost depends on the operation outcome.
-
-For public APIs, predictable and documented behaviour is more important than any single choice.
+Follow the contract documented by the API you integrate with.
 
 ---
 
-## 9. Client-Side Retry Behaviour
+## 6. Distributed Rate Limiting with Redis
 
-A good client should not immediately retry a `429` response in a tight loop.
-
-### 9.1 Respect Retry-After
-
-```python
-response = call_api()
-
-if response.status_code == 429:
-    delay = int(response.headers.get("Retry-After", "1"))
-    time.sleep(delay)
-```
-
-### 9.2 Use Exponential Backoff with Jitter
-
-When `Retry-After` is absent, use exponential backoff.
-
-| Attempt | Wait before retrying |
-|---|---|
-| 1 | About 1 second |
-| 2 | About 2 seconds |
-| 3 | About 4 seconds |
-| 4 | About 8 seconds |
-
-Add random jitter so many clients do not retry simultaneously.
-
-```python
-import random
-
-base_delay = min(2 ** attempt, 30)
-delay = random.uniform(0, base_delay)
-```
-
-### 9.3 Why Jitter Matters
-
-Without jitter:
+A process-local counter is incorrect when traffic is spread across multiple API instances.
 
 ```text
-1,000 clients fail at 12:00:00
-All retry at 12:00:01
-All fail again
-All retry at 12:00:03
+Instance A sees 70 requests
+Instance B sees 65 requests
+
+Configured limit = 100
+Real combined usage = 135
 ```
 
-This creates a **thundering herd**.
-
-With jitter, retry attempts are spread across time.
-
-### 9.4 Retry Only Safe Operations Automatically
-
-Automatic retries are simplest for idempotent operations such as `GET` and `PUT`.
-
-For non-idempotent operations such as payment or order creation, use an idempotency key before retrying: `Idempotency-Key: 8cc74e62-7f9d-4fd1-9c2c-0f018d4302c1`
-
-Rate limiting and idempotency solve different problems but are often needed together — see [Idempotency (HTTP)](idempotency-http-methods.md).
-
----
-
-## 10. Distributed Rate Limiting with Redis
-
-A limiter stored only in application memory works correctly only for a single process.
-
-```text
-Application Instance A -> Local counter = 70
-Application Instance B -> Local counter = 65
-```
-
-Each instance believes the client is under a limit of 100, but the combined request count is 135.
-
-### Central Store Design
+Use shared state:
 
 ```mermaid
 flowchart LR
@@ -837,87 +390,65 @@ flowchart LR
     E --> F
 ```
 
-Redis is commonly used because it provides:
+### Atomicity
 
-- fast in-memory operations;
-- atomic increments;
-- key expiration;
-- sorted sets;
-- Lua scripting;
-- shared state across API instances.
-
-### 10.1 Atomicity Is Essential
-
-This sequence is unsafe when separate operations can interleave:
+This is unsafe:
 
 ```text
-GET current count
-IF count < limit
+GET count
+if count < limit:
     INCREMENT count
 ```
 
-Two workers may read the same value and both allow the request.
+Two workers can read the same value and both allow the request.
 
-Prefer:
+Use an atomic operation such as:
 
-- atomic `INCR` operations;
-- Redis transactions where suitable;
-- a Lua script that checks and updates in one atomic execution.
+- `INCR` when a single command is enough;
+- a short Redis Lua script for check-and-update logic;
+- Redis Functions when you want server-managed programmable logic on Redis 7+.
 
-### 10.2 Key Expiration
+Redis executes Lua scripts atomically, which makes them useful for limiter state transitions.
 
-Every window-based key should expire automatically.
+### TTL
 
-```text
-rl:user:42:window:29384012 -> TTL 60 seconds
-```
-
-Without expiry, Redis accumulates stale counters indefinitely.
-
-### 10.3 Fail-Open vs Fail-Closed
-
-What happens if Redis is unavailable?
-
-#### Fail Open
-
-Allow the request.
+Window-based keys should expire automatically:
 
 ```text
-Advantage: API remains available
-Risk:      limits are temporarily unenforced
+rl:user:42:window:12345 -> TTL 60 seconds
 ```
 
-Suitable when availability is more important than strict quota enforcement.
+Without TTLs, stale limiter keys accumulate indefinitely.
 
-#### Fail Closed
+### Redis Cluster Note
 
-Reject the request.
+When one atomic script needs to touch multiple keys in Redis Cluster, those keys must be designed so they can be handled on the same cluster slot. Redis hash tags are commonly used when co-location is required.
+
+### Redis Failure Strategy
+
+Choose the behavior explicitly:
 
 ```text
-Advantage: protected resource remains safe
-Risk:      Redis failure blocks legitimate users
+Fail open   -> allow traffic if Redis is unavailable
+Fail closed -> reject traffic if Redis is unavailable
+Hybrid      -> fall back to a conservative local limiter
 ```
 
-Suitable for highly expensive, security-sensitive, or billing-critical operations.
-
-#### Hybrid Approach
-
-Use a small local emergency limiter when the central store fails.
-
-```text
-Normal state  -> Distributed Redis limiter
-Redis failure -> Conservative in-process fallback
-```
+Use fail-open when availability is the priority. Use fail-closed for very expensive, billing-critical, or security-sensitive operations.
 
 ---
 
-## 11. Practical FastAPI and Redis Example
+## 7. Practical Example: FastAPI + Redis
 
-The following example demonstrates a fixed-window limiter. It is intentionally compact so the core design is easy to understand.
+The following example uses a **fixed-window counter** because it makes the distributed and atomicity concepts easy to see.
 
-### 11.1 Redis Lua Script
+Policy:
 
-The script increments the counter and sets the expiry atomically.
+```text
+100 requests/minute per authenticated user
+```
+
+### Redis Lua Script
 
 ```lua
 local current = redis.call("INCR", KEYS[1])
@@ -930,21 +461,23 @@ local ttl = redis.call("TTL", KEYS[1])
 return {current, ttl}
 ```
 
-### 11.2 FastAPI Middleware-Style Dependency
+The increment and initial expiry happen inside one atomic Redis script.
+
+### FastAPI Dependency
 
 ```python
-from __future__ import annotations
-
 import time
-from dataclasses import dataclass
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from redis.asyncio import Redis
 
 app = FastAPI()
 redis = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 
-RATE_LIMIT_SCRIPT = """
+LIMIT = 100
+WINDOW = 60
+
+SCRIPT = """
 local current = redis.call("INCR", KEYS[1])
 
 if current == 1 then
@@ -956,513 +489,223 @@ return {current, ttl}
 """
 
 
-@dataclass(frozen=True)
-class RateLimitPolicy:
-    limit: int
-    window_seconds: int
+async def rate_limit(request: Request, response: Response) -> None:
+    user_id = request.state.user_id
+    now = int(time.time())
 
+    window_id = now // WINDOW
+    reset_in = WINDOW - (now % WINDOW)
 
-DEFAULT_POLICY = RateLimitPolicy(limit=100, window_seconds=60)
-
-
-def resolve_client_key(request: Request) -> str:
-    """Prefer a verified user or API-key identity in production."""
-    user_id = getattr(request.state, "user_id", None)
-    if user_id:
-        return f"user:{user_id}"
-
-    client_host = request.client.host if request.client else "unknown"
-    return f"ip:{client_host}"
-
-
-async def enforce_rate_limit(
-    request: Request,
-    response: Response,
-) -> None:
-    policy = DEFAULT_POLICY
-    client_key = resolve_client_key(request)
-
-    now_epoch = int(time.time())
-    window_id = now_epoch // policy.window_seconds
-    seconds_until_reset = policy.window_seconds - (
-        now_epoch % policy.window_seconds
-    )
-    redis_key = f"rl:{client_key}:{window_id}"
+    key = f"rl:user:{user_id}:{window_id}"
 
     current, ttl = await redis.eval(
-        RATE_LIMIT_SCRIPT,
+        SCRIPT,
         1,
-        redis_key,
-        seconds_until_reset,
+        key,
+        reset_in,
     )
 
     current = int(current)
     ttl = max(int(ttl), 0)
-    remaining = max(policy.limit - current, 0)
-    reset_at_epoch = now_epoch + ttl
+    remaining = max(LIMIT - current, 0)
 
-    # Widely supported conventional headers.
-    response.headers["X-RateLimit-Limit"] = str(policy.limit)
-    response.headers["X-RateLimit-Remaining"] = str(remaining)
-    response.headers["X-RateLimit-Reset"] = str(reset_at_epoch)
+    policy = '"user-minute";q=100;w=60'
+    state = f'"user-minute";r={remaining};t={ttl}'
 
-    if current > policy.limit:
+    response.headers["RateLimit-Policy"] = policy
+    response.headers["RateLimit"] = state
+
+    if current > LIMIT:
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded",
             headers={
                 "Retry-After": str(ttl),
-                "X-RateLimit-Limit": str(policy.limit),
-                "X-RateLimit-Remaining": "0",
-                "X-RateLimit-Reset": str(reset_at_epoch),
+                "RateLimit-Policy": policy,
+                "RateLimit": f'"user-minute";r=0;t={ttl}',
             },
         )
 
 
 @app.get("/orders")
 async def list_orders(
-    _: None = Depends(enforce_rate_limit),
-) -> dict[str, list[dict[str, str]]]:
+    request: Request,
+    response: Response,
+):
+    await rate_limit(request, response)
     return {"orders": []}
 ```
 
-#### Important Production Improvements
-
-The example should be extended with:
-
-- authenticated user, tenant, or API-key identities;
-- route-specific policies;
-- trusted proxy handling;
-- fail-open or fail-closed behaviour;
-- metrics and structured logs;
-- a token-bucket or sliding-window algorithm when burst precision matters;
-- standardized error responses;
-- automated tests for boundary and concurrency conditions.
-
-### 11.3 Test Cases to Verify
-
-```text
-1. Requests below the limit are accepted.
-2. The request exactly at the limit is accepted.
-3. The next request returns 429.
-4. Retry-After is non-negative and reasonable.
-5. Keys expire after the window.
-6. Concurrent requests cannot exceed the limit through a race condition.
-7. Different users have independent counters.
-8. Different routes use the intended policies.
-9. Redis failure follows the configured fail strategy.
-10. Proxy headers cannot be spoofed by external clients.
-```
+In a real application, resolve the identity from verified authentication data and add route-specific policies, trusted proxy handling, metrics, tests, and an explicit Redis failure strategy.
 
 ---
 
-## 12. Weighted and Multi-Level Limits
+## 8. Client Retry Behaviour
 
-### 12.1 Weighted Requests
+A client should never retry `429` responses in a tight loop.
 
-Not all requests should necessarily cost one unit.
-
-| Request | Cost |
-|---|---|
-| `GET /products` | 1 unit |
-| `GET /analytics/report` | 5 units |
-| `POST /ai/generate` | 20 units |
-
-A token bucket supports this naturally because each request can consume a different number of tokens.
+### Respect `Retry-After`
 
 ```python
-cost_by_operation = {
-    "list_products": 1,
-    "analytics_report": 5,
-    "ai_generate": 20,
-}
+if response.status_code == 429:
+    delay = int(response.headers.get("Retry-After", "1"))
+    time.sleep(delay)
 ```
 
-Weighted limits are useful when resource cost varies significantly, but API documentation must clearly explain the quota-unit model.
+### Backoff with Jitter
 
-### 12.2 Multi-Level Limits
+If no explicit retry delay is available:
 
-A request may need to satisfy several policies.
+```python
+import random
+
+base_delay = min(2 ** attempt, 30)
+delay = random.uniform(0, base_delay)
+```
+
+Jitter spreads retries across time and reduces the **thundering herd** problem.
+
+### Non-Idempotent Requests
+
+Before retrying operations such as order or payment creation, use an idempotency key:
+
+```http
+Idempotency-Key: 8cc74e62-7f9d-4fd1-9c2c-0f018d4302c1
+```
+
+Rate limiting controls **how often** work is attempted; idempotency prevents a retry from creating the same business operation twice.
+
+---
+
+## 9. Production Design Principles
+
+### Use Multi-Level Limits
+
+A single request may need to satisfy several policies:
 
 ```text
 Per user:   10 requests/second
 Per tenant: 1,000 requests/minute
-Per route:  100 report generations/hour
-Global:     20,000 requests/second
+Per route:  20 report generations/hour
+Global:     system safety limit
 ```
 
-```mermaid
-flowchart TD
-    A[Incoming request] --> B{Global capacity available?}
-    B -- No --> X[Reject]
-    B -- Yes --> C{Tenant quota available?}
-    C -- No --> X
-    C -- Yes --> D{User quota available?}
-    D -- No --> X
-    D -- Yes --> E{Route quota available?}
-    E -- No --> X
-    E -- Yes --> F[Process request]
-```
+### Use Weighted Cost for Expensive APIs
 
-All required checks should be atomic enough to avoid partial consumption. A Lua script can evaluate multiple Redis keys and update them together.
-
-### 12.3 Burst and Sustained Limits Together
-
-A robust public API may combine:
+Not every request needs to cost one unit.
 
 ```text
-20 requests/second
-500 requests/minute
-20,000 requests/day
+GET /products          -> 1 unit
+GET /analytics/report  -> 5 units
+POST /ai/generate      -> 20 units
 ```
 
-The short window limits bursts, while the longer windows enforce sustained usage and billing plans.
+Token bucket fits weighted requests naturally.
 
----
+### Monitor the Limiter
 
-## 13. Rate Limiting in Microservices
-
-### 13.1 Gateway-Only Limiting Is Not Always Enough
-
-The gateway can protect external traffic, but internal service-to-service calls may multiply.
-
-```mermaid
-flowchart LR
-    A[1 client request] --> B[Order service]
-    B --> C[5 inventory calls]
-    B --> D[3 pricing calls]
-    B --> E[2 notification calls]
-```
-
-One external request can produce many internal requests.
-
-### 13.2 Apply Limits Near the Protected Resource
-
-| Component | Limit purpose |
-|---|---|
-| Public API gateway | Client fairness |
-| Order service | Business operation limit |
-| AI service | Inference and concurrency limit |
-| Third-party adapter | Vendor quota protection |
-
-### 13.3 Avoid Double-Counting Retries
-
-Service meshes, HTTP clients, and gateways may retry requests automatically. Those retries can unexpectedly consume quotas.
-
-Document whether quota is counted:
-
-- at the gateway;
-- at the application;
-- per attempt;
-- per logical idempotency key;
-- only after admission to the protected operation.
-
-### 13.4 Local vs Global Limits
-
-#### Global Limit
-
-All instances share one counter.
+Useful metrics include:
 
 ```text
-Total maximum across the cluster: 1,000 requests/second
-```
-
-Accurate but requires coordination.
-
-#### Local Limit
-
-Each of ten instances permits 100 requests/second.
-
-```text
-Approximate total: 10 × 100 = 1,000 requests/second
-```
-
-This avoids central coordination but becomes inaccurate when load is uneven or the number of instances changes.
-
-A hybrid design can allocate local capacity from a global budget.
-
----
-
-## 14. Observability and Monitoring
-
-A limiter that silently rejects requests is difficult to operate.
-
-### 14.1 Useful Metrics
-
-```text
-rate_limit_requests_total
 rate_limit_allowed_total
 rate_limit_rejected_total
 rate_limit_store_errors_total
 rate_limit_check_duration_seconds
-rate_limit_remaining_ratio
-rate_limit_fallback_total
 ```
 
-Recommended dimensions:
+Use low-cardinality labels such as policy name, route template, plan, and decision. Avoid raw user IDs or API keys in metric labels.
 
-- policy name;
-- route template;
-- client plan;
-- service;
-- decision: allowed or rejected.
+### Protect Authentication Endpoints in Multiple Dimensions
 
-Avoid placing raw user IDs, API keys, or IP addresses in metric labels because they create high cardinality and may expose sensitive data.
-
-### 14.2 Logs
-
-A structured rejection log may contain:
-
-```json
-{
-  "event": "rate_limit_rejected",
-  "policy": "report-generation",
-  "tenant_id": "tenant-42",
-  "route": "POST /reports",
-  "limit": 20,
-  "retry_after_seconds": 17,
-  "request_id": "req-9ad31"
-}
-```
-
-Mask or hash sensitive identifiers according to security requirements.
-
-### 14.3 Alerts
-
-Alert on patterns such as:
-
-- sudden increase in rejected requests;
-- Redis errors or latency;
-- one route consuming most quota;
-- unusual IP distribution;
-- global capacity near exhaustion;
-- fallback mode active for an extended period.
-
-A high rejection rate may indicate abuse, but it may also indicate an incorrectly configured client or an API limit that no longer matches normal usage.
-
----
-
-## 15. Security and Reliability Considerations
-
-### 15.1 Rate Limiting Is Not Complete DDoS Protection
-
-Application-level rate limiting begins after network traffic has already reached part of your infrastructure.
-
-Use layered protection:
+For login and password-reset traffic, combine limits such as:
 
 ```text
-DDoS protection -> CDN/WAF -> load balancer -> API gateway -> application limiter
+Per trusted client IP
+Per account identifier
+Per device/risk signal
+Global suspicious-traffic protection
 ```
 
-### 15.2 Do Not Expose Internal Capacity Carelessly
+Do not rely on only one dimension, and avoid responses that reveal whether an account exists.
 
-Very detailed limit information can help clients behave well, but it can also reveal system characteristics.
+### Keep the Limiter Cheap
 
-Expose enough information for safe client behaviour without publishing unnecessary internal topology or exact infrastructure capacity.
+A limiter runs on the hot path, so prefer:
 
-### 15.3 Keep the Limiter Fast
-
-A rate limiter runs on every protected request. Its latency directly affects API latency.
-
-Good properties include:
-
-- constant-time or logarithmic operations;
-- one network round trip where possible;
-- bounded key size;
+- small and bounded Redis keys;
 - automatic expiry;
+- one network round trip where possible;
 - atomic updates;
-- graceful store-failure behaviour.
-
-### 15.4 Prevent Clock Problems
-
-Distributed instances may have slightly different clocks.
-
-Recommendations:
-
-- synchronize infrastructure clocks;
-- prefer server-side timestamps for critical Redis logic;
-- use monotonic clocks for elapsed-time calculations within one process;
-- avoid trusting client timestamps.
-
-### 15.5 Protect Login and Password-Reset Endpoints
-
-Authentication endpoints need multiple dimensions:
-
-```text
-Per IP
-Per account/email
-Per device or risk signal
-Global suspicious-traffic limit
-```
-
-A per-IP limit alone can be bypassed by distributed attackers. A per-account limit alone can let an attacker lock out a victim. Balanced controls and progressive delays are safer.
-
-### 15.6 Avoid User Enumeration
-
-Rate-limit responses on login or reset endpoints should not reveal whether a username or email exists.
-
-Prefer a consistent message:
-
-> Too many attempts. Try again later.
-
-### 15.7 Bound Queues
-
-A leaky-bucket or waiting limiter must have:
-
-- maximum queue length;
-- maximum waiting time;
-- cancellation handling;
-- overload rejection.
-
-An unlimited queue converts overload into memory exhaustion and extreme latency.
+- short Lua scripts or functions;
+- a documented failure strategy.
 
 ---
 
-## 16. Recommended Production Design
+## 10. Recommended Mental Model
 
-For a typical multi-instance REST API, a practical design is:
+When designing rate limiting, answer these questions in order:
 
-```mermaid
-flowchart TD
-    A[Client] --> B[CDN / WAF IP limit]
-    B --> C[API Gateway API-key limit]
-    C --> D[Application]
-    D --> E{Business limit check}
-    E -->|Allowed| F[Service logic]
-    E -->|Rejected| G[429 + Retry-After]
-    E <--> H[(Redis Cluster)]
-    F --> I[Database / External API]
+```text
+1. WHAT resource am I protecting?
+2. WHO should share the limit?
+3. WHAT consumes one quota unit?
+4. HOW much burst traffic is acceptable?
+5. WHICH algorithm fits that behavior?
+6. WHERE should the limit be enforced?
+7. HOW is state shared across instances?
+8. WHAT does the 429 response tell the client?
+9. HOW will clients retry safely?
+10. HOW will I observe failures and rejections?
 ```
 
-### Suggested Policies
+For a typical production REST API:
 
-| Scenario | Suggested policy |
-|---|---|
-| Unauthenticated endpoints | Trusted-IP fixed window or token bucket |
-| Authenticated API | User or API-key token bucket |
-| Multi-tenant SaaS | Tenant + user limits |
-| Expensive async work | Request rate + concurrency limit |
-| Third-party integrations | Outbound token bucket |
-| Billing plans | Short-term rate + long-term quota |
+```text
+CDN/WAF
+   ↓
+API gateway
+   ↓
+Application limiter
+   ↓
+Redis-backed atomic state
+   ↓
+Database / downstream service
+```
 
-### Decision Sequence
+A practical default is:
 
-1. Identify the resource being protected.
-2. Choose the rate-limit identity.
-3. Define quota units and request costs.
-4. Select short-term and long-term windows.
-5. Decide whether bursts are allowed.
-6. Choose the algorithm.
-7. Choose enforcement layers.
-8. Define the `429` response contract.
-9. Decide fail-open or fail-closed behaviour.
-10. Add metrics, logs, tests, and operational dashboards.
+- edge IP protection;
+- API-key/user/tenant limits at the gateway or application;
+- a distributed **token bucket or sliding-window counter**;
+- **concurrency limiting** for expensive long-running work;
+- `429 + Retry-After` for client-specific violations;
+- safe retries with jitter and idempotency.
 
 ---
 
-## 17. Practical Scenarios
+## Standards Reference
 
-### 17.1 Public Product API
-
-Requirement:
-
-```text
-Free users: 60 requests/minute
-Allow small bursts
-```
-
-Recommended design:
-
-```text
-Identity: API key
-Algorithm: Token bucket
-Refill: 1 token/second
-Capacity: 10 tokens
-Long-term quota: 60/minute or separate hourly quota
-Response: 429 + Retry-After
-```
-
-### 17.2 Report Generation
-
-Requirement:
-
-> Reports are CPU-heavy and take 20 seconds.
-
-Recommended design:
-
-```text
-Per-tenant request limit: 20/hour
-Per-tenant concurrency: 2 active reports
-Global concurrency: 50 active reports
-Execution: asynchronous job queue
-```
-
-A request-per-minute limit alone does not protect worker concurrency.
-
-### 17.3 Search Endpoint
-
-Requirement:
-
-> Search creates expensive database queries.
-
-Recommended design:
-
-```text
-Per-user token bucket
-Higher cost for broad searches
-Maximum query complexity
-Database statement timeout
-Caching for repeated queries
-```
-
-Rate limiting should complement query validation and database protection.
-
-### 17.4 Login Endpoint
-
-Recommended layered design:
-
-```text
-5 attempts/minute per account
-20 attempts/minute per IP
-Progressive delay after repeated failures
-Risk-based challenge for suspicious patterns
-Generic error messages
-```
-
-### 17.5 Outbound Vendor API
-
-Your service may need to protect itself from exceeding a vendor's quota.
-
-```text
-Vendor limit: 100 requests/second across all workers
-```
-
-Use a distributed outbound token bucket before making the vendor call. Add retries with jitter and respect the vendor's `Retry-After` response.
-
----
-
-## 18. Standards Reference
-
-The following standards and active work are directly relevant:
-
-- **RFC 6585 — Additional HTTP Status Codes:** defines `429 Too Many Requests`.
-- **RFC 9110 — HTTP Semantics:** defines `Retry-After` and general HTTP semantics.
-- **RFC 9457 — Problem Details for HTTP APIs:** defines `application/problem+json` for machine-readable API errors.
-- **IETF draft-ietf-httpapi-ratelimit-headers-11 — RateLimit header fields for HTTP:** active May 2026 draft proposing `RateLimit-Policy` and `RateLimit`; it remains a work in progress and may change.
+- **RFC 6585** — defines `429 Too Many Requests`.
+- **RFC 9110** — defines HTTP semantics including `Retry-After`.
+- **RFC 9457** — defines Problem Details and `application/problem+json`.
+- **draft-ietf-httpapi-ratelimit-headers-11** — active May 2026 Internet-Draft defining `RateLimit-Policy` and `RateLimit`; still a work in progress as of August 2026.
 
 ---
 
 ### Final Takeaway
 
-Rate limiting is an API capacity-allocation mechanism, not merely an abuse blocker. A good design clearly defines:
+Rate limiting is best understood as **capacity allocation**, not only abuse prevention.
+
+A solid design combines:
 
 ```text
-WHO is limited
-WHAT consumes quota
-HOW the limit is calculated
-WHERE it is enforced
-WHEN capacity becomes available again
-HOW clients should respond
+correct identity
++ suitable algorithm
++ shared atomic state
++ layered enforcement
++ clear 429 responses
++ safe client retries
++ observability
 ```
 
-For most production REST APIs, combine edge protection, a distributed token-bucket or sliding-window limiter, clear `429` responses, safe retry guidance, and separate concurrency controls for expensive work.
+That combination keeps the API fair, predictable, and stable as traffic grows.

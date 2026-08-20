@@ -7,60 +7,59 @@ updated: "3 August 2026"
 
 # Consistency, CAP, and Why Retries Need Idempotency
 
-> Why a distributed read can return stale data, what CAP and PACELC really constrain, and why every retry policy needs idempotency behind it.
+> How replication creates stale reads, what CAP and PACELC actually mean, and why safe retries require idempotency.
 
 ## In short
 
-- Consistency is not "no corrupt rows" — it is the rule for **what a client may observe after a completed write**: linearizable, sequential, causal, or eventual.
-- CAP only bites **during a partition**: while replicas cannot talk, an operation is either CP (reject or delay to stay correct) or AP (accept and reconcile later). It is never "pick any two".
-- PACELC covers the other 99% of the time: **e**lse, with no partition, you still trade **l**atency against **c**onsistency on every replicated read and write.
-- Choose the model **per operation**, not per product — one service can serve balances strongly and profile pages eventually.
-- Session guarantees (read-your-writes, monotonic reads) buy a coherent user experience without paying for global linearizability.
-- A timeout means **the caller stopped waiting**, not that the server rolled back — the write may have committed with only the response lost.
-- That ambiguity forces retries, and retries duplicate side effects, so backoff with jitter, a total deadline, and a stable operation key are one design rather than four.
+- **Consistency** defines what clients are allowed to observe when data is replicated or updated concurrently.
+- **Linearizable consistency** is useful when stale or conflicting data could break a business invariant such as a balance, stock reservation, or unique allocation.
+- **Eventual consistency** is useful when temporary staleness is acceptable and replicas can converge later.
+- **CAP matters during a network partition**: for a given operation, the system must either preserve consistency by rejecting/delaying some requests or preserve availability by accepting requests and reconciling later.
+- **PACELC covers normal operation too**: when there is no partition, replicated systems still trade lower latency against stronger consistency.
+- A **timeout does not prove failure**. The server may already have committed the operation while the response was lost.
+- Because callers retry uncertain requests, **side-effecting operations must be idempotent**.
+- A safe retry design normally combines **stable operation identity + bounded retries + exponential backoff + jitter + reconciliation**.
 
 ```mermaid
-flowchart TD
-    DATA[Distributed data] --> REPL[Replication creates consistency trade-offs]
-    REPL --> NET[Network failures make request outcomes uncertain]
-    NET --> RETRY[Clients retry uncertain operations]
-    RETRY --> SIDE[Retries can repeat side effects]
-    SIDE --> IDEM[Idempotency prevents duplicate business effects]
+flowchart LR
+    R[Replication] --> C[Consistency trade-off]
+    C --> P[Partition or network failure]
+    P --> U[Outcome may be uncertain]
+    U --> T[Client retries]
+    T --> D[Duplicate side effect risk]
+    D --> I[Idempotency + durable deduplication]
 ```
-
-**Interview answer:** Pick the consistency model per business invariant — anything guarding money, stock, or uniqueness needs linearizable reads and writes, and everything derived from it (feeds, counters, search indexes, notifications) can be eventual. CAP then tells you what that choice costs during a partition, and PACELC what it costs the rest of the time. Because any remote call can time out with the outcome unknown, every write on the critical path must also carry a stable operation key, so that a retry converges on one effect instead of two.
-
-**Gotcha:** Treating CAP as a one-time architectural label ("we are an AP system"). Partitions are rare and the choice is per-operation: the same service normally refuses a double-spend (CP) while still serving a stale product page (AP). Reciting "consistency, availability, partition tolerance — pick two", as though partition tolerance were something you could decline, is the answer interviewers are listening for.
 
 ---
 
 # 1. The Core Idea
 
-Those three topics form one chain. Replication buys availability and latency but forces a consistency trade-off; network failure makes the outcome of any single request uncertain; clients therefore retry; and a retry repeats the side effect unless the operation is idempotent.
+Distributed systems have two different correctness problems:
 
-A distributed system cannot assume that:
+1. **What value is safe to return?**  
+   This is a consistency problem.
 
-- every replica has the latest value;
-- every network request reaches its destination;
-- every response reaches the caller;
-- a timeout means the operation failed;
-- a message is delivered only once.
+2. **What happens if the same operation is attempted more than once?**  
+   This is an idempotency problem.
 
-A reliable design therefore needs two separate decisions:
+These problems are connected because network calls are uncertain.
 
-1. **What consistency guarantee does each business operation require?**
-2. **How can the operation be retried without creating duplicate effects?**
+A client can send a request, the server can commit it, and the response can be lost. The client only sees a timeout, so retrying is reasonable. Without idempotency, that retry can repeat the business effect.
 
-Consistency protects the correctness of shared state.  
-Idempotency protects the correctness of repeated requests.
+A reliable design therefore assumes:
+
+- replicas may temporarily disagree;
+- networks may delay or drop messages;
+- timeouts may leave the outcome unknown;
+- messages and requests may be delivered more than once.
 
 ---
 
-# 2. What Consistency Means
+# 2. Consistency in Distributed Systems
 
-## 2.1 Consistency in a replicated system
+## 2.1 What consistency means
 
-Suppose a user changes an address and the system stores the data in two replicas.
+Suppose a profile is stored in two replicas.
 
 ```mermaid
 sequenceDiagram
@@ -68,199 +67,158 @@ sequenceDiagram
     participant A as Replica A
     participant B as Replica B
 
-    C->>A: Update address to "Pune"
+    C->>A: Update city = Pune
     A-->>C: Success
-    A-->>B: Replicate update later
-    C->>B: Read address
-    B-->>C: Returns old address
+    A-->>B: Replicate asynchronously
+    C->>B: Read profile
+    B-->>C: city = Ahmedabad
 ```
 
-The write succeeded on Replica A, but Replica B had not received it yet. The next read returned stale data.
+Replica A accepted the write, but Replica B had not received it yet. The next read returned an older value.
 
-Consistency defines **what values clients are allowed to observe when multiple copies of data or concurrent operations exist**.
+So, in distributed-system design, consistency asks:
 
-It does not simply mean that the database has no corrupt rows. In system design, the important question is:
+> **After operations complete, what values and ordering may clients observe?**
 
-> After a successful write, what may another client or replica return?
+This is different from ACID consistency, which is about preserving database rules and invariants.
 
 ---
 
 ## 2.2 Common consistency models
 
-### Strong or linearizable consistency
+### Linearizable consistency
 
-A completed write appears to take effect at one instant, and later operations observe it.
+A successful operation appears to happen at one instant between its start and completion. If a write finishes before a later read begins, that later read must observe that write or a newer one.
 
 ```text
-Write X = 20 completes
-          │
-          └── Any later read must not return the previous value
+Write balance = ₹10,000 completes
+            |
+            +--> Any later linearizable read cannot return the old balance
 ```
 
-Linearizability respects real-time ordering. It is useful when stale data could violate a business invariant.
+Use it when stale or conflicting data can violate a hard invariant.
 
-Typical use cases:
+Common examples:
 
-- account balance checks;
-- inventory reservation;
-- uniqueness decisions;
-- lock ownership;
-- leader election metadata;
-- payment or ledger state.
+- account or ledger state;
+- final inventory reservation;
+- distributed lock ownership;
+- unique allocation;
+- correctness-critical state transitions.
 
-The cost is usually greater coordination, latency, or reduced availability during failures.
+**Trade-off:** stronger coordination usually increases latency and can reduce availability during failures.
 
 ---
 
 ### Sequential consistency
 
-All clients observe operations in one valid global order, but that order does not have to match real-time order.
+All clients observe operations in one valid global order, but that order does not have to match real-time completion order.
 
-It is weaker than linearizability because a client may not immediately observe an operation that already completed in real time.
+It is weaker than linearizability because an operation that already completed in real time does not necessarily have to appear immediately before later operations.
 
 ---
 
 ### Causal consistency
 
-Operations that are causally related are observed in the correct order.
+Operations that depend on one another are observed in causal order.
 
 Example:
 
 ```text
-1. User creates a post
-2. Another user replies to that post
+Create post
+    |
+    +--> Reply to that post
 ```
 
-A system should not show the reply before the original post. Independent operations may be observed in different orders.
+A user should not observe the reply without being able to observe the post it depends on.
 
-This model is useful in collaboration, social feeds, comments, and globally distributed applications.
+This model is useful for collaboration, comments, messaging, and globally distributed user activity.
 
 ---
 
 ### Eventual consistency
 
-If no new writes occur, all replicas eventually converge to the same value.
+If updates stop, replicas eventually converge to the same state.
 
-An immediate read may be stale:
+A read can temporarily return stale data.
 
 ```text
-T0: Write product price = ₹1,999 in Region A
-T1: Read in Region B returns ₹2,099
-T2: Replication completes
-T3: Read in Region B returns ₹1,999
+T0  Price updated in Region A
+T1  Region B still returns old price
+T2  Replication catches up
+T3  Both regions return the new price
 ```
 
-Eventual consistency provides convergence, not immediate freshness.
+Common examples:
 
-Typical use cases:
-
-- product catalog;
-- analytics;
-- activity feeds;
-- view counters;
 - search indexes;
-- cached profile information.
+- analytics;
+- feeds;
+- counters;
+- cached profile data;
+- derived dashboards.
 
-The application may still need conflict resolution, versioning, timestamps, CRDTs, or domain-specific merge rules.
+Eventual consistency does **not** mean conflicts solve themselves. The application may still need version checks, timestamps, deterministic merge rules, or CRDTs.
 
 ---
 
-### Session guarantees
+## 2.3 Session guarantees
 
-Many applications do not need global linearizability but need a predictable user experience.
-
-Common session guarantees include:
+Many applications do not need global linearizability for every request. They only need a predictable experience for one user or session.
 
 | Guarantee | Meaning |
 |---|---|
-| Read-your-writes | A user sees their own completed changes |
+| Read-your-writes | After a user updates something, that user sees the new value |
 | Monotonic reads | A user does not move backward to an older version |
 | Monotonic writes | A user's writes are applied in order |
-| Writes-follow-reads | A write is based on a version the user has already observed |
+| Writes-follow-reads | A write is based on data the user has already observed |
 
-For example, a globally replicated profile service may be eventually consistent across users while guaranteeing that the user who edited the profile immediately sees the new value.
-
----
-
-## 2.3 Consistency vs transaction isolation
-
-These terms are related but not interchangeable.
-
-### Replication consistency
-
-Asks:
-
-> What can different clients or replicas observe?
-
-Examples: linearizable, causal, eventual.
-
-### Transaction isolation
-
-Asks:
-
-> How do concurrent transactions interact?
-
-Examples: read committed, repeatable read, snapshot isolation, serializable.
-
-### Important distinction
-
-- **Linearizability** commonly describes real-time behavior of individual operations.
-- **Serializability** ensures concurrent transactions behave like some serial execution.
-- **Strict serializability** combines serializable transactions with real-time ordering.
-
-A system can have serializable transactions inside one database region while replicas in another region remain eventually consistent.
+This is useful when global strong consistency would be too expensive but a stale UI would be confusing.
 
 ---
 
-# 3. The CAP Theorem
+## 2.4 Consistency vs transaction isolation
 
-## 3.1 The three CAP properties
+These concepts are related but solve different problems.
 
-CAP refers to:
+| Concept | Main question |
+|---|---|
+| Replication consistency | What can different clients or replicas observe? |
+| Transaction isolation | How do concurrent transactions interact? |
+| Linearizability | Does operation order respect real-time completion? |
+| Serializability | Do concurrent transactions behave like some serial execution? |
+| Strict serializability | Serializability + real-time ordering |
+
+A database can provide serializable transactions in one Region while remote replicas are still eventually consistent.
+
+---
+
+# 3. CAP Theorem
+
+## 3.1 CAP properties
+
+CAP refers to three properties.
 
 ### Consistency
 
-In the CAP model, consistency is close to **single-copy atomic or linearizable behavior**.
-
-Every read behaves as though the system contains one up-to-date copy of the data.
-
-This is not the `C` in ACID. ACID consistency refers to preserving database rules and invariants.
-
----
+In CAP, consistency means behavior close to a **single up-to-date copy of the data**, usually discussed in terms of linearizability.
 
 ### Availability
 
-Every request sent to a non-failing node eventually receives a valid response.
+Every request to a non-failing node eventually receives a successful response rather than being refused because another partition is unreachable.
 
-Availability in CAP is stronger and more formal than saying:
-
-- the monthly uptime is 99.99%;
-- the service returned an HTTP response;
-- the load balancer is healthy.
-
-Returning an error such as “cannot process because the other region is unavailable” does not preserve CAP availability for that operation.
-
----
+This is a formal property, not the same as an SLA such as `99.99% uptime`.
 
 ### Partition tolerance
 
-The system continues to follow its defined behavior even when nodes cannot communicate reliably.
-
-A partition can involve:
-
-- dropped messages;
-- extreme delay;
-- broken network links;
-- a region becoming unreachable;
-- firewall or routing problems;
-- partial connectivity between nodes.
+The distributed system continues operating according to its defined rules even when nodes cannot reliably communicate.
 
 ```mermaid
 flowchart LR
-    C1[Clients in Region A] --> A[Replica A]
-    C2[Clients in Region B] --> B[Replica B]
-    A <-. Network partition .-> B
+    A[Region A] <-. network partition .-> B[Region B]
 ```
+
+Partitions can come from packet loss, routing problems, unreachable Regions, broken links, or severe delays.
 
 ---
 
@@ -271,135 +229,86 @@ During a network partition, a replicated system cannot guarantee both:
 - linearizable consistency; and
 - availability for every request.
 
-The system must choose what a particular operation does while communication is unavailable.
-
 ```mermaid
 flowchart TD
-    PART[Network partition] --> CONS[Preserve consistency]
-    PART --> AVAIL[Preserve availability]
-    CONS --> REJECT["Reject, delay, or time out<br/>some operations"]
-    AVAIL --> ACCEPT[Accept requests on both sides<br/>and reconcile later]
-    REJECT --> CP[CP behavior]
-    ACCEPT --> AP[AP behavior]
+    P[Network partition] --> C[Preserve consistency]
+    P --> A[Preserve availability]
+
+    C --> R[Reject, delay, or time out some operations]
+    A --> W[Accept operations and reconcile conflicts later]
+
+    R --> CP[CP-style behavior]
+    W --> AP[AP-style behavior]
 ```
 
-### The most important interpretation
+The useful system-design question is therefore not:
 
-CAP does **not** mean:
+> "Which two letters did we choose?"
 
-> “Choose any two of consistency, availability, and partition tolerance.”
+It is:
 
-In a real distributed system, partitions are possible. Partition tolerance is therefore part of the operating environment, not a feature that can always be disabled.
-
-The practical choice during a partition is normally:
-
-> **For this operation, should the system reject or delay work to preserve consistency, or accept work and risk temporary inconsistency?**
+> **For this operation, what should happen if replicas cannot communicate?**
 
 ---
 
-## 3.3 CP, AP, and CA
+## 3.3 CP and AP behavior
 
-### CP: Consistency + partition tolerance
+### CP-style behavior
 
-During a partition, the system may reject, delay, or make some operations unavailable rather than return stale or conflicting data.
+The system protects consistency even if some operations become unavailable.
 
-Example:
+Typical for:
 
-```text
-Two regions cannot communicate.
-
-Request: Reserve the last available hotel room.
-
-CP behavior:
-- Only the quorum/leader side accepts the reservation.
-- The other side rejects or waits.
-- Double booking is prevented.
-```
-
-Suitable for operations where conflicting success is unacceptable:
-
+- payment state transitions;
 - ledger posting;
-- unique username allocation;
-- inventory reservation for scarce stock;
-- distributed locks;
-- configuration control;
-- payment state transitions.
+- final stock reservation;
+- unique allocation;
+- coordination metadata.
 
-CP does not mean the entire product is always unavailable. Only the operations that cannot safely proceed may be affected.
-
----
-
-### AP: Availability + partition tolerance
-
-Both sides continue serving requests during the partition and reconcile after communication returns.
-
-Example:
+Example behavior during a partition:
 
 ```text
-Two regions cannot communicate.
-
-Request: Add an item to a shopping cart.
-
-AP behavior:
-- Both regions accept updates.
-- Cart versions are merged later.
+Only the side that still has quorum/leadership may commit.
+Other requests wait or fail.
 ```
 
-Suitable when temporary inconsistency is acceptable and conflicts can be merged or corrected:
+### AP-style behavior
 
-- shopping carts;
-- likes and counters;
-- feeds;
+The system continues accepting operations on both sides and resolves differences later.
+
+Typical for:
+
+- shopping-cart updates;
+- likes;
 - telemetry;
-- some catalog data;
-- offline-first applications.
+- feeds;
+- some offline-first data.
 
-AP does not mean “no consistency.” An AP design may still provide causal consistency, read-your-writes, version checks, conflict-free data types, or deterministic merge rules.
-
----
-
-### CA: Consistency + availability without partition handling
-
-A single-node database can provide consistent and available behavior while it is healthy because there is no inter-node partition to handle.
-
-A distributed system can also behave like CA when the network is healthy. CAP becomes relevant when communication is partitioned.
-
-Therefore, labeling a real multi-node system as permanently “CA” is usually incomplete.
+AP does not mean "no consistency." An AP design can still provide causal ordering, read-your-writes, version checks, or deterministic merge rules.
 
 ---
 
-## 3.4 CAP is an operation-level trade-off
+## 3.4 Choose consistency per operation
 
-A complete platform is rarely purely CP or purely AP.
+A complete product is rarely purely CP or purely AP.
 
-An e-commerce system may choose:
-
-| Operation | Preferred behavior |
+| Operation | Reasonable behavior |
 |---|---|
-| Browse product descriptions | AP / eventually consistent |
-| Display approximate stock | Eventual or bounded-staleness |
-| Reserve final stock unit | CP / strongly consistent |
-| Add item to cart | AP with merge |
-| Capture payment | Strongly controlled and idempotent |
-| Analytics ingestion | AP / asynchronous |
-| Ledger posting | CP-like invariant protection |
+| Browse product information | Eventual / AP-friendly |
+| Show approximate stock | Eventual or bounded staleness |
+| Reserve the final stock unit | Strong / CP-style |
+| Add item to cart | AP-friendly with merge |
+| Capture payment | Strong invariant protection + idempotency |
+| Analytics ingestion | Asynchronous / eventual |
+| Ledger posting | Strong transactional protection |
 
-The choice may also differ between reads and writes.
-
-A database can offer:
-
-- eventual reads by default;
-- strongly consistent reads on demand;
-- conditional writes for critical updates;
-- transactions for a small set of records.
-
-For example, current DynamoDB documentation describes eventual and strongly consistent read options for tables and local secondary indexes. Its multi-Region global tables support eventual and strong consistency modes, with different replication behavior and operational trade-offs.
+The business invariant should drive the choice, not the database marketing label.
 
 ---
 
-## 3.5 Beyond CAP: PACELC
+# 4. PACELC: The Normal-Operation Trade-off
 
-CAP focuses on behavior **during a partition**.
+CAP mainly explains behavior **when a partition exists**.
 
 PACELC adds the normal case:
 
@@ -410,72 +319,62 @@ Else:
     choose Latency or Consistency
 ```
 
-Even without a partition, strong consistency often requires coordination between replicas. Waiting for that coordination increases latency.
+Why?
 
-For a globally distributed service:
+Strong consistency often requires coordination with another replica, leader, or quorum. That coordination takes time.
 
 ```mermaid
 flowchart LR
-    subgraph STRONG[Strong consistency]
-        C1[Client] --> REG1[Local region]
-        REG1 -->|Coordination cost| QUORUM[Remote quorum]
-        QUORUM --> RESP1[Response]
-    end
-
-    subgraph FAST[Lower-latency consistency]
-        C2[Client] --> REG2[Local region]
-        REG2 --> RESP2[Response]
-        REG2 --> ASYNC[Replicate asynchronously]
-    end
+    C[Client] --> R1[Local Region]
+    R1 --> Q[Remote quorum / replica]
+    Q --> OK[Commit and respond]
 ```
 
-PACELC is useful because most system-design decisions happen while the network is slow but not fully partitioned.
+A lower-latency design may respond locally and replicate asynchronously:
+
+```mermaid
+flowchart LR
+    C[Client] --> R1[Local Region]
+    R1 --> OK[Respond]
+    R1 -. async replication .-> R2[Remote Region]
+```
+
+The first design gives stronger coordination but adds latency. The second is faster but can expose temporary staleness.
+
+### Current DynamoDB example
+
+Amazon DynamoDB global tables currently support two consistency modes:
+
+- **MREC — Multi-Region Eventual Consistency:** asynchronous cross-Region replication and lower write latency.
+- **MRSC — Multi-Region Strong Consistency:** writes synchronously replicate to another Region before success is returned; strongly consistent reads on an MRSC replica return the latest item version.
+
+MRSC gives stronger cross-Region guarantees, but the extra coordination increases write latency. This is a practical PACELC-style trade-off.
 
 ---
 
-# 4. Choosing Consistency for Real Features
+# 5. Enforcing a Business Invariant
 
-Start with the business invariant, not the database label.
+Strong consistency is useful, but application code should also make invariants atomic.
 
-### Decision framework
+Suppose only one inventory unit remains.
 
-Ask:
-
-1. What incorrect outcome can stale or conflicting data produce?
-2. Can that outcome be repaired later?
-3. Is the conflict visible only in the UI, or does it move money or allocate a scarce resource?
-4. Can the operation be expressed as a conditional write?
-5. How much extra latency is acceptable?
-6. What should happen when the coordinating nodes are unavailable?
-
-### Practical selection guide
-
-| Requirement | Reasonable approach |
-|---|---|
-| Must never overspend an account | Strong consistency, transaction, or conditional update |
-| Must not sell the same unique seat twice | Leader/quorum plus atomic reservation |
-| User must immediately see own profile edit | Read-your-writes session guarantee |
-| Search may lag the source database | Eventual consistency |
-| Like count may be approximate briefly | Eventual consistency or CRDT counter |
-| Two offline users edit the same document | Causal/versioned merge or conflict resolution |
-| Reporting can be several minutes behind | Asynchronous replicas or warehouse pipeline |
-
-### Example: safe stock decrement
-
-Avoid:
+Avoid a separate read followed by an unconditional update:
 
 ```sql
-SELECT available_quantity FROM inventory WHERE sku = 'SKU-10';
--- Application sees 1.
+SELECT available_quantity
+FROM inventory
+WHERE sku = 'SKU-10';
+
+-- application sees 1
 
 UPDATE inventory
 SET available_quantity = 0
 WHERE sku = 'SKU-10';
 ```
 
-Two concurrent requests can both read `1` and both succeed.
+Two concurrent requests can both read `1`.
 
-Prefer an atomic conditional update:
+Prefer one atomic conditional update:
 
 ```sql
 UPDATE inventory
@@ -485,177 +384,159 @@ WHERE sku = 'SKU-10'
 RETURNING available_quantity;
 ```
 
-The affected-row count becomes part of the business decision. Database constraints and atomic conditions are more reliable than an application-level “check then update.”
+If no row is returned, the reservation failed.
+
+**Interview-relevant principle:** use database constraints, conditional writes, compare-and-set operations, or transactions to enforce invariants at the data boundary.
 
 ---
 
-# 5. Why Distributed Operations Need Retries
+# 6. Why Retries Are Necessary
 
 Remote calls fail for temporary reasons:
 
 - connection reset;
 - packet loss;
-- service restart;
+- dependency restart;
 - load-balancer timeout;
-- database leader election;
-- rate limiting;
 - temporary overload;
-- DNS or routing issue;
-- response lost after successful processing.
+- rate limiting;
+- leader election;
+- DNS or routing problems.
 
-Retries improve availability by giving a transient failure another chance.
+Retries improve reliability, but the difficult case is an **ambiguous outcome**.
 
-The difficult part is that a caller often cannot tell whether the first attempt changed state.
-
----
-
-## 5.1 The ambiguous timeout problem
-
-Consider a payment request:
+## 6.1 Timeout does not mean rollback
 
 ```mermaid
 sequenceDiagram
-    participant C as Checkout Service
-    participant P as Payment Service
+    participant C as Checkout
+    participant P as Payment API
     participant D as Payment DB
 
-    C->>P: POST /payments
-    P->>D: Insert successful payment
+    C->>P: Create payment
+    P->>D: Commit payment
     D-->>P: Commit successful
-    P--xC: Response lost / timeout
-    Note over C: Outcome is unknown
+    P--xC: Response lost
+    Note over C: Caller sees timeout
 ```
 
-From the checkout service's perspective, several outcomes look identical:
+From the caller's point of view, the same timeout can mean:
 
 ```text
-Observed by caller: timeout
-
-Possible server reality:
-A. Request never reached the server
-B. Request reached the server but failed before mutation
-C. Mutation committed, but response was lost
-D. Server is still processing the operation
+1. Request never reached the server
+2. Request failed before changing state
+3. Request committed but response was lost
+4. Request is still processing
 ```
 
-A timeout means **the caller stopped waiting**. It does not prove that the server rolled back or never processed the request.
+The caller cannot safely convert "timeout" into "failed."
 
 ---
 
-## 5.2 How retries create duplicate effects
+# 7. Idempotency for Safe Retries
 
-Without idempotency:
+An operation is idempotent when repeating the **same logical intent** does not create an additional business effect.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant API as Payment API
-    participant DB as Database
+Examples:
 
-    C->>API: Create payment ₹5,000
-    API->>DB: Insert payment P-101
-    DB-->>API: Committed
-    API--xC: Response lost
-
-    C->>API: Retry create payment ₹5,000
-    API->>DB: Insert payment P-102
-    DB-->>API: Committed
-    API-->>C: Success
-
-    Note over DB: Customer may be charged twice
+```text
+Set profile city = Pune       -> naturally idempotent
+Cancel order ORD-100          -> can be naturally idempotent
+Create one payment            -> not naturally idempotent
+Increment balance by ₹100     -> not naturally idempotent
+Send an email                 -> not naturally idempotent
 ```
 
-The retry is technically a second valid `POST`. The server cannot know whether it represents:
+For non-idempotent side effects, the client sends a stable operation key.
 
-- a retry of the same intent; or
-- a new intent with identical data.
+```text
+POST /payments
+Idempotency-Key: 7ec1...
 
-Comparing request bodies is not enough. A customer may intentionally make two identical ₹5,000 payments.
+amount = 500000
+currency = INR
+order_id = ORD-901
+```
 
-The client must provide an identifier that expresses business intent.
+Every retry of the same logical payment reuses the **same key**.
+
+A genuinely new payment uses a new key.
 
 ---
 
-# 6. Idempotency: What Retries Actually Require
+## 7.1 Durable idempotency contract
 
-An operation is idempotent when repeating the same *intended* operation produces the same business effect as performing it once. "Set the address to Pune", "cancel order `ORD-100`", and "create one payment for checkout attempt `CHK-9001`" already behave that way. "Increment the balance by ₹100", "create a new order", "send an email", and "capture a card payment" do not, and are made idempotent by attaching a stable operation identity and remembering its result.
+A production design normally needs:
 
-[Idempotency: Which HTTP Methods Are Idempotent?](../api-design/idempotency-http-methods.md) owns this topic in full — the method matrix, the `Idempotency-Key` contract, the request fingerprint and `409` rule, the `idempotency_records` schema, concurrent-duplicate handling, retention, and the consumer inbox table. The short version, which is what a distributed-systems answer needs:
-
-| Requirement | Why the distributed case needs it |
+| Requirement | Purpose |
 |---|---|
-| A client-generated key per logical intent | A retry must reuse it; a genuinely new intent must not. Two identical payments of the same amount are legitimate, so the request body cannot identify the intent. |
-| Key scoped as `tenant + operation + key` | Stops unrelated endpoints and tenants colliding inside one shared store. |
-| A stored request fingerprint | The same key with a different payload is a client bug: answer `409 Conflict`, never replay the old result. |
-| Claim and mutation in one transaction | A uniqueness constraint is the only reliable concurrency guard. A cache can be evicted, instances restart, and two of them can race. |
-| An explicit `unknown` outcome | When a provider call times out, "unknown" is correct and "failed" is dangerous — recording failure invites a second charge. |
-| The same key passed downstream | Retry the provider with the *original* key. Minting a fresh key because the last attempt timed out is exactly how double charges happen. |
-| Retention longer than the real retry window | Hours for order creation, days for payments, provider-defined for webhook redelivery. |
+| Client-generated key per logical intent | Distinguishes retry from a new operation |
+| Key scoped by tenant + operation | Prevents collisions across tenants/endpoints |
+| Request fingerprint | Detects same key reused with a different payload |
+| Durable unique constraint | Prevents concurrent duplicate execution |
+| Stored result/status | Lets a retry return the original outcome |
+| Stable downstream key | Prevents duplicate effects at an external provider |
+| Retention beyond retry window | Keeps deduplication state long enough |
+| `unknown` state | Represents a timed-out external call safely |
 
-Idempotency is not exactly-once execution. The handler may genuinely run more than once; what you build is at-least-once delivery plus durable deduplication plus atomic state protection, and together those give **effectively-once** business outcomes. Across an arbitrary network, a database, a queue, and an external provider, "exactly once" is never a transport guarantee — it is assembled from unique operation identifiers, durable deduplication records, transactions, uniqueness constraints, idempotent side effects, and reconciliation.
-
-The `unknown` state deserves its own transition rather than being collapsed into failure:
-
-```mermaid
-flowchart TD
-    CREATED[created] --> PROCESSING[processing]
-    PROCESSING --> SUCCEEDED[succeeded]
-    PROCESSING --> FAILED[failed_final]
-    PROCESSING --> UNKNOWN[unknown]
-    UNKNOWN --> RECONCILING[reconciling]
-    RECONCILING --> SUCCEEDED
-    RECONCILING --> FAILED
-```
-
-Two dual-write patterns pair with the same reasoning. An **inbox** table keyed on `consumer_name + event_id` makes an at-least-once consumer safe, with the insert and the business mutation in one transaction. A **transactional outbox** writes the domain row and the event row in one transaction and publishes later, so a committed state change can never become invisible downstream — but because publishing is retried, consumers still deduplicate on the event ID.
+Do not identify a retry only by comparing request bodies. Two legitimate payments can have identical amounts and payloads.
 
 ---
 
-# 7. Safe Retry Policy
+## 7.2 Effectively-once, not magic exactly-once
 
-Idempotency prevents duplicate effects, but retry behavior must still be controlled.
+Across an HTTP API, queue, database, and external payment provider, execution may happen more than once.
 
-## Retry only failures that may be transient
+What we normally build is:
+
+```text
+at-least-once attempts
+        +
+stable operation IDs
+        +
+durable deduplication
+        +
+transactions / unique constraints
+        +
+idempotent side effects
+        =
+effectively-once business outcome
+```
+
+The system should be designed so repeated attempts converge on one business result.
+
+---
+
+# 8. Safe Retry Policy
+
+Idempotency makes retries safer, but retries must still be bounded.
+
+## Retry only transient failures
 
 Often retryable:
 
-- connection timeout;
-- connection reset;
-- temporary DNS failure;
+- network timeout or reset;
 - `408 Request Timeout`;
 - `429 Too Many Requests`;
 - `502 Bad Gateway`;
 - `503 Service Unavailable`;
 - `504 Gateway Timeout`;
-- database deadlock or leader failover, when documented as retryable.
+- documented transient database errors.
 
-Usually not retryable without changing the request:
+Usually not retryable without changing something:
 
-- validation errors;
-- authentication or authorization errors;
-- malformed payloads;
-- insufficient balance;
+- malformed requests;
+- validation failures;
+- authentication/authorization failures;
+- insufficient funds;
 - business-rule rejection;
-- idempotency key reused with different parameters.
+- idempotency key reused with a different payload.
 
-Status code alone is not always enough. Follow the downstream service's documented retry contract.
+Follow the dependency's documented retry contract rather than relying only on HTTP status codes.
 
 ---
 
 ## Use exponential backoff with jitter
-
-Without delay:
-
-```text
-Attempt 1 fails
-Thousands of clients retry immediately
-Dependency becomes more overloaded
-More requests fail
-```
-
-This is a retry storm.
-
-A common capped full-jitter calculation is:
 
 ```python
 import random
@@ -665,315 +546,172 @@ def retry_delay(attempt: int, base: float = 0.2, cap: float = 10.0) -> float:
     return random.uniform(0, maximum)
 ```
 
-Example delay ranges:
+Jitter prevents many clients from retrying at the same instant and creating a retry storm.
+
+---
+
+## Use a total deadline
 
 ```text
-Attempt 0: 0.0–0.2 s
-Attempt 1: 0.0–0.4 s
-Attempt 2: 0.0–0.8 s
-Attempt 3: 0.0–1.6 s
-...
-Maximum:   10 s
+Total deadline: 8 seconds
+
+Attempt 1
+   |
+Backoff
+   |
+Attempt 2
+   |
+Backoff
+   |
+Final attempt within remaining budget
 ```
 
-Jitter spreads retry traffic instead of synchronizing every client.
+Do not allow retries to continue indefinitely.
+
+Also:
+
+- cap the number of attempts;
+- respect `Retry-After`;
+- avoid retrying at many application layers;
+- monitor retry volume;
+- use dead-letter/reconciliation paths for asynchronous work.
 
 ---
 
-## Apply a total deadline
+# 9. One End-to-End Example: Payment Capture
 
-A call should not retry forever.
+A checkout service needs to collect **₹5,000** for `ORD-901`.
 
-```text
-Request deadline: 8 seconds
-Attempt 1: 1.0 second timeout
-Backoff:   0.2 second
-Attempt 2: 1.5 second timeout
-Backoff:   0.6 second
-Attempt 3: remaining budget
-```
-
-Propagate the remaining deadline across service boundaries where possible.
-
----
-
-## Limit attempts
-
-Set a maximum based on:
-
-- end-user latency;
-- operation importance;
-- downstream recovery time;
-- queue redelivery;
-- overall request deadline.
-
-For asynchronous jobs, retries can continue longer, but they still need:
-
-- maximum attempts;
-- dead-letter handling;
-- alerting;
-- reconciliation.
-
----
-
-## Retry at one layer
-
-Suppose a request passes through five services and every layer makes three attempts.
-
-```text
-3 × 3 × 3 × 3 × 3 = 243 possible calls
-```
-
-Retries can multiply dramatically.
-
-Choose the layer with enough context to make the retry decision. Lower-level libraries may retry very short network failures, while the business workflow controls larger retries.
-
----
-
-## Respect server signals
-
-Use:
-
-- `Retry-After`;
-- rate-limit headers;
-- provider-specific retry guidance;
-- circuit-breaker state;
-- concurrency limits.
-
----
-
-## Side-effecting requests require idempotency
-
-Before automatically retrying `POST`, payment capture, order creation, email sending, or resource provisioning, confirm that one of these is true:
-
-1. the API has an idempotency-key contract;
-2. the business operation uses a natural unique identifier;
-3. the server can prove the first attempt was never applied;
-4. a reconciliation step determines the actual outcome.
-
-Without one of these, automatic retry can be unsafe.
-
----
-
-# 8. End-to-End Payment Example
-
-A checkout service must collect ₹5,000 for order `ORD-901`. It sends `POST /v1/payments` carrying `Idempotency-Key: 5fdd80f8-...` and an amount of `500000` — amounts belong in the smallest currency unit, so that no rounding happens in transit.
-
-The point of the example is not the request shape but how many independent things can be repeated behind it while the customer is still charged once.
-
-## Processing flow
+The client creates one idempotency key `K` for that payment intent.
 
 ```mermaid
 sequenceDiagram
     participant C as Checkout
     participant API as Payment API
     participant DB as Payment DB
-    participant Q as Worker Queue
     participant PSP as Payment Provider
 
-    C->>API: Create payment, key K
-    API->>DB: Insert payment intent + key K
-    DB-->>API: payment_id = PAY-101
-    API->>Q: Schedule PAY-101
-    API-->>C: 202 Processing
+    C->>API: POST /payments, key K
+    API->>DB: Claim key K + create payment
+    DB-->>API: PAY-101
+    API->>PSP: Capture ₹5,000, provider key K
+    PSP--xAPI: Response lost
 
-    Q->>PSP: Capture ₹5,000 with provider key K
-    PSP--xQ: Response lost
+    Note over API: Provider outcome is unknown
 
-    Q->>PSP: Retry capture with same key K
-    PSP-->>Q: Existing successful capture PSP-88
-    Q->>DB: Mark PAY-101 succeeded
+    API->>PSP: Reconcile/retry with same key K
+    PSP-->>API: Existing successful capture PSP-88
+    API->>DB: Mark PAY-101 succeeded
+    API-->>C: PAY-101 succeeded
 
-    C->>API: Retry original request with key K
-    API->>DB: Read existing result
+    C->>API: Retry original request, key K
+    API->>DB: Read stored result for K
     API-->>C: PAY-101 succeeded
 ```
 
-There may be several HTTP attempts, several queue deliveries, several worker executions, and several provider calls — but exactly one effective payment.
+Many technical attempts may occur, but the customer should see one effective payment.
 
----
-
-## Important database constraints
-
-```sql
-CREATE UNIQUE INDEX uq_payment_idempotency
-ON payments (tenant_id, idempotency_key);
-
-CREATE UNIQUE INDEX uq_payment_provider_reference
-ON payments (provider_name, provider_payment_id);
-
-CREATE UNIQUE INDEX uq_single_capture_per_order
-ON payments (order_id)
-WHERE payment_type = 'capture'
-  AND status IN ('processing', 'succeeded');
-```
-
-The exact constraints depend on whether the business supports:
-
-- split payments;
-- multiple attempts;
-- partial captures;
-- retries after a definitive failure;
-- multiple payment methods.
-
-Do not create a “one payment per order” constraint if the business legitimately permits more than one payment.
-
----
-
-## Consistency decision
-
-The payment ledger uses strongly controlled state transitions, protects its balance invariants with transactions or atomic writes, and refuses conflicting state changes in two disconnected partitions. Views, notifications, and analytics derived from it update asynchronously.
+### Where consistency is strong
 
 ```text
-Critical core:
-Payment state + ledger entries
-        │
-        └── Strong invariants / CP-like behavior
-
-Derived views:
-Email, analytics, dashboard counters
-        │
-        └── Eventual consistency / AP-friendly behavior
+Payment state
+Ledger entries
+Provider reference uniqueness
+Final order/payment transition
 ```
 
-This is a common system-design approach: keep the correctness-critical core small and strongly protected, then propagate derived data asynchronously.
+These states protect money and should use transactions, conditional writes, or strong coordination where required.
+
+### Where eventual consistency is usually acceptable
+
+```text
+Email confirmation
+Analytics
+Dashboard counters
+Search/reporting views
+```
+
+These are derived states and can normally update asynchronously.
+
+### Unknown outcome state
+
+Do not convert an external timeout directly to `failed`.
+
+```mermaid
+flowchart LR
+    P[processing] --> S[succeeded]
+    P --> F[failed_final]
+    P --> U[unknown]
+    U --> R[reconciling]
+    R --> S
+    R --> F
+```
+
+If the provider can be queried by the stable key or provider request ID, reconciliation can determine whether the side effect already happened.
 
 ---
 
-# 9. Observability and Operational Controls
+# 10. Practical Design Summary
 
-Idempotency failures are difficult to debug without traceable identifiers.
+When designing a distributed feature, work in this order:
 
-Log the following fields:
+1. **Define the business invariant.**  
+   Example: an order must not be captured twice.
 
-```text
-request_id
-trace_id
-tenant_id
-operation
-idempotency_key_hash
-request_hash
-idempotency_status
-resource_id
-attempt_number
-downstream_request_id
-provider_reference
-retry_reason
-response_replayed
-processing_duration
-```
+2. **Choose the required consistency per operation.**  
+   Use strong coordination only where stale/conflicting data would break correctness.
 
-Avoid logging sensitive payloads or raw credentials.
+3. **Define partition behavior.**  
+   Decide which operations reject/wait and which may continue with later reconciliation.
 
-### Useful metrics
+4. **Choose the normal latency/consistency trade-off.**  
+   This is the PACELC part of the design.
 
-- total idempotent requests;
-- duplicate request rate;
-- replayed response rate;
-- key/payload mismatch count;
-- records stuck in `processing`;
-- retry count by dependency;
-- final failure count;
-- unknown payment outcomes;
-- reconciliation backlog;
-- idempotency-store latency;
-- deduplication conflicts.
+5. **Enforce invariants atomically.**  
+   Use transactions, unique constraints, conditional writes, or compare-and-set.
 
-### Alerts
+6. **Assume remote outcomes can be unknown.**  
+   A timeout is not proof of failure.
 
-Alert when:
+7. **Make side effects idempotent before retrying them.**  
+   Reuse the same operation key for the same logical intent.
 
-- `processing` records exceed their expected duration;
-- provider success exists without matching local success;
-- local success exists without a provider reference;
-- duplicate side effects are detected;
-- retry traffic rises sharply;
-- idempotency storage becomes unavailable.
+8. **Bound retries.**  
+   Use backoff, jitter, deadlines, attempt limits, and server guidance.
 
-### Recovery job
+9. **Reconcile uncertain outcomes.**  
+   Especially for payments and external providers.
 
-A periodic reconciler can inspect stale records:
-
-```text
-payment_attempt.status = processing
-AND updated_at < now() - 10 minutes
-```
-
-For each record:
-
-1. query the external provider using the stable key or request ID;
-2. update the local state if the provider knows the outcome;
-3. retry safely if the provider confirms no operation exists;
-4. move unrecoverable cases to manual review.
-
----
-
-# 10. Design Checklist
-
-## Consistency
-
-- [ ] The business invariant is clearly defined.
-- [ ] The required consistency model is chosen per operation.
-- [ ] Stale-read behavior is documented.
-- [ ] Conflict resolution is defined for AP operations.
-- [ ] Strong coordination is limited to correctness-critical state.
-- [ ] Database conditions and constraints enforce invariants.
-- [ ] Replication lag is considered in read paths.
-- [ ] Session guarantees are provided where user experience requires them.
-
-## CAP and failure behavior
-
-- [ ] Behavior during a partition is explicit.
-- [ ] The system knows which operations reject, wait, or continue.
-- [ ] The design does not describe CAP as simply “choose any two.”
-- [ ] Latency vs consistency is considered during normal operation.
-- [ ] Read and write behavior may be selected independently.
-
-## Idempotency
-
-See [Idempotency: Which HTTP Methods Are Idempotent?](../api-design/idempotency-http-methods.md) for the full contract checklist.
-
-- [ ] Key registration and the database mutation are atomic.
-- [ ] External providers receive a stable downstream key, reused on retry.
-- [ ] In-progress, success, failure, and *unknown* states are all defined.
-- [ ] Retention exceeds the realistic retry and redelivery window.
-
-## Retries
-
-- [ ] Only transient failures are retried.
-- [ ] Side-effecting calls are idempotent before automatic retry.
-- [ ] Exponential backoff and jitter are used.
-- [ ] The total deadline and maximum attempts are bounded.
-- [ ] `Retry-After` and provider guidance are respected.
-- [ ] Retry multiplication across layers is controlled.
-- [ ] Dead-letter and reconciliation paths exist.
-- [ ] Retry and duplicate metrics are monitored.
+The main engineering goal is not to remove all uncertainty. It is to make uncertainty safe and recoverable.
 
 ---
 
 # 11. References
 
-1. Seth Gilbert and Nancy A. Lynch, **Perspectives on the CAP Theorem**, IEEE Computer, 2012.  
-   https://groups.csail.mit.edu/tds/papers/Gilbert/Brewer2.pdf
+1. Eric Brewer, **CAP Twelve Years Later: How the "Rules" Have Changed**  
+   https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/
 
-2. IETF, **RFC 9110: HTTP Semantics**, Section 9.2.2, Idempotent Methods.  
+2. Daniel J. Abadi, **Consistency Tradeoffs in Modern Distributed Database System Design (PACELC)**  
+   https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf
+
+3. IETF, **RFC 9110: HTTP Semantics — Idempotent Methods**  
    https://datatracker.ietf.org/doc/rfc9110/
 
-3. AWS Builders' Library, **Making retries safe with idempotent APIs**.  
+4. AWS Builders' Library, **Making retries safe with idempotent APIs**  
    https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/
 
-4. AWS Builders' Library, **Timeouts, retries, and backoff with jitter**.  
+5. AWS Builders' Library, **Timeouts, retries, and backoff with jitter**  
    https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/
 
-5. AWS Architecture Blog, **Exponential Backoff and Jitter**.  
-   https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-
-6. Amazon DynamoDB Developer Guide, **DynamoDB read consistency**.  
+6. Amazon DynamoDB Developer Guide, **DynamoDB read consistency**  
    https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.ReadConsistency.html
 
-7. Stripe API Reference, **Idempotent requests**.  
+7. Amazon DynamoDB Developer Guide, **Global tables — multi-active, multi-Region replication**  
+   https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GlobalTables.html
+
+8. Stripe API Reference, **Idempotent requests**  
    https://docs.stripe.com/api/idempotent_requests
 
 ---
 
-> **Key takeaway:** Distributed systems cannot remove uncertainty, but they can contain it. Choose the required consistency for each business invariant, expect requests to be retried, and make every retryable side effect idempotent.
+> **Key takeaway:** Choose consistency according to the business invariant, define what happens during partitions, accept that remote calls can have unknown outcomes, and make every retryable side effect idempotent.

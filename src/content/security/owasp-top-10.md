@@ -4,578 +4,272 @@ group: "Web Vulnerabilities"
 order: 1
 ---
 
-# OWASP Top 10:2025 — Practical Security Guide for Developers
+# OWASP Top 10:2025 — Practical Guide for Developers
 
-> Understand the most important web application security risks and apply practical safeguards during design, development, testing, deployment, and operations.
->
-> **Version covered:** OWASP Top 10:2025 — the current released OWASP Top Ten version as of August 2026.
+> A concise, interview-focused guide to the most important web application security risks and the controls developers use in real projects.
 
-## In short
+> **Version:** OWASP Top 10:2025 — current released OWASP Top Ten version as of August 2026.
 
-- The Top 10 is an awareness list of risk **categories**, not a standard you can be compliant with. It tells you where defects cluster; it never tells you that you are secure.
-- **A01 Broken Access Control remains number one**, and 2025 folds Server-Side Request Forgery into it. Authentication is not authorization: every request needs a server-side check of this action against this object.
-- The 2025 shape reflects how software is *delivered*, not only written — **A02 Security Misconfiguration** moved up, **A03 Software Supply Chain Failures** now spans dependencies, repositories, CI/CD, build tools, and artifacts, and **A10 Mishandling of Exceptional Conditions** is new.
-- **A05 Injection** is a separation problem: parameter binding, argument lists, and context-aware output encoding are structural fixes; input validation and a WAF are defence in depth, never the fix.
-- **A04 Cryptographic Failures** usually starts as a data-classification failure. Decide what is sensitive in transit, at rest, and in credential storage, then use proven primitives — never a fast hash for passwords.
-- **A06 Insecure Design** cannot be caught in code review, because the code correctly implements a control that was never specified. It needs threat modelling and security acceptance criteria.
-- **A09 Logging** and **A10 Exceptional Conditions** are the categories teams skip: if an attack is never recorded or alerted on, and failures fail open, every control above becomes invisible.
+## In Short
+
+The **OWASP Top 10** is an awareness document that groups common and serious web application security risks into ten categories.
+
+It is useful during:
+
+- application design
+- API development
+- code review
+- security testing
+- CI/CD
+- cloud deployment
+- production monitoring
+
+It is **not a certification checklist**. A real application still needs threat modeling and controls specific to its business logic.
 
 ```mermaid
-flowchart TD
-    U[Internet User] --> E[CDN / WAF / Rate Limiting]
-    E --> G[API Gateway / Load Balancer]
-    G --> A[Authentication]
+flowchart LR
+    U[User / Client] --> E[Edge: TLS, WAF, Rate Limit]
+    E --> A[Authentication]
     A --> Z[Authorization]
-    Z --> V[Input Validation]
-    V --> S[Application Services]
-    S --> D[Database / Storage]
+    Z --> V[Validation]
+    V --> S[Application Logic]
+    S --> D[(Database / Storage)]
 
-    K[Secrets and Key Management] -. protects .-> S
-    L[Central Logging and Alerting] -. observes .-> E
-    L -. observes .-> G
-    L -. observes .-> S
-    L -. observes .-> D
+    K[Secrets / Key Management] -. protects .-> S
+    C[Secure CI/CD] -. builds .-> S
+    L[Logging & Alerting] -. observes .-> S
 ```
-
-**Interview answer:** The OWASP Top 10 is an awareness document listing the ten categories of web application risk that most often lead to real breaches — a starting point for design reviews, code review, and CI/CD gates rather than a standard you pass. A01 Broken Access Control has stayed at the top because it is the one class of defect a scanner cannot find: only the application knows who is supposed to own what. The other notable shift in 2025 is that the list now reflects delivery as much as code — misconfiguration moved up, supply-chain failures expanded to cover CI/CD and artifacts, and mishandling of exceptional conditions became a category of its own.
-
-**Gotcha:** Treating it as a checklist that can be completed. The categories are ranked by how often they appear across the industry, not by what threatens *your* application, and the one that usually does — A06 Insecure Design, a control nobody specified — is by definition the one the list cannot enumerate for you.
 
 ---
 
-# 1. What Is the OWASP Top 10?
+# 1. OWASP Top 10:2025 at a Glance
 
-**OWASP** stands for the **Open Worldwide Application Security Project**. It is a nonprofit community that publishes open resources for building and testing secure software.
-
-The **OWASP Top 10** is an awareness document describing ten major categories of web application security risk. It helps development teams understand which weaknesses commonly lead to data exposure, unauthorized access, application compromise, fraud, or service disruption.
-
-The Top 10 is useful for:
-
-- Security requirements and architecture reviews
-- Developer security training
-- Pull-request and code-review checklists
-- Penetration-testing scope
-- CI/CD security controls
-- Cloud and application hardening
-- Risk communication between engineering and business teams
-
-> The OWASP Top 10 is a starting point, not a complete security standard. A production application must also consider business-specific threats, privacy requirements, infrastructure security, API security, mobile security, and operational controls.
-
-## 1.1 Security Objectives: The CIA Triad
-
-Most application-security controls protect one or more of these objectives:
-
-| Objective | Meaning | Example Failure |
-|---|---|---|
-| **Confidentiality** | Data is visible only to authorized users | One customer reads another customer's invoice |
-| **Integrity** | Data and software cannot be changed without authorization | An attacker changes payment details |
-| **Availability** | Systems remain accessible and usable | Resource exhaustion crashes an API |
-
-```mermaid
-flowchart LR
-    A[Application Security] --> C[Confidentiality]
-    A --> I[Integrity]
-    A --> V[Availability]
-
-    C --> C1[Prevent unauthorized disclosure]
-    I --> I1[Prevent unauthorized modification]
-    V --> V1[Keep services reliable]
-```
-
-## 1.2 Threat, Vulnerability, Exploit, and Risk
-
-These terms are related but different:
-
-| Term | Meaning | Example |
-|---|---|---|
-| **Asset** | Something valuable | User data, payment records, source code |
-| **Threat** | Something capable of causing harm | Attacker, malicious dependency, insider |
-| **Vulnerability** | A weakness in the system | Missing authorization check |
-| **Exploit** | A technique that abuses a vulnerability | Changing `/orders/101` to `/orders/102` |
-| **Impact** | Damage caused by exploitation | Data leak or fraudulent transaction |
-| **Risk** | Likelihood combined with impact | High probability of account data exposure |
-
-A simple way to reason about risk is: `Risk ≈ Likelihood of exploitation × Business impact`
-
----
-
-# 2. OWASP Top 10:2025 at a Glance
-
-| Rank | Category | Core Concern |
+| Rank | Category | Main Problem |
 |---:|---|---|
-| **A01** | Broken Access Control | Users can perform actions or access data outside their permissions |
-| **A02** | Security Misconfiguration | Insecure settings, defaults, permissions, services, or cloud configuration |
-| **A03** | Software Supply Chain Failures | Compromised, vulnerable, untrusted, or poorly governed dependencies and build systems |
-| **A04** | Cryptographic Failures | Sensitive data is inadequately protected in transit, at rest, or during credential storage |
-| **A05** | Injection | Untrusted input is interpreted as a command, query, expression, or executable content |
-| **A06** | Insecure Design | Security controls are missing or ineffective at the architecture or business-logic level |
-| **A07** | Authentication Failures | The system incorrectly validates identity or manages credentials and sessions poorly |
-| **A08** | Software or Data Integrity Failures | Code, updates, serialized data, or artifacts are trusted without integrity verification |
-| **A09** | Security Logging and Alerting Failures | Attacks are not properly recorded, detected, escalated, or investigated |
-| **A10** | Mishandling of Exceptional Conditions | Unexpected states are handled insecurely, causing fail-open behavior, leaks, corruption, or outages |
+| **A01** | Broken Access Control | A user can access data or actions outside their permission |
+| **A02** | Security Misconfiguration | Unsafe application, cloud, server, framework, or container settings |
+| **A03** | Software Supply Chain Failures | Vulnerable or compromised dependencies, build systems, CI/CD, or artifacts |
+| **A04** | Cryptographic Failures | Sensitive data is protected incorrectly |
+| **A05** | Injection | User-controlled data is interpreted as a query, command, or executable content |
+| **A06** | Insecure Design | Required security controls were missing from the design itself |
+| **A07** | Authentication Failures | Identity, credentials, sessions, or tokens are handled incorrectly |
+| **A08** | Software or Data Integrity Failures | Software or data is trusted without verifying integrity or origin |
+| **A09** | Security Logging and Alerting Failures | Attacks happen without useful logging, detection, or alerts |
+| **A10** | Mishandling of Exceptional Conditions | Errors and abnormal states cause insecure or inconsistent behavior |
 
-## 2.1 Major Changes from OWASP Top 10:2021
+## Important 2025 Changes
 
-The 2025 edition places more focus on modern software delivery and resilience.
+Compared with OWASP Top 10:2021:
 
-| 2025 Category | Important Change |
-|---|---|
-| **A01 Broken Access Control** | Remains number one; Server-Side Request Forgery is now included in this broader category |
-| **A02 Security Misconfiguration** | Moves higher because configuration increasingly controls application and cloud behavior |
-| **A03 Software Supply Chain Failures** | Expands beyond vulnerable components to dependencies, repositories, CI/CD, build tools, artifacts, and distribution systems |
-| **A10 Mishandling of Exceptional Conditions** | New category covering fail-open behavior, improper error handling, abnormal states, rollback failures, and resource issues |
-
----
-
-# 3. How Security Fits into Application Development
-
-Security should not be added only after development. It must be included across the complete software lifecycle.
-
-```mermaid
-flowchart LR
-    R[Requirements] --> D[Secure Design]
-    D --> C[Secure Coding]
-    C --> T[Security Testing]
-    T --> B[Secure Build]
-    B --> P[Protected Deployment]
-    P --> M[Monitoring and Alerting]
-    M --> F[Feedback and Improvement]
-    F --> R
-```
-
-## 3.1 Defense in Depth
-
-No single control is enough. A secure application uses multiple layers so that one failure does not immediately become a full compromise. Drawn in full, including the supply-chain, integrity, and failure-handling controls that the later categories cover, the layering looks like this:
-
-```mermaid
-flowchart TD
-    USER[User or External System] --> EDGE[WAF, Rate Limit, TLS]
-    EDGE --> AUTHN[Authentication]
-    AUTHN --> AUTHZ[Authorization and Tenant Isolation]
-    AUTHZ --> VALID[Validation and Safe Parsing]
-    VALID --> LOGIC[Secure Business Logic]
-    LOGIC --> DATA[(Protected Data Stores)]
-    LOGIC --> EXT[Verified External Integrations]
-
-    SECRETS[Secrets and Key Management] -.-> AUTHN
-    SECRETS -.-> LOGIC
-
-    SUPPLY[Trusted Dependencies and Secure CI/CD] -. builds .-> LOGIC
-    INTEGRITY[Artifact and Message Integrity] -. verifies .-> SUPPLY
-    INTEGRITY -. verifies .-> EXT
-
-    OBS[Central Logs, Monitoring, Alerts] -. observes .-> EDGE
-    OBS -. observes .-> AUTHN
-    OBS -. observes .-> AUTHZ
-    OBS -. observes .-> LOGIC
-    OBS -. observes .-> DATA
-
-    FAIL[Timeouts, Transactions, Idempotency, Fail-Closed Behavior] -. protects .-> LOGIC
-```
-
-Important principle:
-
-> **Authentication answers “Who are you?” Authorization answers “What are you allowed to do?”**
+- **A01 Broken Access Control** remains #1, and **SSRF** is now included in this category.
+- **A02 Security Misconfiguration** moved from #5 to #2.
+- **A03 Software Supply Chain Failures** expands the older "Vulnerable and Outdated Components" idea to include dependencies, build systems, repositories, CI/CD, and distribution infrastructure.
+- **A07** is now named **Authentication Failures**.
+- **A09** is now **Security Logging and Alerting Failures**, emphasizing that logs must lead to useful detection and action.
+- **A10 Mishandling of Exceptional Conditions** is a new category.
 
 ---
 
-# 4. A01:2025 Broken Access Control
+# 2. A01 — Broken Access Control
 
-## 4.1 Simple Meaning
+## Simple Meaning
 
-Broken access control occurs when the application does not correctly enforce what an authenticated or unauthenticated user is allowed to read, create, update, delete, or execute. Authentication answers *who is calling*; authorization answers *may this identity do this to this object*. A valid session or JWT proves only the first, which is why this category has been consistently ranked at or near the top of the list.
+The application knows who the user is, but does not correctly enforce **what that user is allowed to do**.
 
-It commonly results in:
+> **Authentication:** Who are you?  
+> **Authorization:** What are you allowed to do?
 
-- Reading another user's records, or updating resources owned by another tenant.
-- Calling admin-only APIs as a normal user, because the frontend hid the button but the backend endpoint stayed callable. Frontend visibility is not a security control.
-- Bypassing restrictions by changing a URL, a request body, or an object identifier.
-- Accessing internal URLs through Server-Side Request Forgery.
-- Performing state-changing requests without suitable CSRF protection.
+Common examples:
 
-> The object-level case — the attacker who increments an ID — is treated in depth in [OWASP API Top 10](owasp-api-top-10.md), which ranks the same defect first as API1 (BOLA) and covers the tenant-scoped query that fixes it, the nested-resource variant, the 404-versus-403 enumeration trade-off, and the cross-tenant authorization test matrix.
+- User A reads User B's invoice by changing `/invoices/101` to `/invoices/102`.
+- A normal user directly calls an admin API.
+- A tenant can access another tenant's records.
+- The backend trusts a role or ownership value sent by the frontend.
+- Server-side URL fetching allows access to internal resources through SSRF.
 
-## 4.2 Prevention
+## Secure Approach
 
-- Deny access by default.
-- Enforce authorization in backend code, not only in the UI.
-- Centralize authorization policies where practical.
-- Scope database queries by owner, organization, or tenant, so authorization is part of the query rather than a check bolted on after the fetch.
-- Enforce multi-tenant isolation close to the data-access layer, not in each view.
-- Validate permissions for every HTTP method, not only `GET`.
-- Use least privilege for users, services, databases, storage, and cloud roles.
-- Protect state-changing browser requests against CSRF when using cookie-based authentication; see [SQL Injection, XSS and CSRF](sql-injection-xss-csrf.md).
-- Restrict CORS to trusted origins rather than using unrestricted settings.
-- For server-side URL fetching, use destination allowlists, network segmentation, URL validation, redirect controls, and metadata-service protections.
-- Add rate limits where automated enumeration or abuse is possible.
-- Test horizontal access, vertical access, and tenant boundaries.
+Authorization must be checked **server-side for every protected operation**.
+
+```python
+invoice = (
+    Invoice.objects
+    .filter(
+        id=invoice_id,
+        tenant_id=request.user.tenant_id,
+    )
+    .first()
+)
+
+if not invoice:
+    raise Http404()
+```
+
+The query itself is tenant-scoped instead of fetching first and checking later.
+
+### Remember
+
+- deny by default
+- never rely on hidden buttons or frontend checks
+- check object ownership
+- check tenant boundaries
+- apply least privilege
+- test horizontal and vertical privilege escalation
 
 ---
 
-# 5. A02:2025 Security Misconfiguration
+# 3. A02 — Security Misconfiguration
 
-## 5.1 Simple Meaning
+## Simple Meaning
 
-Security misconfiguration occurs when an application, framework, server, container, database, cloud service, or network is deployed with insecure settings.
+The code may be secure, but the application is deployed with unsafe settings.
 
-Typical examples include:
+Common examples:
 
-- Default usernames or passwords
-- Debug mode enabled in production
-- Public cloud storage buckets
-- Overly broad IAM permissions
-- Unnecessary ports or services
-- Directory listing enabled
-- Detailed stack traces returned to users
-- Missing security headers
-- Permissive CORS rules
-- Unprotected administrative interfaces
-- Unused sample applications or test endpoints
+- `DEBUG=True` in production
+- default passwords
+- wildcard CORS
+- public storage buckets
+- overly broad IAM permissions
+- unnecessary ports or services
+- stack traces returned to users
+- exposed admin interfaces
+- missing security headers
 
-## 5.2 Configuration Is Part of the Attack Surface
-
-```mermaid
-flowchart TD
-    A[Application] --> F[Framework Settings]
-    A --> W[Web Server]
-    A --> C[Container Image]
-    A --> D[Database]
-    A --> K[Cloud and Kubernetes]
-    A --> N[Network Rules]
-    A --> P[CI/CD Environment]
-
-    F --> R[Security Risk if Misconfigured]
-    W --> R
-    C --> R
-    D --> R
-    K --> R
-    N --> R
-    P --> R
-```
-
-## 5.3 Example: Production Debug Information
+## Example
 
 ```python
-# Insecure production configuration
-DEBUG = True
-ALLOWED_HOSTS = ["*"]
-```
+# Better production configuration
+DEBUG = False
 
-A production error may expose:
-
-- Source paths
-- Environment variables
-- Database details
-- Internal service names
-- Framework versions
-- Parts of source code
-
-A safer environment-specific setup:
-
-```python
-import os
-
-DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
-ALLOWED_HOSTS = os.environ["ALLOWED_HOSTS"].split(",")
-
-if DEBUG and os.getenv("APP_ENV") == "production":
-    raise RuntimeError("Debug mode must not be enabled in production")
-```
-
-## 5.4 Example: Overly Permissive CORS
-
-```python
-# Dangerous for credentialed or sensitive APIs
-allow_origins = ["*"]
-```
-
-```python
-# Better: explicit trusted origins
-allow_origins = [
-    "https://app.example.com",
-    "https://admin.example.com",
+ALLOWED_HOSTS = [
+    "api.example.com",
 ]
 ```
 
-CORS is a browser policy. It is not a replacement for authentication or authorization.
+For CORS, prefer explicit trusted origins instead of `*`.
 
-## 5.5 Prevention
+### Best Practices
 
-- Maintain hardened, repeatable configurations for each environment.
-- Remove unused services, packages, endpoints, accounts, and features.
-- Change or disable default credentials.
-- Keep production error responses generic.
-- Use secure defaults in reusable templates.
-- Store environment-specific configuration outside application code.
-- Apply infrastructure as code and review it like application code.
-- Scan Docker images, Kubernetes manifests, Terraform, and cloud resources.
-- Use least-privilege cloud IAM policies.
-- Configure security headers such as HSTS, CSP, `X-Content-Type-Options`, and suitable frame protections.
-- Ensure admin tools are authenticated, authorized, network-restricted, and audited.
-- Regularly compare deployed configuration against an approved baseline.
-
-## 5.6 Configuration Pipeline
-
-```mermaid
-flowchart LR
-    T[Approved Secure Template] --> R[Code Review]
-    R --> S[Static Configuration Scan]
-    S --> D[Deploy]
-    D --> V[Runtime Validation]
-    V --> M[Drift Monitoring]
-    M --> T
-```
-
-## 5.7 What to Remember
-
-- Secure code can still be exposed by insecure deployment settings.
-- Configuration should be versioned, reviewed, tested, and monitored.
-- Cloud permissions and network rules are application-security controls.
-- Production should fail deployment when dangerous settings are detected.
+- maintain secure environment-specific configuration
+- use Infrastructure as Code
+- review Terraform/Kubernetes/cloud permissions
+- disable unused services
+- use least-privilege IAM
+- keep production error messages generic
+- detect configuration drift
+- fail deployment when dangerous settings are found
 
 ---
 
-# 6. A03:2025 Software Supply Chain Failures
+# 4. A03 — Software Supply Chain Failures
 
-## 6.1 Simple Meaning
+## Simple Meaning
 
-Modern applications depend on external code and delivery systems. A software supply chain failure occurs when a vulnerable, malicious, compromised, outdated, or untrusted component enters the software or when the build and release process is compromised.
+Your production application includes much more than code written by your team.
 
-The supply chain includes more than libraries:
-
-- Direct and transitive dependencies
-- Package registries
-- Container base images
-- Operating systems and runtimes
-- IDEs and extensions
-- Source-code repositories
-- CI/CD runners and actions
-- Build tools
-- Artifact repositories
-- Signing systems
-- Deployment tooling
-- Update mechanisms
-
-## 6.2 Supply Chain Flow
-
-```mermaid
-flowchart LR
-    D[Developer] --> R[Source Repository]
-    P[Package Registry] --> B[CI Build]
-    R --> B
-    I[Container Base Image] --> B
-    A[CI Actions and Plugins] --> B
-    B --> S[Security Scanning]
-    S --> AR[Signed Artifact Repository]
-    AR --> DEP[Deployment]
-    DEP --> PROD[Production]
-```
-
-A compromise at any stage may affect the final production artifact.
-
-## 6.3 Direct vs Transitive Dependencies
+The software supply chain includes:
 
 ```text
-Your application
-├── framework-a                 ← direct dependency
-│   ├── parser-b                ← transitive dependency
-│   └── utility-c               ← transitive dependency
-└── database-driver-d           ← direct dependency
-    └── network-library-e       ← transitive dependency
+Source Code
+   ↓
+Dependencies
+   ↓
+Build Tools / CI Actions
+   ↓
+Container Images
+   ↓
+Artifact Repository
+   ↓
+Deployment
+   ↓
+Production
 ```
 
-A project may have twenty direct dependencies but hundreds of transitive dependencies.
+A compromise anywhere in this chain can reach production.
 
-## 6.4 Lock Files and Reproducible Builds
+## Common Risks
 
-Pinning versions improves repeatability:
+- vulnerable direct or transitive dependency
+- malicious package
+- compromised package registry
+- outdated container base image
+- over-privileged CI token
+- untrusted pull request accessing secrets
+- mutable or unverified build artifact
 
-```text
-# requirements.txt
-fastapi==0.x.y
-sqlalchemy==2.x.y
-```
+## Best Practices
 
-However, pinning alone is not enough. A pinned vulnerable package stays vulnerable until the team detects and updates it.
+- use lock files and controlled dependency updates
+- scan dependencies and container images
+- track transitive dependencies
+- maintain an SBOM where appropriate
+- restrict CI/CD permissions
+- isolate untrusted builds
+- protect release branches and tags
+- pin critical CI actions to reviewed immutable versions/commits
+- sign and verify important release artifacts
 
-Use both: `Version control + vulnerability monitoring + controlled updates`
-
-## 6.5 Software Bill of Materials
-
-An **SBOM** records the components included in a software product. It improves visibility during vulnerability response.
-
-```mermaid
-flowchart TD
-    App[Application Release] --> SBOM[SBOM]
-    SBOM --> D1[Direct Dependencies]
-    SBOM --> D2[Transitive Dependencies]
-    SBOM --> I[Container and OS Packages]
-    SBOM --> L[Licenses and Versions]
-    SBOM --> H[Hashes and Supplier Data]
-```
-
-When a new vulnerability is announced, the team can check whether the affected component exists in deployed releases.
-
-## 6.6 CI/CD Hardening Example
-
-Avoid unpinned third-party CI actions:
-
-```yaml
-# Riskier: tag can potentially move
-- uses: vendor/security-action@v2
-```
-
-Prefer a reviewed immutable commit reference where supported:
-
-```yaml
-# Better: fixed reviewed commit
-- uses: vendor/security-action@4f2d9d6c0a...
-```
-
-Also:
-
-- Restrict CI token permissions.
-- Separate build and production-deployment privileges.
-- Protect release branches and tags.
-- Require review before production promotion.
-- Isolate untrusted pull-request builds from secrets.
-- Sign and verify release artifacts.
-
-## 6.7 Prevention
-
-- Maintain an inventory or SBOM for application, container, and operating-system components.
-- Track direct and transitive dependencies.
-- Use trusted registries and secure transport.
-- Remove unused dependencies and tools.
-- Scan dependencies and images continuously.
-- Subscribe to vulnerability advisories.
-- Apply risk-based patching with clear ownership and deadlines.
-- Review package ownership, maintenance activity, release history, and provenance.
-- Pin important build dependencies and CI actions.
-- Protect source repositories with MFA, branch protection, and least privilege.
-- Isolate CI runners and protect secrets from untrusted builds.
-- Separate development, build, approval, and production-release responsibilities.
-- Generate reproducible builds where practical.
-- Sign artifacts and verify signatures before deployment.
-
-## 6.8 A03 vs A08
-
-These categories overlap but emphasize different levels:
-
-| A03: Supply Chain Failures | A08: Integrity Failures |
-|---|---|
-| Governance and compromise across the software delivery ecosystem | Treating specific software or data artifacts as trusted without verification |
-| Dependencies, registries, CI/CD, build infrastructure, distribution | Signatures, hashes, unsafe deserialization, update integrity |
-| Broad process and ecosystem risk | Lower-level trust and integrity checks |
-
-## 6.9 What to Remember
-
-- Your production code includes more than the code your team writes.
-- Dependency security includes transitive packages and build tooling.
-- CI/CD is a production-critical system and must be hardened accordingly.
-- SBOMs improve visibility but do not replace patching and governance.
+> Pinning gives reproducibility. It does **not** automatically make a dependency secure.
 
 ---
 
-# 7. A04:2025 Cryptographic Failures
+# 5. A04 — Cryptographic Failures
 
-## 7.1 Simple Meaning
+## Simple Meaning
 
-Cryptographic failures occur when sensitive information is not protected correctly because encryption is missing, algorithms are weak, keys are exposed, randomness is predictable, certificates are not validated, or passwords are stored incorrectly.
+Sensitive information is exposed because encryption, hashing, randomness, certificates, or key management is incorrect.
 
 Sensitive data may include:
 
-- Passwords
-- Access and refresh tokens
-- Payment information
-- Personal data
-- Health records
-- Private documents
-- API keys and secrets
-- Business-confidential information
+- passwords
+- tokens
+- personal information
+- payment information
+- private documents
+- API keys
+- business secrets
 
-## 7.2 Data States
+## Encryption vs Hashing
 
-```mermaid
-flowchart LR
-    U[User Device] -->|Data in transit| API[API]
-    API -->|Data in use| APP[Application Memory]
-    APP -->|Data at rest| DB[(Database / Storage)]
-
-    TLS[TLS] -. protects .-> U
-    TLS -. protects .-> API
-    ENC[Encryption at Rest] -. protects .-> DB
-    KM[Key Management] -. enables .-> TLS
-    KM -. enables .-> ENC
-```
-
-## 7.3 Encryption, Hashing, and Encoding
-
-| Technique | Reversible? | Purpose | Example |
-|---|---:|---|---|
-| **Encryption** | Yes, with a key | Protect data confidentiality | Encrypting a document |
-| **Hashing** | No practical reversal | Integrity or password verification | Password hash |
-| **Digital signature** | Verified with public key | Prove authenticity and integrity | Signed release artifact |
-| **Encoding** | Yes, no secret required | Data representation | Base64 |
+| Technique | Reversible? | Typical Use |
+|---|---:|---|
+| **Encryption** | Yes, with a key | Protect recoverable sensitive data |
+| **Hashing** | No practical reversal | Password verification, integrity |
+| **Digital Signature / MAC** | Verification | Authenticity and integrity |
+| **Encoding** | Yes, no secret | Data representation |
 
 > Base64 is encoding, not encryption.
 
-## 7.4 Password Storage
+## Password Storage
 
-Never store plaintext passwords:
+Never store plaintext passwords or directly use a fast hash such as SHA-256.
 
-```python
-# Never do this
-user.password = request.password
-```
+Use a framework-supported password hasher such as:
 
-Do not use a fast general-purpose hash directly:
-
-```python
-# Not suitable for password storage by itself
-sha256(password)
-```
-
-Use a framework-supported adaptive password hashing function such as Argon2id, bcrypt, scrypt, or PBKDF2 with suitable parameters.
+- Argon2id
+- bcrypt
+- scrypt
+- PBKDF2
 
 ```python
 from argon2 import PasswordHasher
 
-password_hasher = PasswordHasher()
+ph = PasswordHasher()
 
-stored_hash = password_hasher.hash(password)
-password_hasher.verify(stored_hash, supplied_password)
+stored_hash = ph.hash(password)
+ph.verify(stored_hash, supplied_password)
 ```
 
-Adaptive password hashes are deliberately expensive, making large-scale password guessing more costly.
+## Best Practices
 
-## 7.5 Key Management
-
-Encryption is only as strong as key management.
-
-```mermaid
-flowchart TD
-    KMS[Managed KMS / HSM] --> A[Application Identity]
-    A -->|Authorized request| KMS
-    KMS -->|Encrypt, decrypt, or data key| A
-    KMS --> R[Rotation Policy]
-    KMS --> L[Audit Logs]
-```
-
-Recommended controls:
-
-- Do not hard-code keys in source code.
-- Do not place secrets in Docker images.
-- Use a secrets manager or managed key-management service.
-- Restrict access using workload identity and least privilege.
-- Rotate keys and credentials according to risk.
-- Maintain a revocation and emergency-rotation process.
-- Audit key usage.
-- Separate keys by environment and purpose.
-
-## 7.6 Secure Randomness
-
-Security tokens must use cryptographically secure randomness.
+- use TLS for data in transit
+- use approved cryptographic libraries
+- never create custom crypto
+- keep keys outside source code and container images
+- use a secrets manager or KMS
+- rotate and revoke credentials
+- use cryptographically secure randomness
 
 ```python
 import secrets
@@ -583,665 +277,330 @@ import secrets
 reset_token = secrets.token_urlsafe(32)
 ```
 
-Avoid predictable random generators for passwords, tokens, session IDs, or cryptographic keys.
-
-## 7.7 Prevention
-
-- Classify sensitive data and minimize collection and retention.
-- Encrypt network traffic using correctly configured TLS.
-- Validate server certificates and hostnames.
-- Encrypt sensitive data at rest when required by risk or regulation.
-- Use modern, reviewed cryptographic libraries and protocols.
-- Avoid custom cryptographic algorithms.
-- Use adaptive password hashing with unique salts.
-- Keep secrets out of code, logs, URLs, and client-side bundles.
-- Use cryptographically secure random number generators.
-- Rotate, revoke, and audit keys.
-- Disable obsolete protocols and weak cipher configurations.
-- Use authenticated encryption modes where applicable.
-
-## 7.8 What to Remember
-
-- Hash passwords; encrypt data that must later be recovered.
-- Key management is part of cryptography, not a separate afterthought.
-- Never design your own cryptographic algorithm.
-- TLS protects data in transit, not automatically at rest or in application logs.
-
 ---
 
-# 8. A05:2025 Injection
+# 6. A05 — Injection
 
-## 8.1 Simple Meaning
+## Simple Meaning
 
-Injection occurs when untrusted data is mixed with a command or query and an interpreter treats part of that data as executable instructions.
+Injection happens when **data and instructions are mixed together**, causing an interpreter to execute attacker-controlled input.
 
-Common injection types include:
+Common examples:
 
 - SQL injection
 - NoSQL injection
-- Operating-system command injection
+- command injection
 - LDAP injection
-- Expression-language injection
-- Server-side template injection
-- Cross-site scripting
+- template injection
+- cross-site scripting
 
-## 8.2 Injection Flow
+## SQL Example
 
-```mermaid
-flowchart LR
-    I[Untrusted Input] --> C[String Concatenation]
-    C --> Q[Dynamic Query or Command]
-    Q --> P[Interpreter Parses Input as Code]
-    P --> X[Unauthorized Action]
-```
-
-The key problem is mixing **data** with **instructions**.
-
-> SQL injection and cross-site scripting are the two injection types you are most likely to be asked about, and both are covered in full — attack types, output contexts, allow-listed identifiers, and framework-specific secure examples — in [SQL Injection, XSS and CSRF](sql-injection-xss-csrf.md). This section keeps only what that note does not cover: operating-system command injection, and how the input-handling controls relate to one another.
-
-## 8.3 Command Injection
-
-### Insecure
+### Unsafe
 
 ```python
-import os
-
-os.system(f"convert {uploaded_filename} output.png")
+query = f"SELECT * FROM users WHERE email = '{email}'"
 ```
 
-### Better
+### Safe
 
 ```python
-import subprocess
+cursor.execute(
+    "SELECT * FROM users WHERE email = %s",
+    [email],
+)
+```
 
+Use parameterized queries or safe ORM APIs.
+
+## Command Injection Example
+
+### Unsafe
+
+```python
+os.system(f"convert {filename} output.png")
+```
+
+### Safer
+
+```python
 subprocess.run(
     ["convert", safe_input_path, safe_output_path],
-    check=True,
     shell=False,
+    check=True,
     timeout=30,
 )
 ```
 
-Additional safeguards:
+## Important Difference
 
-- Generate server-side file names.
-- Keep uploads outside executable directories.
-- Validate file type and size.
-- Run converters with restricted permissions.
-- Apply resource and time limits.
-
-## 8.4 Validation vs Sanitization vs Encoding
-
-| Control | Purpose | Example |
-|---|---|---|
-| **Validation** | Accept only structurally valid input | Integer must be between 1 and 100 |
-| **Normalization** | Convert input into a consistent representation | Normalize Unicode or phone format |
-| **Sanitization** | Remove or transform dangerous content | Allow selected HTML tags only |
-| **Parameterized query** | Separate data from query instructions | SQL placeholder parameters |
-| **Output encoding** | Render content safely in its destination context | HTML escaping |
-
-Validation alone does not replace parameterized queries or output encoding.
-
-## 8.5 Prevention
-
-- Use parameterized queries and safe ORM APIs; use allowlists for dynamic identifiers such as sort fields, which cannot be bound as parameters.
-- Avoid shell commands when a library API exists. When commands are necessary, pass arguments as a list and disable shell parsing.
-- Use template auto-escaping and context-aware output encoding.
-- Validate input structure, size, type, range, and allowed values — necessary, but not a universal injection fix on its own.
-- Use least-privilege database and operating-system accounts.
-- Add SAST, DAST, IAST, dependency scanning, and fuzz testing where appropriate.
-- Write tests using malicious payloads across query, body, header, cookie, and file inputs.
-
-## 8.6 What to Remember
-
-- Injection is fundamentally a separation problem between data and instructions.
-- ORMs and frameworks help only when their safe APIs are used correctly; raw SQL, dynamic field names, and string-built filters remain your responsibility.
-
----
-
-# 9. A06:2025 Insecure Design
-
-## 9.1 Simple Meaning
-
-Insecure design means the application architecture or business workflow lacks necessary security controls. The problem exists before coding begins.
-
-Examples:
-
-- Password reset does not require sufficient proof of identity.
-- A payment workflow allows the client to provide the final payable amount.
-- A coupon can be reused indefinitely because no usage rule exists.
-- A file-upload feature has no design for type, size, malware, or isolation controls.
-- A high-value transaction has no rate limit, approval, or risk check.
-- Tenant isolation is not part of the data model.
-
-## 9.2 Design Defect vs Implementation Defect
-
-| Insecure Design | Insecure Implementation |
+| Control | Purpose |
 |---|---|
-| Required control does not exist in the architecture | Control exists but code implements it incorrectly |
-| No transaction limit was defined | Limit exists but comparison uses the wrong field |
-| No ownership rule exists | Ownership rule exists but one endpoint forgets to call it |
-| Fixed through requirements and architecture changes | Fixed through code correction and testing |
+| **Validation** | Ensure input has allowed type, size, range, and format |
+| **Parameterized Query** | Keep input separate from SQL instructions |
+| **Output Encoding** | Safely render untrusted data in HTML/JS/etc. |
+| **Sanitization** | Remove or transform dangerous content when necessary |
 
-A perfectly coded insecure design is still insecure because the required protection was never designed.
-
-## 9.3 Threat Modeling
-
-Threat modeling identifies assets, trust boundaries, attackers, abuse cases, and required controls before implementation.
-
-```mermaid
-flowchart LR
-    A[Identify Assets] --> B[Map Data Flow]
-    B --> C[Mark Trust Boundaries]
-    C --> D[Identify Threats and Abuse Cases]
-    D --> E[Choose Security Controls]
-    E --> F[Validate with Tests]
-    F --> A
-```
-
-### Example: Money Transfer Feature
-
-Normal flow:
-
-```text
-User selects beneficiary → enters amount → confirms → transfer executes
-```
-
-Security questions during design:
-
-- Can the client change the source account ID?
-- Is the beneficiary owned or approved by the user?
-- Is the transfer amount recalculated on the server?
-- Are balance checks and updates atomic?
-- Is replay prevented?
-- Is step-up authentication needed for high-value transfers?
-- Are daily and per-transaction limits enforced?
-- Is suspicious behavior logged and alerted?
-- What happens if the payment provider times out after processing?
-
-## 9.4 Trust Boundaries
-
-```mermaid
-flowchart LR
-    Browser[Untrusted Browser] -->|Validated Request| API[Trusted API Boundary]
-    API -->|Authorized Query| DB[(Protected Database)]
-    API -->|Signed Request| PSP[External Payment Provider]
-
-    Browser -. Never trust price, role, ownership .-> API
-    PSP -. Verify response authenticity .-> API
-```
-
-All client-provided values must be treated as untrusted, including hidden fields and disabled form inputs.
-
-## 9.5 Prevention
-
-- Include security requirements in user stories and acceptance criteria.
-- Perform threat modeling for important features and architectural changes.
-- Identify assets, entry points, trust boundaries, and abuse cases.
-- Use secure design patterns and reviewed reference architectures.
-- Enforce tenant isolation in identity, data model, queries, cache keys, storage paths, and background jobs.
-- Define limits for transactions, uploads, requests, retries, and resource use.
-- Design workflows to be atomic and idempotent where needed.
-- Recalculate sensitive values on the server.
-- Use layered controls for high-risk operations.
-- Separate privileged administration from standard user workflows.
-- Add security-focused architecture review before implementation.
-
-## 9.6 Example Security Acceptance Criteria
-
-```text
-Feature: Customer downloads an invoice
-
-Security acceptance criteria:
-1. The request requires authentication.
-2. The invoice must belong to the user's tenant.
-3. The user must have invoice:read permission.
-4. The storage URL must be short-lived and scoped to one object.
-5. The download event must be logged without storing invoice content.
-6. Repeated enumeration attempts must trigger an alert.
-```
-
-## 9.7 What to Remember
-
-- Insecure design cannot be solved only with a code scanner.
-- Business logic is part of application security.
-- Threat modeling should happen before coding, not only before release.
-- Security requirements should be testable acceptance criteria.
+Validation alone does not replace parameterization or output encoding.
 
 ---
 
-# 10. A07:2025 Authentication Failures
+# 7. A06 — Insecure Design
 
-## 10.1 Simple Meaning
+## Simple Meaning
 
-Authentication failures occur when the application incorrectly verifies identity or poorly manages credentials, recovery flows, sessions, and tokens.
+The application was designed without a required security control.
+
+This is different from a coding bug.
+
+| Insecure Design | Implementation Bug |
+|---|---|
+| Security rule never existed | Security rule exists but code implements it incorrectly |
+| No transfer limit defined | Limit exists but wrong field is checked |
+| No tenant-isolation design | One endpoint forgets tenant filtering |
+| Requires design change | Usually requires code correction |
+
+## Example
+
+Consider a money-transfer feature:
+
+```text
+Select beneficiary
+      ↓
+Enter amount
+      ↓
+Confirm
+      ↓
+Transfer
+```
+
+Before coding, the design should answer:
+
+- Does the source account belong to the user?
+- Is the beneficiary allowed?
+- Is the amount recalculated and validated server-side?
+- Are balance updates atomic?
+- Is replay prevented?
+- Are transfer limits enforced?
+- Is step-up authentication required for high-value payments?
+- What happens if a payment provider times out?
+
+## Best Practices
+
+- threat-model important features
+- define trust boundaries
+- write security acceptance criteria
+- treat business logic as security logic
+- calculate sensitive values server-side
+- design tenant isolation into the data model
+- define rate, transaction, upload, and resource limits
+- use atomic and idempotent workflows where required
+
+---
+
+# 8. A07 — Authentication Failures
+
+## Simple Meaning
+
+The application incorrectly verifies identity or poorly handles passwords, MFA, sessions, recovery, or tokens.
 
 Common examples:
 
-- Weak or default passwords
-- Credential stuffing and password spraying
-- No rate limiting for login attempts
-- Missing multi-factor authentication
-- Weak password-reset process
-- Session fixation
-- Session ID exposed in a URL
-- Tokens not invalidated after logout or account compromise
-- Incorrect JWT issuer, audience, expiry, or signature validation
-- Hard-coded credentials
+- weak password-reset flow
+- no login throttling
+- session fixation
+- tokens in URLs
+- JWT signature or claims not validated
+- long-lived sessions that cannot be revoked
+- missing MFA for privileged users
 
-## 10.2 Authentication Flow
+## JWT Validation
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant APP as Application
-    participant IDP as Identity Provider
-    participant S as Session Store
+A backend should validate at least:
 
-    U->>APP: Credentials or SSO request
-    APP->>IDP: Verify identity
-    IDP-->>APP: Authenticated identity and claims
-    APP->>S: Create or rotate session
-    S-->>APP: Secure session identifier
-    APP-->>U: Secure HttpOnly cookie or token
+```text
+Signature
+Issuer (iss)
+Audience (aud)
+Expiry (exp)
+Not-before (nbf), when used
+Token type / purpose
+Scopes / permissions
 ```
 
-## 10.3 Secure Password Handling
+> Decoding a JWT is not the same as validating it.
 
-Recommended approach:
-
-```mermaid
-flowchart TD
-    A[Password received over TLS] --> B[Adaptive password hash verification]
-    B --> C[Rate limit and attack detection]
-    C --> D[MFA or step-up authentication<br/>where required]
-    D --> E[New session identifier<br/>after successful login]
-```
-
-Password rules should support secure user behavior rather than forcing predictable patterns. Use blocklists for known compromised passwords and allow password managers.
-
-## 10.4 Sessions and Tokens
-
-For browser applications using cookies, security attributes commonly include:
+## Secure Cookie Example
 
 ```http
 Set-Cookie: session=<opaque-id>; Secure; HttpOnly; SameSite=Lax; Path=/
 ```
 
-Meaning:
+## Password Reset
 
-- `Secure`: send only over HTTPS.
-- `HttpOnly`: reduce access from client-side JavaScript.
-- `SameSite`: help reduce cross-site request abuse.
-- Suitable expiry and rotation: limit session lifetime.
+A safe reset flow should use:
 
-For JWT validation, verify at least:
-
-- Signature using an allowed algorithm
-- Issuer (`iss`)
-- Audience (`aud`)
-- Expiry (`exp`)
-- Not-before time (`nbf`) where used
-- Token type and purpose
-- Required scopes or claims
-- Key rotation and revocation strategy
-
-> Decoding a JWT is not the same as validating it.
-
-## 10.5 Login Rate Limiting
-
-Rate limiting should consider multiple dimensions: `Source IP + Account + Device/Session + Time Window + Risk Signals`
-
-Only limiting by IP may affect users behind shared networks and may be bypassed through distributed attacks. Only limiting by account may allow denial-of-service through account lockouts. Use balanced throttling, progressive delays, risk detection, and alerts.
-
-## 10.6 Password Reset Design
-
-A safe reset flow should:
-
-- Return a consistent response whether or not the account exists.
-- Generate a cryptographically random, single-use, short-lived token.
-- Store the reset token securely, preferably as a hash.
-- Bind it to the correct user and purpose.
-- Invalidate it after use.
-- Avoid automatic login unless the risk is carefully handled.
-- Notify the user after a password change.
-- Revoke or review active sessions after credential reset.
-
-## 10.7 Prevention
-
-- Use established authentication frameworks or identity providers.
-- Require MFA for privileged and high-risk accounts.
-- Protect against brute force, credential stuffing, and password spraying.
-- Block known compromised passwords.
-- Store passwords using adaptive password hashing.
-- Use secure, random, rotated session identifiers.
-- Invalidate sessions on logout, password reset, account disablement, and security-sensitive changes.
-- Do not place session IDs or tokens in URLs.
-- Validate JWT claims and permitted algorithms.
-- Keep access tokens short-lived and protect refresh tokens carefully.
-- Use generic authentication error responses.
-- Log authentication events and alert on suspicious patterns.
-
-## 10.8 What to Remember
-
-- Authentication includes login, recovery, MFA, session management, and token validation.
-- JWTs do not remove the need for server-side security decisions.
-- MFA significantly improves account protection but must have secure recovery and fallback flows.
-- Login protection must balance attack prevention and user availability.
+- generic account-existence response
+- random, single-use, short-lived token
+- secure token storage
+- expiry
+- invalidation after use
+- user notification after password change
+- session revocation or review when appropriate
 
 ---
 
-# 11. A08:2025 Software or Data Integrity Failures
+# 9. A08 — Software or Data Integrity Failures
 
-## 11.1 Simple Meaning
+## Simple Meaning
 
-Integrity failures occur when an application trusts software, updates, plugins, artifacts, serialized objects, or important data without verifying that they came from an expected source and were not modified.
+The application trusts software or data without verifying that it came from the expected source and was not modified.
 
 Examples:
 
-- Auto-updates installed without signature verification
-- CI/CD deploys an artifact without checking its provenance or hash
-- JavaScript loaded from an untrusted third-party source
-- Unsafe deserialization of attacker-controlled data
-- Client-controlled fields change object properties that should be server-managed
-- Webhook payloads accepted without signature verification
+- unsigned software updates
+- deployment without artifact verification
+- unsafe deserialization
+- unverified webhook payload
+- client-controlled fields updating server-managed attributes
 
-## 11.2 Integrity Verification Flow
-
-```mermaid
-flowchart LR
-    P[Producer] -->|Artifact or Data| C[Consumer]
-    P -->|Signature / MAC / Hash| C
-    C --> V{Integrity and Source Valid?}
-    V -->|Yes| U[Use Artifact or Data]
-    V -->|No| R[Reject, Log, Alert]
-```
-
-## 11.3 Webhook Verification Example
-
-A webhook endpoint should not trust a request merely because it reaches the correct URL.
+## Webhook Example
 
 ```python
 import hashlib
 import hmac
 
-def verify_webhook(raw_body: bytes, supplied_signature: str, secret: bytes) -> bool:
-    expected = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, supplied_signature)
+def verify_webhook(
+    raw_body: bytes,
+    supplied_signature: str,
+    secret: bytes,
+) -> bool:
+    expected = hmac.new(
+        secret,
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(
+        expected,
+        supplied_signature,
+    )
 ```
 
-A complete design should also validate:
+A complete webhook design should also consider:
 
-- Timestamp freshness
-- Replay protection
-- Event ID uniqueness
-- Expected event type
-- Correct account or tenant
-- Safe parsing after signature validation
+- timestamp freshness
+- replay protection
+- unique event IDs
+- expected tenant/account
+- expected event type
 
-## 11.4 Unsafe Deserialization
+## Avoid Mass Assignment
 
-Deserialization converts serialized data back into application objects. Some formats can trigger dangerous behavior or create unexpected object states.
-
-Safer approach:
-
-- Prefer simple data formats such as JSON for untrusted input.
-- Validate against strict schemas.
-- Reject unknown fields when appropriate.
-- Avoid deserializing attacker-controlled native objects.
-- Do not dynamically import or instantiate classes based on input.
-- Sign sensitive serialized state if it must travel through an untrusted client.
-
-## 11.5 Mass Assignment
-
-Suppose the API accepts the full user payload directly:
-
-```json
-{
-  "name": "Alex",
-  "email": "alex@example.com",
-  "is_admin": true
-}
-```
-
-A secure schema should explicitly allow user-editable fields:
+Do not automatically copy arbitrary client fields to sensitive models.
 
 ```python
-from pydantic import BaseModel, EmailStr, ConfigDict
-
 class UserProfileUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     name: str
     email: EmailStr
 ```
 
-Server-managed fields such as roles, permissions, tenant IDs, prices, and account status must not be copied from arbitrary client input.
-
-## 11.6 Artifact Integrity
-
-```mermaid
-flowchart LR
-    B[CI Build] --> H[Generate Hash]
-    B --> S[Sign Artifact]
-    H --> AR[Artifact Repository]
-    S --> AR
-    AR --> DEP[Deployment System]
-    DEP --> V[Verify Hash and Signature]
-    V -->|Valid| P[Production]
-    V -->|Invalid| X[Block Deployment]
-```
-
-## 11.7 Prevention
-
-- Use digital signatures, MACs, or trusted hashes for critical artifacts and data.
-- Verify package and artifact provenance.
-- Consume dependencies from trusted repositories.
-- Protect CI/CD pipelines and artifact stores from unauthorized changes.
-- Verify update signatures before installation.
-- Avoid unsafe deserialization of untrusted input.
-- Use strict schemas and allowlists for object fields.
-- Sign and verify webhooks and asynchronous messages.
-- Protect release approval and production promotion processes.
-- Use Subresource Integrity when loading appropriate third-party browser resources.
-- Log and alert on integrity-verification failures.
-
-## 11.8 What to Remember
-
-- Encryption protects confidentiality; signatures and MACs protect integrity and authenticity.
-- Data from a known-looking source must still be verified.
-- Client-controlled state should never be trusted for sensitive decisions.
-- Unsafe deserialization may turn data processing into code execution or privilege changes.
+Fields such as `role`, `is_admin`, `tenant_id`, `price`, and `account_status` should normally remain server-controlled.
 
 ---
 
-# 12. A09:2025 Security Logging and Alerting Failures
+# 10. A09 — Security Logging and Alerting Failures
 
-## 12.1 Simple Meaning
+## Simple Meaning
 
-Logging and alerting failures occur when attacks cannot be detected or investigated because important events are missing, unclear, unprotected, unmonitored, or never escalated.
+An attack may succeed because nobody can detect, correlate, alert on, or investigate what happened.
 
-Logging is not valuable merely because log files exist. The system must support: `Record → Centralize → Protect → Correlate → Detect → Alert → Respond`
+A useful security flow is:
 
-## 12.2 Security Observability Flow
-
-```mermaid
-flowchart LR
-    APP[Application] --> L[Structured Logs]
-    API[API Gateway] --> L
-    IDP[Identity Provider] --> L
-    DB[Database Audit] --> L
-    CLOUD[Cloud Audit Events] --> L
-
-    L --> SIEM[Central Monitoring / SIEM]
-    SIEM --> RULES[Detection Rules]
-    RULES --> ALERT[Alert]
-    ALERT --> IR[Incident Response]
+```text
+Record
+  ↓
+Centralize
+  ↓
+Correlate
+  ↓
+Detect
+  ↓
+Alert
+  ↓
+Respond
 ```
 
-## 12.3 What Should Be Logged?
+## Security Events Commonly Logged
 
-Security-relevant events often include:
+- successful and failed authentication
+- MFA changes
+- password/email changes
+- permission changes
+- access denied events
+- admin actions
+- sensitive exports/downloads
+- rate-limit violations
+- signature verification failures
+- important exceptions
+- production configuration changes
 
-- Successful and failed authentication
-- MFA enrollment, reset, and failure
-- Password and email changes
-- Permission and role changes
-- Access denied events
-- High-value business transactions
-- Admin actions
-- Sensitive exports and downloads
-- Rate-limit violations
-- Input-validation failures that indicate attack patterns
-- Integrity or signature-verification failures
-- Unexpected exceptions
-- Security configuration changes
-- CI/CD release and deployment events
-
-## 12.4 Structured Logging Example
+## Structured Logging
 
 ```python
 logger.info(
     "invoice_downloaded",
-    user_id=str(current_user.id),
-    tenant_id=str(current_user.tenant_id),
+    user_id=str(user.id),
+    tenant_id=str(user.tenant_id),
     invoice_id=str(invoice.id),
     request_id=request_id,
-    source_ip=client_ip,
     outcome="success",
 )
 ```
 
-Structured fields make searching and correlation easier than unstructured text.
+## Do Not Log
 
-## 12.5 What Should Not Be Logged?
+- passwords
+- full access/refresh tokens
+- session IDs
+- private keys
+- complete payment-card data
+- raw authorization headers
+- reset links or one-time codes
 
-Avoid logging:
-
-- Passwords
-- Full access or refresh tokens
-- Session IDs
-- Private cryptographic keys
-- Complete payment-card data
-- Sensitive health information unless strictly required and protected
-- Raw authorization headers
-- Full reset links or one-time codes
-- Entire request bodies by default
-
-Use masking, tokenization, allowlisted fields, and retention controls.
-
-## 12.6 Log Injection
-
-Attacker-controlled text can manipulate log structure if not encoded or safely structured.
-
-```python
-# Risky unstructured composition
-logger.warning(f"Login failed for username: {username}")
-```
-
-Prefer structured logging and prevent user input from creating false fields or lines.
-
-## 12.7 Correlation IDs
-
-A request ID helps connect events across services:
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant G as Gateway
-    participant A as API
-    participant W as Worker
-    participant D as Database
-
-    C->>G: Request
-    G->>A: X-Request-ID: abc-123
-    A->>D: Query with trace context
-    A->>W: Job with request_id abc-123
-    W-->>A: Result
-    A-->>C: Response with request ID
-```
-
-## 12.8 Prevention
-
-- Define a security-event logging standard.
-- Use structured, centralized logs.
-- Include timestamps, actor, tenant, action, target, source, result, and correlation ID.
-- Synchronize system clocks.
-- Protect logs from unauthorized reading, modification, and deletion.
-- Avoid logging secrets and unnecessary personal data.
-- Define retention according to security, legal, and operational needs.
-- Create actionable alert rules with ownership and escalation paths.
-- Test that simulated attacks trigger expected alerts.
-- Monitor privileged actions, authentication anomalies, data exports, and repeated access failures.
-- Maintain incident-response procedures and regularly exercise them.
-
-## 12.9 Logging vs Monitoring vs Alerting
-
-| Concept | Purpose |
-|---|---|
-| **Logging** | Record an event |
-| **Monitoring** | Analyze system activity and health |
-| **Detection** | Recognize suspicious or harmful behavior |
-| **Alerting** | Notify the correct responder |
-| **Incident response** | Contain, investigate, recover, and learn |
-
-## 12.10 What to Remember
-
-- Logs without monitoring do not provide timely detection.
-- Alerts without ownership or response procedures are ineffective.
-- Logs are sensitive data and need access control and integrity protection.
-- Security events should include enough context for investigation without exposing secrets.
+> Logs without alerting are useful for investigation, but weak for timely attack detection.
 
 ---
 
-# 13. A10:2025 Mishandling of Exceptional Conditions
+# 11. A10 — Mishandling of Exceptional Conditions
 
-## 13.1 Simple Meaning
+## Simple Meaning
 
-This category covers insecure behavior when the application encounters unexpected input, missing values, downstream failures, timeouts, resource exhaustion, partial transactions, race conditions, or other abnormal states.
+Unexpected states are handled insecurely.
 
-An application may:
+Examples:
 
-- Fail open instead of failing closed
-- Reveal sensitive stack traces
-- Continue after a partial operation
-- Commit only part of a transaction
-- Leave files, locks, or connections unreleased
-- Retry indefinitely
-- Accept an invalid state after an exception
-- Return success when a critical verification service is unavailable
-- Crash due to malformed or oversized input
+- authorization dependency fails and access is allowed
+- partial database transaction is committed
+- stack trace is exposed
+- retry loop never stops
+- timeout leaves inconsistent state
+- malformed input crashes the service
+- resources are not released
 
-## 13.2 Fail Closed vs Fail Open
+## Fail Closed
 
-### Fail Open
-
-```mermaid
-flowchart TD
-    A[Authorization service unavailable] --> B[Application assumes access is allowed]
-    B --> C[Protected action continues]
+```text
+Authorization Service Unavailable
+              ↓
+Permission Cannot Be Verified
+              ↓
+     Deny or Safely Defer
 ```
 
-### Fail Closed
+For security-sensitive decisions, failure to verify should normally **not** result in permission being granted.
 
-```mermaid
-flowchart TD
-    A[Authorization service unavailable] --> B[Application cannot verify permission]
-    B --> C[Protected action is denied<br/>or safely deferred]
-```
-
-For security-sensitive decisions, inability to verify should normally result in denial, not approval.
-
-## 13.3 Transaction Example
-
-Suppose a transfer performs these steps:
-
-1. Debit sender
-2. Credit receiver
-3. Write ledger entry
-4. Publish notification
-
-Without transaction handling, step two may fail after step one succeeds.
+## Transaction Example
 
 ```python
 from django.db import transaction
@@ -1253,377 +612,212 @@ def transfer_funds(sender, receiver, amount):
     create_ledger_entries(sender, receiver, amount)
 ```
 
-External side effects require additional patterns such as an outbox, idempotency keys, reconciliation, or compensation logic.
+Distributed workflows may additionally need:
 
-## 13.4 Reliable Transaction and Event Flow
+- idempotency keys
+- outbox pattern
+- bounded retries
+- reconciliation
+- compensation logic
 
-```mermaid
-flowchart TD
-    R[Receive Request with Idempotency Key] --> V[Validate State and Limits]
-    V --> TX[Database Transaction]
-    TX --> D1[Update Business Data]
-    TX --> O[Write Outbox Event]
-    D1 --> C{Commit Successful?}
-    O --> C
-    C -->|No| RB[Rollback All Changes]
-    C -->|Yes| P[Outbox Publisher]
-    P --> E[External Event or Notification]
-    E --> M[Mark Event Delivered]
-```
+## External Calls
 
-## 13.5 Safe Exception Handling
+Always define reasonable:
 
-```python
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-
-app = FastAPI()
-
-@app.exception_handler(Exception)
-async def unexpected_error_handler(request: Request, exc: Exception):
-    request_id = getattr(request.state, "request_id", "unknown")
-
-    logger.exception(
-        "unexpected_server_error",
-        request_id=request_id,
-        path=request.url.path,
-    )
-
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "request_id": request_id,
-        },
-    )
-```
-
-The user receives a safe message, while internal logs retain diagnostic context.
-
-## 13.6 Resource Management
-
-Use bounded resource handling:
-
-```python
-with open(file_path, "rb") as file_handle:
-    process(file_handle)
-```
-
-For external calls, define:
-
-- Connection timeout
-- Read timeout
-- Maximum response size
-- Retry limit
-- Exponential backoff with jitter
-- Circuit breaker where appropriate
-- Concurrency limit
-- Cancellation handling
-- Fallback behavior
-
-Avoid unlimited retries. Retries can multiply load during an outage.
-
-## 13.7 Input and Resource Limits
-
-```text
-Request body size
-File upload size
-Image dimensions
-Archive expansion size
-Page size
-Query complexity
-Execution time
-Concurrent jobs
-Retry count
-Memory and CPU use
-```
+- connection timeout
+- read timeout
+- retry count
+- exponential backoff
+- response-size limit
+- concurrency limit
 
 Nothing should be unlimited.
 
-## 13.8 Prevention
+---
 
-- Validate required fields, ranges, formats, states, and relationships.
-- Handle errors close to where they occur and provide meaningful recovery behavior.
-- Add a global exception handler as a final safety boundary.
-- Fail closed for security-sensitive decisions.
-- Use transactions for atomic operations.
-- Use idempotency for retried state-changing operations.
-- Roll back incomplete work.
-- Release resources using context managers or `finally` blocks.
-- Add timeouts, rate limits, quotas, and bounded retries.
-- Avoid leaking internal details in error responses.
-- Log exceptions with correlation context and alert on suspicious patterns.
-- Test network failures, missing dependencies, malformed input, concurrency, and partial completion.
-- Design reconciliation for distributed operations that cannot be one atomic transaction.
+# 12. One Practical Example — Secure Invoice Download API
 
-## 13.9 What to Remember
+Suppose we build:
 
-- Error handling is a security and resilience control.
-- A failure state must not grant more permission than a healthy state.
-- Distributed systems require explicit handling for retries, duplicate events, and partial success.
-- Generic user errors and detailed internal logs serve different purposes.
+```http
+GET /api/invoices/{invoice_id}/download
+```
+
+A secure design combines several OWASP controls.
+
+```mermaid
+flowchart LR
+    C[Client] --> G[API]
+    G --> A[Authenticate User]
+    A --> Z[Check Permission + Tenant]
+    Z --> Q[Fetch Tenant-Scoped Invoice]
+    Q --> S[Generate Short-Lived Storage URL]
+    S --> L[Audit Download]
+    L --> R[Return Response]
+```
+
+## Controls Applied
+
+### A01 — Broken Access Control
+The invoice query includes the user's tenant/ownership boundary.
+
+### A02 — Security Misconfiguration
+The storage bucket is private; production debug output is disabled.
+
+### A03 — Supply Chain
+Frameworks, libraries, container image, and CI actions are scanned and controlled.
+
+### A04 — Cryptographic Failures
+The download uses HTTPS and a short-lived signed URL.
+
+### A05 — Injection
+The application uses ORM/parameterized database operations.
+
+### A06 — Insecure Design
+The requirement explicitly states that users may download only invoices belonging to their tenant.
+
+### A07 — Authentication Failures
+The API validates the session/token before authorization.
+
+### A08 — Integrity Failures
+Signed storage URLs and trusted deployment artifacts are verified.
+
+### A09 — Logging and Alerting
+The application logs actor, tenant, invoice, result, and request ID.
+
+### A10 — Exceptional Conditions
+If authorization or storage fails, the application fails safely without exposing internal details.
+
+This is the main idea behind application security:
+
+> **Security is not one middleware or one scanner. It is a set of controls working together.**
 
 ---
 
-# 14. How the Risks Work Together
+# 13. Security Testing in Normal Development
 
-Security incidents often involve several categories rather than one isolated weakness.
+Different techniques detect different problems.
 
-## 14.1 Example Attack Chain
-
-```mermaid
-flowchart LR
-    A[A02 Misconfigured Admin Endpoint] --> B[A07 Weak Admin Authentication]
-    B --> C[A01 Excessive Privilege]
-    C --> D[A05 Injection]
-    D --> E[A04 Sensitive Data Exposure]
-    E --> F[A09 No Useful Alert]
-```
-
-Another example:
-
-```mermaid
-flowchart LR
-    A3[A03 Compromised Build Dependency] --> A8[A08 Unsigned Artifact Trusted]
-    A8 --> PROD[Malicious Code Deployed]
-    PROD --> A1[A01 Unauthorized Access]
-    A1 --> A9[A09 Poor Detection Delays Response]
-```
-
-## 14.2 Control Mapping
-
-| Security Control | Risks Reduced |
+| Technique | Best For |
 |---|---|
-| Central authorization policy | A01, A06 |
-| Secure configuration baseline | A02, A03, A09 |
-| Dependency inventory and scanning | A03, A08 |
-| Secrets and key management | A02, A04, A07 |
-| Parameterized queries | A05 |
-| Threat modeling | A01, A06, A07, A10 |
-| MFA and secure sessions | A07 |
-| Artifact signing | A03, A08 |
-| Central logging and alerting | A01, A07, A08, A09, A10 |
-| Transactions and idempotency | A06, A10 |
-| Rate limits and quotas | A01, A07, A10 |
+| **Threat Modeling** | Design and business-logic risks |
+| **Code Review** | Authorization, unsafe APIs, logic |
+| **SAST** | Suspicious code/data-flow patterns |
+| **SCA** | Vulnerable dependencies |
+| **Secret Scanning** | Hard-coded keys and credentials |
+| **IaC Scanning** | Cloud/Kubernetes/Terraform misconfiguration |
+| **Container Scanning** | Vulnerable OS/image packages |
+| **DAST / API Testing** | Runtime endpoint vulnerabilities |
+| **Penetration Testing** | Authorization and complex attack chains |
+
+High-value automated tests include:
+
+- another tenant's resource returns no usable data
+- normal user cannot call admin endpoints
+- wrong/expired JWT is rejected
+- invalid webhook signature is rejected
+- duplicate idempotency request does not duplicate work
+- production cannot start with dangerous settings
+- downstream failure does not leave partial state
 
 ---
 
-# 15. Security Testing Strategy
-
-Different testing methods find different types of weakness.
-
-## 15.1 Testing Layers
+# 14. Secure Development Lifecycle
 
 ```mermaid
-flowchart TD
-    A[Architecture and Threat Modeling] --> B[Code Review]
-    B --> C[SAST and Secret Scanning]
-    C --> D[Dependency and Image Scanning]
-    D --> E[Unit and Integration Security Tests]
-    E --> F[DAST and API Testing]
-    F --> G[Manual Penetration Testing]
-    G --> H[Runtime Monitoring and Incident Exercises]
+flowchart LR
+    R[Requirements] --> D[Threat Modeling / Design]
+    D --> C[Secure Coding]
+    C --> T[Security Tests]
+    T --> B[Secure CI/CD]
+    B --> P[Hardened Deployment]
+    P --> M[Monitoring / Alerting]
+    M --> R
 ```
 
-## 15.2 Tool Categories
-
-| Testing Type | What It Examines | Useful For | Limitations |
-|---|---|---|---|
-| **SAST** | Source or compiled code | Injection patterns, insecure APIs, data flow | May produce false positives; limited business context |
-| **DAST** | Running application | Runtime behavior and exposed endpoints | Limited source visibility; depends on coverage |
-| **IAST** | Running application with instrumentation | Runtime data flow with code context | Requires supported runtime and test traffic |
-| **SCA** | Dependencies and components | Known vulnerable libraries and licenses | Does not prove exploitability; needs accurate inventory |
-| **Secret scanning** | Code and repository history | Hard-coded credentials and keys | Cannot detect all credential misuse |
-| **IaC scanning** | Terraform, Kubernetes, cloud templates | Misconfiguration and insecure permissions | Requires environment and policy context |
-| **Container scanning** | Image packages and configuration | Vulnerable OS packages and risky image settings | Runtime controls still need separate validation |
-| **Fuzz testing** | Unexpected and malformed inputs | Parsers, validation, error handling, crashes | Requires good harnesses and triage |
-| **Penetration testing** | Complete application behavior | Authorization and business-logic attack chains | Point-in-time and dependent on scope |
-
-## 15.3 Tests That Should Be Automated
-
-Examples of high-value automated security tests:
-
-- User cannot access another tenant's records.
-- Normal user cannot call administrator endpoints.
-- Invalid or expired token is rejected.
-- JWT with wrong issuer or audience is rejected.
-- Password reset token is single-use and expires.
-- SQL-like input remains data, not query structure.
-- Unsupported file types and oversized files are rejected.
-- Sensitive fields are absent from API responses.
-- Production configuration disables debug mode.
-- Known dangerous configuration blocks deployment.
-- Webhook with invalid signature is rejected.
-- Duplicate idempotency key does not create a second transaction.
-- Downstream timeout does not leave partial state.
-- Repeated failed login attempts generate an alert.
-
-## 15.4 Security Test Pyramid
-
-```text
-                   Manual penetration tests
-                 /                         \
-          Integration and API security tests
-        /                                     \
-  Unit tests for policies, validation, and business rules
- /                                                   \
-Static analysis, dependency scans, configuration checks
-```
-
-Use frequent low-cost automated checks and targeted expert testing for complex logic.
-
----
-
-# 16. Secure Development Lifecycle
-
-## 16.1 Requirements
+## Requirements
 
 Define:
 
-- Sensitive assets and data classification
-- Roles and permissions
-- Tenant boundaries
-- Authentication requirements
-- Audit requirements
-- Availability and recovery needs
-- Legal and privacy constraints
-- Abuse cases and security acceptance criteria
+- sensitive data
+- roles and permissions
+- tenant boundaries
+- authentication requirements
+- audit needs
+- abuse cases
+- security acceptance criteria
 
-## 16.2 Design
-
-Perform:
-
-- Data-flow diagrams
-- Trust-boundary identification
-- Threat modeling
-- Architecture security review
-- Dependency and platform selection review
-- Failure-mode analysis
-- Logging and incident-response design
-
-## 16.3 Development
+## Development
 
 Apply:
 
-- Secure coding standards
-- Code review
-- Secret scanning
-- Input and output controls
-- Central authentication and authorization
-- Safe cryptographic libraries
-- Secure error handling
-- Dependency governance
+- centralized authentication and authorization
+- safe ORM/query APIs
+- secure crypto libraries
+- strict schemas
+- secret scanning
+- code review
+- safe exception handling
 
-## 16.4 Build and CI/CD
+## CI/CD and Deployment
 
 Protect:
 
-- Repository access
-- Branch and tag rules
-- CI runner isolation
-- Build secrets
-- Third-party actions
-- Artifact integrity
-- Approval and promotion rules
-- Environment separation
+- repository permissions
+- CI secrets
+- build runners
+- dependencies
+- container images
+- release artifacts
+- cloud IAM
+- environment configuration
 
-## 16.5 Deployment
-
-Verify:
-
-- Secure configuration baseline
-- Least-privilege identities
-- Network restrictions
-- TLS and certificate setup
-- Secrets injection
-- Logging and monitoring
-- Backup and recovery
-- Rollback readiness
-
-## 16.6 Operations
+## Production
 
 Continuously:
 
-- Monitor security alerts
-- Patch dependencies and platforms
-- Review permissions
-- Rotate keys and credentials
-- Test backup recovery
-- Review configuration drift
-- Conduct incident exercises
-- Feed production learning back into design
+- monitor security alerts
+- patch dependencies
+- review permissions
+- rotate credentials
+- detect configuration drift
+- test backup/recovery
+- learn from incidents
 
 ---
 
-# 17. Practical Pull Request Checklist
+# 15. What to Remember for Interviews
 
-Use this compact checklist during normal development. Every line below is one of ten principles applied to a diff:
+The most useful mental model is:
 
-1. **Deny by default.** Grant only explicitly required access.
-2. **Use least privilege.** Apply it to users, services, databases, CI/CD, and cloud roles.
-3. **Never trust client input.** The browser and mobile client are outside the trust boundary.
-4. **Separate data from instructions.** Use parameterized APIs and safe output handling.
-5. **Prefer secure defaults.** Make insecure states difficult to deploy.
-6. **Use proven security libraries.** Avoid custom authentication or cryptography.
-7. **Design for failure.** Timeouts, retries, rollback, idempotency, quotas, and reconciliation are security controls.
-8. **Verify integrity.** Do not trust artifacts, updates, webhooks, or serialized state without verification.
-9. **Log for response, not only debugging.** Record important events and connect them to actionable alerts.
-10. **Use defense in depth.** Assume individual controls may fail.
+```text
+Identity      → Authentication
+Permission    → Authorization
+Input         → Validation + Safe APIs
+Sensitive Data→ Encryption / Hashing / Key Management
+Dependencies  → Supply-Chain Controls
+Business Logic→ Secure Design
+Artifacts/Data→ Integrity Verification
+Events        → Logging + Alerting
+Failures      → Fail Closed + Safe Recovery
+```
 
-## Access and Identity
+Key points:
 
-- [ ] Backend authorization is enforced for every protected action.
-- [ ] Object ownership and tenant boundaries are checked.
-- [ ] New endpoints follow least privilege.
-- [ ] Authentication and session behavior use established framework features.
-- [ ] Sensitive actions have appropriate re-authentication or MFA requirements.
-
-## Input, Output, and Data
-
-- [ ] Input type, length, range, format, and allowed values are validated.
-- [ ] Database operations use parameterized queries or safe ORM APIs.
-- [ ] Dynamic identifiers use allowlists.
-- [ ] Browser output is contextually encoded.
-- [ ] File uploads have type, size, storage, and processing controls.
-- [ ] Sensitive response fields are explicitly selected rather than exposing full models.
-
-## Secrets and Cryptography
-
-- [ ] No passwords, tokens, private keys, or production secrets are committed.
-- [ ] Sensitive transport uses TLS.
-- [ ] Passwords use framework-supported adaptive hashing.
-- [ ] Security tokens use cryptographically secure randomness.
-- [ ] New encryption uses approved libraries and managed keys.
-
-## Dependencies and Delivery
-
-- [ ] New dependencies are necessary, maintained, and from trusted sources.
-- [ ] Lock files are updated and reviewed.
-- [ ] Dependency and image scans pass or have documented risk acceptance.
-- [ ] CI changes use restricted permissions and reviewed immutable references where possible.
-- [ ] Release artifacts are traceable and integrity-protected.
-
-## Errors and Reliability
-
-- [ ] Error responses do not expose stack traces or sensitive details.
-- [ ] Operations are atomic or have reconciliation/compensation logic.
-- [ ] Retried state changes are idempotent where necessary.
-- [ ] External calls have timeouts and bounded retries.
-- [ ] Files, connections, locks, and other resources are always released.
-
-## Logging and Monitoring
-
-- [ ] Security-relevant events are logged with actor, action, target, outcome, and request ID.
-- [ ] Secrets and unnecessary personal data are not logged.
-- [ ] Suspicious behavior can trigger an actionable alert.
-- [ ] Logging failures do not expose information to the client.
-
-## Testing
-
-- [ ] Positive and negative authorization tests exist.
-- [ ] Cross-tenant access is tested.
-- [ ] Malformed, missing, oversized, and unexpected inputs are tested.
-- [ ] Dependency, secret, static-analysis, and configuration checks pass.
-- [ ] Failure paths and downstream outages are tested.
+1. **Authentication is not authorization.**
+2. **Never trust the client for ownership, role, price, tenant, or permission decisions.**
+3. **Use parameterized APIs instead of building commands or queries with strings.**
+4. **Use proven cryptographic libraries and secure password hashing.**
+5. **Treat CI/CD, dependencies, images, and artifacts as part of the application's attack surface.**
+6. **Threat modeling finds design problems that scanners cannot.**
+7. **Logs must support detection and response, not only debugging.**
+8. **Security-sensitive failures should normally fail closed.**
+9. **Use least privilege everywhere.**
+10. **Security works through defense in depth, not one control.**
 
 ---
+
+## Official Reference
+
+- OWASP Top 10:2025: https://owasp.org/Top10/
+- OWASP Top 10:2025 Introduction: https://owasp.org/Top10/2025/0x00_2025-Introduction/

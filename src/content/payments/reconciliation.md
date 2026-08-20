@@ -6,571 +6,294 @@ order: 3
 
 # Reconciliation in Payments & Fintech
 
-> A practical, developer-focused guide to matching payment records, settlement reports, bank movements, and ledger balances.
+> A practical, developer-focused guide to matching payment records, provider settlements, bank movements, and ledger balances.
 
 ## In short
 
-- Reconciliation compares the internal system, the payment provider, the bank statement, and the ledger to confirm the same money movement is recorded correctly everywhere — a successful API response alone proves nothing.
-- The core pipeline is ingest → normalize → validate/deduplicate → match (strongest key first) → calculate variance → mark reconciled or raise an exception.
-- Track gross amount, fees, tax, and net amount as separate fields; a single "amount" column cannot explain a settlement payout.
-- Match on the strongest available key first (provider transaction ID, settlement ID, bank reference) before falling back to amount-plus-date-window rules with explicit, stored tolerances.
-- Unmatched or mismatched items become tracked exceptions with a reason code, owner, age bucket, and evidence — never a silent write-off.
-- Ingestion and matching must be idempotent and safely re-runnable: the same input plus the same rule version always produces the same result, even when overlapping windows re-fetch data to catch late arrivals.
+Reconciliation verifies that the same money movement is represented correctly across your internal system, payment provider, settlement data, bank account, and ledger.
+
+A payment being `CAPTURED` or a webhook being received does **not** prove that the money reached the bank. Reconciliation adds that financial verification layer.
 
 ```mermaid
 flowchart LR
-    I[Ingest Data] --> N[Normalize]
-    N --> V[Validate]
-    V --> D[Deduplicate]
-    D --> M[Match]
-    M --> C[Calculate Variance]
-    C --> X{Matched?}
-    X -->|Yes| R[Mark Reconciled]
-    X -->|No| E[Create Exception]
-    E --> H[Review or Retry]
-    H --> M
+    A[Internal Payment] --> B[Provider Transaction]
+    B --> C[Settlement / Payout]
+    C --> D[Bank Entry]
+    D --> E[Ledger / Accounting]
 ```
 
-**Interview answer:** Build a pipeline that ingests records from every source — internal database, provider API and webhooks, settlement files, bank feed — normalizes them into one canonical format, then matches on the strongest available identifier first (provider transaction ID or settlement/bank reference) before falling back to amount-and-date heuristics with stored tolerances. Anything that doesn't match cleanly becomes a tracked exception with an owner and age, and the whole run must be idempotent so it can be safely re-executed against the same data without creating duplicate financial records.
+The usual pipeline is:
 
-**Gotcha:** Treating a captured payment status or a received webhook as proof that money reconciled — both only show operational state. A record is only RECONCILED once its financial totals are independently verified against provider and bank data; until then it is merely MATCHED, or not matched at all.
+```mermaid
+flowchart LR
+    I[Ingest] --> N[Normalize]
+    N --> V[Validate & Deduplicate]
+    V --> M[Match]
+    M --> C[Calculate Variance]
+    C --> R{Checks Passed?}
+    R -->|Yes| OK[Reconciled]
+    R -->|No| EX[Exception]
+```
+
+For interviews, remember four ideas:
+
+- Match using the **strongest reference first**: provider transaction ID, settlement ID, bank reference, UTR, or trace number.
+- Track **gross, fee, tax, refund, adjustment, and net** separately.
+- Keep reconciliation status separate from payment status.
+- Make imports and matching **idempotent and safely re-runnable**.
 
 ---
 
-# 1. What Is Reconciliation?
+# Index
 
-Reconciliation is the process of comparing records from two or more systems to confirm that the same financial activity is represented correctly everywhere.
+1. [What Reconciliation Means](#1-what-reconciliation-means)
+2. [Why It Is Needed](#2-why-it-is-needed)
+3. [Core Reconciliation Layers](#3-core-reconciliation-layers)
+4. [Important Money and Reference Fields](#4-important-money-and-reference-fields)
+5. [End-to-End Reconciliation Flow](#5-end-to-end-reconciliation-flow)
+6. [Matching Strategy](#6-matching-strategy)
+7. [Status and Exception Model](#7-status-and-exception-model)
+8. [Data Model and Architecture](#8-data-model-and-architecture)
+9. [Idempotency and Late Data](#9-idempotency-and-late-data)
+10. [Worked Example](#10-worked-example)
+11. [Observability and Financial Controls](#11-observability-and-financial-controls)
+12. [Practical Interview Summary](#12-practical-interview-summary)
 
-In a payment flow, your application may say:
+---
 
-- A customer paid ₹1,000.
-- The payment gateway captured ₹1,000.
-- The gateway deducted ₹25 in fees.
-- The bank received a net settlement of ₹975.
-- Your internal ledger recorded the correct debit and credit entries.
+# 1. What Reconciliation Means
 
-Reconciliation verifies that all these records agree.
+Reconciliation is the process of comparing records from two or more systems to confirm that the expected financial movement matches the actual financial movement.
 
-```mermaid
-flowchart TD
-    EXP[Business expectation] --> PSP[Payment provider activity]
-    PSP --> SET[Settlement report]
-    SET --> BANK[Bank statement]
-    BANK --> LEDGER[Internal accounting ledger]
+Example:
+
+- Customer pays `₹1,000`.
+- Payment provider captures `₹1,000`.
+- Provider deducts `₹20` fee and `₹3.60` tax.
+- Merchant bank receives `₹976.40`.
+- Internal ledger records the corresponding receivable, expense, and cash entries.
+
+The basic check is:
+
+```text
+Variance = Expected Amount - Actual Amount
 ```
 
-A simple reconciliation equation is `Expected amount - Actual amount = Variance`.
+A zero variance normally means the financial amount matches. A non-zero variance needs investigation.
 
-A variance of zero usually means the records match. A non-zero variance becomes an exception that must be investigated.
-
-## 1.1 Reconciliation Is Not the Same as Settlement
-
-These terms are related but different:
+## 1.1 Settlement vs Reconciliation
 
 | Term | Meaning |
 |---|---|
-| Payment | The customer's attempt to transfer money |
-| Authorization | The issuer confirms that funds or credit are available |
-| Capture | The merchant confirms that the authorized amount should be collected |
-| Clearing | Payment participants exchange transaction information |
-| Settlement | Funds are transferred between financial participants or into the merchant's bank account |
-| Reconciliation | Records are compared to verify that the expected movement matches the actual movement |
+| Authorization | Issuer confirms funds or credit are available |
+| Capture | Merchant requests collection of an authorized amount |
+| Settlement / Payout | Provider transfers net funds toward the merchant bank |
+| Reconciliation | Records are compared to prove that expected and actual financial movements agree |
 
-**Settlement moves money. Reconciliation proves that the money movement is correct.**
+**Settlement moves money. Reconciliation verifies the movement.**
+
+## 1.2 Match vs Reconciled
+
+These states should not be treated as the same thing.
+
+```text
+MATCHED
+The system found corresponding records.
+
+RECONCILED
+The corresponding records were found and all required financial checks passed.
+```
+
+Example: a payment ID matches the provider record, but the internal amount is `₹1,000` and provider amount is `₹999`.
+
+Result:
+
+```text
+Relationship: MATCHED
+Financial result: EXCEPTION
+```
 
 ---
 
-# 2. Why Reconciliation Is Necessary
+# 2. Why It Is Needed
 
-Payment systems are distributed systems. A single transaction may pass through your frontend, backend, payment service provider, card network, bank, webhook system, settlement process, and accounting platform.
-
-Each component may process the same event at a different time.
+Payment systems are distributed systems. The same transaction can move through several components at different times.
 
 ```mermaid
 flowchart LR
-    C[Customer] --> A[Merchant Application]
-    A --> P[Payment Provider]
-    P --> N[Payment Network or Bank]
-    N --> P
-    P --> S[Settlement Batch]
-    S --> B[Merchant Bank]
-    A --> L[Internal Ledger]
-    P --> W[Webhook Events]
-    W --> A
+    C[Customer] --> APP[Application]
+    APP --> PSP[Payment Provider]
+    PSP --> NET[Bank / Network]
+    PSP --> SET[Settlement Batch]
+    SET --> BANK[Merchant Bank]
+    PSP --> WH[Webhooks]
+    WH --> APP
+    APP --> LEDGER[Ledger]
 ```
 
-Common causes of differences include:
+Differences can appear because of:
 
-- Delayed webhooks
-- Duplicate events
-- Network timeouts
-- Payment status changing after the API response
-- Partial captures
-- Partial refunds
-- Processing fees
-- Tax on fees
+- Delayed or duplicated webhooks
+- API timeouts after the provider already processed a transaction
+- Partial captures or refunds
+- Fees and tax deductions
 - Chargebacks and reversals
 - Rolling reserves
+- Settlement cut-off times and holidays
 - Foreign exchange conversion
-- Settlement holidays and cut-off times
-- A provider grouping many transactions into one payout
-- A bank combining or splitting credits
-- Manual operational adjustments
+- Provider adjustments
+- Many transactions being grouped into one bank payout
+- Bank posting delays
 
-Without reconciliation, an application can show a successful payment even when the expected funds never reach the bank.
+Without reconciliation, your application can show a successful payment even when the final cash movement is missing or incorrect.
 
-## 2.1 Business Value
+## 2.1 Business value
 
-A strong reconciliation process helps a fintech business:
+A good reconciliation system helps teams:
 
-- Detect missing or duplicate money movement
-- Confirm provider fees
-- Identify delayed settlements
-- Find unprocessed refunds
-- Verify merchant or partner payouts
-- Produce reliable financial reports
-- Close accounting periods faster
-- Reduce manual spreadsheet work
-- Maintain an audit trail
+- Detect missing and duplicate movements
+- Verify fees and settlements
+- Find delayed refunds and payouts
+- Validate merchant or partner payouts
+- Keep ledger balances accurate
+- Reduce spreadsheet-based manual work
+- Support accounting close and audits
 - Investigate customer and merchant disputes
 
 ---
 
-# 3. Important Payment Terms
+# 3. Core Reconciliation Layers
 
-## 3.1 Gross Amount
+A mature payment platform normally reconciles money at several levels.
 
-The full amount paid by the customer before deductions, for example `Gross amount = ₹1,000`.
+## 3.1 Transaction reconciliation
 
-## 3.2 Fee
+Compares your payment record with the provider transaction.
 
-The amount charged by a gateway, acquiring bank, network, or payment processor, for example `Processing fee = ₹20` and `Tax on fee = ₹3.60`.
-
-## 3.3 Net Amount
-
-The amount expected after deductions and adjustments: `Net amount = Gross amount - Fee - Tax - Refunds - Chargebacks ± Adjustments`. For the example, `₹1,000 - ₹20 - ₹3.60 = ₹976.40`.
-
-## 3.4 Settlement Batch or Payout
-
-Providers commonly combine multiple payment-related entries into a single bank transfer.
-
-| Line item | Amount |
-|---|---:|
-| Payment A | +₹1,000 |
-| Payment B | +₹2,000 |
-| Refund C | -₹500 |
-| Fees | -₹60 |
-| Tax | -₹10.80 |
-| **Bank payout** | **+₹2,429.20** |
-
-The bank may contain only the final ₹2,429.20 credit. Therefore, matching every payment directly to a bank line is not always possible. The reconciliation process must understand the settlement batch.
-
-## 3.5 Provider Reference
-
-An identifier created by the payment provider, such as:
-
-- Payment ID
-- Charge ID
-- Capture ID
-- Refund ID
-- Payout or settlement ID
-- Provider transaction reference
-- Acquirer reference
-- Bank UTR or trace number
-
-Do not assume every reference is globally unique. Store the provider name and merchant account together with the reference.
-
-## 3.6 Value Date and Processing Date
-
-| Date | Description |
-|---|---|
-| Created time | When your system created the payment |
-| Authorized time | When authorization was approved |
-| Captured time | When funds were captured |
-| Provider processed time | When the provider processed the entry |
-| Settlement date | Date assigned to the payout or batch |
-| Bank posting date | When the bank posted the movement |
-| Value date | Date on which the movement financially takes effect |
-
-Matching only by date is unreliable because these dates can differ.
-
----
-
-# 4. Types of Reconciliation
-
-Reconciliation is not one comparison. Mature systems perform it at multiple layers.
-
-## 4.1 Payment or Transaction Reconciliation
-
-Compares your application's payment records with provider transaction records: `Internal payment record ↔ Provider payment/capture record`.
-
-Typical questions:
-
-- Does every internal success have a successful provider transaction?
-- Did the provider capture the same amount and currency?
-- Is an internal pending payment actually successful at the provider?
-- Did duplicate captures occur?
-
-## 4.2 Refund Reconciliation
-
-Compares internal refund requests with provider refunds and eventual financial deductions: `Refund request ↔ Provider refund ↔ Settlement deduction or bank debit`.
-
-A refund can be accepted by an API but fail or remain pending later. Reconciliation must use the final provider state rather than assuming the initial response is final.
-
-## 4.3 Settlement or Payout Reconciliation
-
-Compares provider transactions and adjustments with the provider's settlement batch: `Payments + refunds + fees + adjustments = Settlement net amount`.
-
-This answers:
-
-- Which payments are included in a settlement?
-- Are all deductions explained?
-- Is the provider's net payout mathematically correct?
-
-## 4.4 Bank Reconciliation
-
-Compares provider payouts with bank statement entries: `Provider payout ↔ Bank credit or debit`.
-
-The strongest keys are normally settlement IDs, bank references, UTRs, trace numbers, amounts, currencies, and date windows.
-
-## 4.5 Ledger Reconciliation
-
-Compares the internal accounting ledger with provider or bank-reported balances: `Internal ledger balance ↔ Provider balance ↔ Bank balance`.
-
-This ensures that the system's accounting representation matches external reality.
-
-## 4.6 Partner, Merchant, or Marketplace Reconciliation
-
-Platforms frequently split customer money among merchants, sellers, drivers, vendors, brokers, or connected accounts.
-
-```mermaid
-flowchart TD
-    COLLECT[Customer collection] --> FEE[Platform fee]
-    FEE --> ADJ["Tax / reserve / adjustment"]
-    ADJ --> PAYABLE[Partner payable]
-    PAYABLE --> PAYOUT[Partner payout]
+```text
+Internal payment ↔ Provider payment / capture
 ```
 
-The platform must reconcile both sides:
+Typical checks:
 
-1. Money collected from the customer
-2. Money owed and paid to the partner
+- Same provider transaction ID
+- Same amount
+- Same currency
+- Compatible final status
+- No duplicate capture
 
-## 4.7 Three-Way Reconciliation
+## 3.2 Refund reconciliation
 
-A common production model compares three sources:
-
-```mermaid
-flowchart TD
-    A[Internal Payment System] --> R[Reconciliation Engine]
-    P[Payment Provider Report] --> R
-    B[Bank Statement] --> R
-    R --> M[Matched Items]
-    R --> E[Exceptions]
-```
-
-Example:
-
-| Source | Amount | Reference | Status |
-|---|---:|---|---|
-| Internal system | ₹5,000 | order_123 | Paid |
-| Provider | ₹5,000 | pay_789 | Captured |
-| Bank settlement | Included in ₹48,250 payout | set_456 | Credited |
-
-The payment is fully reconciled only after each expected stage is verified.
-
----
-
-# 5. End-to-End Reconciliation Flow
-
-A practical reconciliation pipeline usually follows these stages (see the pipeline diagram in "In short" above).
-
-## 5.1 Ingest
-
-Collect records from:
-
-- Internal payment database
-- Provider APIs
-- Provider webhooks
-- Settlement reports
-- SFTP or object storage files
-- Bank statement APIs
-- CAMT, BAI2, MT940, CSV, XLSX, or custom files
-- Internal ledger
-- Accounting or ERP system
-
-## 5.2 Normalize
-
-Convert external records into a canonical internal format.
-
-For example, providers may use different names for the same event — `charge`, `payment`, `transaction` — that all normalize to one internal canonical type, `PAYMENT_CAPTURE`.
-
-Normalization should standardize:
-
-- Currency format
-- Amount units
-- Time zone
-- Event type
-- Status
-- Reference fields
-- Fee categories
-- Sign convention
-
-## 5.3 Validate
-
-Before matching, verify:
-
-- Required fields are present
-- Currency is supported
-- Amount is numeric
-- File totals match control totals
-- Records are not malformed
-- Report date range is correct
-- File or API page is complete
-- Signature or checksum is valid when provided
-
-## 5.4 Deduplicate
-
-Provider reports and webhooks may be delivered more than once. Use stable identifiers and import fingerprints: `Deduplication key = provider + merchant_account + record_type + external_id`. For files, also store `file_hash + row_number + normalized_row_hash`.
-
-## 5.5 Match
-
-Apply deterministic rules first. Use increasingly flexible rules only when safe.
-
-## 5.6 Calculate Variance
-
-`amount_variance = expected_amount - actual_amount`
-
-Also calculate component-level variance: `gross_variance`, `fee_variance`, `tax_variance`, `refund_variance`, `net_variance`.
-
-## 5.7 Resolve or Escalate
-
-Matched items are finalized. Unmatched items enter an exception workflow with an owner, reason, evidence, and resolution history.
-
----
-
-# 6. The Three Main Sources of Truth
-
-A useful design does not declare one system as the source of truth for everything.
-
-## 6.1 Internal Business System
-
-Best source for:
-
-- Order identity
-- Customer intent
-- Merchant or partner ownership
-- Expected amount
-- Business status
-- Product or invoice mapping
-
-It is not sufficient to prove that money moved.
-
-## 6.2 Payment Provider
-
-Best source for:
-
-- Authorization and capture state
-- Provider fees
-- Refund and chargeback state
-- Settlement grouping
-- Provider-side references
-
-It does not by itself prove that the bank received the payout.
-
-## 6.3 Bank Statement
-
-Best source for:
-
-- Actual bank credits and debits
-- Posting and value dates
-- Bank references
-- Closing cash balance
-
-It may not contain enough transaction-level detail to identify every customer payment.
-
-## 6.4 Internal Ledger
-
-Best source for:
-
-- Financial obligations
-- Account-level balances
-- Revenue, cash, fees, refunds, receivables, and payables
-- Historical accounting audit trail
-
-The ledger should represent external events, but it still requires reconciliation against provider and bank evidence.
-
----
-
-# 7. Matching Models
-
-The relationship between internal and external records is not always one-to-one.
-
-## 7.1 One-to-One
-
-One internal record matches one external record, for example `Internal payment ₹1,000 ↔ Provider capture ₹1,000`.
-
-## 7.2 One-to-Many
-
-One expected item matches several actual items. Example: one ₹1,000 order is captured in two parts — expected order `₹1,000`, actual capture A `₹600`, actual capture B `₹400`.
-
-## 7.3 Many-to-One
-
-Several transactions match one settlement or bank credit.
+A refund should be followed beyond the initial API response.
 
 ```mermaid
 flowchart LR
-    A[Payment A ₹1,000] --> S[Settlement ₹3,500<br/>before deductions]
-    B[Payment B ₹2,000] --> S
-    C[Payment C ₹500] --> S
+    A[Refund Requested] --> B[Provider Accepted]
+    B --> C[Refund Succeeded]
+    C --> D[Settlement / Balance Effect]
+    D --> E[Financially Reconciled]
 ```
 
-## 7.4 Many-to-Many
+A provider saying the refund succeeded proves the provider-side state. Financial reconciliation additionally verifies its balance, settlement, or bank effect.
 
-Multiple expected records match multiple external records.
+## 3.3 Settlement or payout reconciliation
 
-This can happen when:
-
-- A bulk payment is split by the bank
-- Several invoices are paid in multiple instalments
-- Aggregated marketplace settlements are reallocated
-- Netting combines receivables and payables
-
-Many-to-many matching should be tightly controlled because incorrect combinations can produce false matches.
-
-## 7.5 Balance-Based Reconciliation
-
-Instead of matching individual records, compare opening balance, period activity, and closing balance: `Opening balance + Credits - Debits = Expected closing balance`. Then compare `Expected closing balance ↔ Reported closing balance`.
-
-This is useful for provider wallet balances, reserve accounts, clearing accounts, and general ledger control accounts.
-
----
-
-# 8. Matching Strategy and Rules
-
-## 8.1 Rule Priority
-
-Use the safest rule first.
-
-| Priority | Rule | Confidence |
-|---:|---|---|
-| 1 | Exact provider transaction ID | Very high |
-| 2 | Exact settlement ID or bank reference | Very high |
-| 3 | Merchant reference + amount + currency | High |
-| 4 | Order ID + amount + date window | Medium to high |
-| 5 | Amount + currency + narrow time window | Medium |
-| 6 | Aggregated amount combinations | Lower; requires controls |
-
-A rule engine should stop after a unique high-confidence match. It should not continue searching and accidentally link the record again.
-
-## 8.2 Example Matching Rule
+Providers commonly group many payment-related entries into one payout.
 
 ```text
-Rule: PAYMENT_BY_PROVIDER_ID
-
-Conditions:
-- internal.provider = external.provider
-- internal.provider_payment_id = external.transaction_id
-- internal.currency = external.currency
-- internal.captured_amount = external.gross_amount
-
-Result:
-- Match when exactly one external record is found
-- Raise DUPLICATE_EXTERNAL_RECORD when more than one is found
-- Continue to the next rule when none is found
+Payments
+- Refunds
+- Fees
+- Tax
+- Chargebacks
+± Adjustments
+± Reserve movements
+= Net settlement / payout
 ```
 
-## 8.3 Date Tolerance
+This is why one customer payment usually cannot be matched directly to one bank credit.
 
-Date tolerance handles asynchronous posting — for example, an internal capture at `03 Aug, 22:58 IST` may appear in the provider report on `04 Aug` and post at the bank on `05 Aug`.
+## 3.4 Bank reconciliation
 
-A matching rule may use a configurable window, such as `capture_time - 1 day <= provider_time <= capture_time + 3 days`.
+Compares the provider payout with the actual bank deposit or debit.
 
-Do not hardcode one window for every rail. Card, UPI, ACH, wire, wallet, and cross-border transactions have different timing behaviour.
-
-## 8.4 Amount Tolerance
-
-Exact amounts should be preferred. Tolerance may be appropriate for:
-
-- Foreign exchange rounding
-- Percentage-based fees
-- Minor-unit conversion
-- Tax rounding
-- Interest calculations
-
-Example: absolute tolerance `₹0.01`, percentage tolerance `0.001%`.
-
-Never apply a broad tolerance silently. Store the rule and tolerance that produced the match.
-
-## 8.5 Currency Must Be Explicit
-
-`100 USD` must never match `100 INR`.
-
-Store money as `amount_minor = 10000`, `currency = "INR"`. Here, `10000` means ₹100.00 when INR uses two decimal places.
-
-Avoid binary floating-point for financial calculations.
-
-```python
-from decimal import Decimal
-
-expected = Decimal("100.00")
-actual = Decimal("99.99")
-variance = expected - actual
+```text
+Provider payout ↔ Bank transaction
 ```
 
-## 8.6 Signed Amount Convention
+Strong matching fields usually include:
 
-Choose one convention and use it everywhere.
+- Settlement or payout ID
+- Bank reference
+- UTR / trace number
+- Amount
+- Currency
+- Posting or value date window
 
-Example from the merchant's perspective:
+## 3.5 Ledger reconciliation
 
-| Entry | Sign |
-|---|---:|
-| Customer payment | Positive |
-| Refund | Negative |
-| Processing fee | Negative |
-| Tax on fee | Negative |
-| Chargeback | Negative |
-| Chargeback reversal | Positive |
-| Reserve hold | Negative |
-| Reserve release | Positive |
+Compares externally reported balances with your accounting representation.
 
-## 8.7 Confidence Score
+```text
+Internal ledger balance ↔ Provider / bank reported balance
+```
 
-When fuzzy or multi-field matching is unavoidable, compute a confidence score.
+A common control-account equation is:
 
-| Signal | Points |
-|---|---:|
-| Exact provider ID | +60 |
-| Exact amount | +20 |
-| Exact currency | +10 |
-| Date within 1 day | +5 |
-| Matching merchant ref | +5 |
-| **Total** | **100** |
+```text
+Opening processor receivable
++ Captures
+- Refunds
+- Chargebacks
+- Fees
+- Settlements
+± Adjustments
+= Closing processor receivable
+```
 
-Suggested policy: `95-100` auto-match, `80-94` review queue, `<80` remain unmatched.
+## 3.6 Three-way reconciliation
 
-The score should support deterministic decisions, not replace strong identifiers.
+A common production approach compares three evidence sources:
+
+```mermaid
+flowchart TD
+    A[Internal System] --> R[Reconciliation Engine]
+    P[Provider Report] --> R
+    B[Bank Statement] --> R
+    R --> M[Reconciled Items]
+    R --> X[Exceptions]
+```
+
+The ledger can be added as a fourth control layer when accounting accuracy is in scope.
 
 ---
 
-# 9. Handling Fees, Refunds, Chargebacks, and Reserves
+# 4. Important Money and Reference Fields
 
-## 9.1 Fees
+## 4.1 Gross, fee, tax, and net
 
-Providers may deduct:
+Do not store only one generic `amount` for settlement reconciliation.
 
-- Gateway fee
-- Network fee
-- Acquirer fee
-- Platform fee
-- Payout fee
-- Instant settlement fee
-- Cross-border fee
-- Foreign exchange fee
-- Tax on fees
+Example:
 
-Do not store one generic `fee` field if the provider exposes fee components that matter for accounting or reporting.
+```text
+Gross amount     ₹1,000.00
+Processing fee      ₹20.00
+Tax on fee           ₹3.60
+Net amount          ₹976.40
+```
+
+Formula:
+
+```text
+Net = Gross - Fees - Tax - Refunds - Chargebacks ± Adjustments
+```
+
+Store each material component separately so the payout can be explained.
+
+## 4.2 Money representation
+
+Prefer integer minor units or exact decimal types.
 
 ```json
 {
@@ -582,131 +305,298 @@ Do not store one generic `fee` field if the provider exposes fee components that
 }
 ```
 
-Validation: `100000 - 2000 - 360 = 97640`.
+For INR, `100000` minor units means `₹1,000.00`.
 
-## 9.2 Refunds
+Avoid binary floating-point for financial calculations.
 
-A refund has multiple stages:
+```python
+from decimal import Decimal
 
-```mermaid
-stateDiagram-v2
-    [*] --> Requested
-    Requested --> Submitted
-    Submitted --> Processing
-    Processing --> Succeeded
-    Processing --> Failed
-    Succeeded --> FinanciallyReconciled
+expected = Decimal("1000.00")
+actual = Decimal("976.40")
+variance = expected - actual
 ```
 
-`Succeeded` may mean the provider processed the refund. `FinanciallyReconciled` means the refund's financial effect was also found in provider balance activity or settlement data.
+## 4.3 References
 
-Partial refunds require cumulative checks: `Total successful refunds <= Captured amount`.
+Useful identifiers include:
 
-## 9.3 Chargebacks and Disputes
+- Provider payment or charge ID
+- Capture ID
+- Refund ID
+- Settlement or payout ID
+- Merchant reference / order ID
+- Acquirer reference
+- Bank UTR / trace number
 
-A chargeback may occur weeks or months after the original payment. Keep the original transaction link.
-
-```mermaid
-flowchart TD
-    PAY[Original payment] --> OPEN[Dispute opened]
-    OPEN --> PROV[Provisional debit]
-    PROV --> OUTCOME{Won or lost?}
-    OUTCOME -->|Won| REV[Reversal]
-    OUTCOME -->|Lost| FINAL[Final debit]
-```
-
-Reconciliation must handle both the dispute event and the related balance movement.
-
-## 9.4 Reserves and Holds
-
-A provider may hold part of the merchant balance for risk management: `Available amount - Reserve hold = Current payout amount`. Later, `Reserve release → Future settlement`.
-
-A reserve hold is not necessarily a fee. It is generally a movement between available and reserved balances and should be modelled separately.
-
-## 9.5 Adjustments
-
-Manual or provider-generated adjustments need explicit reason codes.
-
-Examples:
-
-- Fee correction
-- Rounding adjustment
-- Provider compensation
-- Settlement correction
-- Negative balance recovery
-- Manual operational credit
-
-Never modify the original transaction to absorb an unexplained adjustment.
-
-## 9.6 Foreign Exchange
-
-Cross-currency reconciliation may require both source and settlement amounts.
+Do not assume an external ID is globally unique. A safer uniqueness scope is often:
 
 ```text
-Customer charge:      USD 100.00
-Provider FX rate:     83.1200
-Converted amount:     INR 8,312.00
-FX fee:               INR    83.12
-Net before other fee: INR 8,228.88
+provider + merchant_account + record_type + external_id
 ```
 
-Store:
+## 4.4 Dates
 
-- Source amount and currency
-- Settlement amount and currency
-- Applied FX rate
-- FX fee
-- Provider conversion reference
-- Rate timestamp or rate date when available
+Payment systems expose several different dates:
+
+| Date | Meaning |
+|---|---|
+| Created time | Internal transaction creation |
+| Authorized time | Authorization approval |
+| Captured time | Funds captured |
+| Provider processed time | Provider processing timestamp |
+| Settlement date | Provider payout/batch date |
+| Bank posting date | Bank statement posting time |
+| Value date | Financial effective date |
+
+Do not match only on date. Dates can legitimately differ because of processing windows, holidays, and time zones.
 
 ---
 
-# 10. Reconciliation Status Model
+# 5. End-to-End Reconciliation Flow
 
-Do not overload the payment status with reconciliation state.
+## 5.1 Ingest
 
-A payment can be `CAPTURED` but still `UNRECONCILED`.
+Collect records from sources such as:
 
-## 10.1 Status Values and Meaning
+- Internal payment database
+- Provider APIs
+- Webhooks
+- Provider settlement reports
+- Bank statement APIs or files
+- Ledger or accounting system
 
-| Status | Meaning |
-|---|---|
-| NOT_READY | The expected external data is not available yet |
-| UNMATCHED | Matching was attempted but no candidate was found |
-| PARTIALLY_MATCHED | Some, but not all, expected components matched |
-| MATCHED | Record relationships were found |
-| RECONCILED | Relationships and financial totals were validated |
-| EXCEPTION | A mismatch or invalid condition was detected |
-| MANUAL_REVIEW | Human action is required |
-| RESOLVED | Exception was closed with a documented resolution |
-| REVERSED | A prior reconciliation was undone because source data changed |
+Keep raw source records before normalization.
 
-## 10.2 Match vs Reconciled
+## 5.2 Normalize
 
-```text
-Matched:
-The system found corresponding records.
+Convert provider-specific data into one canonical model.
 
-Reconciled:
-The records correspond and all required financial checks passed.
-```
+Normalize:
+
+- Event type
+- Status
+- Currency
+- Amount units
+- Sign convention
+- Timestamp / time zone
+- Reference fields
+- Fee categories
 
 Example:
 
-> Payment ID matches, but provider amount is ₹999 instead of ₹1,000.  
-> Result: MATCHED relationship, EXCEPTION financial state.
+```text
+Provider A: charge
+Provider B: payment
+Provider C: transaction
+            ↓
+Canonical type: PAYMENT_CAPTURE
+```
+
+## 5.3 Validate and deduplicate
+
+Before matching, check:
+
+- Required fields
+- Currency
+- Numeric amounts
+- Record count and control totals
+- Complete pagination / file ingestion
+- File checksum or signature where available
+- Duplicate external records
+
+Example deduplication key:
+
+```text
+provider + merchant_account + record_type + external_id
+```
+
+For imported files, also keep a file checksum and source-row identity.
+
+## 5.4 Match
+
+Run deterministic rules from strongest to weakest.
+
+Do not continue to lower-confidence rules after a unique strong match is found.
+
+## 5.5 Calculate variance
+
+Calculate both overall and component-level differences.
+
+```text
+amount_variance
+fee_variance
+tax_variance
+refund_variance
+net_variance
+```
+
+## 5.6 Reconcile or create exception
+
+If every required check passes, mark the relationship `RECONCILED`.
+
+Otherwise, create a structured exception with:
+
+- Reason code
+- Expected value
+- Actual value
+- Variance
+- Related records
+- Detection rule
+- Owner
+- Age
+- Evidence
+- Resolution history
 
 ---
 
-# 11. Recommended Data Model
+# 6. Matching Strategy
 
-A production design should preserve raw data, normalized data, matches, exceptions, and audit history.
+## 6.1 Rule priority
 
-## 11.1 Core Tables
+Use exact identifiers before heuristics.
+
+| Priority | Rule | Typical confidence |
+|---:|---|---|
+| 1 | Exact provider transaction ID | Very high |
+| 2 | Exact settlement ID / bank reference / UTR | Very high |
+| 3 | Merchant reference + amount + currency | High |
+| 4 | Order ID + amount + date window | Medium-high |
+| 5 | Amount + currency + narrow date window | Medium |
+| 6 | Grouped amount combinations | Lower; controlled use only |
+
+## 6.2 Example deterministic rule
+
+```text
+Rule: PAYMENT_BY_PROVIDER_ID
+
+Conditions:
+- same provider
+- same merchant account
+- internal.provider_payment_id == external.transaction_id
+- same currency
+
+Then:
+- 1 candidate  -> validate amount and status
+- 0 candidates -> try next rule
+- >1 candidate -> create duplicate/ambiguous exception
+```
+
+## 6.3 Amount tolerance
+
+Exact amount matching is preferred.
+
+Small explicit tolerances may be required for:
+
+- FX rounding
+- Tax rounding
+- Percentage-based fees
+- Interest calculations
+
+Store the tolerance and the rule version that produced the result. Never silently apply a large tolerance.
+
+## 6.4 Date window
+
+A provider transaction may settle one or more days after capture.
+
+Example configurable rule:
+
+```text
+capture_time - 1 day
+<= provider_time <=
+capture_time + 3 days
+```
+
+The real window should depend on the payment rail, provider, country, holidays, and contractual SLA.
+
+## 6.5 One-to-one and grouped matching
+
+Reconciliation relationships can be:
+
+```text
+1 ↔ 1     one payment to one provider transaction
+1 ↔ many  one order captured in multiple parts
+many ↔ 1  many provider transactions in one settlement
+many ↔ many  bulk/netted movements; use strict controls
+```
+
+Many-to-one is especially common for provider payouts.
+
+---
+
+# 7. Status and Exception Model
+
+Keep payment status and reconciliation status separate.
+
+A payment may be:
+
+```text
+Payment status: CAPTURED
+Reconciliation status: UNMATCHED
+```
+
+## 7.1 Recommended reconciliation states
+
+| Status | Meaning |
+|---|---|
+| `NOT_READY` | Expected external evidence is not available yet |
+| `UNMATCHED` | Matching ran but no candidate was found |
+| `PARTIALLY_MATCHED` | Only part of the expected relationship matched |
+| `MATCHED` | Relationship was found; financial validation may still be pending |
+| `RECONCILED` | Required relationships and amount checks passed |
+| `EXCEPTION` | Mismatch or invalid condition detected |
+| `MANUAL_REVIEW` | Human investigation is required |
+| `RESOLVED` | Exception was closed with a recorded outcome |
+| `REVERSED` | Earlier reconciliation was undone because source data changed |
+
+## 7.2 Common exception codes
+
+| Code | Meaning |
+|---|---|
+| `INTERNAL_ONLY` | Internal record exists but provider record is missing |
+| `PROVIDER_ONLY` | Provider record exists without corresponding internal record |
+| `AMOUNT_MISMATCH` | Matching reference but different amount |
+| `CURRENCY_MISMATCH` | Matching reference but different currency |
+| `DUPLICATE_PROVIDER` | Duplicate external records detected |
+| `MISSING_SETTLEMENT` | Eligible transaction not found in expected payout |
+| `MISSING_BANK_CREDIT` | Provider payout exists but bank entry is missing |
+| `UNBALANCED_BATCH` | Settlement components do not equal batch net amount |
+| `REFUND_MISMATCH` | Refund status or amount differs |
+| `LATE_POSTING` | Movement arrived outside expected timing |
+
+## 7.3 Exception lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open
+    Open --> AutoRetry
+    AutoRetry --> Resolved
+    AutoRetry --> Assigned
+    Assigned --> Investigating
+    Investigating --> WaitingExternal
+    WaitingExternal --> Investigating
+    Investigating --> Resolved
+    Resolved --> Reopened
+```
+
+Keep structured resolution codes and audit history. A free-text comment alone is not enough for financial controls.
+
+---
+
+# 8. Data Model and Architecture
+
+A production design usually preserves five things separately:
+
+1. Raw source data
+2. Normalized canonical data
+3. Match relationships
+4. Exceptions
+5. Audit history
+
+## 8.1 Core tables
 
 ```text
 payments
-payment_events
 refunds
 provider_transactions
 settlement_batches
@@ -716,15 +606,13 @@ ledger_transactions
 reconciliation_runs
 reconciliation_matches
 reconciliation_exceptions
-reconciliation_actions
 imported_files
 ```
 
-## 11.2 Simplified Relationship Diagram
+## 8.2 Simplified relationship model
 
 ```mermaid
 erDiagram
-    PAYMENTS ||--o{ PAYMENT_EVENTS : has
     PAYMENTS ||--o{ REFUNDS : has
     PAYMENTS ||--o{ PROVIDER_TRANSACTIONS : maps_to
     SETTLEMENT_BATCHES ||--o{ SETTLEMENT_ENTRIES : contains
@@ -734,115 +622,24 @@ erDiagram
     RECONCILIATION_RUNS ||--o{ RECONCILIATION_EXCEPTIONS : detects
 ```
 
-## 11.3 Example SQL Schema
-
-```sql
-CREATE TABLE provider_transactions (
-    id UUID PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL,
-    merchant_account_id VARCHAR(100) NOT NULL,
-    external_transaction_id VARCHAR(150) NOT NULL,
-    transaction_type VARCHAR(50) NOT NULL,
-    status VARCHAR(50) NOT NULL,
-    amount_minor BIGINT NOT NULL,
-    fee_minor BIGINT NOT NULL DEFAULT 0,
-    tax_minor BIGINT NOT NULL DEFAULT 0,
-    net_amount_minor BIGINT NOT NULL,
-    currency CHAR(3) NOT NULL,
-    occurred_at TIMESTAMPTZ NOT NULL,
-    settlement_id VARCHAR(150),
-    source_file_id UUID,
-    raw_payload JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (
-        provider,
-        merchant_account_id,
-        external_transaction_id,
-        transaction_type
-    )
-);
-```
-
-```sql
-CREATE TABLE reconciliation_matches (
-    id UUID PRIMARY KEY,
-    reconciliation_run_id UUID NOT NULL,
-    left_entity_type VARCHAR(50) NOT NULL,
-    left_entity_id UUID NOT NULL,
-    right_entity_type VARCHAR(50) NOT NULL,
-    right_entity_id UUID NOT NULL,
-    match_rule VARCHAR(100) NOT NULL,
-    confidence_score NUMERIC(5, 2) NOT NULL,
-    expected_amount_minor BIGINT NOT NULL,
-    actual_amount_minor BIGINT NOT NULL,
-    variance_minor BIGINT NOT NULL,
-    currency CHAR(3) NOT NULL,
-    status VARCHAR(30) NOT NULL,
-    matched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (
-        left_entity_type,
-        left_entity_id,
-        right_entity_type,
-        right_entity_id,
-        match_rule
-    )
-);
-```
-
-## 11.4 Raw Payload Retention
-
-Store the original provider record before normalization.
-
-Benefits:
-
-- Reprocessing after parser changes
-- Audit evidence
-- Provider support investigations
-- Detection of mapping errors
-- Backfilling newly introduced fields
-
-Prefer immutable raw records. Corrections should create a new version or adjustment rather than silently overwriting evidence.
-
-## 11.5 Import Metadata
-
-Store:
-
-```text
-provider
-source type
-file name or API endpoint
-report period
-file checksum
-record count
-control totals
-import started time
-import completed time
-parser version
-import status
-```
-
----
-
-# 12. Reconciliation Engine Design
-
-## 12.1 High-Level Architecture
+## 8.3 High-level architecture
 
 ```mermaid
 flowchart TB
     subgraph Sources
         DB[(Payment DB)]
         API[Provider API]
-        FILE[Settlement Files]
+        FILE[Settlement Reports]
         BANK[Bank Feed]
         LEDGER[(Ledger)]
     end
 
     subgraph Reconciliation Platform
-        INGEST[Ingestion Services]
-        RAW[(Raw Data Store)]
+        INGEST[Ingestion]
+        RAW[(Raw Store)]
         NORMAL[Normalizer]
         CANON[(Canonical Store)]
-        RULES[Matching Rule Engine]
+        RULES[Matching Rules]
         EXCEPT[Exception Service]
         AUDIT[(Audit Log)]
     end
@@ -861,164 +658,99 @@ flowchart TB
     EXCEPT --> AUDIT
 ```
 
-## 12.2 Components
+## 8.4 Reconciliation run metadata
 
-### Ingestion Service
+Every run should be reproducible.
 
-Responsible for:
-
-- API pagination
-- File retrieval
-- Signature or checksum verification
-- Schema validation
-- Raw storage
-- Import deduplication
-- Retry handling
-
-### Normalization Service
-
-Responsible for:
-
-- Provider-specific field mapping
-- Time-zone conversion
-- Money conversion to minor units
-- Status mapping
-- Event-type mapping
-- Reference extraction
-
-### Matching Rule Engine
-
-Responsible for:
-
-- Ordered rule execution
-- Candidate generation
-- One-to-one and grouped matching
-- Amount and date tolerance
-- Confidence scoring
-- Prevention of double matching
-
-### Exception Service
-
-Responsible for:
-
-- Reason classification
-- Queue assignment
-- Evidence display
-- Comments and attachments
-- Resolution action
-- Re-run or re-open behaviour
-
-### Reporting Service
-
-Responsible for:
-
-- Reconciliation summaries
-- Ageing reports
-- Variance trends
-- Provider-level dashboards
-- Period-close exports
-
-## 12.3 Rule Engine Pseudocode
-
-```python
-from dataclasses import dataclass
-from decimal import Decimal
-from typing import Iterable
-
-@dataclass(frozen=True)
-class Candidate:
-    external_id: str
-    amount: Decimal
-    currency: str
-
-@dataclass(frozen=True)
-class MatchResult:
-    status: str
-    rule: str | None
-    candidate_id: str | None
-    variance: Decimal | None
-
-def reconcile_payment(payment, candidates: Iterable[Candidate]) -> MatchResult:
-    exact_id_matches = [
-        candidate
-        for candidate in candidates
-        if candidate.external_id == payment.provider_payment_id
-    ]
-
-    if len(exact_id_matches) > 1:
-        return MatchResult(
-            status="EXCEPTION",
-            rule="EXACT_PROVIDER_ID",
-            candidate_id=None,
-            variance=None,
-        )
-
-    if len(exact_id_matches) == 1:
-        candidate = exact_id_matches[0]
-
-        if candidate.currency != payment.currency:
-            return MatchResult(
-                status="EXCEPTION",
-                rule="EXACT_PROVIDER_ID",
-                candidate_id=candidate.external_id,
-                variance=None,
-            )
-
-        variance = payment.amount - candidate.amount
-        status = "RECONCILED" if variance == Decimal("0") else "EXCEPTION"
-
-        return MatchResult(
-            status=status,
-            rule="EXACT_PROVIDER_ID",
-            candidate_id=candidate.external_id,
-            variance=variance,
-        )
-
-    return MatchResult(
-        status="UNMATCHED",
-        rule=None,
-        candidate_id=None,
-        variance=None,
-    )
-```
-
-## 12.4 Reconciliation Run
-
-Every execution should have a run record.
+Store fields such as:
 
 ```json
 {
-  "run_id": "recon_2026_08_03_provider_a",
+  "run_id": "recon_2026_08_20_provider_a",
   "provider": "provider_a",
-  "period_start": "2026-08-02T00:00:00Z",
-  "period_end": "2026-08-03T00:00:00Z",
+  "period_start": "2026-08-19T00:00:00Z",
+  "period_end": "2026-08-20T00:00:00Z",
   "rule_version": "v7",
-  "status": "COMPLETED_WITH_EXCEPTIONS",
   "input_count": 100000,
-  "matched_count": 99820,
-  "exception_count": 180
+  "reconciled_count": 99820,
+  "exception_count": 180,
+  "status": "COMPLETED_WITH_EXCEPTIONS"
 }
 ```
 
-This makes results reproducible and supports comparison after a rule change.
+This makes rule changes, backfills, and audits much easier to explain.
 
 ---
 
-# 13. Worked Example
+# 9. Idempotency and Late Data
 
-Assume a merchant receives three payments.
+## 9.1 Idempotent imports
 
-## 13.1 Internal Records
+Re-importing the same provider report must not create duplicate financial records.
 
-| Payment | Gross amount | Status |
-|---|---:|---|
-| P1 | ₹1,000.00 | Captured |
-| P2 | ₹2,000.00 | Captured |
-| P3 | ₹500.00 | Captured |
+A possible import identity is:
 
-Total gross: `₹1,000 + ₹2,000 + ₹500 = ₹3,500`
+```text
+SHA256(provider + merchant_account + file_checksum)
+```
 
-## 13.2 Provider Activity
+The exact key can vary, but the result should be deterministic.
+
+## 9.2 Idempotent matching
+
+Running reconciliation again against the same source data and same rule version should produce the same relationships and result.
+
+Store:
+
+- Rule version
+- Source-data version
+- Run ID
+- Previous match relationship
+- Reason for rematch
+
+## 9.3 Overlapping retrieval windows
+
+Late-arriving provider records are normal.
+
+A daily job can intentionally fetch the previous few days again:
+
+```text
+Today: 20 Aug
+Fetch: 17 Aug → 20 Aug
+```
+
+Deduplication keeps repeated ingestion safe while the overlap catches late records.
+
+## 9.4 Event-driven plus batch
+
+Use different sources for different jobs:
+
+```text
+Webhooks        -> fast operational updates
+Provider API    -> status verification
+Settlement file -> financial completeness
+Bank feed       -> actual cash confirmation
+Ledger          -> accounting control
+```
+
+Webhooks are useful, but they should not be the only reconciliation source.
+
+---
+
+# 10. Worked Example
+
+Assume the merchant has three captured payments.
+
+## 10.1 Internal payments
+
+| Payment | Gross |
+|---|---:|
+| P1 | ₹1,000.00 |
+| P2 | ₹2,000.00 |
+| P3 | ₹500.00 |
+| **Total** | **₹3,500.00** |
+
+## 10.2 Provider activity
 
 | Entry | Gross | Fee | Tax | Net |
 |---|---:|---:|---:|---:|
@@ -1027,306 +759,68 @@ Total gross: `₹1,000 + ₹2,000 + ₹500 = ₹3,500`
 | P3 capture | ₹500.00 | ₹10.00 | ₹1.80 | ₹488.20 |
 | P2 partial refund | -₹500.00 | ₹0.00 | ₹0.00 | -₹500.00 |
 
-Calculation:
-
-| Line item | Amount |
-|---|---:|
-| Gross captures | ₹3,500.00 |
-| Less refund | ₹500.00 |
-| Less fees | ₹70.00 |
-| Less tax | ₹12.60 |
-| **Expected settlement** | **₹2,917.40** |
-
-## 13.3 Provider Settlement Report
+Settlement calculation:
 
 ```text
-Settlement ID: set_20260803_001
+Gross captures       ₹3,500.00
+Less refund           -₹500.00
+Less fees              -₹70.00
+Less tax               -₹12.60
+--------------------------------
+Expected settlement  ₹2,917.40
+```
+
+## 10.3 Provider settlement
+
+```text
+Settlement ID: set_20260820_001
 Net amount:    ₹2,917.40
-Bank ref:      UTR123456789
+Bank UTR:      UTR123456789
 ```
 
-## 13.4 Bank Statement
+## 10.4 Bank statement
 
 ```text
-03-Aug-2026 | UTR123456789 | PROVIDER SETTLEMENT | +₹2,917.40
+20-Aug-2026 | UTR123456789 | PROVIDER SETTLEMENT | +₹2,917.40
 ```
 
-## 13.5 Reconciliation Result
-
-### Transaction Level
+## 10.5 Reconciliation result
 
 ```text
-P1 internal ↔ P1 provider capture: MATCH
-P2 internal ↔ P2 provider capture: MATCH
-P3 internal ↔ P3 provider capture: MATCH
-P2 refund   ↔ Provider refund:     MATCH
+P1 internal ↔ provider capture     RECONCILED
+P2 internal ↔ provider capture     RECONCILED
+P3 internal ↔ provider capture     RECONCILED
+P2 refund   ↔ provider refund      RECONCILED
+
+Expected settlement: ₹2,917.40
+Provider settlement: ₹2,917.40
+Settlement variance: ₹0.00
+
+Provider payout:      ₹2,917.40
+Bank credit:          ₹2,917.40
+UTR:                  MATCH
+Bank variance:        ₹0.00
 ```
 
-### Settlement Level
+Final state:
 
 ```text
-Expected net: ₹2,917.40
-Provider net: ₹2,917.40
-Variance:     ₹0.00
+Transaction reconciliation  RECONCILED
+Settlement reconciliation   RECONCILED
+Bank reconciliation         RECONCILED
 ```
 
-### Bank Level
-
-```text
-Provider payout: ₹2,917.40
-Bank credit:     ₹2,917.40
-Reference match: UTR123456789
-Variance:        ₹0.00
-```
-
-### Final State
-
-```text
-Transaction reconciliation: RECONCILED
-Settlement reconciliation:  RECONCILED
-Bank reconciliation:        RECONCILED
-```
-
-## 13.6 Example Exception
-
-Suppose the bank received ₹2,900.00 instead.
-
-```text
-Expected bank credit: ₹2,917.40
-Actual bank credit:   ₹2,900.00
-Variance:                ₹17.40
-```
-
-Possible causes:
-
-- Extra payout fee
-- Bank charge
-- Provider adjustment missing from the report
-- Incorrect bank line selected
-- Partial settlement
-- Report generated before the final adjustment
-
-The system should create an exception rather than changing the expected value automatically.
+If the bank received `₹2,900.00` instead, the system should create an `AMOUNT_MISMATCH` or `MISSING_ADJUSTMENT` style exception for the `₹17.40` variance. It should **not** silently change the expected settlement amount.
 
 ---
 
-# 14. Exception Management
+# 11. Observability and Financial Controls
 
-Exceptions are normal in payment operations. The goal is not to hide them; it is to detect and resolve them quickly.
-
-## 14.1 Common Exception Types
-
-| Code | Meaning |
-|---|---|
-| INTERNAL_ONLY | Internal record exists but provider record is missing |
-| PROVIDER_ONLY | Provider record exists but internal record is missing |
-| AMOUNT_MISMATCH | Matching references but different amounts |
-| CURRENCY_MISMATCH | Matching references but different currencies |
-| DUPLICATE_INTERNAL | Duplicate internal records |
-| DUPLICATE_PROVIDER | Duplicate provider records |
-| MISSING_SETTLEMENT | Transaction is eligible but not found in settlement |
-| MISSING_BANK_CREDIT | Provider payout exists but no matching bank entry |
-| UNEXPLAINED_FEE | Fee does not match configured or reported components |
-| REFUND_MISMATCH | Refund state or amount differs |
-| LATE_POSTING | Expected movement arrived outside the normal time window |
-| UNBALANCED_BATCH | Settlement components do not add up to the payout total |
-| PARSER_ERROR | Source record could not be normalized |
-
-## 14.2 Exception Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Open
-    Open --> AutoRetry
-    AutoRetry --> Resolved
-    AutoRetry --> Assigned
-    Assigned --> Investigating
-    Investigating --> Resolved
-    Investigating --> WaitingExternal
-    WaitingExternal --> Investigating
-    Resolved --> Reopened
-```
-
-## 14.3 Exception Record
-
-Store:
-
-- Exception type
-- Severity
-- Related records
-- Expected and actual values
-- Variance
-- Detection rule
-- First detected time
-- Last attempted time
-- Age
-- Assigned owner or team
-- Comments
-- Evidence
-- Resolution code
-- Resolution timestamp
-- Approver when required
-
-## 14.4 Ageing Buckets
-
-```text
-0-1 day
-2-3 days
-4-7 days
-8-30 days
-More than 30 days
-```
-
-Ageing helps teams separate normal settlement timing from operational risk.
-
-## 14.5 Resolution Codes
-
-Use standardized outcomes:
-
-```text
-LATE_SETTLEMENT_RECEIVED
-PROVIDER_REPORT_CORRECTED
-BANK_REFERENCE_CORRECTED
-DUPLICATE_REMOVED
-FEE_CONFIRMED
-MANUAL_ADJUSTMENT_POSTED
-FALSE_POSITIVE_RULE_UPDATED
-WRITTEN_OFF_WITH_APPROVAL
-```
-
-Free-text comments are useful, but they should not replace structured resolution codes.
-
----
-
-# 15. Accounting and Ledger Reconciliation
-
-A payment database records operational state. A ledger records financial state: every posted transaction creates matching debit and credit entries that must sum to zero. Full detail: [Double-Entry Ledger](double-entry-ledger.md).
-
-## 15.1 Double-Entry Example: Customer Payment Captured
-
-For a ₹1,000 customer payment that is still held by the provider:
-
-```text
-Debit:  Payment processor receivable  ₹1,000
-Credit: Customer revenue/payable       ₹1,000
-```
-
-The exact credit account depends on the business model. For a marketplace, the platform may owe most of the amount to a seller rather than recognize all of it as revenue.
-
-## 15.2 Provider Fee
-
-```text
-Debit:  Payment processing expense  ₹23.60
-Credit: Payment processor receivable ₹23.60
-```
-
-## 15.3 Settlement Received
-
-```text
-Debit:  Bank cash account             ₹976.40
-Credit: Payment processor receivable  ₹976.40
-```
-
-The processor receivable should now be zero for this transaction.
-
-## 15.4 Control Account Equation
-
-```text
-Opening processor receivable
-+ Captures
-- Refunds
-- Chargebacks
-- Fees
-- Settlements
-± Adjustments
-= Closing processor receivable
-```
-
-Compare the calculated closing balance with the provider's reported balance.
-
-## 15.5 Why a Ledger Helps
-
-A proper ledger makes it easier to:
-
-- Explain every balance
-- Track pending and available funds
-- Separate company money from customer or merchant money
-- Reverse entries safely
-- Rebuild balances from transaction history
-- Reconcile provider and bank accounts
-- Produce audit-ready reports
-
-Ledger entries should be immutable. Corrections should be recorded as reversals and new entries.
-
----
-
-# 16. Automation, Scheduling, and Idempotency
-
-## 16.1 Reconciliation Cadence
-
-Different checks can run at different frequencies.
-
-| Check | Typical cadence |
-|---|---|
-| Webhook-to-API status check | Near real time or frequent polling |
-| Internal-to-provider transaction reconciliation | Hourly or daily |
-| Settlement batch reconciliation | When a settlement report is available |
-| Bank reconciliation | Daily or when bank transactions arrive |
-| Ledger balance reconciliation | Daily and at accounting close |
-| Historical backfill | On demand |
-
-Use provider-specific availability and business risk to choose the actual cadence.
-
-## 16.2 Idempotent Imports
-
-Reprocessing the same report must not create duplicate financial records: the same input plus the same parser version must always produce the same normalized records. Possible import idempotency key: `SHA256(provider + merchant_account + file_checksum)`.
-
-## 16.3 Idempotent Matching
-
-A repeated reconciliation run should produce the same result unless input data or rules changed.
-
-Store:
-
-- Rule version
-- Source data version
-- Run ID
-- Previous match relationship
-- Reason for rematch
-
-## 16.4 Late-Arriving Data
-
-Do not mark an item as a permanent exception immediately. Example policy: `0-2 days` → NOT_READY or PENDING_EXTERNAL_DATA, `3-5 days` → LATE_POSTING warning, after the configured SLA → EXCEPTION.
-
-The exact thresholds depend on payment rail, provider, country, holidays, risk level, and merchant agreement.
-
-## 16.5 Reconciliation Windows
-
-Use overlapping fetch windows to protect against delayed records.
-
-> Today's run fetches the previous 3 days again.
-
-Deduplication makes repeated ingestion safe.
-
-## 16.6 Event-Driven Plus Batch
-
-A strong design combines:
-
-- Webhooks for fast state updates
-- Provider API retrieval for verification
-- Daily reports for financial completeness
-- Bank feeds for cash confirmation
-
-Webhooks alone are not a complete reconciliation strategy because they can be delayed, duplicated, missing, or represent operational state rather than final settlement totals.
-
----
-
-# 17. Observability and Operational Metrics
-
-## 17.1 Core Metrics
+## 11.1 Useful metrics
 
 ```text
 reconciliation_match_rate
-reconciliation_auto_match_rate
+reconciliation_auto_reconcile_rate
 reconciliation_exception_rate
 unmatched_amount_total
 variance_amount_total
@@ -1334,286 +828,101 @@ exceptions_open_total
 exceptions_by_age
 average_resolution_time
 settlements_missing_in_bank
-provider_records_missing_internally
-internal_records_missing_at_provider
 report_import_delay
 reconciliation_run_duration
 ```
 
-## 17.2 Match Rate
+Track both record count and amount.
 
-`Match rate = Matched records / Eligible records × 100`
+```text
+Count match rate
+= reconciled records / eligible records × 100
 
-## 17.3 Straight-Through Reconciliation Rate
+Amount match rate
+= reconciled amount / eligible amount × 100
+```
 
-`Auto-reconciled records / Total reconciled records × 100`
+Amount-weighted metrics matter because one large unmatched payment may be more important than hundreds of tiny matched payments.
 
-This shows how much work is resolved without human intervention.
-
-## 17.4 Amount-Weighted Match Rate
-
-Record count can be misleading. One unmatched high-value transaction may matter more than many low-value items: `Amount match rate = Reconciled amount / Eligible amount × 100`.
-
-Track both count-based and amount-based rates.
-
-## 17.5 Alerts
+## 11.2 Alerts
 
 Useful alerts include:
 
-- Settlement expected but not found by SLA
+- Settlement expected but not received by SLA
 - Bank payout variance above threshold
 - Sudden increase in provider-only records
 - Duplicate transaction spike
-- Report not received
+- Settlement report not received
 - File control total mismatch
-- Negative provider balance
 - Reconciliation job failure
-- Rule match rate suddenly drops
+- Match rate suddenly drops after a rule change
 
-Alerts should include provider, merchant account, period, affected amount, and run ID.
+## 11.3 Audit and access controls
 
----
+Financial reconciliation needs strong auditability.
 
-# 18. Security, Auditability, and Controls
+Keep:
 
-Reconciliation data often contains sensitive financial and customer information.
-
-## 18.1 Access Control
-
-Apply least privilege.
-
-Example roles:
-
-```text
-Reconciliation Viewer
-Operations Analyst
-Exception Resolver
-Approver
-Finance Administrator
-System Service Account
-```
+- Who performed an action
+- Previous and new values
+- Timestamp
+- Reason
+- Evidence
+- Approval details
 
 High-risk actions such as write-offs, manual adjustments, and match overrides may require maker-checker approval.
 
-## 18.2 Audit Trail
-
-Record:
-
-- Who performed the action
-- What changed
-- Previous and new values
-- When it changed
-- Why it changed
-- Related evidence
-- Approval details
-
-## 18.3 Data Integrity
-
-Use:
-
-- Checksums for imported files
-- Unique constraints
-- Immutable raw records
-- Versioned parsing and matching rules
-- Database transactions
-- Reversal entries instead of destructive edits
-- Control totals
-
-## 18.4 Segregation of Duties
-
-A person who creates a manual adjustment should not always be able to approve it.
-
-```mermaid
-flowchart TD
-    ANALYST[Analyst creates adjustment] --> APPROVER[Finance approver<br/>reviews evidence]
-    APPROVER --> POST[System posts approved<br/>ledger entry]
-```
-
-## 18.5 Sensitive Data
-
-Avoid storing unnecessary cardholder data. Mask bank account identifiers in operational screens and logs. Encrypt sensitive fields at rest and in transit, and apply retention policies to reports and raw payloads.
+Use least privilege and keep raw evidence immutable where possible.
 
 ---
 
-# 19. Scaling Reconciliation Systems
+# 12. Practical Interview Summary
 
-## 19.1 Partitioning
-
-Common partition keys:
-
-- Provider
-- Merchant account
-- Settlement date
-- Transaction date
-- Currency
-- Region
-
-Avoid partitioning only by status because unmatched records can create a hot partition.
-
-## 19.2 Batch Processing
-
-For high volume:
+A strong reconciliation design can be explained in this order:
 
 ```text
-Read input in chunks
-Normalize in parallel
-Generate candidate keys
-Match using indexed lookups
-Write results in batches
-Aggregate control totals
+1. Ingest records from internal systems, provider APIs/reports, bank feeds, and ledger.
+2. Preserve raw data and normalize everything into a canonical model.
+3. Validate and deduplicate before matching.
+4. Match using the strongest reference first.
+5. Support one-to-one and grouped settlement relationships.
+6. Compare gross, fee, tax, refund, adjustment, and net amounts.
+7. Keep MATCHED separate from RECONCILED.
+8. Send mismatches into a structured exception workflow.
+9. Make imports and matching idempotent and safely re-runnable.
+10. Track run versions, metrics, audit history, and late-arriving data.
 ```
 
-## 19.3 Database Indexes
+The most important architectural idea is this:
 
-Useful indexes may include:
-
-```sql
-CREATE INDEX idx_provider_transaction_lookup
-ON provider_transactions (
-    provider,
-    merchant_account_id,
-    external_transaction_id
-);
-
-CREATE INDEX idx_unreconciled_provider_date
-ON provider_transactions (provider, occurred_at)
-WHERE reconciliation_status IN ('UNMATCHED', 'EXCEPTION');
-```
-
-## 19.4 Candidate Search
-
-Do not compare every internal row with every provider row — that is `O(n × m)` complexity.
-
-Generate indexed candidate keys such as `provider + merchant account + external ID`, `merchant reference + amount + currency`, `settlement ID`, or `bank reference + amount`.
-
-## 19.5 Reprocessing
-
-Support scoped reprocessing:
-
-```text
-One transaction
-One settlement
-One report file
-One merchant account
-One date range
-One provider
-```
-
-Full historical reprocessing should not be required to resolve one exception.
-
-## 19.6 Rule Versioning
-
-A rule change can affect historical results.
-
-Store:
-
-```text
-rule_name
-rule_version
-effective_from
-configuration
-created_by
-approval status
-```
-
-Do not silently run a new rule version over closed accounting periods without governance.
+> **Operational payment state tells you what the system believes happened. Reconciliation proves what financially happened across independent sources.**
 
 ---
 
-# 20. Practical Implementation Checklist
+# References
 
-## 20.1 Data Ingestion
+Official documentation checked for current terminology and reconciliation patterns on 20 August 2026:
 
-- Preserve original provider and bank records
-- Deduplicate files, pages, and events
-- Validate record counts and control totals
-- Handle pagination and partial API failures
-- Record source and parser versions
-- Normalize timestamps to a standard time zone while retaining source timestamps
-- Combine event-driven webhooks with scheduled provider reports and bank feeds — webhooks alone are not a complete reconciliation strategy
-
-## 20.2 Money Handling
-
-- Use integer minor units or decimal types
-- Store currency with every amount
-- Define a consistent sign convention
-- Separate gross, fee, tax, refund, reserve, and net components
-- Validate component equations
-- Support zero-decimal and multi-decimal currencies when applicable
-
-## 20.3 Matching
-
-- Prefer provider-generated unique references
-- Run deterministic rules before fuzzy rules
-- Detect ambiguous candidates
-- Support one-to-one, one-to-many, and many-to-one relationships
-- Record the rule and confidence behind every match
-- Prevent records from being matched twice unintentionally
-
-## 20.4 Exceptions
-
-- Use structured reason and resolution codes
-- Track ageing and ownership
-- Retain evidence and comments
-- Support retry, reassignment, escalation, resolution, and reopening
-- Require approvals for material write-offs or manual adjustments
-
-## 20.5 Reliability
-
-- Make ingestion and matching idempotent
-- Use overlapping retrieval windows
-- Support late-arriving and corrected data
-- Track each run and its rule version
-- Allow safe scoped reprocessing
-- Monitor report delivery and run completeness
-
-## 20.6 Financial Controls
-
-- Reconcile transaction, settlement, bank, and ledger levels
-- Compare both record counts and amounts
-- Validate opening and closing balances
-- Preserve immutable audit history
-- Separate operational status from reconciliation status
-- Close accounting periods only after material exceptions are reviewed
-
----
-
-# 21. References
-
-The following official documentation was reviewed for current reconciliation patterns and provider terminology:
-
-1. **Stripe — Payout reconciliation**  
+1. Stripe — Payout reconciliation  
    https://docs.stripe.com/payouts/reconciliation
 
-2. **Stripe — Payout reconciliation report**  
+2. Stripe — Payout reconciliation report  
    https://docs.stripe.com/reports/payout-reconciliation
 
-3. **Stripe — Bank reconciliation**  
+3. Stripe — Bank reconciliation  
    https://docs.stripe.com/bank-reconciliation
 
-4. **Stripe API — Balance transactions**  
-   https://docs.stripe.com/api/balance_transactions/list
-
-5. **Adyen — Settlement reconciliation**  
-   https://docs.adyen.com/reporting/settlement-reconciliation
-
-6. **Adyen — Settlement details report**  
+4. Adyen — Settlement details report  
    https://docs.adyen.com/reporting/settlement-reconciliation/transaction-level/settlement-details-report
 
-7. **Adyen — Batch-level reconciliation**  
-   https://docs.adyen.com/reporting/settlement-reconciliation/batch-level/
+5. Adyen — Aggregate settlement details report  
+   https://docs.adyen.com/reporting/settlement-reconciliation/batch-level/aggregate-settlement-details-report
 
-8. **Razorpay — Settlements**  
+6. Razorpay — Settlements  
    https://razorpay.com/docs/payments/settlements/
 
-9. **Razorpay — Settlement reconciliation reports**  
+7. Razorpay — Settlement FAQs / reconciliation reports  
    https://razorpay.com/docs/payments/settlements/faqs/
 
-10. **Modern Treasury — Account reconciliation**  
-    https://docs.moderntreasury.com/ledgers/docs/account-reconciliation
-
-11. **Modern Treasury — Reconciling received payments**  
-    https://docs.moderntreasury.com/payments/docs/managing-externally-originated-payments
-
-12. **Modern Treasury — Manual reconciliation and exception handling**  
-    https://docs.moderntreasury.com/payments/docs/exception-handling-manual-reconciliation
+8. Modern Treasury — Account Reconciliation  
+   https://docs.moderntreasury.com/ledgers/docs/account-reconciliation

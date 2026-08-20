@@ -8,21 +8,30 @@ order: 12
 
 > Design a reliable distributed system that schedules jobs for future execution, places runnable work onto queues, and executes that work using scalable workers.
 
-## In short
+## In Short
 
-- Split the system three ways: the **scheduler** decides *when* work becomes runnable, the **queue** stores runnable work durably, the **worker** performs the business operation.
-- The scheduler must not dual-write "mark queued, then publish" — insert the job run, advance the schedule, and write an outbox event in one transaction, and let a relay publish it.
-- A worker holds each message under a lease (visibility timeout) and heartbeats to renew it; if the worker dies the lease expires and the message becomes available to someone else.
-- Delivery is at-least-once, so handlers must be idempotent — a deterministic key such as `schedule_id + scheduled_for` plus a unique constraint turns duplicate delivery into an exactly-once *business effect*.
-- Classify failures: retry transient ones with exponential backoff plus jitter, fail invalid payloads immediately, and route exhausted attempts to a dead-letter queue with controlled replay.
-- Recurring jobs compute the next occurrence from the intended scheduled time (never from completion time), store UTC plus an IANA zone name, and need explicit misfire and overlap policies.
-- Scale by partitioning schedules across scheduler shards and queues by workload profile; autoscale workers on queue *age* and arrival × service rate, not on depth alone.
+A reliable job scheduler is easiest to understand as three separate responsibilities:
+
+- **Scheduler** — decides **when** a job becomes runnable.
+- **Queue** — stores runnable work durably until a worker can process it.
+- **Worker** — performs the actual business operation.
+
+The important reliability rules are:
+
+- Store schedules and execution state durably.
+- Use a **transactional outbox** instead of updating the database and publishing to the queue as two unrelated writes.
+- Expect **at-least-once delivery**, so workers must be idempotent.
+- Use a **lease / visibility timeout** so crashed worker jobs can be retried safely.
+- Retry only transient failures with **exponential backoff + jitter**.
+- Send exhausted or permanently failing jobs to a **dead-letter queue (DLQ)**.
+- Store timestamps in UTC and keep the schedule's **IANA time-zone name** for recurring jobs.
+- Scale workers using queue age, arrival rate, processing time, and resource usage—not queue depth alone.
 
 ```mermaid
 flowchart LR
-    API[Job API] --> DB[(Schedule and Execution DB)]
+    API[Job API] --> DB[(Schedule + Execution DB)]
     Scheduler[Scheduler Cluster] --> DB
-    Scheduler --> Outbox[Transactional Outbox]
+    Scheduler --> Outbox[(Transactional Outbox)]
     Outbox --> Relay[Outbox Relay]
     Relay --> Queue[(Durable Queue)]
     Queue --> Workers[Worker Pool]
@@ -30,369 +39,282 @@ flowchart LR
     Queue --> DLQ[(Dead-Letter Queue)]
 ```
 
-**Interview answer:** Keep schedules in a relational store with an indexed `next_run_at`, let several scheduler instances claim due rows with `FOR UPDATE SKIP LOCKED`, and in one transaction create the job run, advance the schedule, and write an outbox event that a relay publishes to a durable queue. A worker receives the message, takes a lease, moves the run `QUEUED → RUNNING` with a conditional update, executes an idempotent handler, records the result, and only then acknowledges; transient failures go back with exponential backoff plus jitter and exhausted attempts land in a dead-letter queue. Exactly-once is a property of the business effect — a deterministic idempotency key with a unique constraint — not of the queue.
+---
 
-**Gotcha:** Marking the job queued in the database and then publishing it to the broker is two writes to two systems with no transaction around them. A crash in between loses the run permanently or, after a retry, duplicates it — which is exactly what the transactional outbox exists to prevent, and why the honest guarantee is at-least-once delivery plus an idempotent handler rather than exactly-once delivery.
+## Index
+
+1. **Problem Overview**
+   - Scheduler vs Queue vs Worker
+   - Common use cases
+2. **Requirements**
+   - Functional requirements
+   - Non-functional requirements
+3. **Core Concepts**
+   - Schedule, Job Run, Attempt
+   - Lease / Visibility Timeout
+   - Idempotency
+4. **High-Level Architecture**
+   - Main execution flow
+   - Transactional Outbox
+5. **Data Model and API Shape**
+   - Main tables
+   - Minimal APIs
+6. **Scheduler Design**
+   - Claiming due schedules
+   - Recurring jobs, misfires, overlaps, time zones
+7. **Queue and Worker Design**
+   - Message shape
+   - Acknowledgement and leasing
+   - Idempotent processing
+8. **Retries and Failure Recovery**
+   - Failure classification
+   - Backoff and DLQ
+   - Important crash scenarios
+9. **Scaling and Observability**
+   - Scheduler and worker scaling
+   - Priority, fairness, ordering
+   - Metrics and alerts
+10. **Practical Example**
+    - Daily invoice email
+11. **Technology Choices and Evolution**
+12. **Key Takeaways**
 
 ---
 
 ## 1. Problem Overview
 
-A **job scheduler and queue** accepts work that should run immediately, once at a future time, repeatedly on a fixed interval or cron expression, or after another job completes — each with its own priority, retry policy, timeout, and concurrency rule.
+A **job scheduler and queue** runs work immediately, at a future time, or repeatedly based on a fixed interval or cron expression.
 
-Typical examples are emails and notifications, monthly invoice generation, uploaded-file processing, image and video resizing, nightly reports, retried webhook deliveries, external data synchronization, expired-session cleanup, and machine-learning inference or batch pipelines.
+Common examples include:
 
-The important system-design challenge is not merely “run a function later.” The system must continue working when schedulers restart, workers crash, messages are duplicated, clocks differ, queues become overloaded, or downstream services fail.
+- sending emails and notifications;
+- monthly invoice generation;
+- uploaded-file processing;
+- image/video resizing;
+- nightly reports;
+- webhook retries;
+- external data synchronization;
+- cleanup jobs;
+- ML inference or batch pipelines.
 
-### 1.1 Scheduler versus Queue
+The real system-design problem is not simply "run this function later." The design must continue working when schedulers restart, workers crash, messages are delivered twice, queues become overloaded, or downstream services temporarily fail.
 
-These responsibilities are related but different:
+### 1.1 Scheduler vs Queue vs Worker
 
-| Component | Main responsibility |
+| Component | Responsibility |
 |---|---|
-| Scheduler | Decides **when** a job becomes runnable |
-| Queue | Stores runnable work until a worker can process it |
-| Worker | Performs the actual business operation |
-| Execution store | Records attempts, status, results, and errors |
+| **Scheduler** | Decides when a job becomes runnable |
+| **Queue** | Stores runnable work until a worker is ready |
+| **Worker** | Executes business logic |
+| **Execution Store** | Records run status, attempts, results, and errors |
 
-A scheduler should normally avoid performing the business work itself. It should convert a durable schedule into a runnable queue message.
+A scheduler should normally **not execute the business operation itself**. Its job is to convert a durable schedule into a runnable job.
 
 ---
 
-## 2. Requirements and Scope
+## 2. Requirements
 
 ### 2.1 Functional Requirements
 
-| Area | Capability |
-|---|---|
-| Schedule management | Create, update, pause, resume, and delete a schedule |
-| Timing | One-time jobs via `run_at`, recurring jobs via cron or fixed interval, and immediate enqueue |
-| Routing | Assign jobs to named queues such as `email`, `billing`, or `video` |
-| Policy | Configure priority, timeout, retry count, and backoff per job |
-| Tracking | Record each logical run and every processing attempt; expose status and execution history |
-| Control | Cancel jobs that have not started; prevent uncontrolled concurrent runs of one schedule |
-| Failure handling | Retry transient failures automatically; move permanently failing jobs to a dead-letter queue |
+The system should support:
+
+- immediate jobs;
+- one-time future jobs using `run_at`;
+- recurring jobs using cron or fixed intervals;
+- pause, resume, update, and delete schedule operations;
+- multiple named queues such as `email`, `billing`, and `media`;
+- configurable priority, timeout, and retry policy;
+- run status and attempt history;
+- cancellation before execution starts;
+- automatic retry of transient failures;
+- DLQ handling after permanent failure or retry exhaustion.
 
 ### 2.2 Non-Functional Requirements
 
-A production design should target:
-
-| Property | Target |
+| Requirement | Meaning |
 |---|---|
-| Durability | Accepted jobs survive process and machine restarts |
-| Availability | A scheduler or worker failure does not stop the complete system |
-| Scalability | Throughput grows by adding scheduler partitions and workers |
-| Scheduling delay | Jobs are dispatched near their expected execution time |
-| Fault tolerance | Lost acknowledgements and worker crashes are recoverable |
-| Isolation | One tenant or queue cannot consume all available capacity |
-| Observability | Operators can see queue lag, failures, retries, and stuck jobs |
-| Security | Job payloads, credentials, and administrative operations are protected |
+| **Durability** | Accepted jobs survive restarts and machine failures |
+| **Availability** | One failed scheduler/worker does not stop the platform |
+| **Scalability** | Add scheduler shards and workers as traffic grows |
+| **Low scheduling delay** | Jobs start close to their intended time |
+| **Fault tolerance** | Worker crashes and lost acknowledgements are recoverable |
+| **Isolation** | One tenant/workload cannot consume all capacity |
+| **Observability** | Operators can identify lag, retries, failures, and stuck jobs |
+| **Security** | Payloads, credentials, and admin operations are protected |
 
-### 2.3 Explicit Non-Goals
+### 2.3 Non-Goal
 
-A basic job scheduler does not automatically provide arbitrary distributed transactions across external systems, true exactly-once execution of every possible side effect, a complete workflow orchestration language, long-running human approval workflows, or event-stream analytics.
-
-Those requirements may need a workflow engine such as Temporal, AWS Step Functions, or another orchestration platform.
+A basic scheduler is not a full workflow engine. Multi-step durable workflows, compensation logic, long-running approvals, signals, and complex orchestration are better handled by systems such as **Temporal** or **AWS Step Functions**.
 
 ---
 
 ## 3. Core Concepts
 
-### 3.1 Job Definition
+### 3.1 Schedule
 
-A **job definition** describes what should be executed.
+A **schedule** describes when work should run.
 
-```json
-{
-  "job_type": "send_invoice_email",
-  "payload": {
-    "invoice_id": "inv_123",
-    "customer_id": "cus_456"
-  },
-  "queue": "email",
-  "priority": 5,
-  "timeout_seconds": 60,
-  "max_attempts": 5
-}
+Examples:
+
+```text
+One time:       2026-08-25T09:00:00Z
+Fixed interval: every 15 minutes
+Cron:           0 8 * * *
+Time zone:      Asia/Kolkata
 ```
 
-The queue should usually contain a small payload or a reference to durable data. Large files should be stored in object storage, while the message contains the object key.
+### 3.2 Job Run
 
-### 3.2 Schedule
+A **job run** is one logical execution generated from a schedule.
 
-A **schedule** describes when a job definition should create a run: one time (`2026-08-10T09:00:00Z`), on a fixed interval (every 15 minutes), on a cron expression (`0 2 * * *`), or event-based (after `report_generation` completes).
+```text
+Daily schedule
+   ├── 2026-08-20 -> run_001
+   ├── 2026-08-21 -> run_002
+   └── 2026-08-22 -> run_003
+```
 
-### 3.3 Job Run
+### 3.3 Attempt
 
-A **job run** is one logical execution generated from a schedule. A daily `daily_invoice_export` schedule creates a new job run each day: `2026-08-01 → run_001`, `2026-08-02 → run_002`, `2026-08-03 → run_003`.
+An **attempt** is one worker try for a job run.
 
-### 3.4 Attempt
+```text
+run_003
+   ├── attempt 1 -> timeout
+   ├── attempt 2 -> HTTP 503
+   └── attempt 3 -> success
+```
 
-An **attempt** is one worker processing try for a job run. So `run_003` may record attempt 1 → timeout, attempt 2 → HTTP 503, attempt 3 → success.
+Keeping **runs** and **attempts** separate makes retries, debugging, and audit history much easier.
 
-Keeping runs and attempts separate makes retries and debugging much clearer.
+### 3.4 Lease / Visibility Timeout
 
-### 3.5 Lease or Visibility Timeout
+When a worker receives a message, it gets temporary ownership of that work.
 
-When a worker receives a message, it obtains a temporary processing lease. During the lease, other workers should not normally receive the same message.
+```text
+Queue -> Worker A receives job
+      -> message becomes temporarily hidden
+      -> Worker A succeeds -> acknowledge/delete
+      -> Worker A crashes   -> lease expires -> message becomes visible again
+```
 
-If the worker succeeds, it acknowledges the message. If it crashes and the lease expires, the message becomes available again.
+For long-running work, the worker should periodically extend the lease with a heartbeat.
 
-### 3.6 Idempotency Key
+### 3.5 Idempotency
 
-An **idempotency key** identifies the logical operation so that processing it more than once does not create duplicate business effects — for example `invoice-email:inv_123:billing-cycle-2026-08`.
+Queues can redeliver messages, so executing the same logical job twice must not produce duplicate business effects.
+
+A recurring job can use a deterministic key such as:
+
+```text
+idempotency_key = schedule_id + scheduled_for_utc
+```
+
+Store that key under a unique database constraint. If the same logical occurrence is created or processed again, the system detects it safely.
 
 ---
 
 ## 4. High-Level Architecture
 
-The durable pieces are the job API, the schedule and execution database, the scheduler cluster, the transactional outbox with its relay, the durable message queue, the worker pool, and the dead-letter queue — the diagram at the top of this note shows how work flows between them. Around that path sit the external systems workers actually call (databases, APIs, object storage) and a monitoring and admin surface that reads from the database, the queue, and the workers.
-
 ### 4.1 Main Flow
-
-1. A client creates a schedule through the API.
-2. The API validates and stores it in the schedule database.
-3. A scheduler instance finds due schedules.
-4. In one database transaction, it creates a job run, advances the schedule, and writes an outbox event.
-5. An outbox relay publishes the runnable job to the queue.
-6. A worker receives the message and obtains a lease.
-7. The worker executes the operation.
-8. On success, it records completion and acknowledges the message.
-9. On transient failure, it schedules a retry.
-10. On permanent or repeated failure, the message moves to a dead-letter queue.
-
----
-
-## 5. End-to-End Job Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> SCHEDULED
-    SCHEDULED --> QUEUED: scheduler dispatches run
-    QUEUED --> RUNNING: worker receives message
-    RUNNING --> SUCCEEDED: operation completed
-    RUNNING --> RETRY_WAIT: retryable failure
-    RETRY_WAIT --> QUEUED: retry becomes due
-    RUNNING --> FAILED: permanent failure
-    RUNNING --> DEAD_LETTERED: attempts exhausted
-    SCHEDULED --> CANCELLED: cancelled before dispatch
-    QUEUED --> CANCELLED: cancellation observed before start
-    SUCCEEDED --> [*]
-    FAILED --> [*]
-    DEAD_LETTERED --> [*]
-    CANCELLED --> [*]
-```
-
-A useful status model is:
-
-| Status | Meaning |
-|---|---|
-| `SCHEDULED` | Known by the scheduler but not yet runnable |
-| `QUEUED` | Published for worker consumption |
-| `RUNNING` | A worker currently owns a lease |
-| `RETRY_WAIT` | Waiting for the next retry time |
-| `SUCCEEDED` | Completed successfully |
-| `FAILED` | Finished with a non-retryable failure |
-| `DEAD_LETTERED` | Failed too many times and requires investigation |
-| `CANCELLED` | Should not start or continue |
-
-State transitions should be validated with conditional updates. For example, a worker should not change a `CANCELLED` job to `RUNNING`.
-
----
-
-## 6. Core Components
-
-### 6.1 Job API
-
-The API handles authentication and authorization, request validation, schedule creation and updates, idempotent job submission, status lookup, cancellation and manual retry, quota enforcement, and audit logging. It must store accepted work durably before returning success.
-
-### 6.2 Schedule Store
-
-A relational database is a strong default: it gives transactions, unique constraints, indexed time-based queries, row-level locking, execution history and auditability, and straightforward updates for pause, cancellation, and policy changes.
-
-PostgreSQL can support multiple schedulers claiming due rows with `FOR UPDATE SKIP LOCKED`. Its documentation explicitly notes that skipping locked rows can help multiple consumers access a queue-like table without waiting on one another.[1]
-
-### 6.3 Scheduler Cluster
-
-The scheduler continuously finds due schedules and converts them into job runs.
-
-It must solve three problems:
-
-1. Multiple scheduler instances must not create uncontrolled duplicate runs.
-2. A crash after updating the database but before publishing to the queue must not lose the run.
-3. Recurring schedules must advance correctly after every due occurrence.
-
-### 6.4 Transactional Outbox
-
-The scheduler should avoid the unsafe dual-write sequence "mark the job queued in the database, then publish the message to the queue" — a crash between the two operations can produce inconsistent state.
-
-Instead, write the job run and outbox event in the same database transaction:
 
 ```mermaid
 sequenceDiagram
-    participant S as Scheduler
+    participant C as Client
+    participant API as Job API
     participant DB as Database
+    participant S as Scheduler
     participant R as Outbox Relay
     participant Q as Queue
+    participant W as Worker
 
-    S->>DB: BEGIN
-    S->>DB: Insert job_run
-    S->>DB: Update schedule.next_run_at
-    S->>DB: Insert outbox_event
-    S->>DB: COMMIT
-    R->>DB: Claim unpublished outbox event
-    R->>Q: Publish job message
-    Q-->>R: Publish acknowledged
-    R->>DB: Mark outbox event published
+    C->>API: Create schedule/job
+    API->>DB: Persist durable state
+    S->>DB: Claim due schedule
+    S->>DB: Create run + advance schedule + outbox event
+    R->>DB: Read unpublished outbox event
+    R->>Q: Publish runnable message
+    W->>Q: Receive with lease
+    W->>DB: QUEUED -> RUNNING
+    W->>W: Execute idempotent handler
+    W->>DB: Mark SUCCEEDED
+    W->>Q: Acknowledge
 ```
 
-The relay may publish the same outbox event more than once when acknowledgements are lost. Therefore, queue messages and workers must remain idempotent.
+### 4.2 Why the Transactional Outbox Matters
 
-### 6.5 Durable Queue
+This sequence is unsafe:
 
-The queue should provide durable messages, multiple competing consumers, acknowledgement or deletion after success, visibility-timeout or lease semantics, delayed messages for retry, dead-letter handling, and metrics for depth and oldest message age.
+```text
+1. Mark job QUEUED in database
+2. Publish message to queue
+```
 
-Managed queues such as Amazon SQS use at-least-once delivery for standard queues, so consumers must tolerate duplicate messages.[2] A received message stays temporarily invisible during its visibility timeout and becomes available again if it is not deleted before the timeout expires.[3]
+If the process crashes between steps 1 and 2, the database says the job was queued but no message exists.
 
-### 6.6 Workers
+Instead, perform these operations in **one database transaction**:
 
-A worker consumes jobs from one or more queues, validates the message schema and version, acquires and renews a processing lease, enforces timeout and cancellation, executes the business logic, records attempts and results, classifies failures as retryable or permanent, and acknowledges only after successful completion.
+```text
+BEGIN
+  create job_run
+  advance schedule.next_run_at
+  insert outbox_event
+COMMIT
+```
 
-### 6.7 Dead-Letter Queue
+A separate relay publishes the outbox event to the queue.
 
-A dead-letter queue stores messages that cannot be processed successfully after the configured number of attempts.
-
-It is not just a “failed messages bucket.” It needs alerting, searchable error details, payload redaction, replay controls, replay rate limits, and a record of who replayed a message and why.
-
-### 6.8 Monitoring and Admin UI
-
-Operators should be able to search jobs by run ID, schedule ID, tenant, or idempotency key; view job state, attempt history, and sanitized error details; pause a schedule or queue; retry, cancel, or replay from the DLQ; and see queue lag, worker capacity, scheduler ownership, and partition health.
+The relay itself may publish twice if it crashes after queue publication but before marking the event as published. That is acceptable because workers are designed to be idempotent.
 
 ---
 
-## 7. Data Model
+## 5. Data Model and API Shape
 
-A practical relational model separates definitions, schedules, logical runs, attempts, and outbox events.
+### 5.1 Main Tables
 
-### 7.1 `job_definitions`
+A practical relational design needs only a few core entities:
 
-```sql
-CREATE TABLE job_definitions (
-    id                  UUID PRIMARY KEY,
-    tenant_id           UUID NOT NULL,
-    job_type            VARCHAR(150) NOT NULL,
-    payload             JSONB NOT NULL,
-    payload_version     INTEGER NOT NULL DEFAULT 1,
-    queue_name          VARCHAR(100) NOT NULL,
-    priority            SMALLINT NOT NULL DEFAULT 5,
-    timeout_seconds     INTEGER NOT NULL,
-    max_attempts        INTEGER NOT NULL DEFAULT 5,
-    retry_policy        JSONB NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
+| Table | Important fields |
+|---|---|
+| `job_definitions` | `job_type`, `payload`, `queue_name`, `timeout`, `max_attempts` |
+| `schedules` | `schedule_type`, `cron_expression`, `time_zone`, `next_run_at`, `state`, `overlap_policy`, `misfire_policy` |
+| `job_runs` | `scheduled_for`, `status`, `idempotency_key`, `available_at`, `attempt_count`, `lease_expires_at` |
+| `job_attempts` | `attempt_number`, `worker_id`, `outcome`, `error`, `duration_ms` |
+| `outbox_events` | `event_type`, `payload`, `created_at`, `published_at` |
 
-### 7.2 `schedules`
+Important indexes:
 
 ```sql
-CREATE TABLE schedules (
-    id                    UUID PRIMARY KEY,
-    tenant_id             UUID NOT NULL,
-    job_definition_id     UUID NOT NULL REFERENCES job_definitions(id),
-    schedule_type         VARCHAR(30) NOT NULL,
-    cron_expression       VARCHAR(100),
-    interval_seconds      BIGINT,
-    time_zone             VARCHAR(100) NOT NULL DEFAULT 'UTC',
-    next_run_at            TIMESTAMPTZ,
-    last_scheduled_at      TIMESTAMPTZ,
-    state                  VARCHAR(30) NOT NULL,
-    overlap_policy         VARCHAR(30) NOT NULL DEFAULT 'ALLOW',
-    misfire_policy         VARCHAR(30) NOT NULL DEFAULT 'RUN_ONCE',
-    version                BIGINT NOT NULL DEFAULT 0,
-    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE INDEX idx_schedules_due
 ON schedules (next_run_at, id)
 WHERE state = 'ACTIVE';
+
+CREATE UNIQUE INDEX uq_job_run_idempotency
+ON job_runs (tenant_id, idempotency_key);
 ```
 
-### 7.3 `job_runs`
+### 5.2 Minimal API
 
-```sql
-CREATE TABLE job_runs (
-    id                    UUID PRIMARY KEY,
-    tenant_id             UUID NOT NULL,
-    schedule_id           UUID,
-    job_definition_id     UUID NOT NULL,
-    scheduled_for         TIMESTAMPTZ NOT NULL,
-    available_at          TIMESTAMPTZ NOT NULL,
-    status                VARCHAR(30) NOT NULL,
-    idempotency_key       VARCHAR(255) NOT NULL,
-    attempt_count         INTEGER NOT NULL DEFAULT 0,
-    worker_id             VARCHAR(255),
-    lease_expires_at      TIMESTAMPTZ,
-    started_at            TIMESTAMPTZ,
-    completed_at          TIMESTAMPTZ,
-    result                JSONB,
-    error_code            VARCHAR(100),
-    error_message         TEXT,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, idempotency_key)
-);
-
-CREATE INDEX idx_job_runs_status_available
-ON job_runs (status, available_at);
+```http
+POST /v1/jobs
+POST /v1/schedules
+GET  /v1/jobs/{job_run_id}
+POST /v1/jobs/{job_run_id}/cancel
+POST /v1/schedules/{schedule_id}/pause
+POST /v1/schedules/{schedule_id}/resume
 ```
 
-A recurring run can use the deterministic key `schedule_id + scheduled_for_utc`. The unique constraint prevents duplicate logical runs even if multiple scheduler instances try to create the same occurrence.
-
-### 7.4 `job_attempts`
-
-```sql
-CREATE TABLE job_attempts (
-    id                UUID PRIMARY KEY,
-    job_run_id        UUID NOT NULL REFERENCES job_runs(id),
-    attempt_number    INTEGER NOT NULL,
-    worker_id         VARCHAR(255) NOT NULL,
-    started_at        TIMESTAMPTZ NOT NULL,
-    completed_at      TIMESTAMPTZ,
-    outcome           VARCHAR(30),
-    error_code        VARCHAR(100),
-    error_message     TEXT,
-    duration_ms       BIGINT,
-    UNIQUE (job_run_id, attempt_number)
-);
-```
-
-### 7.5 `outbox_events`
-
-```sql
-CREATE TABLE outbox_events (
-    id                UUID PRIMARY KEY,
-    aggregate_type    VARCHAR(100) NOT NULL,
-    aggregate_id      UUID NOT NULL,
-    event_type        VARCHAR(100) NOT NULL,
-    payload           JSONB NOT NULL,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at      TIMESTAMPTZ,
-    publish_attempts  INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX idx_outbox_unpublished
-ON outbox_events (created_at, id)
-WHERE published_at IS NULL;
-```
+For immediate job submission, accept an `Idempotency-Key` so a client retry does not create duplicate logical work.
 
 ---
 
-## 8. Scheduler Design
+## 6. Scheduler Design
 
-### 8.1 Database Polling Scheduler
+### 6.1 Claiming Due Schedules
 
-The simplest durable design polls an indexed `next_run_at` column.
+A relational database is a strong default because it provides transactions, indexes, row locks, unique constraints, and auditability.
+
+With PostgreSQL, multiple scheduler instances can claim different due rows using `FOR UPDATE SKIP LOCKED`:
 
 ```sql
 BEGIN;
@@ -405,806 +327,287 @@ ORDER BY next_run_at, id
 FOR UPDATE SKIP LOCKED
 LIMIT 500;
 
--- For every claimed schedule:
--- 1. Insert job_run using a deterministic idempotency key.
--- 2. Insert an outbox event.
--- 3. Calculate and store the next occurrence.
+-- For each claimed schedule:
+-- 1. create job_run if absent
+-- 2. insert outbox_event
+-- 3. calculate next_run_at
 
 COMMIT;
 ```
 
-#### Advantages
+`SKIP LOCKED` is useful here because another scheduler can skip rows already claimed by a peer rather than waiting on them.
 
-- easy to understand;
-- durable and transactional;
-- works well for small and medium workloads;
-- supports pause, update, and audit operations naturally;
-- horizontal schedulers can claim different rows.
+### 6.2 Recurring Jobs
 
-#### Limitations
+Always calculate the next occurrence from the **intended scheduled time**, not from completion time.
 
-- frequent polling creates database load;
-- very large schedule tables require careful indexing and partitioning;
-- scanning every second is inefficient when most jobs are far in the future;
-- a single hot index can become a bottleneck.
-
-### 8.2 Look-Ahead Window
-
-Instead of moving only jobs due at the current millisecond, a scheduler may claim a short look-ahead window such as `now <= next_run_at < now + 30 seconds`.
-
-It can publish those jobs to a queue that supports delayed delivery. This reduces database polling frequency but introduces dependence on queue delay accuracy.
-
-### 8.3 Redis Sorted Set Scheduler
-
-A Redis sorted set can store `member = schedule_id` with `score = next_run_at` in epoch milliseconds; sorted sets keep unique members ordered by score.[4]
-
-A scheduler atomically claims members whose score is less than or equal to the current time, moves them to an in-flight set, and publishes them.
-
-#### Advantages
-
-- fast ordered access by execution time;
-- low scheduling latency;
-- useful when due-time operations are extremely frequent.
-
-#### Risks
-
-- the relational database may still be the source of truth;
-- updating both Redis and the database creates consistency problems;
-- recovery must rebuild Redis from durable state;
-- atomic claim-and-publish still needs careful design.
-
-A common hybrid keeps schedules durably in PostgreSQL and uses Redis only as an acceleration index.
-
-### 8.4 Hierarchical Timing Wheel
-
-A timing wheel places timers into time buckets across levels — seconds, then minutes, then hours, then days.
-
-It is memory-efficient for millions of timers and avoids repeatedly scanning a database index. However, durability, failover, resharding, cancellation, and restart recovery become more complex.
-
-Timing wheels are useful inside a scheduler shard after schedules have already been loaded from durable storage.
-
-### 8.5 Scheduler Ownership Models
-
-#### Single Active Leader
-
-Only one scheduler dispatches work. Standby instances take over after leader failure.
-
-> Simple, but one leader can become a throughput bottleneck.
-
-#### Active-Active with Row Claims
-
-All scheduler instances query due rows and use row locking or conditional updates to claim different records.
-
-> Good default for database-backed systems.
-
-#### Partitioned Scheduling
-
-Schedules are assigned to stable shards with `shard = hash(schedule_id) mod N`. Each scheduler instance owns one or more shards. A coordinator redistributes shards when instances join or leave.
-
-```mermaid
-flowchart TB
-    Registry[Scheduler Membership / Coordination]
-    S1[Scheduler A: shards 0-31]
-    S2[Scheduler B: shards 32-63]
-    S3[Scheduler C: shards 64-95]
-    S4[Scheduler D: shards 96-127]
-    P[(Partitioned Schedule Store)]
-
-    Registry --> S1
-    Registry --> S2
-    Registry --> S3
-    Registry --> S4
-    S1 --> P
-    S2 --> P
-    S3 --> P
-    S4 --> P
+```text
+Scheduled: 09:00
+Completed: 09:07
+Next run:  tomorrow 09:00   ✅
+           tomorrow 09:07   ❌ schedule drift
 ```
 
-Partitioning improves throughput but makes resharding and ownership recovery more complicated.
+### 6.3 Time Zones
+
+Store execution timestamps in UTC, but keep the schedule's IANA time-zone name:
+
+```text
+scheduled_for: 2026-08-21T02:30:00Z
+time_zone:     Asia/Kolkata
+```
+
+Do not keep only a fixed UTC offset because daylight-saving rules can change local offsets.
+
+### 6.4 Misfire Policy
+
+A **misfire** happens when a scheduled time is missed because the scheduler was down or overloaded.
+
+| Policy | Behavior |
+|---|---|
+| `SKIP` | Ignore missed occurrences |
+| `RUN_ONCE` | Run one catch-up job now |
+| `CATCH_UP_ALL` | Create missed runs, with a strict safety cap |
+| `FAIL` | Require operator attention |
+
+### 6.5 Overlap Policy
+
+If the previous occurrence is still running:
+
+| Policy | Behavior |
+|---|---|
+| `ALLOW` | Run concurrently |
+| `FORBID` | Skip/delay the new occurrence |
+| `REPLACE` | Cancel old run and start new run |
+| `SERIALIZE` | Queue new run but allow one active execution |
+
+These policies should be explicit instead of hidden inside worker code.
 
 ---
 
-## 9. Queue Design
+## 7. Queue and Worker Design
 
-### 9.1 Queue Message Shape
+### 7.1 Queue Message
+
+Keep queue messages small:
 
 ```json
 {
   "message_id": "msg_789",
   "job_run_id": "run_123",
-  "job_type": "generate_monthly_invoice",
+  "job_type": "generate_invoice",
   "payload_version": 2,
-  "queue": "billing",
-  "priority": 3,
   "attempt": 1,
-  "scheduled_for": "2026-08-03T02:00:00Z",
-  "available_at": "2026-08-03T02:00:00Z",
-  "timeout_seconds": 300,
+  "scheduled_for": "2026-08-21T02:30:00Z",
+  "timeout_seconds": 120,
   "trace_id": "trace_abc"
 }
 ```
 
-Prefer carrying `job_run_id` and minimal routing data. The worker can load the complete payload from durable storage when payloads are large, sensitive, or frequently updated.
+Large or sensitive payloads should remain in durable storage; the queue message can contain only `job_run_id` and routing metadata.
 
-### 9.2 Acknowledgement Model
+### 7.2 Safe Worker Sequence
 
-The safe sequence is `receive → process → commit business effect → record success → acknowledge`.
-
-Acknowledging before the business operation risks losing work if the worker crashes.
-
-Acknowledging after completion can cause duplicate delivery if the worker succeeds but crashes before the acknowledgement reaches the queue. Idempotency handles this case.
-
-### 9.3 Visibility Timeout
-
-Choose a visibility timeout longer than normal processing time, but not so long that crashed jobs remain unavailable for excessive time.
-
-For variable-duration jobs, use a heartbeat: every 30 seconds, renew the lease for another 90 seconds. The worker stops renewing when processing completes, cancellation is requested, it loses ownership, or the overall timeout is reached.
-
-### 9.4 Queue-per-Workload versus Shared Queue
-
-| Model | Benefits | Costs |
-|---|---|---|
-| Separate queues (`email`, `billing`, `media-processing`, `webhook-delivery`) | Workload isolation; independent scaling; different retry and timeout policies; easier operational ownership | More queues and worker configurations; spare capacity may sit unused; routing and monitoring get more complex |
-| One shared queue | Simple operations; workers consume mixed jobs; capacity is shared automatically | Long tasks delay short tasks; one noisy workload affects the rest; per-type scaling is difficult |
-
-A practical design uses a small number of queues grouped by runtime and resource profile.
-
----
-
-## 10. Worker Design
-
-### 10.1 Worker Processing Flow
-
-```mermaid
-sequenceDiagram
-    participant Q as Queue
-    participant W as Worker
-    participant DB as Execution DB
-    participant B as Business Service
-
-    W->>Q: Receive message
-    Q-->>W: Message + receipt/lease
-    W->>DB: Conditional transition QUEUED -> RUNNING
-    alt Already completed or cancelled
-        DB-->>W: Do not execute
-        W->>Q: Acknowledge duplicate
-    else Worker owns run
-        W->>B: Execute idempotent operation
-        B-->>W: Result
-        W->>DB: Mark SUCCEEDED
-        W->>Q: Acknowledge
-    end
+```text
+receive
+  -> acquire/confirm ownership
+  -> process business operation
+  -> commit business effect
+  -> record success
+  -> acknowledge message
 ```
 
-### 10.2 Conditional Ownership
+Acknowledging **before** processing risks losing work after a crash.
 
-The worker should atomically transition a job to `RUNNING` only when allowed:
+Acknowledging **after** processing can cause redelivery if the worker succeeds but crashes before acknowledgement. That is why the business handler must be idempotent.
+
+### 7.3 Conditional Ownership
+
+Before execution, move the run to `RUNNING` only when its current state allows it:
 
 ```sql
 UPDATE job_runs
 SET status = 'RUNNING',
     worker_id = :worker_id,
     lease_expires_at = now() + interval '90 seconds',
-    started_at = COALESCE(started_at, now()),
     attempt_count = attempt_count + 1
 WHERE id = :job_run_id
   AND status IN ('QUEUED', 'RETRY_WAIT')
   AND available_at <= now()
-RETURNING *;
+RETURNING id;
 ```
 
-If no row is returned, the message may be stale, duplicated, cancelled, already completed, or owned by another valid worker.
+If no row is returned, the message may already be completed, cancelled, stale, or owned by another valid worker.
 
-### 10.3 Worker Concurrency
+### 7.4 Exactly-Once Business Effect
 
-Concurrency should match the workload:
+Do not promise "exactly-once queue delivery." A practical design usually provides:
 
-| Workload | Suitable model |
-|---|---|
-| HTTP and database I/O | Async workers or many lightweight threads |
-| CPU-heavy image processing | Multiple processes or container replicas |
-| GPU inference | GPU-aware worker pools with limited concurrency |
-| Memory-heavy reports | Low concurrency and resource-based scheduling |
+```text
+at-least-once delivery
+        +
+idempotent handler
+        +
+unique business key
+        +
+transactional state changes
+        =
+exactly-once business effect in normal supported operations
+```
 
-Do not set concurrency based only on CPU count. Consider downstream connection limits, rate limits, memory, and job duration.
-
-### 10.4 Graceful Shutdown
-
-When shutting down, a worker stops receiving new messages, finishes or checkpoints current jobs within a grace period while continuing to renew their leases, releases or lets leases expire for whatever is unfinished, flushes status updates and telemetry, and then terminates.
-
-### 10.5 Payload Versioning
-
-Messages can remain in queues for minutes or days, so workers must handle schema evolution. Carry an explicit `"payload_version": 3` alongside the `job_type` in every message.
-
-Support older versions during a deployment window or transform them before execution.
+If the worker calls an external provider that supports idempotency keys, pass the same stable key downstream.
 
 ---
 
-## 11. Delivery Guarantees and Idempotency
+## 8. Retries and Failure Recovery
 
-### 11.1 At-Most-Once
+### 8.1 Classify Failures
 
-A message is processed zero or one time.
+**Retryable** examples:
 
-This usually means acknowledging before processing. It avoids duplicates but can lose work after a crash.
+- network timeout;
+- HTTP `429`;
+- HTTP `502`, `503`, `504`;
+- temporary database unavailability;
+- short-lived downstream outage.
 
-Suitable only when occasional loss is acceptable, such as some non-critical telemetry.
+**Non-retryable** examples:
 
-### 11.2 At-Least-Once
+- malformed payload;
+- unsupported payload version;
+- invalid destination;
+- permanent permission/configuration error;
+- business-rule rejection.
 
-A message is processed one or more times.
-
-This is the common practical guarantee because failures can be retried. Duplicate processing is possible, so handlers must be idempotent.
-
-### 11.3 Exactly-Once Effect
-
-True exactly-once execution across a queue, worker, database, email provider, payment system, and arbitrary external APIs is generally not available as a single system property.
-
-The practical target is an **exactly-once business effect**, built from at-least-once delivery, deterministic idempotency keys, unique database constraints, transactional state changes, idempotency keys passed to downstream providers, and reconciliation when an external outcome is uncertain.
-
-### 11.4 Idempotent Handler Example
-
-Suppose a job charges an invoice.
-
-Unsafe logic:
-
-```python
-charge_card(invoice_id)
-mark_invoice_paid(invoice_id)
-```
-
-A retry after a crash can charge twice.
-
-Safer logic:
+### 8.2 Exponential Backoff + Jitter
 
 ```text
-idempotency_key = "charge:invoice_123"
-
-1. Insert payment_operation(idempotency_key) with a unique constraint.
-2. If it already succeeded, return the stored result.
-3. Call the payment provider using the same idempotency key.
-4. Store provider reference and final status.
-5. Reconcile UNKNOWN operations before retrying blindly.
-```
-
-### 11.5 Inbox Pattern
-
-A worker can keep an inbox table of processed message IDs:
-
-```sql
-INSERT INTO processed_messages (consumer_name, message_id)
-VALUES (:consumer, :message_id)
-ON CONFLICT DO NOTHING;
-```
-
-The insertion and business database update should happen in the same transaction when possible.
-
----
-
-## 12. Retries, Backoff, and Dead-Letter Queues
-
-### 12.1 Failure Classification
-
-**Retryable:** network timeouts, HTTP `429` rate limits, HTTP `502`, `503`, or `504`, temporary database unavailability, lock timeouts, and short-lived dependency outages.
-
-**Non-retryable:** invalid payloads, unsupported payload versions, a required resource that will never appear, permission failures caused by invalid configuration, business-rule rejections, and malformed destination addresses.
-
-The handler should return a structured classification instead of treating every exception equally.
-
-### 12.2 Exponential Backoff with Jitter
-
-A common formula is:
-
-```text
-base_delay = min(max_delay, initial_delay × 2^(attempt - 1))
+base_delay = min(max_delay, initial_delay * 2^(attempt - 1))
 actual_delay = random(0, base_delay)
 ```
 
 Example:
 
 ```text
-Attempt 1 -> 0–5 seconds
-Attempt 2 -> 0–10 seconds
-Attempt 3 -> 0–20 seconds
-Attempt 4 -> 0–40 seconds
-Attempt 5 -> 0–80 seconds
+Attempt 1 -> 0-5 sec
+Attempt 2 -> 0-10 sec
+Attempt 3 -> 0-20 sec
+Attempt 4 -> 0-40 sec
 ```
 
-Jitter prevents thousands of failed jobs from retrying at exactly the same time after a dependency recovers.
+Jitter prevents thousands of jobs from retrying at the same moment after a dependency recovers.
 
-### 12.3 Respecting `Retry-After`
+When an HTTP service returns a valid `Retry-After`, prefer that value within a configured maximum.
 
-For a rate-limited HTTP response, prefer the service-provided `Retry-After` value when valid. Apply a maximum cap and add small jitter to avoid synchronized retries.
-
-### 12.4 Retry Scheduling
-
-Retries can be implemented with delayed queue messages, a dedicated retry queue per delay tier, a `RETRY_WAIT` row with `available_at` that the scheduler picks up, or a Redis sorted set keyed by retry time.
-
-For long delays, durable database scheduling is usually easier to inspect and modify.
-
-### 12.5 Dead-Letter Flow
+### 8.3 Dead-Letter Queue
 
 ```mermaid
 flowchart LR
     Main[Main Queue] --> Worker[Worker]
     Worker -->|Success| Ack[Acknowledge]
-    Worker -->|Retryable and attempts remain| Retry[Retry Delay]
+    Worker -->|Retryable| Retry[Retry Delay]
     Retry --> Main
-    Worker -->|Permanent failure or exhausted| DLQ[Dead-Letter Queue]
-    DLQ --> Review[Review / Fix / Replay]
-    Review -->|Controlled replay| Main
+    Worker -->|Permanent / Exhausted| DLQ[Dead-Letter Queue]
+    DLQ --> Review[Review / Fix / Controlled Replay]
 ```
 
-DLQ replay must preserve or create a clear replay identifier. Avoid repeatedly replaying a poison message into the main queue without changing the cause.
+DLQ replay should be controlled, rate-limited, auditable, and protected from repeatedly replaying the same poison message without fixing its cause.
 
----
+### 8.4 Important Crash Scenarios
 
-## 13. Recurring Jobs, Time Zones, and Missed Runs
-
-### 13.1 Store Time in UTC
-
-Store `scheduled_for`, `next_run_at`, `started_at`, `completed_at`, and lease expiration times in UTC, plus the schedule's IANA time-zone name such as `Asia/Kolkata`, `America/New_York`, or `Europe/London`.
-
-Do not store only a fixed UTC offset because daylight-saving rules can change the offset.
-
-### 13.2 Calculate from the Intended Occurrence
-
-For fixed schedules, calculate the next run from the previous **scheduled time**, not from the completion time. A run scheduled for `09:00` that completes at `09:07` is next due tomorrow at `09:00`, not tomorrow at `09:07` — the second version accumulates schedule drift.
-
-### 13.3 Daylight-Saving Time
-
-A local time may be skipped when clocks move forward or repeated when clocks move backward. The product must define the behavior explicitly:
-
-> Skipped local time: run at next valid instant or skip occurrence?  
-> Repeated local time: run once or twice?
-
-### 13.4 Misfire Policy
-
-A misfire occurs when a scheduled time passes while the scheduler is unavailable or overloaded.
-
-Common policies:
-
-| Policy | Behavior |
+| Failure | Recovery |
 |---|---|
-| `SKIP` | Ignore missed occurrences and calculate the next future time |
-| `RUN_ONCE` | Run one catch-up occurrence immediately |
-| `CATCH_UP_ALL` | Create every missed run, usually with a safety limit |
-| `FAIL` | Mark the schedule as requiring attention |
+| Scheduler crashes before DB commit | Nothing durable was created; another scheduler claims it later |
+| Scheduler crashes after commit | Run and outbox event survive; relay publishes later |
+| Relay publishes then crashes | Event may publish again; worker deduplication handles it |
+| Worker crashes during execution | Lease expires; message becomes available again |
+| Worker finishes but ack is lost | Redelivery occurs; completed/idempotent state prevents duplicate effect |
+| Queue unavailable | Outbox remains pending and relay retries |
+| Database unavailable | Do not acknowledge work that has not been durably recorded |
 
-Never allow unlimited catch-up without a cap. A schedule that was offline for months could create millions of runs.
-
-### 13.5 Overlap Policy
-
-If the previous run is still active when the next occurrence becomes due:
-
-| Policy | Behavior |
-|---|---|
-| `ALLOW` | Start another run |
-| `FORBID` | Skip or delay the new run |
-| `REPLACE` | Cancel the old run and start the new run |
-| `SERIALIZE` | Queue the new run but allow only one active run |
-
-Current Kubernetes CronJob concepts expose related controls through fields such as `concurrencyPolicy`, `startingDeadlineSeconds`, and `.spec.timeZone`.[5] These are useful examples of the policy decisions a general scheduler should make explicit.
+A reaper can also detect stale `RUNNING` rows whose `lease_expires_at < now()` and move them back into retry handling.
 
 ---
 
-## 14. High Availability and Failure Recovery
+## 9. Scaling and Observability
 
-### 14.1 Scheduler Crashes Before Commit
+### 9.1 Scheduler Scaling
 
-No run or outbox event is committed. Another scheduler can claim the schedule later.
-
-### 14.2 Scheduler Crashes After Commit
-
-The job run and outbox event are durable. The outbox relay publishes the event later.
-
-### 14.3 Relay Publishes but Crashes Before Marking Published
-
-The relay republishes the event after restart. The queue or worker may see a duplicate. The deterministic message ID and job-run idempotency prevent duplicate effects.
-
-### 14.4 Worker Crashes During Execution
-
-The lease expires and the message becomes visible again. The next worker checks persistent state and continues or safely retries.
-
-### 14.5 Worker Completes but Acknowledgement Is Lost
-
-The message is redelivered. The worker sees that the logical run already succeeded and acknowledges it without repeating the business effect.
-
-### 14.6 Database Is Temporarily Unavailable
-
-Schedulers should stop dispatching rather than create memory-only work. Workers should avoid acknowledging messages until durable completion state is recorded.
-
-### 14.7 Queue Is Temporarily Unavailable
-
-Outbox events remain unpublished and are retried. Alert on outbox age and unpublished count.
-
-### 14.8 Stale Running Jobs
-
-A reaper process finds expired leases:
-
-```sql
-SELECT id
-FROM job_runs
-WHERE status = 'RUNNING'
-  AND lease_expires_at < now();
-```
-
-It verifies that the lease is truly stale and moves the run to `RETRY_WAIT`, `FAILED`, or `DEAD_LETTERED` according to policy.
-
-Use fencing tokens or monotonically increasing attempt numbers so an old worker cannot overwrite the result of a newer worker.
-
-### 14.9 Clock Problems
-
-Use database or server time for ownership comparisons rather than trusting arbitrary client timestamps.
-
-Scheduler nodes should synchronize clocks with NTP, monitor clock offset, store UTC timestamps, allow a small tolerance around due-time boundaries, and use monotonic clocks for measuring local durations.
-
----
-
-## 15. Scaling and Partitioning
-
-### 15.1 Capacity Example
-
-Assume:
+Start simple:
 
 ```text
-Stored schedules:             10 million
-Peak runnable jobs:           5,000 jobs/second
-Average message size:         2 KB
-Average execution time:       400 ms
-Target worker utilization:    70%
+Multiple scheduler instances
+        -> same PostgreSQL database
+        -> claim different due rows with SKIP LOCKED
 ```
 
-Approximate message ingress: `5,000 × 2 KB = 10 MB/second before protocol overhead and replication`
+At much larger scale, partition schedules by a stable shard key:
 
-Minimum parallel worker slots: `5,000 jobs/s × 0.4 s = 2,000 concurrent slots`
+```text
+shard = hash(schedule_id) % N
+```
 
-Adjusted for 70% utilization: `2,000 / 0.70 ≈ 2,858 slots`
+Each scheduler owns one or more shards.
 
-Add headroom for retries, traffic spikes, slow dependencies, and deployments.
-
-### 15.2 Scheduler Throughput
-
-A scheduler batch of 500 runs every 100 ms can theoretically dispatch: `500 × 10 batches/second = 5,000 runs/second`
-
-Actual capacity depends on transaction cost, index access, payload size, outbox writes, replication, and contention.
-
-### 15.3 Database Indexing
-
-The critical due-schedule query needs an index beginning with `next_run_at` and normally a partial condition for active schedules.
-
-Avoid updating heavily indexed columns unnecessarily. `next_run_at` changes after every occurrence, so recurring schedules naturally create write pressure.
-
-### 15.4 Table Partitioning
-
-Large execution-history tables can be partitioned by time (`job_runs_2026_08`, `job_runs_2026_09`, `job_runs_2026_10`), which gives faster retention cleanup, smaller indexes, easier archival, and cheaper maintenance operations.
-
-Schedules may instead be hash-partitioned by `schedule_id` or `tenant_id` to spread active writes.
-
-### 15.5 Queue Partitioning
-
-Partition queues by workload, tenant group, region, or hash key — `billing-0` through `billing-3` — and route with a stable function such as `partition = hash(order_id) mod partition_count`.
-
-Stable routing can preserve ordering for a business key, but resharding must be planned carefully.
-
-### 15.6 Autoscaling Workers
-
-Useful scaling signals are queue depth, age of the oldest ready message, ready messages per active worker, consumer lag, processing-duration percentiles, CPU and memory, and downstream rate-limit headroom.
-
-Queue depth alone is insufficient. A queue of 10,000 jobs lasting 5 ms is very different from 10,000 jobs lasting 10 minutes.
+### 9.2 Worker Scaling
 
 A useful approximation is:
 
 ```text
-required_workers = arrival_rate × average_processing_time / target_utilization
+required_concurrency
+    = arrival_rate * average_processing_time / target_utilization
 ```
 
----
+Example:
 
-## 16. Priority, Fairness, Ordering, and Rate Limits
-
-### 16.1 Priority
-
-Strict global priority can starve low-priority jobs. Prefer a small number of bounded priority classes and have workers consume them by weight rather than strictly in order:
-
-| Class | Share of worker capacity |
-|---|---:|
-| `critical` | 50% |
-| `high` | 25% |
-| `normal` | 20% |
-| `bulk` | 5% |
-
-### 16.2 Tenant Fairness
-
-A large tenant must not monopolize all worker slots. Options include per-tenant queues, weighted fair queuing, a token bucket per tenant, a maximum number of concurrent jobs per tenant, and round-robin dispatch across tenant partitions.
-
-### 16.3 Ordering
-
-Global ordering severely limits parallelism. Most systems need ordering only for a business key — "all events for `account_123` must be ordered".
-
-Route the same key to the same partition or message group. Different keys can still execute concurrently.
-
-### 16.4 Concurrency Limits
-
-Typical limits are one active invoice-generation job per company, ten concurrent API calls per integration account, or a hundred media jobs per tenant.
-
-Concurrency permits must also be leased so they recover when workers crash.
-
-### 16.5 External Rate Limits
-
-Workers should enforce limits before calling dependencies.
-
-```mermaid
-flowchart LR
-    Q[Queue] --> W[Worker]
-    W --> L{Rate-limit token available?}
-    L -->|Yes| API[External API]
-    L -->|No| Delay[Reschedule with short delay]
-    Delay --> Q
+```text
+2,000 jobs/sec * 0.25 sec / 0.70
+≈ 715 concurrent worker slots
 ```
 
-Do not let thousands of workers repeatedly call a dependency that is already returning `429`.
+Also consider memory, CPU, database connections, downstream API rate limits, and job duration.
 
----
+### 9.3 Queue Isolation
 
-## 17. API Design
+Use a small number of queues by workload profile:
 
-### 17.1 Create an Immediate Job
-
-```http
-POST /v1/jobs
-Idempotency-Key: upload-123-virus-scan
-Content-Type: application/json
+```text
+email
+billing
+media-processing
+webhook-delivery
 ```
 
-```json
-{
-  "job_type": "scan_uploaded_file",
-  "queue": "file-processing",
-  "payload": {
-    "object_key": "uploads/2026/08/file-123.pdf"
-  },
-  "timeout_seconds": 120,
-  "max_attempts": 4
-}
+This gives independent scaling and prevents long CPU-heavy jobs from blocking short I/O jobs.
+
+### 9.4 Priority and Fairness
+
+Avoid strict global priority because low-priority work can starve.
+
+Prefer bounded classes such as:
+
+```text
+critical -> high -> normal -> bulk
 ```
 
-Response:
+Use weighted consumption or reserved capacity, plus per-tenant concurrency/rate limits when the platform is multi-tenant.
 
-```json
-{
-  "job_run_id": "run_123",
-  "status": "QUEUED"
-}
+### 9.5 Ordering
+
+Avoid global ordering unless absolutely required.
+
+Most systems only need ordering per business key:
+
+```text
+account_123 -> same partition/message group
+account_456 -> another partition/message group
 ```
 
-### 17.2 Create a Recurring Schedule
+Different keys can still run concurrently.
 
-```http
-POST /v1/schedules
-Content-Type: application/json
-```
+### 9.6 Metrics
 
-```json
-{
-  "name": "daily-sales-summary",
-  "job_type": "generate_sales_summary",
-  "cron_expression": "0 8 * * *",
-  "time_zone": "Asia/Kolkata",
-  "queue": "reports",
-  "overlap_policy": "FORBID",
-  "misfire_policy": "RUN_ONCE",
-  "payload": {
-    "company_id": "cmp_123"
-  }
-}
-```
-
-### 17.3 Get Job Status
-
-```http
-GET /v1/jobs/run_123
-```
-
-```json
-{
-  "id": "run_123",
-  "status": "RETRY_WAIT",
-  "scheduled_for": "2026-08-03T02:00:00Z",
-  "attempt_count": 2,
-  "next_attempt_at": "2026-08-03T02:01:30Z",
-  "last_error": {
-    "code": "DEPENDENCY_UNAVAILABLE",
-    "message": "Report service returned 503"
-  }
-}
-```
-
-### 17.4 Pause a Schedule
-
-```http
-POST /v1/schedules/sch_123/pause
-```
-
-The update should be conditional on a version or `updated_at` value to prevent lost updates.
-
-### 17.5 Cancel a Job
-
-```http
-POST /v1/jobs/run_123/cancel
-```
-
-Cancellation is generally cooperative. The worker checks cancellation between safe processing steps. An external side effect already committed cannot always be undone.
-
----
-
-## 18. Important Algorithms and Pseudocode
-
-### 18.1 Scheduler Loop
-
-```python
-from __future__ import annotations
-
-from datetime import datetime, timezone
-from typing import Iterable
-
-BATCH_SIZE = 500
-
-def scheduler_tick(repository: "ScheduleRepository") -> int:
-    """Create durable job runs for schedules that are currently due."""
-    now = datetime.now(timezone.utc)
-
-    with repository.transaction() as tx:
-        schedules = tx.claim_due_schedules(
-            due_before=now,
-            limit=BATCH_SIZE,
-            skip_locked=True,
-        )
-
-        dispatched = 0
-        for schedule in schedules:
-            occurrences = schedule.calculate_due_occurrences(now=now)
-
-            for scheduled_for in occurrences:
-                idempotency_key = f"{schedule.id}:{scheduled_for.isoformat()}"
-
-                job_run = tx.insert_job_run_if_absent(
-                    schedule=schedule,
-                    scheduled_for=scheduled_for,
-                    idempotency_key=idempotency_key,
-                )
-
-                if job_run.created:
-                    tx.insert_outbox_event(
-                        aggregate_id=job_run.id,
-                        event_type="JOB_RUN_READY",
-                        payload={"job_run_id": str(job_run.id)},
-                    )
-                    dispatched += 1
-
-            schedule.advance_after(occurrences=occurrences, now=now)
-            tx.save_schedule(schedule)
-
-    return dispatched
-```
-
-Important properties:
-
-- rows are claimed transactionally;
-- duplicate occurrences are blocked by a unique idempotency key;
-- publication is represented by an outbox event;
-- the next schedule time advances in the same transaction.
-
-### 18.2 Outbox Relay
-
-```python
-def publish_outbox_batch(repository, queue, batch_size: int = 500) -> int:
-    published = 0
-
-    events = repository.claim_unpublished_events(limit=batch_size)
-
-    for event in events:
-        try:
-            queue.publish(
-                message_id=str(event.id),
-                body=event.payload,
-            )
-        except Exception as exc:
-            repository.record_publish_failure(event.id, str(exc))
-            continue
-
-        repository.mark_published(event.id)
-        published += 1
-
-    return published
-```
-
-The event may be published more than once. This is acceptable when consumers deduplicate by `message_id` or `job_run_id`.
-
-### 18.3 Worker Loop
-
-```python
-class RetryableJobError(Exception):
-    pass
-
-class PermanentJobError(Exception):
-    pass
-
-def process_message(message, repository, queue, handlers) -> None:
-    run = repository.try_start_run(
-        job_run_id=message.job_run_id,
-        worker_id=current_worker_id(),
-        lease_seconds=90,
-    )
-
-    if run is None:
-        # Duplicate, cancelled, completed, not yet available, or already owned.
-        queue.ack(message)
-        return
-
-    try:
-        handler = handlers.get(run.job_type)
-        result = handler.execute(
-            payload=run.payload,
-            idempotency_key=run.idempotency_key,
-            cancellation_token=run.cancellation_token,
-        )
-
-        repository.mark_succeeded(run.id, result=result)
-        queue.ack(message)
-
-    except RetryableJobError as exc:
-        retry_at = calculate_retry_time(run.attempt_count)
-        repository.mark_retry_wait(run.id, retry_at=retry_at, error=str(exc))
-        queue.ack(message)
-        enqueue_retry(run.id, available_at=retry_at)
-
-    except PermanentJobError as exc:
-        repository.mark_failed(run.id, error=str(exc))
-        queue.ack(message)
-
-    except Exception as exc:
-        # Unknown failures are normally retried conservatively.
-        repository.record_unexpected_failure(run.id, error=str(exc))
-        queue.nack_or_allow_lease_expiry(message)
-```
-
-In a real implementation, make the state update and retry publication atomic using an outbox event.
-
-### 18.4 Heartbeat Loop
-
-```python
-async def heartbeat(run_id: str, lease_token: str, repository) -> None:
-    while True:
-        await sleep(30)
-        renewed = repository.extend_lease(
-            run_id=run_id,
-            lease_token=lease_token,
-            extension_seconds=90,
-        )
-        if not renewed:
-            raise LeaseLostError(run_id)
-```
-
-The business handler should stop or avoid committing new effects after losing the lease unless it can prove idempotency independently.
-
----
-
-## 19. Observability and Operations
-
-### 19.1 Essential Metrics
-
-| Layer | Metrics to emit |
-|---|---|
-| Scheduler | Schedules scanned, claimed, and runs created per second; dispatch delay; database claim duration; lock contention; missed occurrence count; outbox unpublished count and age |
-| Queue | Ready and in-flight message counts; age of oldest ready message; publish, receive, and acknowledgement rates; redelivery rate; dead-letter count; consumer lag |
-| Worker | Active workers; active jobs by type; success, failure, and retry rates; processing-duration percentiles; lease-renewal failures; timeouts; concurrency utilization; downstream response codes |
-
-Redis consumer-group information, for example, exposes pending entries and lag, both of which are useful scaling signals.[6]
-
-### 19.2 Important Latencies
-
-Distinguish:
+Track separate latency stages:
 
 ```text
 Scheduling delay = queued_at - scheduled_for
@@ -1213,216 +616,169 @@ Execution time   = completed_at - started_at
 End-to-end delay = completed_at - scheduled_for
 ```
 
-This separation tells whether a slowdown is in the scheduler, queue, worker capacity, or business handler.
+Important operational metrics:
 
-### 19.3 Logs
+- oldest ready message age;
+- queue depth and in-flight count;
+- dispatch rate;
+- outbox unpublished count and age;
+- retry/redelivery rate;
+- DLQ count;
+- execution duration percentiles;
+- lease-renewal failures;
+- scheduler claim latency;
+- worker concurrency utilization.
 
-Use structured logs containing:
+For autoscaling, **oldest message age + arrival/service rate** is usually more meaningful than queue depth alone.
+
+---
+
+## 10. Practical Example — Daily Invoice Email
+
+Assume every customer invoice summary must be emailed at **08:00 Asia/Kolkata** every day.
+
+### 10.1 Schedule
 
 ```json
 {
-  "job_run_id": "run_123",
-  "schedule_id": "sch_456",
-  "tenant_id": "tenant_789",
-  "job_type": "generate_report",
-  "attempt": 3,
-  "worker_id": "worker-17",
-  "trace_id": "trace_abc",
-  "event": "job_attempt_failed",
-  "error_code": "DEPENDENCY_TIMEOUT"
+  "job_type": "send_daily_invoice_email",
+  "cron_expression": "0 8 * * *",
+  "time_zone": "Asia/Kolkata",
+  "queue": "email",
+  "overlap_policy": "FORBID",
+  "misfire_policy": "RUN_ONCE",
+  "max_attempts": 5
 }
 ```
 
-Do not log secrets, full personal data, payment details, or complete sensitive payloads.
+### 10.2 Execution Flow
 
-### 19.4 Distributed Tracing
-
-Propagate a trace context along `API request → schedule creation → scheduler → queue → worker → external dependency`.
-
-Because execution may happen hours later, link traces using job-run and schedule identifiers even when a single continuous trace is not retained.
-
-### 19.5 Alerts
-
-Alert when the oldest queue message exceeds its SLO, when the scheduler makes no dispatches for a defined period, when outbox age climbs continuously, when the DLQ rate or the retry ratio crosses a threshold, when worker capacity falls below its minimum, when lease expirations spike, when one tenant starts dominating queue usage, or when schedule drift exceeds tolerance.
-
-### 19.6 Retention
-
-Keep operational data according to value and compliance needs:
-
-```text
-Detailed attempts:       30–90 days
-Aggregated metrics:      12–18 months
-Job payloads:            shortest practical duration
-Audit events:            according to policy
-DLQ payloads:            bounded retention with alerts
+```mermaid
+flowchart TD
+    A[08:00 occurrence becomes due] --> B[Scheduler claims schedule]
+    B --> C[Create job_run]
+    C --> D[Idempotency key = schedule_id + scheduled_for]
+    D --> E[Insert outbox event]
+    E --> F[Relay publishes to email queue]
+    F --> G[Worker receives with lease]
+    G --> H{Already completed?}
+    H -->|Yes| I[Acknowledge duplicate]
+    H -->|No| J[Send email with provider idempotency key]
+    J --> K{Result}
+    K -->|Success| L[Mark SUCCEEDED + acknowledge]
+    K -->|Temporary error| M[Retry with backoff + jitter]
+    K -->|Permanent/exhausted| N[Move to DLQ]
 ```
+
+### 10.3 Why This Example Is Reliable
+
+If the scheduler runs twice, the unique idempotency key prevents two logical runs for the same scheduled occurrence.
+
+If the relay publishes twice, the worker sees the same `job_run_id` and avoids repeating a completed operation.
+
+If the worker crashes before acknowledgement, the queue can redeliver the message after the lease expires.
+
+If the email provider returns a temporary `503`, the job retries later with backoff instead of immediately creating a retry storm.
 
 ---
 
-## 20. Security and Multi-Tenancy
+## 11. Technology Choices and Evolution
 
-### 20.1 Authentication and Authorization
+### 11.1 Common Choices
 
-Keep separate permissions for creating jobs, creating recurring schedules, pausing or deleting schedules, viewing payloads, viewing errors, replaying DLQ messages, and administering queues.
+| Technology | Good Fit | Watch-Out |
+|---|---|---|
+| **PostgreSQL** | Schedule store, run state, small/medium job queues | High queue throughput can create DB contention |
+| **Redis Streams / Sorted Sets** | Low-latency internal queue/timer acceleration | Durability and DB consistency require care |
+| **RabbitMQ** | Task queues, routing, acknowledgements | More broker operations/topology management |
+| **Amazon SQS** | Managed durable AWS queue | Standard queues are at-least-once; consumers must be idempotent |
+| **Kafka** | Event streams, replay, partition ordering | Not a natural general-purpose delayed-job scheduler |
+| **Kubernetes CronJob** | Scheduling Kubernetes Jobs/containers | Not a full multi-tenant business scheduler |
+| **Workflow Engine** | Multi-step durable orchestration | More concepts and operational complexity |
 
-A user who can create jobs must not automatically be allowed to execute arbitrary code.
+### 11.2 Practical Evolution
 
-### 20.2 Job-Type Allowlist
-
-Use a registry of named handlers — `send_email → SendEmailHandler`, `build_report → BuildReportHandler`, `sync_customer → SyncCustomerHandler`.
-
-Do not accept module paths, shell commands, SQL strings, or arbitrary code from normal API clients.
-
-### 20.3 Payload Protection
-
-Encrypt data in transit and at rest, keep secrets in a secret manager rather than in job payloads, pass credential references instead of credentials, redact sensitive fields in logs and admin screens, define payload retention and deletion policies, and scope every read and update by tenant.
-
-### 20.4 Tenant Isolation
-
-Every durable entity should carry `tenant_id` when the system is multi-tenant, backed by tenant-aware indexes, authorization filters, quotas, per-tenant concurrency controls, tenant-specific encryption keys where required, and audit trails for administrative access.
-
-### 20.5 Replay Security
-
-DLQ replay is powerful and dangerous. Require elevated permission, a stated reason, payload review or transformation, a bounded batch size, a rate limit, a dry-run option where possible, and an audit record.
-
----
-
-## 21. Technology Choices
-
-### 21.1 Queue Comparison
-
-| Technology | Strengths | Watch-outs | Good fit |
-|---|---|---|---|
-| PostgreSQL queue table | Simple, transactional with application data | Database contention at high throughput | Small or medium systems |
-| Redis Streams | Fast, consumer groups, pending tracking | Memory and persistence operations need care | Low-latency internal queues |
-| RabbitMQ | Rich routing, acknowledgements, priorities | Cluster operations and topology management | Task queues and complex routing |
-| Amazon SQS | Managed, durable, elastic, DLQ and visibility controls | At-least-once duplicates, limited transactional coupling | AWS applications |
-| Apache Kafka | High throughput, replay, partition ordering | Not naturally a delayed-job scheduler | Event streams and durable logs |
-| Cloud task service | Managed retries, delays, HTTP delivery | Vendor-specific limits and semantics | HTTP task execution |
-
-### 21.2 Scheduler Comparison
-
-| Approach | Complexity | Scale | Best use |
-|---|---:|---:|---|
-| Application cron | Low | Low | Single-instance maintenance tasks |
-| PostgreSQL polling | Low–Medium | Medium | Most business applications |
-| PostgreSQL + outbox + queue | Medium | High | Reliable distributed job platform |
-| Redis sorted set accelerator | Medium–High | High | Low-latency timer dispatch |
-| Partitioned scheduler service | High | Very high | Millions of active timers |
-| Workflow engine | Medium–High | High | Multi-step durable workflows |
-
-### 21.3 PostgreSQL as a Complete First Version
-
-A strong initial implementation can use only PostgreSQL: a `schedules` table, a `job_runs` table, and workers claiming rows with `SKIP LOCKED`. This minimizes components and provides transactional behavior.
-
-Move to a dedicated message broker when queue throughput starts stressing the database, when worker and producer scaling need to be independent, when delayed delivery or routing becomes complex, when multiple languages and services need standard messaging, or when queue availability must be isolated from the application database.
-
-### 21.4 Kubernetes CronJob
-
-Kubernetes CronJob is useful when the scheduled unit is a Kubernetes Job or container workload. It is less suitable as a complete user-facing multi-tenant scheduling platform with detailed per-run APIs, custom retries, tenant fairness, and business-level idempotency.
-
-### 21.5 Workflow Engine Boundary
-
-Choose a workflow engine when jobs require:
-
-- multiple durable steps;
-- compensation logic;
-- timers lasting days or months;
-- child workflows;
-- signals or human approval;
-- continuation after process restarts;
-- visibility into step-by-step state.
-
-A task queue answers “who should execute this unit of work?” A workflow engine also answers “what durable step should happen next?”
-
----
-
-## 22. Practical Design Evolution
-
-### 22.1 Stage 1: Single Service
+**Stage 1 — PostgreSQL only**
 
 ```text
-Application
-  ├── PostgreSQL schedules
-  ├── polling scheduler thread
-  └── worker processes using SKIP LOCKED
+App
+ ├── schedules table
+ ├── job_runs table
+ ├── scheduler thread
+ └── workers using SKIP LOCKED
 ```
 
-Use when:
+Good for a normal business application and the best place to start when scale is modest.
 
-- traffic is modest;
-- one engineering team owns the system;
-- operational simplicity matters most.
-
-### 22.2 Stage 2: Separate Scheduler and Workers
+**Stage 2 — Separate scheduler and workers**
 
 ```text
-API -> PostgreSQL -> Scheduler -> PostgreSQL job table -> Workers
+API -> PostgreSQL -> Scheduler -> job_runs -> Workers
 ```
 
-Benefits:
+Useful when deployments and scaling need to be independent.
 
-- independent deployments;
-- separate scaling;
-- clearer ownership;
-- scheduler failure does not stop active workers.
-
-### 22.3 Stage 3: Add Durable Broker and Outbox
+**Stage 3 — Add outbox + durable broker**
 
 ```text
 API -> DB
 Scheduler -> job_run + outbox
-Outbox relay -> Queue
+Relay -> Queue
 Workers -> business services
 ```
 
-Use when throughput, isolation, or multi-language consumers grow.
+Use when throughput, workload isolation, or multi-service consumption grows.
 
-### 22.4 Stage 4: Partition Scheduling and Queues
+**Stage 4 — Partition scheduler and queues**
 
-Partitioned schedules with multiple scheduler owners, workload-specific queues, autoscaled worker pools, and regional routing. Use only after measurements show the simpler design is reaching its limits.
+Add scheduler shards, workload-specific queues, regional routing, and autoscaled worker pools only after measurements show the simpler design is reaching its limits.
+
+### 11.3 Current Platform Notes
+
+- PostgreSQL's current `SELECT` documentation supports `FOR UPDATE ... SKIP LOCKED` and specifically notes queue-like multiple-consumer use as an appropriate case.
+- Amazon SQS standard queues use at-least-once delivery, so duplicate-safe consumers are required.
+- SQS visibility timeout hides a received message temporarily; if it is not deleted before expiry, it can become visible again. Visibility can be extended during long processing.
+- SQS native delay/message timers are limited to 15 minutes; AWS recommends EventBridge Scheduler for more advanced/far-future scheduling scenarios.
+- Kubernetes CronJob exposes explicit `concurrencyPolicy`, `startingDeadlineSeconds`, and `.spec.timeZone` behavior, reinforcing the need for overlap, misfire, and time-zone policies in a general scheduler.
 
 ---
 
-## 23. Key Design Decisions
+## 12. Key Takeaways
 
-A strong design should make these choices explicit:
+A strong job scheduler design normally uses these defaults:
 
-| Decision | Recommended default |
+| Decision | Recommended Default |
 |---|---|
 | Source of truth | Relational database |
-| Delivery guarantee | At least once |
-| Duplicate handling | Idempotent worker and unique business key |
+| Delivery | At least once |
+| Duplicate handling | Idempotent worker + unique business key |
 | DB-to-queue consistency | Transactional outbox |
-| Scheduler concurrency | Active-active row claims initially |
-| Worker ownership | Visibility lease with heartbeat |
-| Retry policy | Exponential backoff with jitter |
-| Permanent failures | Dead-letter queue with controlled replay |
-| Timestamps | UTC storage plus IANA schedule time zone |
-| Recurring run identity | `schedule_id + scheduled_for` |
-| Queue isolation | A few queues by workload profile |
+| Scheduler concurrency | Active-active row claims with `SKIP LOCKED` |
+| Worker ownership | Lease / visibility timeout + heartbeat |
+| Retry policy | Exponential backoff + jitter |
+| Permanent failure | Dead-letter queue with controlled replay |
+| Recurring identity | `schedule_id + scheduled_for` |
+| Time handling | UTC timestamps + IANA time-zone name |
+| Queue isolation | Few queues grouped by workload profile |
 | Ordering | Per business key, not global |
 | Cancellation | Cooperative and state-aware |
-| Scaling signal | Queue age and arrival/service rate, not depth alone |
+| Scaling signal | Queue age + arrival/service rate + resource limits |
 
-Every one of those defaults follows from a single assumption:
+The central design principle is:
 
-> **Assume every boundary can fail after completing its action but before confirming it.**
+> **Assume every distributed boundary can fail after doing the work but before confirming it.**
 
-The schedule store knows when work becomes ready, the scheduler turns due schedules into logical runs, the outbox and queue transport them, the worker executes under a lease, and the execution store records the truth about runs, attempts, and outcomes — and each of those five boundaries can crash in the gap between doing its work and reporting it. That is why the table reaches for durable state, idempotency keys, unique constraints, leases, retries, an outbox, dead-letter handling, reconciliation, and observability. A reliable job platform does not try to eliminate every duplicate or failure; it makes failures visible, recoverable, and safe.
+That assumption naturally leads to durable state, idempotency keys, unique constraints, leases, retries, an outbox, DLQ handling, and strong observability.
 
 ---
 
-## 24. References
+## References
 
-The core design is technology-neutral. The following current official documentation was used to verify implementation details:
-
-1. [PostgreSQL `SELECT` documentation — `SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html)
-2. [Amazon SQS — At-least-once delivery](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues-at-least-once-delivery.html)
-3. [Amazon SQS — Visibility timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
-4. [Redis — Sorted sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/)
-5. [Kubernetes — CronJob concepts](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/)
-6. [Redis — Consumer-group information and lag](https://redis.io/docs/latest/commands/xinfo-groups/)
+1. PostgreSQL 18 — `SELECT`, locking clauses and `SKIP LOCKED`: https://www.postgresql.org/docs/18/sql-select.html
+2. Amazon SQS — At-least-once delivery: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues-at-least-once-delivery.html
+3. Amazon SQS — Visibility timeout: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+4. Amazon SQS — Message timers and EventBridge Scheduler guidance: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-message-timers.html
+5. Kubernetes — CronJob concepts: https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
 
 ---
 

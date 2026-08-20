@@ -11,7 +11,7 @@ See [INTERVIEW_GUIDE.md](INTERVIEW_GUIDE.md) for what to study and what intervie
 
 ```bash
 pnpm install
-pnpm dev          # dev server with hot reload → http://localhost:5173
+pnpm dev          # dev server with hot reload → http://localhost:5178
 ```
 
 ## Build & preview the production bundle

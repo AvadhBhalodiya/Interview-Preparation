@@ -11,56 +11,228 @@ updated: "July 2026"
 
 ## In short
 
-- A webhook reverses the direction of HTTP: the provider pushes an event to your endpoint instead of you polling for changes.
-- Delivery is at-least-once, so events can be duplicated, delayed, or arrive out of order and every handler must be idempotent.
-- Verify the HMAC signature over the exact raw request body, before any JSON parsing or re-serialisation.
-- Require a signed timestamp within a short tolerance, such as five minutes, and store the event ID to block replays.
-- Acknowledge fast: verify, durably store or enqueue, return `202` or `200`, then do the business work in a worker.
-- The provider retries temporary failures with exponential backoff and jitter, and parks permanently failing events in a dead-letter store.
-- For money and compliance flows, treat the webhook as a notification and reconcile against the provider API as the source of truth.
+A **webhook** is an HTTP callback where one system pushes an event to another system when something happens. Instead of continuously polling an API, the consumer exposes an endpoint such as `POST /webhooks/payments`, and the provider sends events to it.
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant P as Provider
-    participant W as Consumer Webhook Endpoint
-    participant D as Consumer Database
+The important production idea is simple:
 
-    U->>P: Complete payment
-    P->>P: Create payment.succeeded event
-    P->>W: POST webhook event
-    W->>W: Verify signature
-    W->>D: Record event ID
-    W-->>P: 200 OK
-    W->>D: Update order asynchronously
-```
+**Receive → verify → deduplicate → durably store/enqueue → return `2xx` → process asynchronously**
 
-**Interview answer:** A reliable receiver does only four things synchronously — read the raw body, verify the HMAC signature and signed timestamp, deduplicate on the provider's event ID, and durably store or enqueue the event — then returns `2xx` immediately. All business logic runs in a worker, so a slow downstream call never turns into a provider retry. Because delivery is at-least-once, every handler must be idempotent, failures land in a dead-letter store, and a scheduled reconciliation job compares local state against the provider API for anything financial.
-
-**Gotcha:** Parsing the JSON and re-serialising it before verifying the signature breaks the HMAC, because the signature covers the exact bytes the provider sent, not an equivalent object.
+Webhook delivery is distributed communication, so duplicates, delays, retries, failures, and out-of-order events must be expected. Retry behavior itself is **provider-specific**: some providers retry automatically, while others require manual or application-driven redelivery.
 
 ---
 
-# 1. What Is a Webhook?
+# Index
 
-A **webhook** is an HTTP callback used by one system to notify another system when an event occurs.
+1. What a Webhook Is
+2. How Webhooks Work
+3. Webhooks vs Polling, WebSockets, and Brokers
+4. Webhook HTTP Contract
+5. Reliability: Idempotency, Retries, and Ordering
+6. Webhook Security
+7. Production Receiver Architecture
+8. FastAPI Payment Webhook Example
+9. Designing Webhooks as a Provider
+10. Testing and Observability
 
-Instead of repeatedly asking a service whether something has changed, the receiving application exposes an HTTP endpoint. The provider sends an HTTP request to that endpoint when a subscribed event occurs.
+---
 
-### Simple example
+# 1. What a Webhook Is
 
-A payment platform sends the following event to an e-commerce application:
+A webhook is an **event-driven HTTP notification**.
 
-```http
-POST /webhooks/payments HTTP/1.1
-Host: shop.example.com
-Content-Type: application/json
-X-Webhook-Signature: sha256=...
+For example, a payment service may send:
 
+```text
+payment.succeeded
+payment.failed
+refund.created
+```
+
+The event describes something that already happened. The consumer decides what business action should follow.
+
+## 1.1 Main participants
+
+| Participant | Responsibility |
+|---|---|
+| **Provider** | Detects an event and sends the webhook |
+| **Webhook endpoint** | Public HTTP endpoint that receives it |
+| **Consumer** | Verifies, stores, and processes the event |
+| **Event** | The fact that describes what happened |
+
+## 1.2 Why webhooks are useful
+
+Without a webhook, an application may repeatedly poll:
+
+```text
+GET /payments/pay_98765
+GET /payments/pay_98765
+GET /payments/pay_98765
+```
+
+Most requests may return the same result.
+
+With a webhook, the provider pushes the update only when the state changes.
+
+Typical use cases include:
+
+- Payment completion
+- Shipment status changes
+- Git push or pull-request events
+- File/OCR/AI job completion
+- Identity verification results
+- Message delivery/read receipts
+
+---
+
+# 2. How Webhooks Work
+
+A normal production flow looks like this:
+
+```mermaid
+sequenceDiagram
+    participant P as Provider
+    participant W as Webhook Endpoint
+    participant S as Event Store / Queue
+    participant K as Worker
+    participant D as Business DB
+
+    P->>W: POST event
+    W->>W: Verify signature
+    W->>W: Validate event ID
+    W->>S: Store / enqueue durably
+    W-->>P: 2xx acknowledgement
+    S->>K: Deliver internal job
+    K->>D: Apply idempotent business update
+```
+
+## 2.1 Typical lifecycle
+
+1. Consumer registers a webhook URL.
+2. Consumer subscribes to required event types.
+3. An event occurs in the provider system.
+4. Provider creates an event with a unique ID.
+5. Provider signs the request according to its webhook protocol.
+6. Provider sends an HTTP `POST` request.
+7. Consumer verifies authenticity and basic metadata.
+8. Consumer deduplicates and durably stores or enqueues the event.
+9. Consumer quickly returns a successful `2xx` response.
+10. A worker performs the business operation.
+
+## 2.2 Notification vs source of truth
+
+For important workflows, especially payments and compliance, treat the webhook as a **notification that something changed**.
+
+If required, fetch the latest resource from the provider API before making a high-impact decision:
+
+```text
+Webhook: payment pay_98765 changed
+              ↓
+GET /payments/pay_98765
+              ↓
+Confirm current provider state
+              ↓
+Update local order
+```
+
+This is useful when events can arrive late or out of order.
+
+---
+
+# 3. Webhooks vs Polling, WebSockets, and Brokers
+
+## 3.1 Webhooks vs polling
+
+| Webhooks | Polling |
+|---|---|
+| Provider pushes changes | Consumer repeatedly checks |
+| Near-real-time | Delay depends on polling interval |
+| Less unnecessary traffic | Can create many no-change requests |
+| Requires a reachable callback endpoint | Works without a public callback |
+| Must handle duplicate/out-of-order delivery | Usually simpler request logic |
+
+A common production pattern is:
+
+**Webhooks for fast updates + scheduled polling/reconciliation as a safety net.**
+
+## 3.2 Webhooks vs WebSockets
+
+| Webhooks | WebSockets |
+|---|---|
+| HTTP callback | Long-lived bidirectional connection |
+| Strong fit for server-to-server events | Strong fit for live interactive applications |
+| No permanent connection | Connection must stay open |
+| Common for payments/SaaS integrations | Common for chat/live dashboards |
+
+## 3.3 Webhooks vs message brokers
+
+| Webhooks | Message broker |
+|---|---|
+| Easy external HTTP integration | Strong internal messaging infrastructure |
+| Provider calls consumer endpoint | Consumer reads from broker |
+| Provider defines delivery behavior | Broker controls queueing/acknowledgement |
+| Limited backpressure control | Better buffering and consumer scaling |
+
+A common architecture is to receive an **external webhook** and immediately put it onto an **internal queue**.
+
+---
+
+# 4. Webhook HTTP Contract
+
+A webhook is still an API contract and should be documented carefully.
+
+## 4.1 Endpoint
+
+Use `POST` and prefer provider/domain-specific paths:
+
+```text
+POST /webhooks/stripe
+POST /webhooks/github
+POST /webhooks/payments
+```
+
+Separate endpoints are useful when providers use different secrets, payloads, signature formats, or operational rules.
+
+## 4.2 Common headers
+
+Header names vary by provider, but common purposes are:
+
+| Purpose | Example |
+|---|---|
+| Event type | `X-Webhook-Event: payment.succeeded` |
+| Event/delivery ID | `X-Webhook-ID: evt_123` |
+| Signature | `X-Webhook-Signature: sha256=...` |
+| Timestamp | `X-Webhook-Timestamp: 1785407400` |
+| Version | `X-Webhook-Version: 2026-08-01` |
+
+Do not assume every provider uses all of these headers. Follow the provider's documented signing contract exactly.
+
+## 4.3 Response status
+
+The receiver should return `2xx` only after the event has been safely accepted.
+
+| Status | Typical meaning |
+|---|---|
+| `200 OK` | Accepted / already handled |
+| `202 Accepted` | Accepted for async processing |
+| `204 No Content` | Accepted, no response body |
+| `400 Bad Request` | Invalid payload |
+| `401/403` | Authentication/authorization failed |
+| `429` | Receiver overloaded; provider behavior varies |
+| `5xx` | Temporary receiver failure; provider may retry |
+
+The exact retry response rules are provider-specific.
+
+## 4.4 Event payload design
+
+A useful generic envelope is:
+
+```json
 {
   "id": "evt_01JY2N7Q5J",
   "type": "payment.succeeded",
-  "created_at": "2026-07-30T10:30:00Z",
+  "source": "payment-service",
+  "created_at": "2026-08-20T06:30:00Z",
+  "api_version": "2026-08-01",
   "data": {
     "payment_id": "pay_98765",
     "order_id": "order_12345",
@@ -70,1051 +242,355 @@ X-Webhook-Signature: sha256=...
 }
 ```
 
-The shop receives the event and updates the order from `payment_pending` to `paid`.
+The most important fields are a **unique event ID**, a stable **event type**, creation time, schema/API version, and event-specific data.
 
-## 1.1 Main participants
+CloudEvents is a standard option for event envelopes. Its core required attributes are `id`, `source`, `specversion`, and `type`.
 
-| Participant | Responsibility |
-|---|---|
-| **Webhook provider** | Detects an event and sends the HTTP request |
-| **Webhook endpoint** | Public URL that receives the event |
-| **Webhook consumer** | Verifies, stores, and processes the event |
-| **Event** | A fact describing something that has already happened |
+### Snapshot vs thin events
 
-## 1.2 Webhooks are usually event notifications
+A **snapshot event** contains much of the resource state. A **thin event** mainly contains identifiers and requires the consumer to fetch the latest resource.
 
-A webhook event should normally describe a completed fact:
-
-```text
-payment.succeeded
-invoice.created
-order.shipped
-user.deleted
-pull_request.merged
-```
-
-Event names written in the past tense are often easier to understand because they represent something that has already happened.
+Thin events reduce payload coupling; snapshot events reduce follow-up API calls. Choose based on consistency, availability, and data sensitivity requirements.
 
 ---
 
-# 2. Why Webhooks Are Used
+# 5. Reliability: Idempotency, Retries, and Ordering
 
-Webhooks provide **near-real-time communication** between independently deployed systems.
+Webhook delivery happens over a network, so the consumer must assume uncertainty.
 
-## 2.1 Benefits
-
-### Reduced polling
-
-Without webhooks, a client may repeatedly call an API:
-
-```text
-GET /payments/pay_98765
-GET /payments/pay_98765
-GET /payments/pay_98765
-...
-```
-
-Most calls return the same result and consume unnecessary network, application, and database resources.
-
-With a webhook, the payment service pushes an event only when the state changes.
-
-### Loose coupling
-
-The provider does not need to understand the consumer's internal implementation. It only needs:
-
-- The endpoint URL
-- The subscribed event types
-- The agreed payload and security contract
-
-### Better user experience
-
-Applications can react quickly to asynchronous events such as:
-
-- Payment completion
-- File processing completion
-- Shipment updates
-- Identity verification results
-- CI/CD build completion
-
-## 2.2 Important limitation
-
-A webhook is not a guaranteed synchronous command. Delivery may be delayed, duplicated, retried, or received out of order.
-
-Therefore, the consuming system must be designed for **at-least-once delivery**, even when the provider does not formally guarantee it.
-
----
-
-# 3. How a Webhook Works
-
-A delivery has two halves. The provider detects an event, gives it a unique ID, signs it, and posts it; the consumer verifies it, records it, acknowledges it, and only then performs the business operation. The sequence diagram at the top of this note shows that happy path. The full lifecycle below adds the subscription and retry steps around it.
-
-## 3.1 Typical lifecycle
-
-1. The consumer registers a webhook URL with the provider.
-2. The consumer selects the required event types.
-3. An event occurs in the provider's system.
-4. The provider creates an event with a unique ID.
-5. The provider signs the request payload.
-6. The provider sends an HTTP `POST` request.
-7. The consumer verifies authenticity and validates the payload.
-8. The consumer stores the event or places it on a queue.
-9. The consumer quickly returns a successful `2xx` response.
-10. A worker performs the business operation.
-11. If delivery fails, the provider may retry.
-
-## 3.2 Push notification, not source of truth
-
-A robust consumer often treats the webhook as a notification that something changed, not necessarily as the only source of truth.
-
-For sensitive workflows, the consumer can use the event's resource ID to fetch the current resource from the provider:
+## 5.1 Acknowledgement ambiguity
 
 ```mermaid
 flowchart TD
-    A["Webhook says: payment pay_98765 succeeded"] --> B["Consumer calls: GET /payments/pay_98765"]
-    B --> C[Consumer confirms current status before updating the order]
+    A[Provider sends event] --> B[Consumer stores/processes it]
+    B --> C[Consumer sends 2xx]
+    C --> D[Network drops response]
+    D --> E[Provider may consider delivery failed]
 ```
 
-This is useful when:
+The provider might not know that the consumer already accepted the event. This is why duplicate delivery is possible.
 
-- Events can arrive out of order
-- Payloads contain limited data
-- The resource may have changed again
-- Financial or compliance accuracy is important
+## 5.2 Idempotent processing
 
----
+Processing the same event twice must not create two business effects.
 
-# 4. Webhooks vs APIs, Polling, WebSockets, and Message Brokers
-
-## 4.1 Webhooks vs regular REST APIs
-
-| REST API call | Webhook delivery |
-|---|---|
-| Consumer initiates the request | Provider initiates the request |
-| Usually request-response driven | Event driven |
-| Consumer decides when to call | Provider sends when an event occurs |
-| Often used to read or modify resources | Usually used to notify state changes |
-| Response commonly contains business data | Response usually only acknowledges receipt |
-
-A webhook still uses HTTP, but the direction of communication is reversed.
-
-```mermaid
-sequenceDiagram
-    participant C as Consumer
-    participant P as Provider
-
-    Note over C,P: Regular API
-    C->>P: Request
-    P-->>C: Response
-
-    Note over C,P: Webhook
-    P->>C: Event
-    C-->>P: 2xx ACK
-```
-
-## 4.2 Webhooks vs polling
-
-| Webhooks | Polling |
-|---|---|
-| Provider pushes changes | Consumer repeatedly checks |
-| Near-real-time updates | Delay depends on polling interval |
-| Lower unnecessary traffic | Many calls may return no change |
-| Requires a reachable endpoint | Works even without a public callback URL |
-| Delivery handling is more complex | Client-side logic is often simpler |
-
-Use polling when:
-
-- The provider does not support webhooks
-- The consumer cannot expose a reachable endpoint
-- Updates are infrequent and delay is acceptable
-- Periodic reconciliation is required
-
-Many reliable integrations use **webhooks for fast updates** and **polling for reconciliation**.
-
-## 4.3 Webhooks vs WebSockets
-
-| Webhooks | WebSockets |
-|---|---|
-| Server-to-server HTTP callback | Long-lived bidirectional connection |
-| Best for business events | Best for live interactive communication |
-| No permanent connection required | Connection must remain open |
-| Delivery may be retried | Reconnect and missed-message handling are required |
-| Common for payments and SaaS integrations | Common for chat, collaboration, and live dashboards |
-
-## 4.4 Webhooks vs message brokers
-
-| Webhooks | Message broker |
-|---|---|
-| HTTP-based integration across organizations | Messaging infrastructure inside or across controlled systems |
-| Easy for external consumers | Better control over delivery, routing, and backpressure |
-| Consumer needs an HTTP endpoint | Consumer connects to broker |
-| Provider implements retries | Broker manages queues and acknowledgements |
-| Limited flow control | Stronger buffering and consumer-group features |
-
-A common architecture receives an external webhook and immediately places it on an internal queue.
-
----
-
-# 5. Webhook HTTP Contract
-
-A webhook is an API contract and should be documented as carefully as any REST endpoint.
-
-## 5.1 HTTP method
-
-Webhook providers normally use `POST`, as in `POST /webhooks/payments`, because an event payload is being submitted to the receiver for processing.
-
-## 5.2 Endpoint naming
-
-Prefer provider- or domain-specific endpoints:
-
-```text
-POST /webhooks/stripe
-POST /webhooks/github
-POST /webhooks/payments
-POST /webhooks/shipping
-```
-
-Separate endpoints are useful when providers use different:
-
-- Signing algorithms
-- Secrets
-- Payload formats
-- Retry rules
-- IP ranges
-- Operational ownership
-
-Avoid exposing business commands as webhook paths: `POST /mark-order-paid` names an internal operation, while `POST /webhooks/payments` names the delivery channel. The webhook endpoint receives an event. The consumer decides which internal operation should follow.
-
-## 5.3 Request headers
-
-Common webhook headers include:
-
-| Header purpose | Example |
-|---|---|
-| Event type | `X-Webhook-Event: payment.succeeded` |
-| Event or delivery ID | `X-Webhook-ID: evt_123` |
-| Signature | `X-Webhook-Signature: sha256=...` |
-| Timestamp | `X-Webhook-Timestamp: 1785407400` |
-| API version | `X-Webhook-Version: 2026-07-01` |
-| Content type | `Content-Type: application/json` |
-
-Provider-specific names differ. For example, GitHub uses headers such as `X-GitHub-Event`, `X-GitHub-Delivery`, and `X-Hub-Signature-256`.
-
-## 5.4 Response status codes
-
-| Status | Meaning to provider |
-|---|---|
-| `200 OK` | Event accepted or already processed |
-| `202 Accepted` | Event accepted for asynchronous processing |
-| `204 No Content` | Event accepted; no response body |
-| `400 Bad Request` | Invalid payload or malformed request |
-| `401 Unauthorized` | Missing or invalid authentication information |
-| `403 Forbidden` | Authenticated sender is not allowed |
-| `409 Conflict` | Usually avoid for duplicate events; acknowledge duplicates with `2xx` |
-| `429 Too Many Requests` | Receiver is overloaded; provider may retry |
-| `500–599` | Temporary server failure; provider may retry |
-
-### Practical rule
-
-Return a `2xx` response after the request is safely verified and durably recorded or queued.
-
-Do not wait for slow business logic such as:
-
-- Sending email
-- Updating multiple services
-- Generating reports
-- Calling third-party APIs
-- Running large database operations
-
-## 5.5 Response body
-
-Providers usually care about the status code, not a large response body.
-
-```json
-{
-  "received": true
-}
-```
-
-A minimal response is easier to maintain.
-
----
-
-# 6. Designing Webhook Events and Payloads
-
-## 6.1 Recommended event envelope
-
-```json
-{
-  "id": "evt_01JY2N7Q5J",
-  "type": "invoice.paid",
-  "source": "billing-service",
-  "spec_version": "1.0",
-  "api_version": "2026-07-01",
-  "created_at": "2026-07-30T10:30:00Z",
-  "data": {
-    "invoice_id": "inv_123",
-    "customer_id": "cus_456",
-    "amount_paid": 4999,
-    "currency": "INR"
-  }
-}
-```
-
-### Important fields
-
-| Field | Purpose |
-|---|---|
-| `id` | Unique identifier used for deduplication |
-| `type` | Identifies the business event |
-| `source` | Identifies the producing system |
-| `created_at` | Time the event was created |
-| `api_version` | Defines payload structure |
-| `data` | Event-specific information |
-
-CloudEvents provides a standard event envelope that can improve interoperability between event producers and consumers. A team does not have to adopt the complete specification, but fields such as `id`, `source`, `type`, `time`, and `specversion` are useful design references.
-
-## 6.2 Event naming
-
-Use clear, stable names:
-
-```text
-order.created
-order.cancelled
-order.shipped
-payment.authorized
-payment.succeeded
-payment.failed
-subscription.renewed
-```
-
-Avoid vague names such as `order.updated`, `status.changed`, or `data.modified`. Sometimes a broad event is necessary, but a specific event normally creates a cleaner consumer contract.
-
-## 6.3 Snapshot events vs thin events
-
-### Snapshot event
-
-Contains most of the resource state:
-
-```json
-{
-  "type": "customer.updated",
-  "data": {
-    "id": "cus_123",
-    "name": "Aarav Shah",
-    "email": "aarav@example.com",
-    "status": "active",
-    "updated_at": "2026-07-30T10:30:00Z"
-  }
-}
-```
-
-**Advantages**
-
-- Consumer may not need another API call
-- Easier offline processing
-- Event preserves the historical snapshot
-
-**Trade-offs**
-
-- Larger payloads
-- Sensitive fields may be exposed unnecessarily
-- Schema evolution is harder
-- Snapshot may already be stale when processed
-
-### Thin event
-
-Contains identifiers and minimal metadata:
-
-```json
-{
-  "type": "customer.updated",
-  "data": {
-    "customer_id": "cus_123"
-  }
-}
-```
-
-**Advantages**
-
-- Smaller and safer payload
-- Consumer retrieves the latest representation
-- Less coupling to provider schema
-
-**Trade-offs**
-
-- Requires an additional API call
-- Provider must remain available
-- Historical state may be lost
-
-## 6.4 Payload compatibility
-
-Webhook payload changes should be backward compatible whenever possible.
-
-Usually safe:
-
-- Adding optional fields
-- Adding new event types
-- Adding new enum values when consumers handle unknown values
-
-Usually breaking:
-
-- Removing fields
-- Renaming fields
-- Changing a field's type
-- Changing field meaning
-- Moving fields to a different structure
-
-Consumers should ignore unknown fields unless strict validation is a deliberate requirement.
-
-## 6.5 Versioning strategies
-
-### Version in endpoint path
-
-```text
-POST /webhooks/v1/payments
-POST /webhooks/v2/payments
-```
-
-### Version in header
-
-```http
-X-Webhook-Version: 2026-07-01
-```
-
-### Version in event envelope
-
-```json
-{
-  "api_version": "2026-07-01"
-}
-```
-
-Date-based versions are useful because they communicate when a contract became active. The provider should document support periods and migration steps.
-
----
-
-# 7. Delivery Semantics and Reliability
-
-Webhook delivery is distributed communication. Network failures can happen at any point.
-
-## 7.1 The acknowledgement ambiguity
-
-```mermaid
-flowchart TD
-    A[Provider sends event] --> B[Consumer processes event successfully]
-    B --> C[Consumer returns 200]
-    C --> D[Network drops the response]
-    D --> E[Provider assumes failure and retries]
-```
-
-The provider cannot know whether the consumer completed processing. This is why duplicate delivery is unavoidable in many webhook systems.
-
-## 7.2 Delivery guarantees
-
-### At-most-once
-
-The provider sends once and does not retry.
-
-- No duplicate delivery
-- Events may be lost
-- Rarely sufficient for important integrations
-
-### At-least-once
-
-The provider retries until it receives success or reaches a retry limit.
-
-- Lower chance of lost events
-- Duplicate events are possible
-- Most common model for webhooks
-
-### Exactly-once effect
-
-True exactly-once network delivery is generally not practical. Instead, systems create an exactly-once **business effect** through:
-
-- Unique event IDs
-- Durable event storage
-- Database uniqueness constraints
-- Idempotent processing
-- Transactions
-
-## 7.3 Idempotent event processing
-
-Processing the same event multiple times must not create multiple business effects.
-
-### Unsafe example
+Unsafe:
 
 ```python
 account.balance += event["data"]["amount"]
 ```
 
-If the event is delivered twice, the amount is credited twice.
+If the event is delivered twice, the balance may be credited twice.
 
-### Safer approach
+Safer design:
 
 ```text
-1. Insert event ID into webhook_events
-2. Unique constraint rejects duplicate event ID
-3. Apply business change in the same transaction
-4. Mark event as processed
+1. Insert provider + event_id
+2. Unique constraint rejects duplicates
+3. Apply business update transactionally
+4. Mark event processed
 ```
 
 Example table:
 
 ```sql
 CREATE TABLE webhook_events (
-    provider       VARCHAR(50) NOT NULL,
-    event_id       VARCHAR(255) NOT NULL,
-    event_type     VARCHAR(255) NOT NULL,
-    status         VARCHAR(30) NOT NULL,
-    payload        JSONB NOT NULL,
-    received_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    processed_at   TIMESTAMPTZ,
-    error_message  TEXT,
+    provider      VARCHAR(50)  NOT NULL,
+    event_id      VARCHAR(255) NOT NULL,
+    event_type    VARCHAR(255) NOT NULL,
+    status        VARCHAR(30)  NOT NULL,
+    payload       JSONB        NOT NULL,
+    received_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    processed_at  TIMESTAMPTZ,
     PRIMARY KEY (provider, event_id)
 );
 ```
 
-The composite primary key prevents the same provider event from being recorded twice. The provider's event ID plays the role that a client-supplied key plays in a normal request — see [Idempotency (HTTP)](idempotency-http-methods.md) for the general pattern.
+The database uniqueness constraint is more reliable than a check-then-insert pattern in application memory.
 
-## 7.4 Retry strategy
+## 5.3 Delivery semantics
 
-A provider should retry temporary failures using exponential backoff:
+For important webhook integrations, design the consumer as if delivery can be **at least once**: duplicates may happen even if the provider usually delivers once.
 
-| Attempt | Delay before delivery |
-|---|---|
-| 1 | Immediately |
-| 2 | After 30 seconds |
-| 3 | After 2 minutes |
-| 4 | After 10 minutes |
-| 5 | After 1 hour |
-| Later attempts | Delay keeps growing up to a maximum |
+True exactly-once network delivery is generally not something a webhook receiver can rely on. What we normally build is an **exactly-once business effect** using deduplication, transactions, and idempotent operations.
 
-Add **jitter** so many failing deliveries do not retry at exactly the same time.
+## 5.4 Retries are provider-specific
 
-```text
-retry_delay = min(max_delay, base_delay × 2^attempt) + random_jitter
-```
+Do not assume every provider automatically retries failed webhooks.
 
-Retry likely temporary failures:
+Examples from current official documentation:
 
-- Connection timeout
-- DNS failure
-- `408 Request Timeout`
-- `429 Too Many Requests`
-- `500–599` responses
+- Stripe automatically retries live-mode webhook delivery for up to three days with exponential backoff.
+- GitHub does not automatically redeliver failed webhook deliveries; failed deliveries can be redelivered manually or through application logic.
 
-Normally do not repeatedly retry permanent failures without a clear policy:
+As a consumer, document the retry rules for every provider you integrate with.
 
-- Invalid callback URL
-- `400 Bad Request`
-- Removed subscription
-- Permanently invalid credentials
+## 5.5 Event ordering
 
-Provider behavior differs. Consumers must read the provider's delivery documentation.
-
-## 7.5 Event ordering
-
-Never assume events arrive in creation order unless the provider explicitly guarantees ordering.
+Never depend on event arrival order unless the provider explicitly guarantees it.
 
 Example:
 
-```mermaid
-flowchart TD
-    subgraph EXP[Expected order]
-        E1[subscription.created] --> E2[invoice.created]
-        E2 --> E3[invoice.paid]
-    end
-    subgraph POS[Possible delivery order]
-        P1[invoice.paid] --> P2[subscription.created]
-        P2 --> P3[invoice.created]
-    end
+```text
+Generated: subscription.created → invoice.created → invoice.paid
+Received:  invoice.paid → subscription.created → invoice.created
 ```
 
 Ways to handle this:
 
-- Fetch the current resource state from the provider
-- Include resource version numbers
-- Include sequence numbers per aggregate
-- Compare event timestamps carefully
+- Fetch the latest provider resource
+- Store resource/version numbers when available
+- Use provider sequence information when available
 - Make state transitions tolerant of missing earlier events
-- Reconcile periodically
+- Run reconciliation jobs
 
-A timestamp alone does not fully solve ordering because clocks, retries, and concurrent updates complicate processing.
+## 5.6 Dead-letter handling and reconciliation
 
-## 7.6 Dead-letter handling
+Events that repeatedly fail during **internal processing** should go to a dead-letter queue or failed-event store with the event ID, payload, attempts, timestamps, and last error.
 
-Events that fail repeatedly should be moved to a dead-letter queue or failed-event store.
-
-Store:
-
-- Event ID
-- Event type
-- Payload
-- Attempt count
-- Last error
-- First and last attempt timestamps
-- Endpoint or consumer identity
-
-Operations teams should be able to inspect and replay failed events safely.
-
-## 7.7 Reconciliation
-
-Webhooks should not be the only consistency mechanism for critical workflows.
-
-A scheduled reconciliation process can compare local state with provider state:
+For critical data:
 
 ```text
-Webhook path: fast, near-real-time update
-Reconciliation job: slower safety net
+Webhook = fast update path
+Reconciliation = consistency safety net
 ```
 
-Example:
-
-- Every hour, fetch payments updated since the previous cursor
-- Compare them with local orders
-- Repair missing or inconsistent records
+A reconciliation job periodically compares local state with provider state and repairs missed or inconsistent records.
 
 ---
 
-# 8. Webhook Security
+# 6. Webhook Security
 
-A webhook endpoint is publicly reachable and must be treated as an external attack surface.
+A webhook endpoint is publicly reachable and should be treated as an external attack surface.
 
-## 8.1 Use HTTPS
+## 6.1 HTTPS
 
-Production webhook endpoints should use HTTPS with a valid TLS certificate.
+Use HTTPS in production. TLS protects data in transit, but HTTPS alone does not prove that the sender is your expected provider.
 
-HTTPS protects the request from being read or modified in transit. It does not by itself prove that the request came from the expected provider, so request signing is still required.
+## 6.2 Verify the signature over the raw body
 
-## 8.2 HMAC signature verification
+Many providers sign the request body with HMAC or another signature scheme.
 
-A common approach uses a shared secret and HMAC-SHA256.
+The key rule is:
 
-### Provider
+**Verify the exact bytes received before JSON parsing or re-serialization.**
 
-```text
-signed_payload = timestamp + "." + raw_request_body
-signature = HMAC_SHA256(secret, signed_payload)
+Changing whitespace, key order, encoding, or escaping can make a valid signature fail.
+
+When implementing HMAC manually, use a constant-time comparison such as Python's:
+
+```python
+hmac.compare_digest(expected_signature, received_signature)
 ```
 
-### Consumer
+Prefer the provider's official SDK when one is available because signature formats differ between providers.
 
-1. Read the raw request body.
-2. Read the timestamp and signature headers.
-3. Recompute the HMAC using the shared secret.
-4. Compare signatures with a constant-time comparison.
-5. Reject old timestamps.
-6. Process the event only after successful verification.
+## 6.3 Replay protection
 
-```mermaid
-flowchart TD
-    A[Receive HTTP request] --> B[Read raw body and headers]
-    B --> C{Timestamp within tolerance?}
-    C -- No --> X[Reject request]
-    C -- Yes --> D[Calculate expected HMAC]
-    D --> E{Constant-time signature match?}
-    E -- No --> X
-    E -- Yes --> F[Check event ID for duplicate]
-    F --> G[Store and enqueue event]
-    G --> H[Return 2xx]
-```
+If the provider signs a timestamp as part of its protocol, verify that it falls within a short tolerance and reject stale requests.
 
-### Why raw body matters
+Also store the provider's event/delivery ID so the same event cannot create the business effect again.
 
-Signature verification is performed over the exact bytes sent by the provider. Parsing and re-serializing JSON can change:
+Not every provider includes a signed timestamp, so replay protection must match the provider's actual protocol rather than assuming a universal header format.
 
-- Whitespace
-- Key order
-- Escaping
-- Number representation
+## 6.4 Secret management
 
-The signature must be verified before modifying the body.
+Keep webhook secrets in a secret manager or secure runtime configuration, not in source code or logs.
 
-## 8.3 Prevent replay attacks
+During rotation, a receiver may temporarily support both the new and old secret if the provider's rotation process requires an overlap window.
 
-An attacker may capture a valid request and send it again.
+## 6.5 Additional protections
 
-Use both:
-
-- A signed timestamp with a limited tolerance, such as five minutes
-- A unique event or delivery ID stored by the consumer
-
-The timestamp blocks old requests. The event ID blocks repeated processing within and beyond the timestamp window.
-
-## 8.4 Constant-time comparison
-
-Do not compare signatures with a normal string equality operation in custom cryptographic code.
-
-Python provides: `hmac.compare_digest(expected_signature, received_signature)`
-
-This reduces timing information that could help an attacker guess a valid signature.
-
-## 8.5 Secret management and rotation
-
-Store secrets in:
-
-- Environment variables supplied by a secret manager
-- AWS Secrets Manager
-- HashiCorp Vault
-- Google Secret Manager
-- Azure Key Vault
-- Kubernetes Secrets with appropriate encryption and access controls
-
-Do not store signing secrets in source code or logs.
-
-During rotation, temporarily support both the current and previous secret:
-
-```mermaid
-flowchart TD
-    A[Verify with new secret] -->|If not valid| B[Verify with old secret]
-    B --> C["After migration window, remove old secret"]
-```
-
-## 8.6 IP allow lists
-
-IP allow-listing can be an additional layer when the provider publishes stable delivery ranges.
-
-It should not replace signature verification because:
-
-- IP ranges may change
-- Proxies can affect source addresses
-- Configuration errors may block valid deliveries
-- A compromised permitted system could still send malicious traffic
-
-## 8.7 Mutual TLS and asymmetric signatures
-
-Higher-security integrations may use:
-
-- Mutual TLS, where both sides present certificates
-- JWS or public-key signatures, where the provider signs with a private key and consumers verify with a public key
-
-These approaches reduce shared-secret distribution but add certificate and key-rotation complexity.
-
-## 8.8 Additional protections
-
-- Apply a request body size limit
-- Enforce `Content-Type: application/json`
-- Validate required fields
+- Limit request body size
+- Validate `Content-Type`
+- Validate required metadata and schema
 - Rate-limit abusive traffic carefully
-- Use a dedicated endpoint without browser sessions
-- Do not require CSRF tokens for machine-to-machine webhook routes
-- Redact personal and secret data from logs
-- Subscribe only to required events
+- Redact secrets and unnecessary PII from logs
+- Subscribe only to required event types
+- Do not require browser CSRF tokens on dedicated machine-to-machine webhook routes
+- Use IP allow lists only as an additional layer, not as a replacement for signature verification
 
 ---
 
-# 9. Production-Ready Receiver Architecture
+# 7. Production Receiver Architecture
 
-## 9.1 Recommended architecture
+A reliable receiver should keep the synchronous path small.
 
 ```mermaid
 flowchart LR
-    P[Webhook Provider] -->|HTTPS POST| G[API Gateway / Load Balancer]
+    P[Webhook Provider] --> G[API Gateway / Load Balancer]
     G --> R[Webhook Receiver]
-    R --> V[Signature and Schema Validation]
+    R --> V[Signature + Basic Validation]
     V --> E[(Webhook Event Store)]
     E --> Q[Queue]
     Q --> W[Worker]
     W --> B[(Business Database)]
-    W --> X[External Services]
-    E --> O[Monitoring and Replay Tool]
+    E --> O[Monitoring / Replay]
 ```
 
-## 9.2 Receiver responsibilities
+## 7.1 Receiver responsibilities
 
-The HTTP receiver should do only the minimum synchronous work:
+The HTTP receiver should mainly:
 
-1. Read the raw request body.
-2. Verify signature and timestamp.
-3. Validate basic event metadata.
-4. Deduplicate by event ID.
+1. Read the raw body.
+2. Verify the provider signature.
+3. Validate required event metadata.
+4. Deduplicate by provider event ID.
 5. Durably store or enqueue the event.
 6. Return `2xx` quickly.
 
-## 9.3 Worker responsibilities
+## 7.2 Worker responsibilities
 
-The asynchronous worker should:
+The worker should:
 
-- Parse and validate the full event schema
-- Run business logic
-- Call internal or external services
+- Perform full schema validation
+- Execute business logic
+- Call downstream services
 - Retry recoverable processing failures
 - Record processing status
-- Send failed events to a dead-letter queue
+- Move permanent failures to a dead-letter store
 
-## 9.4 Durable store before acknowledgement
+## 7.3 Store before acknowledgement
 
-Do not acknowledge an important event before it is safely stored. The unsafe order is `Receive → Return 200 → Process in application memory`: if the process crashes after returning `200`, the event may be lost. The safe order is `Receive → Verify → Store/Queue durably → Return 200 → Process`.
-
-## 9.5 Database transaction boundary
-
-When possible, perform deduplication and the local state change in one transaction:
+Unsafe:
 
 ```text
-BEGIN
-  INSERT webhook event ID
-  UPDATE business resource
-  MARK event processed
-COMMIT
+Receive → return 200 → keep work only in application memory
 ```
 
-If the transaction fails, none of the changes are committed and the event can be retried.
+If the process crashes after `200`, the provider believes delivery succeeded and the event may be lost.
 
-For cross-service operations, use patterns such as:
+Safer:
 
-- Transactional outbox
-- Saga
-- Retryable commands
-- Idempotency keys
+```text
+Receive → verify → durably store/enqueue → return 2xx → process
+```
+
+For local database changes, deduplication and the business update should be in the same transaction when practical.
 
 ---
 
-# 10. FastAPI Webhook Receiver Example
+# 8. FastAPI Payment Webhook Example
 
-The following example demonstrates generic HMAC verification. Provider-specific SDKs should be used when available because they encode the provider's exact signature format.
+This example uses a **generic custom HMAC contract**:
 
-## 10.1 Signature verification utility
+```text
+signature = HMAC_SHA256(secret, timestamp + "." + raw_body)
+```
+
+Real providers may use a different format. Use the provider SDK when available.
 
 ```python
 import hashlib
 import hmac
-import time
-
-class InvalidWebhookSignature(Exception):
-    """Raised when a webhook request cannot be authenticated."""
-
-def verify_webhook_signature(
-    *,
-    raw_body: bytes,
-    timestamp: str,
-    received_signature: str,
-    secret: str,
-    tolerance_seconds: int = 300,
-) -> None:
-    try:
-        request_timestamp = int(timestamp)
-    except (TypeError, ValueError) as exc:
-        raise InvalidWebhookSignature("Invalid timestamp") from exc
-
-    current_timestamp = int(time.time())
-    if abs(current_timestamp - request_timestamp) > tolerance_seconds:
-        raise InvalidWebhookSignature("Webhook timestamp is too old")
-
-    signed_payload = timestamp.encode("utf-8") + b"." + raw_body
-    expected_signature = hmac.new(
-        secret.encode("utf-8"),
-        signed_payload,
-        hashlib.sha256,
-    ).hexdigest()
-
-    normalized_signature = received_signature.removeprefix("sha256=")
-
-    if not hmac.compare_digest(expected_signature, normalized_signature):
-        raise InvalidWebhookSignature("Signature does not match")
-```
-
-## 10.2 FastAPI endpoint
-
-```python
 import json
 import os
-from typing import Any
+import time
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, ValidationError
 
 app = FastAPI()
 WEBHOOK_SECRET = os.environ["PAYMENT_WEBHOOK_SECRET"]
 
-class WebhookEvent(BaseModel):
-    model_config = ConfigDict(extra="allow")
 
-    id: str
-    type: str
-    created_at: str
-    data: dict[str, Any]
+def verify_signature(
+    raw_body: bytes,
+    timestamp: str,
+    received_signature: str,
+    tolerance_seconds: int = 300,
+) -> None:
+    try:
+        request_time = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid timestamp") from exc
 
-async def event_already_recorded(event_id: str) -> bool:
-    # Replace with a database query.
-    return False
+    if abs(int(time.time()) - request_time) > tolerance_seconds:
+        raise HTTPException(status_code=401, detail="Stale webhook")
 
-async def store_and_enqueue_event(event: WebhookEvent, raw_payload: dict) -> None:
+    signed_payload = timestamp.encode() + b"." + raw_body
+    expected = hmac.new(
+        WEBHOOK_SECRET.encode(),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+    received = received_signature.removeprefix("sha256=")
+
+    if not hmac.compare_digest(expected, received):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+
+async def store_event_if_new(event: dict) -> bool:
     """
-    Production implementation should atomically:
-    1. insert the event using a unique event_id constraint;
-    2. enqueue an internal processing job or write to an outbox.
+    Insert using a UNIQUE(provider, event_id) constraint.
+    Return False when the event already exists.
     """
+    return True
+
+
+async def enqueue_event(event_id: str) -> None:
+    """Push the event ID to a durable queue/outbox."""
     pass
 
+
 @app.post("/webhooks/payments", status_code=status.HTTP_202_ACCEPTED)
-async def receive_payment_webhook(
+async def payment_webhook(
     request: Request,
     x_webhook_timestamp: str = Header(alias="X-Webhook-Timestamp"),
     x_webhook_signature: str = Header(alias="X-Webhook-Signature"),
-) -> dict[str, bool]:
+):
     raw_body = await request.body()
 
-    try:
-        verify_webhook_signature(
-            raw_body=raw_body,
-            timestamp=x_webhook_timestamp,
-            received_signature=x_webhook_signature,
-            secret=WEBHOOK_SECRET,
-        )
-    except InvalidWebhookSignature as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
+    verify_signature(
+        raw_body,
+        x_webhook_timestamp,
+        x_webhook_signature,
+    )
 
     try:
-        raw_payload = json.loads(raw_body)
-        event = WebhookEvent.model_validate(raw_payload)
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid webhook payload",
-        ) from exc
+        event = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
 
-    if await event_already_recorded(event.id):
-        # A duplicate is considered successfully handled.
-        return {"received": True}
+    if not await store_event_if_new(event):
+        return {"received": True}  # duplicate already handled
 
-    await store_and_enqueue_event(event, raw_payload)
+    await enqueue_event(event["id"])
     return {"received": True}
 ```
 
-## 10.3 Event dispatcher
+The important part is not the framework syntax. The important design is that signature verification happens on the **raw body**, duplicate detection is **durable**, and expensive business logic is moved out of the request path.
 
-```python
-from collections.abc import Awaitable, Callable
-
-EventHandler = Callable[[WebhookEvent], Awaitable[None]]
-
-async def handle_payment_succeeded(event: WebhookEvent) -> None:
-    payment_id = event.data["payment_id"]
-    order_id = event.data["order_id"]
-
-    # Use an idempotent database operation.
-    # Example: update only when the order is not already paid.
-    await mark_order_as_paid(order_id=order_id, payment_id=payment_id)
-
-async def handle_payment_failed(event: WebhookEvent) -> None:
-    await mark_payment_as_failed(
-        order_id=event.data["order_id"],
-        payment_id=event.data["payment_id"],
-    )
-
-HANDLERS: dict[str, EventHandler] = {
-    "payment.succeeded": handle_payment_succeeded,
-    "payment.failed": handle_payment_failed,
-}
-
-async def process_event(event: WebhookEvent) -> None:
-    handler = HANDLERS.get(event.type)
-
-    if handler is None:
-        # Unknown events should normally be recorded and ignored safely.
-        return
-
-    await handler(event)
-```
-
-## 10.4 Why not use only an in-process background task?
-
-FastAPI background tasks can be useful for lightweight work, but they run in the application process. A process restart can interrupt the task.
-
-For important webhook workloads, prefer a durable queue such as:
-
-- RabbitMQ
-- Amazon SQS
-- Kafka
-- Redis Streams
-- A database-backed job queue
-
-Celery, Dramatiq, RQ, Taskiq, or a custom worker can consume the queued event.
+For important workloads, do not rely only on an in-process FastAPI `BackgroundTasks` job. Use a durable queue/job system such as SQS, RabbitMQ, Kafka, Redis Streams, or a database-backed queue with a worker framework such as Celery, Taskiq, Dramatiq, or RQ.
 
 ---
 
-# 11. Webhook Sender Design
+# 9. Designing Webhooks as a Provider
 
-When your own API provides webhooks, the sender needs reliable delivery infrastructure.
+If your own API sends webhooks, you are responsible for reliable delivery.
 
-## 11.1 Subscription model
+## 9.1 Use a transactional outbox
 
-A webhook subscription commonly contains:
+Do not call customer webhook URLs inside the main business request.
 
-```json
-{
-  "id": "whsub_123",
-  "url": "https://customer.example.com/webhooks/orders",
-  "enabled_events": [
-    "order.created",
-    "order.shipped"
-  ],
-  "status": "active",
-  "secret": "stored-encrypted",
-  "api_version": "2026-07-01"
-}
-```
-
-Store secrets encrypted and show them only when initially created or rotated.
-
-## 11.2 Do not send directly inside the business request
-
-Unsafe design:
-
-```mermaid
-flowchart TD
-    A[Create order API] --> B[Save order]
-    B --> C[Call every webhook subscriber]
-    C --> D[Return response]
-```
-
-One slow or unavailable subscriber increases your API latency and failure rate.
-
-Use an outbox or event bus:
+Instead:
 
 ```mermaid
 flowchart LR
-    A[Create Order API] --> T[Database Transaction]
+    A[Create Order API] --> T[DB Transaction]
     T --> O[(Orders)]
     T --> E[(Outbox Events)]
     E --> D[Webhook Dispatcher]
-    D --> S1[Subscriber A]
-    D --> S2[Subscriber B]
-    D --> S3[Subscriber C]
+    D --> S[Subscriber Endpoint]
 ```
 
-## 11.3 Transactional outbox pattern
+Write the business change and event record in the same database transaction. A separate dispatcher sends the webhook later.
 
-Write the business change and event record in the same database transaction:
+This avoids the failure case where the order is committed but the event is never created.
 
-```sql
-BEGIN;
+## 9.2 Track deliveries separately
 
-INSERT INTO orders (...);
-
-INSERT INTO outbox_events (
-    event_id,
-    event_type,
-    payload,
-    status
-) VALUES (
-    'evt_123',
-    'order.created',
-    '{"order_id":"order_123"}',
-    'pending'
-);
-
-COMMIT;
-```
-
-A dispatcher later reads pending outbox events and delivers them. This prevents a failure where the order is committed but the event is never created.
-
-## 11.4 Delivery record
-
-Track delivery separately for each subscription:
+One event may be sent to several subscriptions, so keep event data separate from per-endpoint delivery state:
 
 ```text
 webhook_events
@@ -1128,138 +604,46 @@ webhook_deliveries
   subscription_id
   attempt_number
   response_status
-  response_body_preview
   next_attempt_at
   delivered_at
 ```
 
-One event may be delivered to many subscribers, each with its own retry state.
+## 9.3 Protect the sender from SSRF
 
-## 11.5 Sender-side SSRF protection
+Because customers can provide callback URLs, webhook delivery infrastructure can become an SSRF path.
 
-A webhook provider makes server-side requests to customer-provided URLs. This creates a Server-Side Request Forgery risk.
+Important protections include:
 
-Protect the sender by:
-
-- Allowing only `https://` URLs in production
-- Resolving DNS and blocking private, loopback, and link-local IP ranges
-- Rechecking the resolved destination after redirects
-- Limiting or disabling redirects
-- Blocking cloud metadata endpoints
-- Applying connection and response timeouts
-- Limiting response size
-- Isolating delivery workers from internal networks
-
-This concern is especially important when customers can freely configure callback URLs.
-
-## 11.6 Endpoint verification
-
-Some providers verify ownership before activating a subscription.
-
-### Challenge-response example
-
-```http
-POST /webhooks/orders
-Content-Type: application/json
-
-{
-  "type": "webhook.verification",
-  "challenge": "random-value-123"
-}
-```
-
-The receiver returns:
-
-```json
-{
-  "challenge": "random-value-123"
-}
-```
-
-Alternative methods include sending a signed test event or requiring an API-based confirmation.
+- Require `https://` in production
+- Block private, loopback, link-local, and cloud metadata destinations
+- Revalidate destinations after redirects/DNS resolution
+- Limit or disable redirects
+- Apply connection/read timeouts
+- Limit response size
+- Isolate delivery workers from sensitive internal networks
 
 ---
 
-# 12. Testing and Local Development
+# 10. Testing and Observability
 
-## 12.1 Test cases
+## 10.1 Important tests
 
-A webhook receiver should be tested for:
+Test at least:
 
-| Scenario | Expected result |
-|---|---|
-| Valid event and signature | Event stored and `2xx` returned |
-| Invalid signature | Request rejected |
-| Missing signature | Request rejected |
-| Old timestamp | Replay rejected |
-| Malformed JSON | `400` returned |
-| Unknown event type | Safely ignored or stored |
-| Duplicate event ID | No duplicate business effect; `2xx` returned |
-| Dependency unavailable | Event remains retryable |
-| Events out of order | Final state remains correct |
-| Worker crashes | Event can be retried |
-| Large payload | Rejected according to size limit |
+- Valid signature and event
+- Invalid/missing signature
+- Stale signed timestamp when the provider uses one
+- Malformed payload
+- Duplicate event ID
+- Unknown event type
+- Out-of-order events
+- Worker crash and retry
+- Downstream dependency failure
+- Oversized payload
 
-## 12.2 Local endpoint exposure
+## 10.2 Logging
 
-A provider on the internet cannot call `localhost` directly. During development, use:
-
-- The provider's official CLI forwarding tool
-- A secure tunnelling service
-- A temporary development environment
-
-Never expose an unsecured development server with production secrets.
-
-## 12.3 Store sample payloads
-
-Maintain sanitized event fixtures:
-
-```text
-tests/fixtures/webhooks/
-├── payment_succeeded.json
-├── payment_failed.json
-├── invoice_paid.json
-└── subscription_cancelled.json
-```
-
-Fixtures improve:
-
-- Unit tests
-- Schema migration testing
-- Replay testing
-- Debugging
-- Consumer contract testing
-
-## 12.4 Contract testing
-
-Provider and consumer teams should test:
-
-- Required fields
-- Optional fields
-- Enum expansion
-- Event version compatibility
-- Signature generation and verification
-- Unknown field handling
-- Deprecation behavior
-
-## 12.5 Replay tools
-
-A useful internal replay tool should:
-
-- Require authorization
-- Preserve the original event ID
-- Clearly mark manual replays
-- Prevent accidental mass replay
-- Record who replayed the event and why
-- Avoid bypassing normal idempotency checks
-
----
-
-# 13. Observability and Operations
-
-## 13.1 Structured logging
-
-Log operational metadata:
+Log operational metadata such as:
 
 ```json
 {
@@ -1267,138 +651,69 @@ Log operational metadata:
   "provider": "payment-service",
   "event_id": "evt_123",
   "event_type": "payment.succeeded",
-  "delivery_id": "del_456",
-  "signature_valid": true,
   "duplicate": false,
-  "processing_status": "queued",
-  "request_id": "req_789"
+  "processing_status": "queued"
 }
 ```
 
-Avoid logging:
+Avoid logging signing secrets, full authorization headers, or unnecessary personal/payment data.
 
-- Signing secrets
-- Full authorization headers
-- Complete payment details
-- Personal data not needed for debugging
-- Entire payloads without redaction and retention controls
+## 10.3 Metrics worth monitoring
 
-## 13.2 Metrics
-
-Track at minimum:
-
-- Received events per provider and type
-- Successful acknowledgements
+- Events received by provider/type
 - Invalid signatures
-- Duplicate events
+- Duplicate count
 - Queue depth
-- Processing latency
-- Processing failures
-- Retry count
-- Dead-letter queue size
 - Oldest unprocessed event age
+- Processing latency
+- Retry count
+- Processing failures
+- Dead-letter queue size
 
-## 13.3 Useful latency measures
+A rising queue age is often more useful than queue length alone because it directly shows how stale processing has become.
 
-| Measure | Formula |
-|---|---|
-| Delivery latency | `received_at - event_created_at` |
-| Queue latency | `processing_started_at - received_at` |
-| Processing time | `processing_finished_at - processing_started_at` |
-| End-to-end time | `processing_finished_at - event_created_at` |
+---
 
-These measurements help locate whether delays originate in the provider, receiver, queue, or worker.
+# Key Takeaway
 
-## 13.4 Alerts
+A production webhook is not just a `POST` endpoint. It is a small distributed system boundary.
 
-Alert on conditions such as:
+The reliable pattern is:
 
-- Sudden increase in signature failures
-- No events received during an expected active period
-- Queue depth above threshold
-- Oldest event age above threshold
-- Dead-letter queue growth
-- Repeated failures for one event type
-- Provider retry rate increase
-
-## 13.5 Correlation IDs
-
-Preserve identifiers across the entire flow:
-
-```mermaid
-flowchart TD
-    A[Provider event ID] --> B[Webhook event record]
-    B --> C[[Queue message]]
-    C --> D[Worker log]
-    D --> E[Business transaction]
+```text
+Provider
+   ↓
+HTTPS webhook
+   ↓
+Verify exact request
+   ↓
+Deduplicate event ID
+   ↓
+Durably store / enqueue
+   ↓
+Return 2xx quickly
+   ↓
+Worker processes idempotently
+   ↓
+Retry / DLQ / reconciliation
 ```
 
-This makes distributed debugging significantly easier.
+If you remember only four ideas, remember these:
+
+1. **Verify authenticity before processing.**
+2. **Assume duplicate and out-of-order delivery.**
+3. **Acknowledge only after durable acceptance, then process asynchronously.**
+4. **Treat retry, ordering, and signature details as provider-specific contracts.**
 
 ---
 
-# 14. Common Practical Use Cases
+# References
 
-| Domain | Typical events | Why a webhook |
-|---|---|---|
-| Payment processing | `payment.succeeded`, `payment.failed`, `refund.created`, `chargeback.opened` | The outcome is settled after the original API call returns, and duplicate financial events cause serious errors, so processing must be idempotent |
-| E-commerce and shipping | `order.created`, `order.cancelled`, `shipment.dispatched`, `shipment.delivered` | Carrier updates arrive late and out of order, so the consumer should use provider state or sequence information when available |
-| Source control and CI/CD | `push.created`, `pull_request.opened`, `pull_request.merged`, `build.completed`, `release.published` | A Git platform triggers code analysis, deployment, notifications, or audit workflows with no polling agent |
-| Document and AI processing | `document.uploaded`, `document.ocr_completed`, `model.job_completed`, `report.generated` | The initial API request creates a long-running job, and the webhook reports completion without constant polling |
-| Identity and compliance | `verification.completed`, `verification.failed`, `risk.review_required` | Review can take minutes or days, and the receiver should retrieve current provider state before a high-impact decision |
-| Communication platforms | `message.received`, `message.delivered`, `message.read`, `message.failed` | Delivery receipts arrive continuously and at high volume, requiring efficient queueing, partitioning, and idempotent processing |
-
-The pattern is the same in every domain: an operation completes outside the caller's request cycle, and the provider reports the outcome instead of the consumer asking repeatedly.
-
-Financial and high-volume integrations put the most pressure on the same two requirements — idempotent processing and reconciliation against provider state.
-
----
-
-# 15. Webhook Design Checklist
-
-## 15.1 Consumer checklist
-
-- [ ] Use a dedicated HTTPS endpoint
-- [ ] Verify the signature against the raw body
-- [ ] Validate a signed timestamp
-- [ ] Use constant-time signature comparison
-- [ ] Deduplicate using a durable unique event ID
-- [ ] Store or enqueue before returning success
-- [ ] Return `2xx` quickly
-- [ ] Process business logic asynchronously
-- [ ] Handle unknown event types safely
-- [ ] Do not depend on event order
-- [ ] Make business operations idempotent
-- [ ] Add retry and dead-letter handling
-- [ ] Redact sensitive logs
-- [ ] Monitor queue age and failures
-- [ ] Run periodic reconciliation for critical data
-
-## 15.2 Provider checklist
-
-- [ ] Generate a globally unique event ID
-- [ ] Use clear, stable event names
-- [ ] Sign every request
-- [ ] Include a signed timestamp
-- [ ] Support secret rotation
-- [ ] Retry temporary failures with exponential backoff and jitter
-- [ ] Document retry duration and timeout behavior
-- [ ] Provide delivery history and manual replay
-- [ ] Version payload contracts
-- [ ] Preserve backward compatibility
-- [ ] Protect the sender from SSRF
-- [ ] Apply connection and response timeouts
-- [ ] Let consumers subscribe only to required events
-- [ ] Document ordering and duplication behavior
-
----
-
-# 16. References
-
-- IETF, **RFC 9110 — HTTP Semantics**: https://www.rfc-editor.org/rfc/rfc9110.html
-- GitHub Docs, **About webhooks**: https://docs.github.com/en/webhooks/about-webhooks
-- GitHub Docs, **Best practices for using webhooks**: https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
-- Stripe Docs, **Receive events in your webhook endpoint**: https://docs.stripe.com/webhooks
-- Stripe Docs, **Process undelivered webhook events**: https://docs.stripe.com/webhooks/process-undelivered-events
-- CloudEvents, **Specification and ecosystem**: https://cloudevents.io/
-
+- IETF RFC 9110 — HTTP Semantics: https://www.rfc-editor.org/rfc/rfc9110.html
+- Stripe Docs — Receive events in your webhook endpoint: https://docs.stripe.com/webhooks
+- Stripe Docs — Resolve webhook signature verification errors: https://docs.stripe.com/webhooks/signature
+- GitHub Docs — Handling webhook deliveries: https://docs.github.com/en/webhooks/using-webhooks/handling-webhook-deliveries
+- GitHub Docs — Validating webhook deliveries: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
+- GitHub Docs — Handling failed webhook deliveries: https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries
+- CloudEvents Specification: https://github.com/cloudevents/spec
+- FastAPI Docs — Background Tasks: https://fastapi.tiangolo.com/tutorial/background-tasks/

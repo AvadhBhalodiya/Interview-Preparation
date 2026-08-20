@@ -6,1043 +6,534 @@ order: 3
 
 # Redis TTL and Eviction Policies (LRU, LFU)
 
-> Practical understanding of TTL, memory limits, LRU/LFU eviction, configuration, monitoring, and production usage
->
-> **Documentation baseline:** Redis 8.x documentation, reviewed in July 2026
+> Practical understanding of TTL, expiration, `maxmemory`, LRU/LFU eviction, monitoring, and production cache usage.
 
-## In short
+> **Documentation baseline:** Redis Open Source 8.10 documentation, reviewed in August 2026.
 
-- TTL and eviction both delete keys but answer different questions. TTL asks "is this key still valid?" — per key, triggered by time. Eviction asks "which key is least valuable?" — server-wide, triggered only by memory pressure.
-- Set the value and its expiry in one command (`SET key value EX 600`). With a separate `SET` then `EXPIRE`, a crash between the two leaves a key that never expires.
-- A plain `SET` on an existing key replaces its TTL; `KEEPTTL` and in-place updates such as `HSET`, `INCR`, and `APPEND` preserve it. This is the most common accidental cache leak.
-- Redis expires keys lazily, on access, plus a background sampling loop — so an expired key can still occupy memory for a short time after its TTL passes.
-- Eviction runs only at `maxmemory`. Under `noeviction`, Redis rejects memory-consuming writes with an error instead of making room; reads keep working.
-- `allkeys-*` policies may evict anything; `volatile-*` policies may evict only keys that carry a TTL — and if no eligible key has one, a volatile policy behaves like `noeviction`.
-- LRU tracks recency, LFU tracks frequency with decay. Both are approximate in Redis (sampled via `maxmemory-samples`), not exact orderings.
+## In Short
 
-```mermaid
-flowchart TD
-    A[Choose eviction policy] --> B{Can Redis discard cached keys?}
-    B -->|No| C[noeviction]
-    B -->|Yes| D{Dedicated cache instance?}
-    D -->|Yes| E{Access pattern}
-    E -->|Recent data stays hot| F[allkeys-lru]
-    E -->|Stable popular data stays hot| G[allkeys-lfu]
-    E -->|Uniform access| H[allkeys-random]
-    D -->|No, mixed cache and protected keys| I{Can every disposable key have TTL?}
-    I -->|Yes| J[Consider volatile-lru or volatile-lfu]
-    I -->|No| K[Separate workloads into different Redis instances]
-```
-
-**Interview answer:** TTL is per-key freshness control and fires on time; eviction is instance-wide capacity control and fires only when memory reaches `maxmemory`. A dedicated cache should start at `allkeys-lru`, and move to `allkeys-lfu` when popularity is stable — LRU will discard a genuinely popular key that merely went untouched while some scan pushed newer keys through. Use a `volatile-*` policy only when the same instance also holds keys that must never be evicted, and remember it silently degrades to `noeviction` when none of the candidates carry a TTL.
-
-**Gotcha:** Assuming a TTL survives a write. `SET key newvalue` drops the existing expiry, so a key refreshed on every write becomes immortal. Combined with `noeviction`, that slow leak turns into hard write failures rather than a quietly shrinking cache.
-
----
-
-# 1. Why TTL and Eviction Matter
-
-Redis stores data primarily in memory. Memory is fast, but it is limited.
-
-A production Redis cache must answer two different questions:
-
-1. **How long should a cached value remain valid?**
-2. **Which value should Redis remove when memory becomes full?**
-
-Redis solves these with:
-
-- **TTL**, which controls the lifetime of a key.
-- **Eviction policy**, which controls memory-pressure removal.
-
-Without TTL, stale cache entries may remain indefinitely.
-
-Without a suitable eviction policy, Redis may reject writes when its configured memory limit is reached.
+- **TTL (Time To Live)** controls **freshness** for an individual key.
+- **Eviction** controls **memory usage** for the Redis instance when `maxmemory` is reached.
+- Prefer setting a value and expiry together: `SET key value EX 600`.
+- A normal `SET` overwrites the key and removes its existing TTL unless `KEEPTTL` is used.
+- In-place operations such as `INCR`, `HSET`, and `LPUSH` normally preserve the key TTL.
+- `allkeys-lru` is a strong general-purpose cache policy.
+- `allkeys-lfu` is useful when a stable set of keys is repeatedly popular.
+- `volatile-*` policies only evict keys that have an expiry.
+- Redis LRU and LFU are **approximate**, not exact, which keeps memory and CPU overhead low.
 
 ```mermaid
 flowchart LR
-    A[Application] --> B[Redis Cache]
-    B --> C{Why should a key disappear?}
-    C -->|Its lifetime ended| D[TTL Expiration]
-    C -->|Redis reached maxmemory| E[Memory Eviction]
+    A[Redis key] --> B{Why should it disappear?}
+    B -->|Data is no longer fresh| C[TTL expiration]
+    B -->|Redis reaches maxmemory| D[Eviction policy]
 ```
 
 ---
 
-# 2. TTL vs Eviction
+# 1. TTL vs Eviction
 
 TTL and eviction both remove keys, but they solve different problems.
 
 | Area | TTL / Expiration | Eviction |
 |---|---|---|
-| Main purpose | Prevent stale data from living forever | Keep Redis within its memory limit |
+| Purpose | Keep data fresh | Keep Redis within memory limits |
 | Trigger | Expiration time is reached | Memory exceeds `maxmemory` |
-| Configured per key | Yes | No |
-| Configured at server level | Expiration processing is automatic | Yes, through `maxmemory-policy` |
+| Scope | Per key | Entire Redis instance |
 | Requires memory pressure | No | Yes |
-| Typical example | OTP expires after 5 minutes | Cold product cache is removed when RAM is full |
-| Main commands/settings | `EXPIRE`, `SET EX`, `TTL`, `PERSIST` | `maxmemory`, `maxmemory-policy` |
+| Example | Product cache expires after 10 minutes | Cold cache keys are removed when memory is full |
+| Main commands/settings | `SET EX`, `EXPIRE`, `TTL`, `PERSIST` | `maxmemory`, `maxmemory-policy` |
 
-## Mental Model
+### Mental Model
 
 ```text
-TTL asks:
+TTL:
+"Is this cached value still valid?"
 
-    "Is this key still valid?"
-
-Eviction asks:
-
-    "If memory is full, which key is least valuable?"
+Eviction:
+"If Redis is full, which key should be removed?"
 ```
 
-A key may therefore disappear in either of these ways:
+A cache normally uses **both**:
 
-```mermaid
-flowchart TD
-    K[Key exists in Redis] --> T{TTL reached?}
-    T -->|Yes| X[Key expires]
-    T -->|No| M{Memory above maxmemory?}
-    M -->|No| K
-    M -->|Yes| P[Apply eviction policy]
-    P --> E[Selected key is evicted]
+```text
+TTL       -> controls staleness
+Eviction  -> controls capacity
 ```
 
 ---
 
-# 3. How Redis TTL Works
+# 2. How TTL Works
 
-TTL means **Time To Live**.
-
-It is the remaining time before Redis considers a key expired.
-
-Example:
-
-```bash
-SET session:user:42 "active"
-EXPIRE session:user:42 1800
-```
-
-The session will expire after 1,800 seconds, which is 30 minutes.
-
-A more compact and usually preferred form is: `SET session:user:42 "active" EX 1800`
-
-This sets the value and expiration atomically in one command.
-
-## Why Atomic TTL Assignment Matters
-
-Consider this sequence:
-
-```bash
-SET session:user:42 "active"
-EXPIRE session:user:42 1800
-```
-
-If the application crashes after `SET` but before `EXPIRE`, the key remains without a TTL.
-
-This is safer: `SET session:user:42 "active" EX 1800`
-
-The value and TTL are applied together.
-
----
-
-# 4. TTL Commands
-
-## 4.1 Set Expiration in Seconds
-
-`EXPIRE key seconds` attaches an expiry to a key that already exists.
-
-```bash
-SET otp:user:1001 "483921"
-EXPIRE otp:user:1001 300          # the OTP expires after five minutes
-```
-
----
-
-## 4.2 Set Expiration in Milliseconds
-
-`PEXPIRE key milliseconds` does the same at millisecond resolution, which matters for short-lived locks.
-
-```bash
-SET lock:payment:812 "worker-7"
-PEXPIRE lock:payment:812 1500     # the lock expires after 1.5 seconds
-```
-
----
-
-## 4.3 Set Value with Expiration
-
-`SET key value EX seconds` and `SET key value PX milliseconds` apply the value and its expiry in one atomic command, which is the preferred form.
+TTL means **Time To Live**: the remaining lifetime of a key before Redis considers it expired.
 
 ```bash
 SET cache:product:501 '{"name":"Keyboard","price":2999}' EX 600
-SET rate-limit:user:42 "1" PX 1000
 ```
 
----
+The key expires after **600 seconds (10 minutes)**.
 
-## 4.4 Set an Absolute Expiration Time
+## 2.1 Prefer Atomic Value + TTL
 
-Redis can expire a key at a specific Unix timestamp.
+Avoid separating the write and expiry when both belong to the same operation:
 
 ```bash
-EXPIREAT key unix_timestamp_seconds
-PEXPIREAT key unix_timestamp_milliseconds
+SET cache:product:501 "value"
+EXPIRE cache:product:501 600
 ```
 
-The `SET` command also supports absolute expiration:
+If the application fails between the two commands, the key may remain without an expiry.
+
+Prefer:
 
 ```bash
-SET key value EXAT unix_timestamp_seconds
-SET key value PXAT unix_timestamp_milliseconds
+SET cache:product:501 "value" EX 600
 ```
 
-This is useful when many keys must expire at a known business deadline.
+The value and TTL are applied in one command.
 
-Example use cases:
+## 2.2 Common TTL Commands
 
-- Promotion expires at midnight.
-- Temporary access ends at a contract deadline.
-- Daily counter resets at a fixed time.
-
----
-
-## 4.5 Check Remaining TTL
-
-`TTL key` returns the remaining lifetime in seconds, `PTTL key` in milliseconds.
-
-```bash
-SET cache:user:42 "data" EX 120
-TTL cache:user:42                 # => (integer) 118
-```
-
-The two negative return values are the ones worth remembering, because they distinguish "no expiry" from "no key":
-
-| Result | Meaning |
-|---:|---|
-| Positive number | Remaining lifetime in seconds |
-| `-1` | Key exists but has no expiration |
-| `-2` | Key does not exist |
-
----
-
-## 4.6 Check the Absolute Expiration Timestamp
-
-```bash
-EXPIRETIME key
-PEXPIRETIME key
-```
-
-These commands return the Unix timestamp at which the key will expire.
-
-Use them when an application needs an absolute deadline instead of a remaining duration.
-
----
-
-## 4.7 Remove a TTL
-
-`PERSIST key` keeps the key but removes its expiration, making it permanent again.
-
-```bash
-SET config:feature-x "enabled" EX 3600
-PERSIST config:feature-x
-```
-
----
-
-## 4.8 Conditional Expiration
-
-`EXPIRE`, `PEXPIRE`, `EXPIREAT`, and `PEXPIREAT` support conditions.
-
-| Option | Meaning |
+| Command | Purpose |
 |---|---|
-| `NX` | Set expiration only when the key currently has no expiration |
-| `XX` | Set expiration only when the key already has an expiration |
-| `GT` | Set expiration only when the new TTL is greater than the current TTL |
-| `LT` | Set expiration only when the new TTL is less than the current TTL |
-
-Examples: `EXPIRE session:user:42 1800 NX`
-
-Add an expiry only when one is not already present.
-
-```bash
-EXPIRE session:user:42 3600 GT
-```
-
-Extend the expiry only when the new expiry is longer.
-
-```bash
-EXPIRE otp:user:42 60 LT
-```
-
-Shorten the expiry only when the new expiry is smaller.
-
-These options are useful for:
-
-- Sliding sessions
-- Distributed locks
-- Rate-limit windows
-- Safely extending or shortening deadlines
-
----
-
-# 5. Important TTL Behaviors
-
-## 5.1 Overwriting a Key Can Remove Its TTL
-
-A normal `SET` replaces the old value and normally clears the existing TTL.
-
-```bash
-SET user:42 "old-value" EX 300
-TTL user:42
-
-SET user:42 "new-value"
-TTL user:42
-```
-
-The second `TTL` returns `-1` because the new `SET` replaced the key without preserving its expiration.
-
-Use `KEEPTTL` to retain the existing TTL: `SET user:42 "new-value" KEEPTTL`
-
-## 5.2 In-Place Updates Usually Preserve TTL
-
-Commands that modify the existing data structure without replacing the key generally keep the TTL.
-
-Examples include operations such as:
-
-```bash
-INCR page:view:home
-HSET user:42 last_seen "2026-07-30T10:30:00Z"
-LPUSH queue:emails "job-501"
-```
-
-The important distinction is:
-
-```text
-Replace/delete the key itself  -> TTL may be removed
-Modify the value in place      -> TTL is generally preserved
-```
-
-Always verify behavior for the exact Redis command used by your application.
-
----
-
-## 5.3 Renaming Transfers Expiration
-
-When a key is renamed, its expiration is transferred to the new key name.
-
-```bash
-SET temp:user:42 "data" EX 600
-RENAME temp:user:42 cache:user:42
-TTL cache:user:42
-```
-
-The renamed key keeps the remaining TTL.
-
----
-
-## 5.4 Expiration Uses Absolute Time
-
-Redis stores expiration as an absolute timestamp.
-
-This means time continues to pass even when Redis is stopped.
+| `EXPIRE key seconds` | Set TTL in seconds |
+| `PEXPIRE key milliseconds` | Set TTL in milliseconds |
+| `SET key value EX seconds` | Set value with TTL |
+| `SET key value PX milliseconds` | Set value with millisecond TTL |
+| `EXPIREAT key timestamp` | Expire at a Unix timestamp |
+| `TTL key` | Remaining TTL in seconds |
+| `PTTL key` | Remaining TTL in milliseconds |
+| `EXPIRETIME key` | Absolute expiry timestamp |
+| `PERSIST key` | Remove the expiry |
 
 Example:
 
-1. A key is set to expire at 10:30.
-2. Redis is stopped at 10:25.
-3. Redis restarts at 10:35.
-4. The key is already expired.
-
-System clock accuracy therefore matters.
-
-Large clock changes between servers, containers, or virtual machines can cause unexpected expiration behavior.
-
----
-
-## 5.5 TTL Applies to the Key
-
-Traditionally, Redis expiration is attached to the key rather than an individual field inside a hash.
-
-```text
-user:42 -> entire hash has one TTL
+```bash
+SET session:user:42 "active" EX 1800
+TTL session:user:42
 ```
 
-Modern Redis versions also provide hash-field expiration commands, but ordinary `EXPIRE` and `TTL` still apply to the complete key.
+Important `TTL` results:
 
-For most caching designs, keeping one cached object per Redis key remains simple and predictable.
+| Result | Meaning |
+|---:|---|
+| Positive number | Remaining lifetime |
+| `-1` | Key exists but has no expiry |
+| `-2` | Key does not exist |
+
+## 2.3 Conditional Expiration
+
+Redis supports conditions with `EXPIRE`:
+
+```bash
+EXPIRE session:user:42 1800 NX
+EXPIRE session:user:42 3600 GT
+EXPIRE session:user:42 300 LT
+```
+
+| Option | Meaning |
+|---|---|
+| `NX` | Set expiry only if the key has no expiry |
+| `XX` | Set expiry only if the key already has an expiry |
+| `GT` | Set only if the new expiry is greater |
+| `LT` | Set only if the new expiry is smaller |
+
+These are useful when application logic needs to safely extend or shorten an existing deadline.
 
 ---
 
-# 6. How Redis Expires Keys
+# 3. Important TTL Behavior
 
-Redis uses two complementary expiration approaches.
+## 3.1 `SET` Normally Removes the Existing TTL
 
-## 6.1 Passive Expiration
+```bash
+SET user:42 "old" EX 300
+SET user:42 "new"
 
-When a client accesses a key, Redis checks whether the key has expired.
+TTL user:42
+# -1
+```
 
-If it has expired, Redis deletes it and behaves as though the key does not exist.
+A successful normal `SET` replaces the value and discards the previous TTL.
+
+To preserve the TTL:
+
+```bash
+SET user:42 "new" KEEPTTL
+```
+
+## 3.2 In-Place Updates Preserve TTL
+
+Operations that modify the existing data structure without replacing the key normally keep its expiry.
+
+Examples:
+
+```bash
+INCR page:views
+HSET user:42 last_seen "2026-08-20T10:00:00Z"
+LPUSH queue:emails "job-501"
+```
+
+Think of it this way:
+
+```text
+Replace the key/value -> TTL may be removed
+Modify value in place -> TTL normally remains
+```
+
+## 3.3 Expiration Belongs to the Key
+
+Normal `EXPIRE` and `TTL` operate on the complete key.
+
+```text
+user:42
+  ├── name
+  ├── email
+  └── role
+
+EXPIRE user:42 600
+        |
+        └── expiry applies to the whole hash
+```
+
+Redis also supports hash-field expiration commands in modern versions, but normal cache designs are often simpler when one cached object maps to one Redis key.
+
+## 3.4 Expiration Uses Absolute Time
+
+Redis stores expiration using an absolute point in time.
+
+If Redis stops before a key expires and restarts after its deadline, the key is already expired.
+
+Accurate server/container clocks therefore matter.
+
+---
+
+# 4. How Redis Removes Expired Keys
+
+Redis does not continuously scan every key.
+
+It uses two complementary approaches.
+
+## 4.1 Passive Expiration
+
+When a client accesses a key, Redis checks its expiry.
 
 ```mermaid
 sequenceDiagram
     participant App
     participant Redis
 
-    App->>Redis: GET session:user:42
-    Redis->>Redis: Check expiration timestamp
-    alt Key has expired
-        Redis->>Redis: Delete key
+    App->>Redis: GET cache:product:501
+    Redis->>Redis: Check expiry
+
+    alt Expired
+        Redis->>Redis: Remove key
         Redis-->>App: nil
-    else Key is still valid
+    else Valid
         Redis-->>App: cached value
     end
 ```
 
-## 6.2 Active Expiration
+## 4.2 Active Expiration
 
-Some expired keys may never be accessed again.
+Keys may expire without being accessed again.
 
-Redis therefore periodically samples keys that have expiration times and removes expired ones.
+Redis therefore performs background expiration work and samples keys with TTLs so expired data does not remain in memory indefinitely.
 
-This avoids keeping all logically expired keys forever.
+### Key Point
 
-## Combined Behavior
+A key can be **logically expired** before Redis has physically reclaimed every byte associated with it.
 
-```text
-Passive expiration:
-    Remove an expired key when it is accessed.
-
-Active expiration:
-    Periodically find and remove expired keys in the background.
-```
-
-Redis does not need to continuously scan every key, which would be expensive for a large dataset.
+For application behavior, an expired key is treated as unavailable.
 
 ---
 
-# 7. What Triggers Eviction
+# 5. What Triggers Eviction
 
-Eviction begins when Redis memory usage exceeds the configured `maxmemory` limit.
+Eviction is related to memory pressure, not data age.
 
-Example configuration:
+Example:
 
 ```conf
 maxmemory 2gb
 maxmemory-policy allkeys-lru
 ```
 
-Runtime configuration:
-
-```bash
-CONFIG SET maxmemory 2gb
-CONFIG SET maxmemory-policy allkeys-lru
-```
-
-## Eviction Flow
+Redis checks memory when commands add more data. If memory is above `maxmemory`, it evicts keys according to the configured policy until memory is brought back under the limit.
 
 ```mermaid
 flowchart TD
-    A[Write command arrives] --> B[Redis processes memory allocation]
-    B --> C{Used memory above maxmemory?}
-    C -->|No| D[Complete command]
-    C -->|Yes| E[Select eviction candidates]
-    E --> F[Evict keys according to policy]
-    F --> G{Memory below target?}
-    G -->|No| E
-    G -->|Yes| D
+    A[Write adds data] --> B{Memory above maxmemory?}
+    B -->|No| C[Continue normally]
+    B -->|Yes| D[Apply eviction policy]
+    D --> E[Remove candidate keys]
+    E --> F{Below memory limit?}
+    F -->|No| D
+    F -->|Yes| C
 ```
-
-## Important Point
-
-Eviction does not happen just because a key is old.
-
-A key becomes an eviction candidate only when:
-
-1. Redis has a memory limit.
-2. Memory pressure crosses that limit.
-3. The selected policy permits eviction.
-
-If `maxmemory` is not configured, Redis can continue growing until the operating system or environment becomes the limiting factor.
-
----
 
 ## Memory Headroom
 
-Do not configure `maxmemory` equal to all available machine RAM.
+Do not set `maxmemory` equal to all host or container RAM.
 
-Redis may need additional memory for:
+Redis may also need memory for:
 
-- Client connections
 - Replication buffers
-- AOF buffers
-- Forking during persistence
+- AOF/persistence buffers
+- Client connections
 - Temporary command allocations
 - Memory fragmentation
-- Operating system processes
+- Operating-system and container overhead
 
-Example:
-
-```text
-Machine memory:               8 GB
-Redis maxmemory:              5.5-6 GB
-Remaining system headroom:    2-2.5 GB
-```
-
-The exact value depends on persistence, replication, dataset shape, traffic, and deployment environment.
-
-Use `INFO memory` and operating-system monitoring rather than relying only on a fixed percentage.
+Use `INFO memory` and infrastructure monitoring to choose a safe limit.
 
 ---
 
-# 8. Redis Eviction Policies
+# 6. Redis Eviction Policies
 
-Redis policies can be divided into three groups.
+Redis eviction policies fall into three practical groups.
 
-## 8.1 No Eviction
-
-### `noeviction`
-
-Redis does not automatically remove keys.
-
-When memory is full, commands that require additional memory fail with an error. Read commands can continue to work.
+## 6.1 `noeviction`
 
 ```conf
 maxmemory-policy noeviction
 ```
 
-Suitable for:
+Redis does not automatically remove keys.
 
-- Data that must not be discarded automatically
-- Redis used as a primary data store
-- Workloads where the application must explicitly handle capacity failures
+When memory is full, commands that need more memory can fail, while read-only operations can continue.
 
-Usually not the best option for a disposable cache.
+Use this when automatic data loss is unacceptable and the application is designed to handle write failures.
 
----
+## 6.2 `allkeys-*`
 
-## 8.2 All-Keys Policies
-
-These policies can evict any key.
+Any key can be selected for eviction.
 
 | Policy | Behavior |
 |---|---|
 | `allkeys-lru` | Evict approximately least recently used keys |
 | `allkeys-lfu` | Evict approximately least frequently used keys |
 | `allkeys-random` | Evict random keys |
-| `allkeys-lrm` | Evict approximately least recently modified keys in Redis versions that support LRM |
+| `allkeys-lrm` | Evict approximately least recently modified keys |
 
-For a dedicated cache, `allkeys-lru` and `allkeys-lfu` are the most commonly useful choices.
+`allkeys-lrm` is available in Redis 8.6+ and tracks modification recency rather than read access. For normal caching interviews, LRU and LFU remain the main policies to understand.
 
----
+## 6.3 `volatile-*`
 
-## 8.3 Volatile Policies
-
-These policies consider only keys that have an expiration.
+Only keys that have an expiry are eligible.
 
 | Policy | Behavior |
 |---|---|
-| `volatile-lru` | LRU among keys with a TTL |
-| `volatile-lfu` | LFU among keys with a TTL |
-| `volatile-random` | Random key among keys with a TTL |
-| `volatile-ttl` | Key with the shortest remaining TTL |
-| `volatile-lrm` | Least recently modified among keys with a TTL, where supported |
+| `volatile-lru` | LRU among expiring keys |
+| `volatile-lfu` | LFU among expiring keys |
+| `volatile-random` | Random among expiring keys |
+| `volatile-ttl` | Prefer keys with the shortest remaining TTL |
+| `volatile-lrm` | Least recently modified among expiring keys |
 
-A key without a TTL is protected from these policies.
-
-### Critical Behavior
-
-When a volatile policy is configured but no eligible keys have TTLs, Redis behaves similarly to `noeviction` for additional memory-consuming writes.
-
-```text
-volatile-lru + no expiring keys
-            =
-no eligible key to evict
-            =
-write may fail at maxmemory
-```
-
----
-
-## Allkeys vs Volatile
+If a volatile policy has **no keys with TTLs available for eviction**, it effectively behaves like `noeviction` for memory-growing writes.
 
 ```mermaid
 flowchart TD
     A[Redis reaches maxmemory] --> B{Policy family}
-    B -->|allkeys-*| C[Every key can be considered]
-    B -->|volatile-*| D[Only keys with TTL can be considered]
+    B -->|allkeys-*| C[Any key can be considered]
+    B -->|volatile-*| D[Only keys with TTL]
     B -->|noeviction| E[Reject memory-growing writes]
 ```
 
-## Practical Recommendation
-
-Use separate Redis deployments when possible:
-
-```text
-Redis instance A:
-    Pure cache
-    allkeys-lru or allkeys-lfu
-
-Redis instance B:
-    Sessions, queues, locks, durable operational data
-    Different persistence and memory policy
-```
-
-Mixing disposable cache entries with critical non-evictable data creates difficult failure behavior.
-
 ---
 
-# 9. LRU: Least Recently Used
+# 7. LRU: Least Recently Used
 
-LRU tries to remove keys that have not been accessed recently.
-
-```text
-Recent access = likely useful
-Old access    = likely safe to remove
-```
-
-## Example Access Timeline
+LRU focuses on **recency**.
 
 ```text
-Current time ---------------------------------------------------->
-
-product:101    accessed 2 seconds ago
-product:205    accessed 10 seconds ago
-product:990    accessed 15 minutes ago
-product:301    accessed 2 hours ago
-
-Likely LRU candidate: product:301
+Recently accessed -> probably still useful
+Not accessed recently -> better eviction candidate
 ```
 
-## Suitable Workloads
+Example:
 
-LRU works well when recency predicts future access.
+| Key | Last Access |
+|---|---:|
+| `product:101` | 2 seconds ago |
+| `product:205` | 20 seconds ago |
+| `product:990` | 12 minutes ago |
+| `product:301` | 2 hours ago |
 
-Examples:
+`product:301` is the strongest LRU candidate.
 
-- News feeds
-- Recently viewed products
-- User profile caches
-- Search results
+## Where LRU Fits
+
+LRU works well when recent access predicts future access:
+
 - API response caches
-- Rapidly changing hot data
+- Search-result caches
+- User/profile caches
+- Recently viewed data
+- Rapidly changing hot sets
 
 ## Redis Uses Approximate LRU
 
-Redis does not maintain one perfectly ordered global list of every key.
+Redis does not maintain a perfectly sorted global LRU list.
 
-An exact implementation would require more CPU and memory.
-
-Instead, Redis:
-
-1. Samples a small number of keys.
-2. Compares their idle/access information.
-3. Evicts the best candidate from the sample.
-4. Maintains an eviction candidate pool to improve results.
+Instead, it samples candidate keys and selects good eviction candidates.
 
 ```mermaid
 flowchart LR
-    A[Large keyspace] --> B[Sample several keys]
+    A[Large keyspace] --> B[Sample keys]
     B --> C[Compare idle time]
-    C --> D[Keep good candidates]
+    C --> D[Select candidate]
     D --> E[Evict approximate LRU key]
 ```
 
-The number of sampled keys is controlled by: `maxmemory-samples 5`
+The sample count is controlled by:
 
-A larger sample can make eviction closer to true LRU, but increases CPU work.
+```conf
+maxmemory-samples 5
+```
 
-Example: `maxmemory-samples 10`
-
-Use benchmarking before changing the default.
-
-## Inspecting Idle Time
-
-When the selected policy is not LFU-based, Redis can expose idle time: `OBJECT IDLETIME cache:product:501`
-
-Example result: `(integer) 84`
-
-The key has been idle for approximately 84 seconds.
-
-This command is useful for debugging and analysis, not for implementing your own full production eviction scanner.
+Increasing the sample size can make eviction closer to ideal LRU, but uses more CPU.
 
 ---
 
-# 10. LFU: Least Frequently Used
+# 8. LFU: Least Frequently Used
 
-LFU tries to remove keys that are accessed less frequently.
+LFU focuses on **frequency**.
 
 ```text
-High access frequency = valuable
-Low access frequency  = eviction candidate
+Frequently accessed -> more valuable
+Rarely accessed -> better eviction candidate
 ```
 
-## Example
+Example:
 
-| Key | Approximate access frequency |
-|---|---|
-| `product:popular` | 9500 |
-| `category:phones` | 3100 |
-| `product:average` | 120 |
-| `product:rare` | 4 |
+| Key | Relative Popularity |
+|---|---:|
+| `product:popular` | Very high |
+| `category:phones` | High |
+| `product:average` | Medium |
+| `product:rare` | Very low |
 
-Likely LFU candidate: `product:rare`
+`product:rare` is a likely LFU candidate.
 
-## Suitable Workloads
+## Where LFU Fits
 
-LFU works well when a stable set of keys remains popular over time.
+LFU is useful when a relatively stable group of keys stays popular:
 
-Examples:
-
-- Popular product catalog entries
-- Frequently accessed configuration
-- Top articles
-- Shared reference data
-- Repeated API metadata
+- Popular product/catalog data
+- Frequently reused reference data
+- Shared metadata
+- Popular articles/content
 - Stable hot-key workloads
 
-## Redis Uses Approximate LFU
+## Approximate Counter + Decay
 
-Redis does not store an exact unlimited request count for every key.
+Redis LFU does not store an exact request count.
 
 It uses:
 
-- A compact probabilistic logarithmic counter
+- A compact probabilistic counter
 - Sampling during eviction
 - Counter decay over time
 
-The frequency counter is intentionally approximate.
-
-This provides a good balance between:
-
-- Memory usage
-- CPU cost
-- Adaptation to changing access patterns
-- Cache hit rate
-
----
-
-## Why LFU Needs Decay
-
-Assume a product was extremely popular last month but is no longer requested.
-
-Without decay:
+Decay matters because yesterday's popular key should not remain protected forever.
 
 ```mermaid
-flowchart TD
-    P[Past popularity remains forever] --> O[Old hot key stays protected]
-    O --> N[Newly popular data may be evicted]
+flowchart LR
+    A[Key was popular] --> B[Traffic decreases]
+    B --> C[LFU counter decays]
+    C --> D[Key gradually loses protection]
 ```
 
-With decay:
-
-```mermaid
-flowchart TD
-    P[Past access count gradually loses weight] --> O[Old hot key becomes less protected]
-    O --> C[Cache adapts to current traffic]
-```
-
----
-
-## LFU Configuration
+Main settings:
 
 ```conf
 lfu-log-factor 10
 lfu-decay-time 1
 ```
 
-### `lfu-log-factor`
-
-Controls how quickly the probabilistic frequency counter grows.
-
-General effect:
-
-| Value Direction | Effect |
-|---|---|
-| Lower | Counter grows faster |
-| Higher | More accesses are needed to increase the counter |
-
-The default is generally appropriate unless load testing shows a reason to tune it.
-
-### `lfu-decay-time`
-
-Controls counter decay in minutes.
-
-```conf
-lfu-decay-time 1
-```
-
-This means Redis evaluates frequency aging using a one-minute decay interval.
-
-General effect:
-
-| Value Direction | Effect |
-|---|---|
-| Lower | Old popularity loses importance faster |
-| Higher | Popular keys remain protected longer |
-
-Choose based on how quickly your hot set changes.
+For most applications, the defaults are a good starting point.
 
 ---
 
-## Inspecting Frequency
-
-When an LFU policy is active: `OBJECT FREQ cache:product:501`
-
-Example: `(integer) 17`
-
-This value is a logarithmic frequency counter, not an exact request count.
-
-Do not interpret it as “the key was accessed exactly 17 times.”
-
----
-
-# 11. LRU vs LFU
+# 9. LRU vs LFU
 
 | Area | LRU | LFU |
 |---|---|---|
 | Full form | Least Recently Used | Least Frequently Used |
-| Main signal | How recently a key was accessed | How often a key is accessed |
-| Best for | Changing or recency-driven hot sets | Stable popularity-driven hot sets |
-| Example | Latest search results | Most popular product records |
+| Main signal | Last access time | Access frequency |
+| Best when | Hot set changes often | Popularity is relatively stable |
+| Example | Search results | Popular product records |
 | Redis implementation | Approximate sampling | Approximate counter + sampling + decay |
 | Main policy | `allkeys-lru` | `allkeys-lfu` |
-| Volatile version | `volatile-lru` | `volatile-lfu` |
-| Introspection | `OBJECT IDLETIME` | `OBJECT FREQ` |
-| Tuning | `maxmemory-samples` | Samples, log factor, decay time |
+| Debug command | `OBJECT IDLETIME` | `OBJECT FREQ` |
 
-## Scenario Comparison
-
-Assume these keys exist:
-
-| Key | Last Access | Total Recent Access Pattern |
-|---|---:|---:|
-| A | 1 second ago | Accessed once |
-| B | 10 seconds ago | Accessed 10,000 times |
-| C | 20 seconds ago | Accessed 500 times |
-| D | 60 seconds ago | Accessed twice |
-
-### LRU View
-
-LRU mainly sees recency.
-
-> D is the oldest recently used key.  
-> D is a strong eviction candidate.
-
-### LFU View
-
-LFU mainly sees frequency after accounting for decay.
-
-> A or D may have the lowest frequency.  
-> B is strongly protected because it is frequently used.
-
-## Simple Decision Rule
+### Simple Decision Rule
 
 ```mermaid
 flowchart TD
-    Q1{Does recently used<br/>predict future demand?} -->|Yes| LRU[LRU]
-    Q2{Does long-term or repeated popularity<br/>predict future demand?} -->|Yes| LFU[LFU]
+    A{What predicts future reuse?}
+    A -->|Recent access| B[allkeys-lru]
+    A -->|Repeated stable popularity| C[allkeys-lfu]
+    A -->|Roughly uniform access| D[allkeys-random]
 ```
 
-When uncertain, begin with `allkeys-lru`, observe hit rate and evictions, and compare against `allkeys-lfu` using production-like load tests.
+If you are unsure for a dedicated cache, `allkeys-lru` is a practical starting point. Compare hit ratio, latency, database load, and eviction rate before tuning further.
 
 ---
 
-# 12. Choosing the Right Policy
+# 10. Choosing the Right Policy
 
-The decision flow is the diagram in **In short** at the top of this note. This section gives the conditions behind each of its outcomes.
+| Situation | Practical choice |
+|---|---|
+| Dedicated general-purpose cache | `allkeys-lru` |
+| Stable popularity-driven cache | `allkeys-lfu` |
+| Uniform/random-looking access | `allkeys-random` |
+| Only expiring keys may be removed | `volatile-lru` / `volatile-lfu` |
+| Short TTL means low business value | `volatile-ttl` |
+| Automatic eviction is not acceptable | `noeviction` |
 
-## Policy Guidance
+### Prefer Separate Redis Instances for Different Workloads
 
-### Use `allkeys-lru` When
-
-- Redis is a dedicated cache.
-- Recently accessed data is likely to be accessed again.
-- The hot set changes regularly.
-- You need a strong general-purpose default.
-
-Typical examples:
-
-- Search result cache
-- User profile cache
-- Timeline cache
-- Recently requested API responses
-
----
-
-### Use `allkeys-lfu` When
-
-- Redis is a dedicated cache.
-- Some keys are consistently more popular than others.
-- Protecting heavily reused data improves hit rate.
-- The hot set changes more slowly.
-
-Typical examples:
-
-- Popular products
-- Frequently accessed categories
-- Shared lookup tables
-- Repeated public content
-
----
-
-### Use `volatile-lru` or `volatile-lfu` When
-
-- One Redis instance contains both expiring cache keys and non-expiring keys.
-- Only expiring keys are allowed to be evicted.
-- Every disposable key reliably receives a TTL.
-
-Prefer separate Redis instances when operationally possible.
-
----
-
-### Use `volatile-ttl` When
-
-The application intentionally assigns shorter TTLs to less valuable entries.
-
-Example:
+Avoid mixing disposable cache data with data that needs different durability or eviction behavior.
 
 ```text
-High-value cache: TTL 30 minutes
-Medium-value cache: TTL 10 minutes
-Low-value cache: TTL 1 minute
+Redis A
+  -> Disposable application cache
+  -> allkeys-lru / allkeys-lfu
+
+Redis B
+  -> Sessions, queues, locks, streams, or other operational data
+  -> policy chosen for that workload
 ```
 
-When memory fills, keys closest to expiration are preferred for eviction.
-
-This policy works only when TTL values accurately represent business value.
+This keeps failure behavior easier to reason about.
 
 ---
 
-### Use `allkeys-random` When
+# 11. Practical End-to-End Example
 
-- Access is close to uniform.
-- Maintaining recency/frequency does not provide much benefit.
-- Simplicity is more useful than access-based selection.
+Assume an e-commerce API caches product details.
 
-This is less common for normal web application caches.
+### Requirements
 
----
+- Product data may be stale for up to 10 minutes.
+- Redis is dedicated to caching.
+- Frequently reused products should remain cached.
+- Cache memory must stay below 4 GB.
+- Traffic is popularity-driven.
 
-### Use `noeviction` When
-
-- Automatic data loss is unacceptable.
-- The application can handle out-of-memory write errors.
-- Redis is not being treated as a disposable cache.
-
-It requires careful capacity planning and alerting.
-
----
-
-# 13. Configuration Examples
-
-## 13.1 Dedicated General-Purpose Cache
+### Redis Configuration
 
 ```conf
-maxmemory 2gb
-maxmemory-policy allkeys-lru
-maxmemory-samples 5
-```
-
-This is a practical starting point for many web application caches.
-
----
-
-## 13.2 Stable Popularity Cache
-
-```conf
-maxmemory 2gb
+maxmemory 4gb
 maxmemory-policy allkeys-lfu
 maxmemory-samples 5
-
 lfu-log-factor 10
 lfu-decay-time 1
 ```
 
-Suitable when a relatively stable group of popular keys should remain cached.
-
----
-
-## 13.3 Mixed Expiring and Protected Keys
-
-```conf
-maxmemory 2gb
-maxmemory-policy volatile-lru
-```
-
-Only keys with expiration are eviction candidates.
-
-This requires strict application discipline:
-
-> Every disposable cache key must have a TTL.
-
----
-
-## 13.4 Configure Redis at Runtime
-
-```bash
-redis-cli CONFIG SET maxmemory 2gb
-redis-cli CONFIG SET maxmemory-policy allkeys-lru
-redis-cli CONFIG SET maxmemory-samples 5
-```
-
-Check active values:
-
-```bash
-redis-cli CONFIG GET maxmemory
-redis-cli CONFIG GET maxmemory-policy
-redis-cli CONFIG GET maxmemory-samples
-```
-
-Runtime changes may not survive restart unless configuration is persisted appropriately.
-
-For production, manage settings through:
-
-- `redis.conf`
-- Container configuration
-- Helm values
-- Cloud provider settings
-- Infrastructure as Code
-
----
-
-## 13.5 Docker Compose Example
-
-```yaml
-services:
-  redis:
-    image: redis:8
-    command:
-      - redis-server
-      - --maxmemory
-      - 512mb
-      - --maxmemory-policy
-      - allkeys-lru
-      - --maxmemory-samples
-      - "5"
-    ports:
-      - "6379:6379"
-```
-
-For production, also configure:
-
-- Authentication and ACLs
-- TLS where required
-- Persistence according to the workload
-- Health checks
-- Resource limits
-- Metrics and alerting
-- Replication or managed high availability
-
----
-
-# 14. Practical Python Example
-
-The following example uses `redis-py`.
-
-```bash
-pip install redis
-```
-
-## 14.1 Cache-Aside with TTL
+### Python Cache-Aside Example
 
 ```python
 from __future__ import annotations
@@ -1054,6 +545,7 @@ from typing import Any
 from redis import Redis
 from redis.exceptions import RedisError
 
+
 redis_client = Redis(
     host="localhost",
     port=6379,
@@ -1062,46 +554,43 @@ redis_client = Redis(
     socket_timeout=2,
 )
 
+
 def load_product_from_database(product_id: int) -> dict[str, Any]:
-    """Example database lookup."""
     return {
         "id": product_id,
         "name": "Mechanical Keyboard",
         "price": 2999,
     }
 
+
 def get_product(product_id: int) -> dict[str, Any]:
-    cache_key = f"cache:product:{product_id}"
+    key = f"cache:product:{product_id}"
 
     try:
-        cached_value = redis_client.get(cache_key)
-
-        if cached_value is not None:
-            return json.loads(cached_value)
+        cached = redis_client.get(key)
+        if cached is not None:
+            return json.loads(cached)
     except RedisError:
-        # The database remains the source of truth.
-        # Log this exception through the application's logging system.
         pass
 
     product = load_product_from_database(product_id)
 
-    # Base TTL plus jitter prevents many keys from expiring together.
+    # Base TTL + jitter spreads expiration times.
     ttl_seconds = 600 + random.randint(0, 60)
 
     try:
         redis_client.set(
-            cache_key,
+            key,
             json.dumps(product),
             ex=ttl_seconds,
         )
     except RedisError:
-        # Cache failure should not necessarily fail the request.
         pass
 
     return product
 ```
 
-## Request Flow
+### Request Flow
 
 ```mermaid
 sequenceDiagram
@@ -1119,507 +608,203 @@ sequenceDiagram
     else Cache miss
         Redis-->>API: nil
         API->>DB: SELECT product
-        DB-->>API: Product record
+        DB-->>API: Product
         API->>Redis: SET value EX 600+jitter
         API-->>Client: Response
     end
 ```
 
----
+### Why This Works
 
-## 14.2 Sliding Session TTL
+```text
+TTL + jitter
+    -> limits stale data
+    -> avoids many keys expiring at exactly the same time
 
-A sliding session refreshes the expiry when the user remains active.
+maxmemory
+    -> limits cache memory
 
-```python
-from redis import Redis
+allkeys-lfu
+    -> protects frequently reused products under memory pressure
 
-redis_client = Redis(decode_responses=True)
-
-SESSION_TTL_SECONDS = 1800
-
-def read_session(session_id: str) -> str | None:
-    key = f"session:{session_id}"
-
-    # Redis 6.2+ supports GETEX.
-    # It reads the value and updates its TTL atomically.
-    return redis_client.getex(
-        key,
-        ex=SESSION_TTL_SECONDS,
-    )
+database
+    -> remains the source of truth
 ```
 
-Equivalent Redis command: `GETEX session:abc123 EX 1800`
-
-This avoids a race between separate `GET` and `EXPIRE` commands.
-
 ---
 
-## 14.3 Safe Lock with Expiration
+# 12. Monitoring TTL and Eviction
 
-```python
-import secrets
-from redis import Redis
-
-redis_client = Redis(decode_responses=True)
-
-def acquire_lock(resource_id: str, ttl_ms: int = 5000) -> str | None:
-    lock_key = f"lock:{resource_id}"
-    token = secrets.token_urlsafe(24)
-
-    acquired = redis_client.set(
-        lock_key,
-        token,
-        nx=True,
-        px=ttl_ms,
-    )
-
-    return token if acquired else None
-```
-
-Redis command: `SET lock:payment:812 random-token NX PX 5000`
-
-The TTL prevents a crashed worker from holding the lock forever.
-
-Lock release should compare the token and delete atomically, normally with a Lua script or an appropriate client helper.
-
----
-
-# 15. Monitoring TTL and Eviction
-
-Configuration is only the starting point. Observe real workload behavior.
-
-## 15.1 Memory Metrics
+Use:
 
 ```bash
 redis-cli INFO memory
-```
-
-Important fields include:
-
-| Metric | Meaning |
-|---|---|
-| `used_memory` | Memory allocated by Redis |
-| `used_memory_human` | Human-readable used memory |
-| `used_memory_dataset` | Memory used by the dataset |
-| `maxmemory` | Configured dataset memory limit |
-| `maxmemory_policy` | Active eviction policy |
-| `mem_fragmentation_ratio` | Relationship between process memory and Redis allocation |
-| `mem_not_counted_for_evict` | Some buffer memory excluded from eviction comparison |
-
-Do not diagnose memory only from one metric.
-
-Compare:
-
-- Redis allocator memory
-- Dataset memory
-- Process RSS
-- Container memory
-- Host memory
-- Replication/persistence buffers
-- Fragmentation
-
----
-
-## 15.2 Eviction and Expiration Metrics
-
-```bash
 redis-cli INFO stats
+redis-cli CONFIG GET maxmemory
+redis-cli CONFIG GET maxmemory-policy
 ```
 
-Important fields:
+Important metrics:
 
-| Metric | Meaning |
+| Metric | Why It Matters |
 |---|---|
+| `used_memory` | Current Redis memory allocation |
+| `used_memory_dataset` | Memory used by dataset |
+| `maxmemory` | Configured memory ceiling |
 | `evicted_keys` | Keys removed due to memory pressure |
-| `expired_keys` | Keys removed because their TTL elapsed |
-| `keyspace_hits` | Successful key lookups |
-| `keyspace_misses` | Failed key lookups |
-| `current_eviction_exceeded_time` | Current time spent over the eviction threshold, where available |
-| `total_eviction_exceeded_time` | Total time spent over the memory threshold |
+| `expired_keys` | Keys removed after TTL expiration |
+| `keyspace_hits` | Successful cache lookups |
+| `keyspace_misses` | Cache misses |
+| `mem_fragmentation_ratio` | Helps identify fragmentation |
+| `current_eviction_exceeded_time` | Time currently spent above the eviction threshold |
 
-## Hit Ratio
+### Cache Hit Ratio
 
 ```text
-hit_ratio = keyspace_hits / (keyspace_hits + keyspace_misses)
+hit_ratio =
+    keyspace_hits
+    -------------------------------
+    keyspace_hits + keyspace_misses
 ```
 
 Example:
 
 ```text
-keyspace_hits   = 900,000
-keyspace_misses = 100,000
+900,000 hits
+100,000 misses
 
-hit_ratio = 900,000 / 1,000,000
-          = 0.90
-          = 90%
+Hit ratio = 90%
 ```
 
-Interpret hit ratio with context.
+Do not judge the cache only by hit ratio. Also watch:
 
-A low hit ratio may mean:
-
-- TTL is too short.
-- Cache capacity is too small.
-- Eviction policy does not match access patterns.
-- Cache keys have poor reuse.
-- Invalidations happen too aggressively.
-- The workload naturally has low repetition.
-
-A very high hit ratio is useful only if cached data remains correct and sufficiently fresh.
+- Database query volume
+- P95/P99 API latency
+- Eviction rate
+- Redis CPU
+- Write errors
+- Memory pressure
+- Cache rebuild cost
 
 ---
 
-## 15.3 Inspect TTL Distribution
+# 13. Production Best Practices
 
-For one key:
+## 13.1 Match TTL to Freshness Requirements
 
-```bash
-TTL cache:product:501
-PTTL cache:product:501
-```
+Different data needs different TTLs.
 
-For debugging a small controlled dataset: `SCAN 0 MATCH "cache:product:*" COUNT 100`
-
-Avoid using `KEYS *` in production on a large database because it scans the keyspace synchronously.
-
-For fleet-wide TTL analysis, prefer:
-
-- Redis Insight
-- Metrics exporters
-- Sampling scripts based on `SCAN`
-- Managed-service observability
-- Offline analysis of representative keys
-
----
-
-## 15.4 Check Eviction Policy
-
-```bash
-CONFIG GET maxmemory-policy
-CONFIG GET maxmemory
-CONFIG GET maxmemory-samples
-```
-
-For LFU:
-
-```bash
-CONFIG GET lfu-log-factor
-CONFIG GET lfu-decay-time
-OBJECT FREQ cache:product:501
-```
-
-For non-LFU policies: `OBJECT IDLETIME cache:product:501`
-
----
-
-## 15.5 Useful Alert Conditions
-
-Create alerts for patterns such as:
-
-```text
-used_memory near maxmemory
-evicted_keys increasing rapidly
-cache hit ratio dropping
-memory fragmentation rising
-write commands rejected
-expired_keys unexpectedly high
-latency increasing during eviction
-replica lag increasing
-host/container memory pressure
-```
-
-A single eviction is not necessarily a problem. In a cache, eviction is expected.
-
-The key question is whether eviction causes:
-
-- Poor hit rate
-- Excess database load
-- Increased response latency
-- Request failures
-- Repeated cache churn
-
----
-
-# 16. Production Best Practices
-
-## 16.1 Set TTL According to Data Freshness
-
-Do not use one universal TTL for every type of data.
-
-Example:
-
-| Cached Data | Possible TTL |
+| Data | Example TTL |
 |---|---:|
 | Product description | 30–60 minutes |
-| Product inventory | 5–30 seconds |
+| Inventory | 5–30 seconds |
 | User profile | 5–15 minutes |
-| Static configuration | 1–24 hours |
 | OTP | 2–10 minutes |
-| API rate-limit window | Window duration |
-| Distributed lock | Slightly longer than expected operation time |
+| Rate-limit key | Same as rate-limit window |
 
-TTL should reflect:
+Choose TTL based on how quickly the source changes and how much staleness the business can tolerate.
 
-- How often source data changes
-- How stale data is allowed to become
-- Database load
-- Rebuild cost
-- Business risk
+## 13.2 Add TTL Jitter
 
----
+Creating thousands of keys with exactly the same TTL can make them expire together.
 
-## 16.2 Add TTL Jitter
+Instead of:
 
-If thousands of keys are created together with the same TTL, they may expire together.
+```text
+TTL = 600 seconds
+```
 
-This can cause:
+use something like:
 
-- Sudden cache misses
-- Database traffic spike
-- Higher latency
-- Cache stampede
-
-Instead of: `TTL = 600 seconds for every key`
-
-Use: `TTL = 600 + random(0, 60) seconds`
+```text
+TTL = 600 + random(0, 60)
+```
 
 ```mermaid
 flowchart LR
-    A[Same TTL on many keys] --> B[Mass expiration]
-    B --> C[Database spike]
+    A[Same TTL] --> B[Mass expiration]
+    B --> C[Large DB spike]
 
-    D[TTL plus random jitter] --> E[Spread expiration times]
-    E --> F[Smoother database load]
+    D[TTL + jitter] --> E[Spread expirations]
+    E --> F[Smoother DB load]
 ```
 
----
+## 13.3 Use TTL for Freshness, Eviction for Capacity
 
-## 16.3 Use Atomic Commands
+Do not substitute one for the other.
 
-Prefer: `SET key value EX 600`
+```text
+Freshness -> TTL or explicit invalidation
+Capacity  -> maxmemory + eviction policy
+```
 
-over:
+A stale key can remain forever if it has no TTL and memory never becomes tight.
+
+At the same time, TTL alone cannot protect Redis from a sudden burst that fills memory before keys expire.
+
+## 13.4 Use Atomic Redis Operations
+
+Prefer:
+
+```bash
+SET key value EX 600
+```
+
+instead of:
 
 ```bash
 SET key value
 EXPIRE key 600
 ```
 
-Prefer: `GETEX key EX 1800`
+Atomic operations reduce partial-state and race-condition problems.
 
-over:
+## 13.5 Keep Cache Failure Non-Critical When Possible
 
-```bash
-GET key
-EXPIRE key 1800
-```
-
-Atomic commands reduce race conditions and partial updates.
-
----
-
-## 16.4 Do Not Rely on Eviction for Freshness
-
-Eviction is driven by memory pressure, not business validity.
-
-A stale key might stay in Redis for days if memory is available.
-
-Use TTL or explicit invalidation for freshness.
+In cache-aside designs, Redis is normally an optimization rather than the source of truth.
 
 ```text
-Freshness control -> TTL / invalidation
-Memory control    -> eviction policy
+Redis unavailable
+      |
+      v
+Read source database
+      |
+      v
+Return response
 ```
+
+Use short Redis timeouts and monitor failures so a cache outage does not unnecessarily become a complete application outage.
 
 ---
 
-## 16.5 Do Not Rely Only on TTL for Capacity
-
-TTL does not guarantee Redis will remain below a safe memory level.
-
-A sudden traffic burst can create millions of keys before their TTL expires.
-
-Configure both:
-
-```conf
-maxmemory 2gb
-maxmemory-policy allkeys-lru
-```
-
-and assign suitable TTLs in the application.
-
----
-
-## 16.6 Separate Cache from Critical Data
-
-Avoid mixing these in the same Redis instance:
+# 14. What to Remember for Interviews
 
 ```text
-Disposable API cache
-Critical job queue
-Authentication sessions
-Distributed locks
-Durable counters
-Pub/Sub or Streams workload
+TTL       = per-key freshness
+Eviction  = instance-wide memory control
+
+allkeys-lru
+    -> strong general-purpose cache choice
+    -> uses recency
+
+allkeys-lfu
+    -> protects repeatedly popular keys
+    -> uses approximate frequency + decay
+
+volatile-*
+    -> only keys with TTL are eligible
+
+noeviction
+    -> Redis does not make room automatically
+    -> memory-growing writes can fail
+
+SET key value EX 600
+    -> preferred atomic value + TTL write
+
+SET key value
+    -> replaces existing TTL unless KEEPTTL is used
 ```
 
-Different workloads need different:
+The key design idea is simple:
 
-- Eviction behavior
-- Persistence
-- Backup strategy
-- Latency expectations
-- Scaling strategy
-- Failure handling
-
-Separate instances reduce unintended data loss and simplify capacity planning.
-
----
-
-## 16.7 Handle Cache Failure Gracefully
-
-For cache-aside:
-
-```mermaid
-flowchart TD
-    R[Redis unavailable] --> D[(Source database)]
-    D -->|Read| RE[Return response]
-    RE --> L[Log and monitor cache failure]
-```
-
-Do not let a non-critical cache become a mandatory dependency unless the business design intentionally requires it.
-
-Also protect the database with timeouts, circuit breakers, request coalescing, rate limiting, stale-while-revalidate, cache warming, and backpressure — these are covered in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
-
----
-
-## 16.8 Use Namespaced Keys
-
-Prefix keys by purpose — `cache:product:501`, `session:abc123`, `lock:invoice:9901`, `rate-limit:user:42:2026073016`. For TTL work specifically, the payoff is that a namespace makes TTL coverage auditable: you can sample one prefix and see whether every key in it actually carries an expiry. Broader key-design rules are in [Caching Layers and Stampede](../system-design/caching-layers-stampede.md).
-
----
-
-## 16.9 Keep Cache Values Reasonably Sized
-
-One very large value may cause:
-
-- Temporary memory spikes
-- Network latency
-- Command latency
-- More expensive eviction/repopulation
-- Uneven cluster distribution
-
-Measure real serialized size.
-
-Possible strategies:
-
-- Cache only fields needed by the endpoint.
-- Split large objects where access patterns justify it.
-- Compress only after benchmarking CPU versus memory.
-- Avoid caching unbounded collections.
-- Paginate cached results.
-
----
-
-## 16.10 Test Policies with Realistic Traffic
-
-LRU and LFU behavior depends on access distribution.
-
-A synthetic test with uniform random access may not represent production.
-
-Test using:
-
-- Realistic hot-key distribution
-- Production-like object sizes
-- Burst traffic
-- TTL distribution
-- Cache warm-up
-- Database latency
-- Failover behavior
-- Memory pressure
-
-Compare:
-
-```text
-Hit ratio
-P50/P95/P99 latency
-Database query volume
-Eviction rate
-Memory fragmentation
-CPU usage
-Write rejection rate
-```
-
----
-
-# 17. End-to-End Example
-
-Consider an e-commerce API that caches product details.
-
-## Requirements
-
-- Product details can be stale for up to 10 minutes.
-- Popular products should stay cached.
-- Redis is dedicated to caching.
-- Redis must stay below 4 GB.
-- Traffic follows a popularity pattern: a small percentage of products receive most requests.
-
-## Recommended Setup
-
-```conf
-maxmemory 4gb
-maxmemory-policy allkeys-lfu
-maxmemory-samples 5
-lfu-log-factor 10
-lfu-decay-time 1
-```
-
-Application write: `SET cache:product:501 product-json EX 600`
-
-With jitter: `TTL = 600 to 660 seconds`
-
-## Runtime Behavior
-
-```mermaid
-flowchart TD
-    A[Product request] --> B{Key in Redis?}
-    B -->|Yes| C[Return cached product]
-    B -->|No| D[Load product from database]
-    D --> E[Store with TTL plus jitter]
-    E --> F[Return product]
-
-    G[Memory exceeds 4 GB] --> H[LFU samples candidates]
-    H --> I[Evict infrequently accessed keys]
-    I --> J[Popular products remain more likely cached]
-```
-
-## Why LFU Fits
-
-- Access is popularity-driven.
-- Frequently accessed products are likely to remain popular.
-- Rarely requested products are cheaper eviction candidates.
-- TTL still limits staleness.
-- `maxmemory` limits capacity.
-- LFU decides what to sacrifice under pressure.
-
-## Monitoring
-
-```bash
-INFO memory
-INFO stats
-CONFIG GET maxmemory-policy
-OBJECT FREQ cache:product:501
-TTL cache:product:501
-```
-
-Track:
-
-- Cache hit ratio
-- `evicted_keys`
-- `expired_keys`
-- Database product-query volume
-- API P95 latency
-- Redis memory usage
-
----
+> **TTL decides when cached data is too old. Eviction decides what Redis sacrifices when memory is full.**

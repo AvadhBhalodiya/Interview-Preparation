@@ -6,290 +6,196 @@ order: 3
 
 # OWASP API Security Top 10 — Developer Guide
 
-> Understand the most important API-specific security risks and the practical controls used to prevent them.
+> Understand the API security risks that matter most in real backend development and interviews.
 >
-> **Edition covered:** OWASP API Security Top 10 — 2023
+> **Current API edition:** OWASP API Security Top 10 — 2023  
+> **Important:** This is different from the broader OWASP Top 10:2025 for web applications.
 
-## In short
+## In Short
 
-- The list is deliberately API-specific and assumes you already handle injection, dependencies, and XSS. Its dominant theme is **authorization**, which appears three separate times: object (API1), property (API3), and function (API5).
-- **BOLA (API1)** is the number-one API risk. The endpoint authenticates the caller, then loads whatever object ID the URL contains, so an authenticated attacker changes `/orders/1001` to `/orders/1002`. Fix it by scoping the lookup to the caller *in the query*, never by fetching first and checking afterwards.
-- Guessable IDs are not the vulnerability and UUIDs are not the fix. Random identifiers raise the cost of enumeration; they do not add an authorization check.
-- **BOPLA (API3)** is two mirrored bugs: excessive data exposure serialising a whole model outwards, and mass assignment binding a whole request body inwards. Explicit request and response schemas close both.
-- **BFLA (API5)** is about operations rather than records — an admin endpoint protected only by the UI not linking to it. Every privileged function needs a server-side permission check.
-- API4 and API6 look alike but differ: unrestricted resource consumption is technical exhaustion (CPU, memory, third-party cost), while sensitive business-flow abuse is *valid* requests at inhuman scale, which rate limits alone do not stop.
-- **SSRF (API7)** follows any user-supplied URL the server fetches. Blocklists lose to redirects, DNS rebinding, and alternate encodings, so allow-list destinations, block internal ranges, and do not follow redirects.
+- API security is heavily about **authorization**, because clients directly send object IDs, fields, filters, and endpoint paths.
+- Three of the top five risks are authorization problems:
+  - **API1 — BOLA:** Can this user access this object?
+  - **API3 — BOPLA:** Can this user read or change this property?
+  - **API5 — BFLA:** Can this user execute this function?
+- Authentication proves **who the caller is**; authorization decides **what that caller may do**.
+- Rate limiting alone is not enough. APIs also need limits on payload size, pagination, expensive operations, business actions, and third-party cost.
+- Treat URLs and third-party API responses as **untrusted input**.
+- API gateways help, but application-level authorization and business rules still belong in the backend.
 
 ```mermaid
-flowchart TD
-    A[Authenticate identity] --> B[Authorize function]
-    B --> C[Authorize object]
-    C --> D[Authorize properties]
-    D --> E[Validate business rules]
-    E --> F[Control resource usage]
-    F --> G[Perform and audit the action]
+flowchart LR
+    A[Client Request] --> B[Authenticate]
+    B --> C[Authorize Function]
+    C --> D[Authorize Object]
+    D --> E[Authorize Properties]
+    E --> F[Validate Business Rules]
+    F --> G[Apply Resource Limits]
+    G --> H[Execute + Audit]
 ```
-
-**Interview answer:** APIs hand the client direct control of object IDs, field names, and endpoint paths, which is why authorization dominates the API Top 10 rather than injection. BOLA is ranked first: the endpoint validates the token and then trusts the identifier in the URL, so an authenticated user can read or modify another user's records just by changing a number. The fix is to make ownership part of the query rather than a check bolted on after the fetch, and to test cross-user access automatically — a scanner cannot infer who is supposed to own what, so these bugs survive every automated tool.
-
-**Gotcha:** Switching to UUIDs and considering BOLA fixed. An identifier that leaks through a webhook payload, a shared link, or another endpoint's response still works perfectly, because nothing in the request path ever asked whether this caller owns this object.
 
 ---
 
 # 1. What Is the OWASP API Security Top 10?
 
-The **OWASP API Security Top 10** is an awareness document that describes the most critical security risks commonly found in APIs.
+The **OWASP API Security Top 10** is an awareness guide describing major security risks that commonly affect APIs.
 
-It is designed for people involved in API design, development, testing, deployment, and maintenance, including:
+It focuses on problems that are especially important for REST, GraphQL, gRPC, webhooks, mobile backends, microservices, and public or partner APIs.
 
-- Backend developers
-- API architects
-- DevOps and platform engineers
-- Security engineers
-- QA and automation engineers
-- Engineering managers
+The current list contains:
 
-The list focuses on risks that need special attention in APIs. It does **not** mean that general application risks such as SQL injection, vulnerable dependencies, insecure cryptography, or cross-site scripting are unimportant.
-
-> The API Security Top 10 complements broader security standards; it does not replace them.
+| Rank | Risk | Main Question |
+|---:|---|---|
+| API1 | Broken Object Level Authorization | Can this user access this specific record? |
+| API2 | Broken Authentication | Is the caller's identity verified correctly? |
+| API3 | Broken Object Property Level Authorization | Can this user read/change these fields? |
+| API4 | Unrestricted Resource Consumption | Can one request/user consume excessive resources or cost? |
+| API5 | Broken Function Level Authorization | Can this user call this operation? |
+| API6 | Unrestricted Access to Sensitive Business Flows | Can valid business actions be abused through automation? |
+| API7 | Server-Side Request Forgery | Can user input make the server call an unsafe destination? |
+| API8 | Security Misconfiguration | Are insecure settings exposing the API? |
+| API9 | Improper Inventory Management | Do unknown, old, or forgotten APIs remain exposed? |
+| API10 | Unsafe Consumption of APIs | Are upstream API responses trusted too much? |
 
 ---
 
-# 2. Why API Security Is Different
+# 2. Authentication vs Authorization
 
-Traditional web applications expose both a user interface and backend behavior. APIs expose application data and operations directly through structured requests.
-
-A normal API request may contain:
-
-- An object identifier
-- Authentication credentials or a token
-- Properties that should be updated
-- Filters, sorting, pagination, or search parameters
-- URLs to external resources
-- Commands that trigger expensive business operations
-
-This makes APIs especially sensitive to authorization and business-logic problems.
-
-```mermaid
-flowchart LR
-    A[Client Application] -->|HTTP Request| B[API Gateway]
-    B --> C[Authentication]
-    C --> D[Authorization]
-    D --> E[Business Logic]
-    E --> F[(Database)]
-    E --> G[Third-Party APIs]
-
-    X[Attacker] -. manipulates ID .-> D
-    X -. sends excessive requests .-> B
-    X -. injects external URL .-> G
-    X -. calls hidden admin function .-> E
-```
-
-## 2.1 Authentication and Authorization Are Different
+This distinction is fundamental.
 
 **Authentication** answers:
 
-> Who is making this request?
+> Who are you?
 
 **Authorization** answers:
 
-> Is this authenticated identity allowed to perform this action on this specific resource?
+> Are you allowed to perform this action on this resource?
 
-A valid JWT proves identity only when it is correctly validated. It does not automatically prove that the user can access every requested object or operation.
+A valid JWT does **not** automatically authorize access to every object.
 
 ```text
-Valid token + unauthorized object = blocked request
-Valid token + unauthorized function = blocked request
-Valid token + forbidden property = ignored or blocked property
+Valid token + own order       -> allowed
+Valid token + another order   -> blocked
+Valid token + admin endpoint  -> blocked unless permitted
 ```
+
+For token-based APIs, validation normally includes the signature, allowed algorithm, issuer, audience, expiry, and token purpose.
 
 ---
 
-# 3. The Top 10 at a Glance
+# 3. Authorization Risks: API1, API3, and API5
 
-| Rank | Risk | Main Security Boundary |
-|---:|---|---|
-| API1 | Broken Object Level Authorization | Access to a specific object or record |
-| API2 | Broken Authentication | Identity, credentials, sessions, and tokens |
-| API3 | Broken Object Property Level Authorization | Access to individual fields or properties |
-| API4 | Unrestricted Resource Consumption | CPU, memory, storage, network, and paid services |
-| API5 | Broken Function Level Authorization | Access to operations and privileged endpoints |
-| API6 | Unrestricted Access to Sensitive Business Flows | Automated abuse of valid business operations |
-| API7 | Server-Side Request Forgery | Server-initiated outbound requests |
-| API8 | Security Misconfiguration | Unsafe settings across the API stack |
-| API9 | Improper Inventory Management | Unknown, outdated, or exposed API assets |
-| API10 | Unsafe Consumption of APIs | Untrusted data from third-party services |
+These three categories are closely related and are very important for interviews.
 
-A useful mental model is:
+## 3.1 API1 — Broken Object Level Authorization (BOLA)
 
-```mermaid
-mindmap
-  root((API Security))
-    Identity
-      Authentication
-      Tokens
-      Sessions
-    Authorization
-      Object
-      Property
-      Function
-    Availability
-      Rate limits
-      Resource limits
-      Cost controls
-    Business Logic
-      Automation abuse
-      Fraud prevention
-    Infrastructure
-      Configuration
-      Inventory
-      Outbound requests
-    Integrations
-      Third-party APIs
-      Data validation
-```
+BOLA happens when the API receives an object ID and fails to verify that the current user may access that object.
 
----
-
-# 4. API1:2023 — Broken Object Level Authorization (BOLA)
-
-## 4.1 Simple Meaning
-
-BOLA happens when an API accepts an object identifier from the client but does not verify that the current user is authorized to access that object.
-
-It is also commonly called **IDOR — Insecure Direct Object Reference**.
-
-## 4.2 Vulnerable Example
-
-A user requests their order:
-
-```http
-GET /api/orders/1042
-Authorization: Bearer <user-token>
-```
-
-The attacker changes the identifier:
+### Vulnerable request
 
 ```http
 GET /api/orders/1043
-Authorization: Bearer <same-user-token>
+Authorization: Bearer <user-a-token>
 ```
 
-If order `1043` belongs to another customer and the API returns it, object-level authorization is broken.
+If order `1043` belongs to User B but User A receives it, object-level authorization is broken.
 
-```mermaid
-sequenceDiagram
-    participant U as User A
-    participant API as Orders API
-    participant DB as Database
-
-    U->>API: GET /orders/1043 + User A token
-    API->>DB: SELECT * FROM orders WHERE id = 1043
-    DB-->>API: Order owned by User B
-    API-->>U: 200 OK — User B's order
-    Note over API: Missing owner/tenant authorization check
-```
-
-## 4.3 Why It Happens
-
-The application checks that the user is logged in but does not check ownership or tenant access.
-
-Vulnerable logic:
+### Vulnerable code
 
 ```python
-order = Order.objects.get(id=order_id)
-return order
+order = await repository.get_by_id(order_id)
 ```
 
-The database query uses only the client-provided ID.
-
-## 4.4 Secure Pattern
-
-Filter by both the object identifier and the authorized security scope.
+### Better pattern
 
 ```python
-order = Order.objects.get(
-    id=order_id,
+order = await repository.get_for_customer(
+    order_id=order_id,
     customer_id=current_user.id,
-)
-```
-
-For multi-tenant systems:
-
-```python
-order = Order.objects.get(
-    id=order_id,
     tenant_id=current_user.tenant_id,
 )
 ```
 
-## 4.5 Prevention
+The authorization scope becomes part of the query itself.
 
-- Apply object-level authorization on every endpoint that receives an object ID.
-- Scope database queries to the authenticated user, tenant, organization, or permitted resource set.
-- Use a centralized authorization service or reusable policy layer.
-- Do not treat UUIDs as an authorization control.
-- Deny access by default.
-- Test by replacing IDs with IDs belonging to another user or tenant.
-- Check nested resources as well as top-level resources.
+> UUIDs make enumeration harder, but they do not replace authorization.
 
-Example nested endpoint: `GET /organizations/20/projects/700`
+## 3.2 API3 — Broken Object Property Level Authorization (BOPLA)
 
-The API must validate that:
+BOPLA is about **fields** inside an object.
 
-1. The user can access organization `20`.
-2. Project `700` belongs to organization `20`.
-3. The user can access project `700`.
+It commonly appears in two directions:
 
-## 4.6 Important Point
+- **Excessive data exposure:** returning fields the caller should not see.
+- **Mass assignment:** accepting fields the caller should not be allowed to change.
 
-Changing sequential integers to UUIDs makes object IDs harder to guess, but leaked or collected UUIDs can still be used. Authorization must be enforced regardless of identifier format.
-
----
-
-# 5. API2:2023 — Broken Authentication
-
-## 5.1 Simple Meaning
-
-Broken authentication occurs when an API incorrectly verifies identity, manages credentials, handles sessions, or validates tokens.
-
-An attacker may then impersonate another user or take over an account.
-
-## 5.2 Common Causes
-
-- Weak password policies
-- No protection against credential stuffing
-- Missing login rate limits
-- Predictable session identifiers
-- Tokens placed in URLs
-- JWT signatures not validated
-- Expired tokens accepted
-- Weak token-signing secrets
-- Passwords stored using weak hashing
-- Password-reset flows with weaker protection than login
-- Sensitive account changes without re-authentication
-- Internal microservices trusting requests without service authentication
-
-## 5.3 Vulnerable JWT Validation
-
-A server reads claims without verifying the signature:
-
-```python
-# Vulnerable conceptual example
-payload = decode_without_signature_verification(token)
-user_id = payload["sub"]
-```
-
-An attacker can create a modified token:
+Example attacker payload:
 
 ```json
 {
-  "sub": "admin-user-id",
-  "role": "admin"
+  "display_name": "Asha",
+  "role": "admin",
+  "credit_limit": 1000000
 }
 ```
 
-## 5.4 Secure Authentication Flow
+Use explicit request and response schemas instead of exposing database models directly.
+
+```python
+from pydantic import BaseModel, ConfigDict
+
+class ProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str | None = None
+```
+
+A useful rule is:
+
+```text
+Database model != Request model != Response model
+```
+
+## 3.3 API5 — Broken Function Level Authorization (BFLA)
+
+BFLA occurs when a lower-privileged user can call a function intended for a higher-privileged role.
+
+```http
+DELETE /api/admin/users/42
+Authorization: Bearer <normal-user-token>
+```
+
+Hiding the button in the frontend is not security. The server must enforce permission checks.
+
+```python
+if "user:delete" not in current_user.permissions:
+    raise HTTPException(status_code=403, detail="Forbidden")
+```
+
+### Easy way to remember
+
+| Risk | Security Boundary |
+|---|---|
+| BOLA | Object |
+| BOPLA | Property |
+| BFLA | Function |
+
+---
+
+# 4. API2 — Broken Authentication
+
+Broken Authentication means the API incorrectly verifies or maintains identity.
+
+Common areas include:
+
+- Login and password reset
+- Access and refresh tokens
+- JWT validation
+- Session handling
+- MFA and OTP flows
+- Service-to-service authentication
+- Brute-force and credential-stuffing protection
+
+For JWT-based APIs, do not simply decode claims. The server must validate the token cryptographically and enforce expected claims.
 
 ```mermaid
 sequenceDiagram
@@ -297,462 +203,82 @@ sequenceDiagram
     participant A as Auth Service
     participant API as Resource API
 
-    C->>A: Credentials + MFA
-    A->>A: Verify password hash and MFA
-    A-->>C: Short-lived access token + refresh token
-    C->>API: Access token
+    C->>A: Credentials / MFA
+    A-->>C: Access token
+    C->>API: Bearer token
     API->>API: Validate signature, issuer, audience, expiry
-    API->>API: Load current user and permissions
+    API->>API: Load user + permissions
     API-->>C: Authorized response
 ```
 
-## 5.5 JWT Validation Checklist
-
-A JWT-consuming API should validate at least:
-
-- Cryptographic signature
-- Allowed algorithm
-- Expiration time: `exp`
-- Not-before time: `nbf`, when used
-- Issuer: `iss`
-- Intended audience: `aud`
-- Subject: `sub`
-- Token type or purpose
-- Revocation or session status when required
-
-Do not accept the algorithm directly from the token without enforcing a server-side allowlist.
-
-## 5.6 Password Security
-
-Passwords should be stored using a password-hashing algorithm designed for password storage, such as:
-
-- Argon2id
-- bcrypt
-- scrypt
-- PBKDF2 with an appropriate work factor
-
-Passwords should never be stored using plain SHA-256 or reversible encryption as the primary password-storage mechanism.
-
-## 5.7 Prevention
-
-- Use mature authentication libraries and identity providers.
-- Protect login, OTP, and password-reset endpoints with stricter limits.
-- Implement MFA for high-risk applications or actions.
-- Use short-lived access tokens.
-- Rotate refresh tokens and detect token reuse.
-- Revoke active sessions after password changes or account compromise.
-- Require recent authentication for sensitive changes.
-- Store tokens securely and never include them in URLs.
-- Authenticate service-to-service communication.
-- Separate user authentication from API-client identification.
-
-> An API key normally identifies an application or integration. It should not be treated as a complete replacement for user authentication.
+Practical controls include short-lived access tokens, protected refresh-token flows, strong password hashing such as Argon2id/bcrypt/scrypt/PBKDF2, login throttling, and re-authentication for sensitive actions.
 
 ---
 
-# 6. API3:2023 — Broken Object Property Level Authorization (BOPLA)
+# 5. API4 and API6 — Limits vs Business Abuse
 
-## 6.1 Simple Meaning
+These two risks look similar but protect different things.
 
-BOPLA occurs when an API fails to control which object fields a user may read or modify.
+## 5.1 API4 — Unrestricted Resource Consumption
 
-It combines two closely related problems:
+The attacker consumes too much **technical capacity or paid infrastructure**.
 
-1. **Excessive data exposure** — returning fields the user should not see.
-2. **Mass assignment** — accepting fields the user should not be allowed to change.
+Examples:
 
-## 6.2 Excessive Data Exposure Example
+- `page_size=1000000`
+- Huge file uploads
+- Expensive GraphQL queries
+- Too many concurrent OCR/LLM jobs
+- Unlimited SMS or email calls
+- Large retry storms
 
-The frontend needs only a public user profile:
+Controls should exist at multiple layers:
 
-```json
-{
-  "id": 42,
-  "name": "Asha",
-  "avatar_url": "/media/asha.png"
-}
-```
+| Layer | Typical Control |
+|---|---|
+| Gateway / proxy | Rate limits, body-size limits, timeouts |
+| Application | Pagination and batch limits |
+| Database | Query timeout, connection limits |
+| Workers | Concurrency, retry, execution timeout |
+| External APIs | Per-user quota, spending limit |
 
-But the API serializes the entire database object:
-
-```json
-{
-  "id": 42,
-  "name": "Asha",
-  "avatar_url": "/media/asha.png",
-  "email": "asha@example.com",
-  "password_hash": "...",
-  "mfa_secret": "...",
-  "internal_risk_score": 87
-}
-```
-
-Hiding fields in the UI does not protect them. The API response itself must be safe.
-
-## 6.3 Mass Assignment Example
-
-Expected profile update:
-
-```http
-PATCH /api/users/me
-Content-Type: application/json
-
-{
-  "display_name": "Asha Patel"
-}
-```
-
-Attacker request:
-
-```http
-PATCH /api/users/me
-Content-Type: application/json
-
-{
-  "display_name": "Asha Patel",
-  "role": "admin",
-  "is_verified": true,
-  "credit_limit": 1000000
-}
-```
-
-Vulnerable code:
+Example:
 
 ```python
-for key, value in request.json.items():
-    setattr(user, key, value)
+@router.get("/events")
+async def list_events(
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    ...
 ```
 
-## 6.4 Secure Input and Output Models
+## 5.2 API6 — Unrestricted Access to Sensitive Business Flows
 
-Use explicit schemas for each operation.
+The requests may be technically valid, but automation abuses the business process.
 
-```python
-from pydantic import BaseModel, ConfigDict
+Examples:
 
-class ProfileUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+- Bots buying all limited tickets
+- Mass account creation
+- Repeated coupon redemption
+- Inventory reservation without payment
+- Automated claim or loan submissions
+- Referral reward farming
 
-    display_name: str | None = None
-    avatar_url: str | None = None
-
-class PublicProfileResponse(BaseModel):
-    id: int
-    display_name: str
-    avatar_url: str | None
-```
-
-This creates two allowlists:
-
-- Fields that may enter the application
-- Fields that may leave the application
-
-## 6.5 Prevention
-
-- Use dedicated request and response schemas.
-- Avoid directly binding request JSON to persistence models.
-- Allowlist writable fields per operation and role.
-- Allowlist readable fields per endpoint and audience.
-- Reject unexpected fields instead of silently trusting them.
-- Avoid generic serializers for sensitive entities.
-- Review nested objects and relationships.
-- Treat GraphQL fields and mutations as property-level authorization boundaries.
-
-## 6.6 Practical Rule
+The difference is simple:
 
 ```text
-Database model != API request model != API response model
+API4 -> protect system resources and cost
+API6 -> protect valuable business processes
 ```
 
-They may look similar, but they serve different trust boundaries.
+API6 usually needs business-aware controls such as account/device limits, anomaly detection, risk scoring, step-up verification, reservation expiry, idempotency, or anti-bot challenges.
 
 ---
 
-# 7. API4:2023 — Unrestricted Resource Consumption
+# 6. API7 — Server-Side Request Forgery (SSRF)
 
-## 7.1 Simple Meaning
-
-Every API request consumes resources. If limits are missing, an attacker can cause service unavailability or unexpectedly high operational cost.
-
-Resources include:
-
-- CPU
-- Memory
-- Database connections
-- Network bandwidth
-- Storage
-- Worker processes
-- File descriptors
-- Email, SMS, and phone-call credits
-- Third-party AI or OCR requests
-- Payment, identity, and biometric verification calls
-
-## 7.2 Example: Unbounded Pagination
-
-```http
-GET /api/events?page_size=1000000
-```
-
-If the API attempts to load one million records, it may consume excessive memory, database time, and response bandwidth.
-
-Secure behavior:
-
-```text
-Default page size: 20
-Maximum page size: 100
-Request above maximum: reject or clamp safely
-```
-
-## 7.3 Example: Expensive File Processing
-
-```mermaid
-flowchart LR
-    A[Attacker] -->|Uploads 10 GB file| B[API]
-    B --> C[Memory Buffer]
-    C --> D[OCR Service]
-    D --> E[LLM Processing]
-    E --> F[Cloud Storage]
-
-    G[Impact] --> H[High memory usage]
-    G --> I[Third-party charges]
-    G --> J[Worker exhaustion]
-    G --> K[Service outage]
-```
-
-## 7.4 Controls
-
-Apply limits at multiple levels:
-
-| Layer | Example Limit |
-|---|---|
-| Reverse proxy | Maximum body size, connection limits, timeouts |
-| API gateway | Requests per second, quotas, burst limits |
-| Application | Page size, batch size, field count, query depth |
-| Database | Query timeout, connection-pool size |
-| Worker system | Task timeout, retry count, concurrency |
-| File processing | File size, type, dimensions, decompressed size |
-| Third-party services | Daily spending caps and per-user quotas |
-
-## 7.5 Rate-Limiting Dimensions
-
-A single IP-based limit is often insufficient. Consider limits by:
-
-- IP address
-- User ID
-- Tenant ID
-- API key or client ID
-- Endpoint
-- Operation type
-- Device or session
-- Global system capacity
-
-## 7.6 Prevention
-
-- Set request-body and upload-size limits.
-- Restrict pagination, batch size, query depth, and filters.
-- Apply per-user, per-tenant, per-IP, and global quotas.
-- Add execution timeouts and cancellation.
-- Limit concurrent expensive operations.
-- Validate compressed files against decompression bombs.
-- Limit retries and use exponential backoff with jitter.
-- Monitor cost-generating operations.
-- Use queues for long-running work.
-- Return `429 Too Many Requests` when appropriate.
-
-Example response:
-
-```http
-HTTP/1.1 429 Too Many Requests
-Retry-After: 60
-Content-Type: application/json
-
-{
-  "detail": "Request limit exceeded. Retry after 60 seconds."
-}
-```
-
----
-
-# 8. API5:2023 — Broken Function Level Authorization (BFLA)
-
-## 8.1 Simple Meaning
-
-BFLA occurs when a user can access an API operation or function that their role should not be allowed to use.
-
-BOLA protects **which object** a user can access. BFLA protects **which action or endpoint** a user can execute.
-
-## 8.2 Vulnerable Example
-
-A standard user discovers an admin endpoint:
-
-```http
-DELETE /api/admin/users/42
-Authorization: Bearer <standard-user-token>
-```
-
-The UI never displays this option, but the endpoint lacks a role check and performs the deletion.
-
-## 8.3 Horizontal and Vertical Privilege Escalation
-
-**Horizontal escalation:** A user accesses another user's data at the same privilege level.
-
-> Customer A reads Customer B's invoice.
-
-This is commonly BOLA.
-
-**Vertical escalation:** A lower-privileged user executes an admin or manager function.
-
-> Normal user disables another user's account.
-
-This is commonly BFLA.
-
-## 8.4 Secure Policy Example
-
-```python
-from enum import StrEnum
-
-class Permission(StrEnum):
-    USER_DELETE = "user:delete"
-    USER_READ = "user:read"
-
-def require_permission(user, permission: Permission) -> None:
-    if permission not in user.permissions:
-        raise ForbiddenError("Insufficient permission")
-```
-
-Route-level use:
-
-```python
-@router.delete("/admin/users/{user_id}")
-def delete_user(user_id: int, current_user=Depends(get_current_user)):
-    require_permission(current_user, Permission.USER_DELETE)
-    user_service.delete(user_id)
-```
-
-Object-level rules may still be needed after the function-level check.
-
-## 8.5 Prevention
-
-- Deny access by default.
-- Define a clear authorization matrix.
-- Centralize authorization checks.
-- Enforce permissions on the server, not only in the UI.
-- Separate administrative routes and permissions clearly.
-- Do not authorize based only on HTTP method or URL naming.
-- Test lower-privileged tokens against privileged operations.
-- Apply authorization consistently across REST, GraphQL, gRPC, WebSockets, and background actions.
-
-Example authorization matrix:
-
-| Function | Customer | Support Agent | Admin |
-|---|:---:|:---:|:---:|
-| Read own profile | Yes | No | Yes |
-| Read customer profile | No | Limited | Yes |
-| Update account status | No | Limited | Yes |
-| Delete user | No | No | Yes |
-
----
-
-# 9. API6:2023 — Unrestricted Access to Sensitive Business Flows
-
-## 9.1 Simple Meaning
-
-Some API operations are valid and correctly implemented, but become harmful when automated or used at scale.
-
-This risk is about **business abuse**, not necessarily a technical coding bug.
-
-Examples include:
-
-- Buying all available tickets using bots
-- Creating thousands of fake accounts
-- Reserving inventory without completing payment
-- Posting spam comments
-- Generating unlimited referral rewards
-- Requesting repeated OTP messages
-- Scraping price or availability data
-- Automating coupon redemption
-- Submitting large numbers of insurance claims or loan applications
-
-## 9.2 Example: Ticket Purchasing Bot
-
-```mermaid
-sequenceDiagram
-    participant B as Bot Network
-    participant API as Ticket API
-    participant DB as Inventory
-
-    loop Thousands of automated requests
-        B->>API: Reserve best available seat
-        API->>DB: Lock seat
-        DB-->>API: Seat reserved
-        API-->>B: Reservation created
-    end
-
-    Note over DB: Genuine users see no available inventory
-```
-
-The endpoint may have valid authentication, correct authorization, and valid input. The problem is unrestricted automation of a sensitive business operation.
-
-## 9.3 Difference from Resource Consumption
-
-| API4: Resource Consumption | API6: Sensitive Business Flow |
-|---|---|
-| Main impact is system resource exhaustion or cost | Main impact is business abuse or unfair use |
-| Example: huge file causes CPU exhaustion | Example: bot buys all limited-stock items |
-| Control focuses on technical limits | Control includes business rules and anti-automation |
-
-One attack may involve both risks.
-
-## 9.4 Prevention
-
-- Identify business flows that create value, scarcity, money movement, reputation, or legal commitments.
-- Define acceptable human and automated usage.
-- Add per-account, per-device, per-payment-method, and per-tenant limits.
-- Use risk scoring and anomaly detection.
-- Add step-up verification for suspicious behavior.
-- Use proof-of-work, CAPTCHA, or challenge mechanisms where appropriate.
-- Apply idempotency keys to prevent duplicate actions.
-- Use reservation expiration and fair-queue mechanisms.
-- Detect account farms and distributed bot behavior.
-- Monitor business metrics, not only infrastructure metrics.
-
-## 9.5 Business-Level Signals
-
-Useful signals may include:
-
-- Number of accounts per device
-- Number of payment cards per account
-- Time between actions
-- Identical behavior across many accounts
-- Unusual geographic changes
-- Repeated failures followed by success
-- High-value actions immediately after registration
-- Reservation-to-purchase conversion rate
-
----
-
-# 10. API7:2023 — Server-Side Request Forgery (SSRF)
-
-## 10.1 Simple Meaning
-
-SSRF occurs when an API fetches a URL supplied by a user without safely validating and restricting the destination.
-
-The attacker makes the **server** send a request to an unintended target.
-
-## 10.2 Vulnerable Example
-
-An API imports an image from a URL:
-
-```http
-POST /api/profile/import-avatar
-Content-Type: application/json
-
-{
-  "url": "https://images.example.com/avatar.png"
-}
-```
-
-Attacker-controlled URL:
+SSRF occurs when the API accepts a URL and the **server fetches it** without strong destination restrictions.
 
 ```json
 {
@@ -760,139 +286,52 @@ Attacker-controlled URL:
 }
 ```
 
-Cloud metadata target example:
+An attacker may try to reach:
 
-```json
-{
-  "url": "http://169.254.169.254/latest/meta-data/"
-}
-```
-
-## 10.3 Attack Flow
+- Localhost
+- Internal services
+- Private network addresses
+- Cloud metadata services
+- Other protected infrastructure
 
 ```mermaid
 flowchart LR
-    A[Attacker] -->|Supplies malicious URL| B[Public API]
-    B -->|Server makes request| C[Internal Service]
-    B -->|Possible request| D[Cloud Metadata]
-    B -->|Possible request| E[Localhost]
-    B -->|Possible request| F[Private Network]
-
-    C --> B
-    D --> B
-    E --> B
-    F --> B
-    B -->|Leaks response| A
+    A[Attacker] -->|Malicious URL| B[Public API]
+    B --> C[Internal Service]
+    B --> D[Cloud Metadata]
+    B --> E[Private Network]
 ```
 
-## 10.4 Why Basic URL Checks Fail
+Prefer not to fetch arbitrary user URLs. If fetching is required:
 
-A simple string check can often be bypassed through:
+- Allowlist expected hosts/protocols.
+- Block private, loopback, link-local, and reserved addresses.
+- Disable or strictly validate redirects.
+- Apply outbound firewall/egress rules.
+- Use timeouts and response-size limits.
 
-- Redirects
-- Alternative IP formats
-- DNS rebinding
-- IPv6 addresses
-- User-information sections in URLs
-- Encoded characters
-- Hostname resolution changes
-- Private networks reached through public-looking domains
-
-## 10.5 Secure Design
-
-The safest design is not to fetch arbitrary user-provided URLs.
-
-Prefer one of these patterns:
-
-1. Accept uploaded content directly.
-2. Allow only known providers and paths.
-3. Map a client-selected identifier to a server-controlled URL.
-4. Use a dedicated outbound-fetch service with strict network isolation.
-
-## 10.6 Prevention
-
-- Use an allowlist of protocols, hosts, ports, and paths.
-- Permit only `https` when possible.
-- Resolve the hostname and block private, loopback, link-local, multicast, and reserved ranges.
-- Re-check the destination after redirects or disable redirects.
-- Apply outbound firewall or egress proxy rules.
-- Block access to cloud metadata services.
-- Use strict timeouts and response-size limits.
-- Do not return raw upstream responses to users.
-- Log outbound destinations and suspicious failures.
-- Isolate URL-fetching workloads from sensitive networks.
-
-Conceptual destination validation:
-
-```python
-ALLOWED_HOSTS = {"cdn.example.com", "images.partner.com"}
-
-parsed = urlparse(user_url)
-
-if parsed.scheme != "https":
-    raise ValidationError("Only HTTPS URLs are allowed")
-
-if parsed.hostname not in ALLOWED_HOSTS:
-    raise ValidationError("Host is not allowed")
-```
-
-An allowlist is stronger than attempting to block every dangerous host.
+A blocklist alone is fragile because redirects, DNS changes, IPv6, and alternate address formats can bypass naive checks.
 
 ---
 
-# 11. API8:2023 — Security Misconfiguration
+# 7. API8 and API9 — Secure Operations
 
-## 11.1 Simple Meaning
+## 7.1 API8 — Security Misconfiguration
 
-Security misconfiguration occurs when unsafe, incomplete, inconsistent, or default settings expose the API or its supporting infrastructure.
+This covers unsafe configuration across the complete API stack.
 
-It can exist at any layer:
+Common examples:
 
-```text
-Cloud -> Network -> Load Balancer -> API Gateway -> Web Server
--> Framework -> Application -> Database -> Storage -> Monitoring
-```
-
-## 11.2 Common Examples
-
-- Debug mode enabled in production
+- Debug mode in production
 - Detailed stack traces returned to clients
-- Incorrect CORS configuration
-- Missing TLS
-- Insecure cloud-storage permissions
+- Incorrect CORS policy
+- Public admin/metrics endpoints
+- Weak TLS or missing TLS
 - Default credentials
-- Unnecessary HTTP methods
-- Public management or metrics endpoints
-- Unpatched frameworks or servers
-- Missing security headers
-- Sensitive responses cached by browsers or proxies
-- Directory listing enabled
-- Verbose GraphQL introspection exposed without a deliberate policy
-- Inconsistent parsing between proxies and application servers
+- Excessive cloud permissions
+- Sensitive responses cached unintentionally
 
-## 11.3 Dangerous CORS Example
-
-```http
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Credentials: true
-```
-
-CORS configuration must be designed carefully. Do not dynamically reflect arbitrary origins while allowing credentials.
-
-## 11.4 Error Handling
-
-Unsafe response:
-
-```json
-{
-  "error": "psycopg.errors.UndefinedTable",
-  "query": "SELECT * FROM payment_cards",
-  "stack_trace": "...",
-  "database_host": "prod-db.internal"
-}
-```
-
-Safer client response:
+Safer error response:
 
 ```json
 {
@@ -901,359 +340,109 @@ Safer client response:
 }
 ```
 
-Detailed diagnostics should remain in protected server-side logs.
+Keep detailed diagnostics in protected server logs.
 
-## 11.5 Prevention
+## 7.2 API9 — Improper Inventory Management
 
-- Create repeatable hardened configurations.
-- Use infrastructure as code and configuration review.
-- Disable debug features in production.
-- Remove unnecessary services, routes, and HTTP methods.
-- Patch operating systems, runtimes, frameworks, and libraries.
-- Apply least privilege to cloud resources and service accounts.
-- Configure TLS correctly.
-- Return generic errors with correlation IDs.
-- Set appropriate cache-control headers.
-- Configure CORS using an explicit origin allowlist.
-- Continuously scan environments for drift and unsafe settings.
-- Keep development, test, staging, and production isolated.
+You cannot secure an API that nobody knows still exists.
 
-Example response headers for sensitive API data:
+Typical problems:
+
+- Old `/v1` endpoints remain public
+- Staging APIs are internet-accessible
+- Forgotten subdomains or services
+- Shadow APIs bypass the gateway
+- Documentation no longer matches production
+
+Maintain an inventory containing at least:
+
+- Service and owner
+- Environment
+- Base URL and version
+- Authentication method
+- Data classification
+- Exposure level
+- Lifecycle/deprecation status
+
+Version removal is part of security, not only API maintenance.
+
+---
+
+# 8. API10 — Unsafe Consumption of APIs
+
+Data coming from another API is still **untrusted input**.
+
+A third-party or internal service may be compromised, misconfigured, or simply return unexpected data.
+
+Validate upstream responses before using them in:
+
+- SQL queries
+- HTML/templates
+- File paths
+- Internal URLs
+- Shell commands
+- Business decisions
+
+Practical controls include:
+
+- Response schema validation
+- Size and type limits
+- TLS certificate validation
+- Connection/read/total timeouts
+- Restricted redirects
+- Retry limits and circuit breakers
+- Least-privilege integration credentials
+- Webhook signature and replay verification
+
+For webhooks, verify the signature and timestamp **before** processing the event, and make event handling idempotent.
+
+---
+
+# 9. One Practical Example — Secure Order Update API
+
+Suppose the endpoint is:
 
 ```http
-Cache-Control: no-store
-Pragma: no-cache
-X-Content-Type-Options: nosniff
-Content-Type: application/json
-```
-
----
-
-# 12. API9:2023 — Improper Inventory Management
-
-## 12.1 Simple Meaning
-
-An organization cannot secure APIs that it does not know exist.
-
-Improper inventory management includes unknown, undocumented, outdated, abandoned, or unnecessarily exposed API assets.
-
-## 12.2 Typical Problems
-
-- Old API versions remain online.
-- Staging or test environments are public.
-- Debug endpoints are deployed accidentally.
-- Documentation does not match production.
-- Multiple teams publish APIs without a central inventory.
-- Shadow APIs bypass the gateway.
-- Deprecated fields still expose sensitive data.
-- Forgotten subdomains point to active services.
-- Different API versions have inconsistent security controls.
-
-## 12.3 Example
-
-The current mobile application uses: `https://api.example.com/v3/users/me`
-
-An older API remains active: `https://api.example.com/v1/users/42`
-
-Version 3 enforces tenant-aware authorization. Version 1 does not.
-
-```mermaid
-flowchart TD
-    A[API Inventory]
-    A --> B[Production v3]
-    A --> C[Production v2 - Deprecated]
-    A --> D[Staging]
-    A --> E[Partner API]
-    A --> F[Internal API]
-
-    C --> G[Removal date]
-    D --> H[Restricted network]
-    E --> I[Named owner]
-    F --> J[Service authentication]
-```
-
-## 12.4 What an API Inventory Should Record
-
-| Field | Example |
-|---|---|
-| Service name | Billing API |
-| Owner | Payments Team |
-| Environment | Production |
-| Base URL | `https://api.example.com/billing/v2` |
-| Version | v2 |
-| Data classification | Confidential financial data |
-| Authentication | OAuth 2.0 access token |
-| External exposure | Public through API gateway |
-| Dependencies | Payment provider, customer DB |
-| Lifecycle status | Active |
-| Deprecation date | Not scheduled |
-| Documentation | OpenAPI specification |
-
-## 12.5 Prevention
-
-- Maintain a central inventory of hosts, services, versions, and environments.
-- Assign an owner to every API.
-- Maintain accurate OpenAPI, AsyncAPI, protobuf, or GraphQL schemas.
-- Route external APIs through controlled gateways.
-- Discover shadow and zombie APIs continuously.
-- Define versioning and deprecation policies.
-- Remove old versions after an announced migration period.
-- Restrict non-production environments.
-- Classify the data handled by each endpoint.
-- Include APIs, webhooks, WebSockets, gRPC services, and internal endpoints.
-
----
-
-# 13. API10:2023 — Unsafe Consumption of APIs
-
-## 13.1 Simple Meaning
-
-Developers often trust third-party or internal API responses more than direct user input. That trust is unsafe.
-
-Data from another API should be treated as untrusted input.
-
-The upstream service may be:
-
-- Compromised
-- Misconfigured
-- Malicious
-- Returning unexpected data
-- Redirecting requests
-- Temporarily unavailable
-- Sending oversized responses
-- Violating the expected schema
-
-## 13.2 Vulnerable Flow
-
-```mermaid
-flowchart LR
-    A[Your API] -->|Request| B[Third-Party API]
-    B -->|Compromised response| A
-    A --> C[SQL Query]
-    A --> D[HTML Template]
-    A --> E[Internal HTTP Request]
-    A --> F[File System]
-
-    G[Risk] --> C
-    G --> D
-    G --> E
-    G --> F
-```
-
-## 13.3 Example
-
-A shipping provider returns:
-
-```json
-{
-  "tracking_status": "Delivered",
-  "callback_url": "http://internal-admin:8080/reconcile"
-}
-```
-
-Your API blindly follows `callback_url`, creating an SSRF path through a trusted integration.
-
-Another example:
-
-```python
-# Unsafe conceptual example
-customer_name = partner_response["customer_name"]
-html = f"<h1>Welcome {customer_name}</h1>"
-```
-
-A compromised upstream response could inject unsafe HTML unless output encoding is applied.
-
-## 13.4 Secure Integration Controls
-
-- Validate upstream response schemas.
-- Apply length, range, format, and enum constraints.
-- Use TLS and validate certificates.
-- Configure connection, read, and total timeouts.
-- Restrict redirects.
-- Limit response size.
-- Use retry limits and circuit breakers.
-- Validate and encode data before using it in another context.
-- Do not construct SQL, shell commands, paths, or URLs from untrusted upstream data.
-- Apply least-privilege credentials to integrations.
-- Rotate and securely store third-party credentials.
-- Monitor upstream behavior and contract changes.
-- Verify webhook signatures and prevent replay attacks.
-
-## 13.5 Webhook Verification Flow
-
-```mermaid
-sequenceDiagram
-    participant P as Provider
-    participant API as Your Webhook API
-    participant Q as Queue
-
-    P->>API: Payload + Timestamp + Signature
-    API->>API: Verify source, signature, timestamp
-    API->>API: Validate schema and event ID
-    API->>API: Reject duplicate/replayed event
-    API->>Q: Enqueue validated event
-    API-->>P: 2xx acknowledgement
-```
-
----
-
-# 14. Authorization Risks Compared
-
-The three authorization categories are closely related but protect different boundaries.
-
-| Risk | Question the API Must Answer | Example Failure |
-|---|---|---|
-| BOLA | Can this user access **this object**? | User reads another user's invoice |
-| BOPLA | Can this user read or change **this property**? | User sets `is_admin=true` |
-| BFLA | Can this user execute **this function**? | Normal user calls admin delete endpoint |
-
-## 14.1 Combined Example
-
-Consider:
-
-```http
-PATCH /api/admin/users/42
+PATCH /api/orders/1042
 Authorization: Bearer <token>
 
 {
-  "credit_limit": 500000,
-  "is_admin": true
+  "delivery_note": "Leave at reception"
 }
 ```
 
-Required checks:
-
-1. **Authentication:** Is the token valid?
-2. **Function authorization:** Can the caller use the admin user-update function?
-3. **Object authorization:** Can the caller manage user `42` within this tenant?
-4. **Property authorization:** Can the caller modify `credit_limit` and `is_admin`?
-5. **Business validation:** Is the requested credit limit allowed?
-6. **Audit:** Is the privileged change recorded?
+A secure implementation must enforce several boundaries:
 
 ```mermaid
 flowchart TD
-    A[Incoming Request] --> B{Authenticated?}
-    B -- No --> X[401 Unauthorized]
+    A[PATCH /orders/1042] --> B{Token valid?}
+    B -- No --> X[401]
     B -- Yes --> C{Function allowed?}
-    C -- No --> Y[403 Forbidden]
-    C -- Yes --> D{Object allowed?}
-    D -- No --> Y
-    D -- Yes --> E{Properties allowed?}
-    E -- No --> Y
+    C -- No --> Y[403]
+    C -- Yes --> D{Order belongs to allowed user/tenant?}
+    D -- No --> Z[404 or 403]
+    D -- Yes --> E{Only allowed fields supplied?}
+    E -- No --> Q[422 / 400]
     E -- Yes --> F{Business rules valid?}
-    F -- No --> Z[400 or 422]
-    F -- Yes --> G[Perform action]
-    G --> H[Audit log]
+    F -- No --> Q
+    F -- Yes --> G[Update + Audit]
 ```
 
----
-
-# 15. Secure API Architecture
-
-A secure API uses multiple layers. No single gateway, WAF, library, or token solves every security problem.
-
-```mermaid
-flowchart TB
-    C[Client] --> CDN[CDN / DDoS Protection]
-    CDN --> GW[API Gateway]
-    GW --> AUTH[Identity Provider / Token Validation]
-    GW --> APP[API Application]
-
-    APP --> POLICY[Authorization Policy Layer]
-    POLICY --> SERVICE[Business Services]
-    SERVICE --> DB[(Database)]
-    SERVICE --> Q[Task Queue]
-    SERVICE --> OUT[Controlled Egress Proxy]
-    OUT --> THIRD[Third-Party APIs]
-
-    GW --> OBS[Central Logs and Metrics]
-    APP --> OBS
-    POLICY --> OBS
-    OUT --> OBS
-
-    SEC[Security Controls] --> GW
-    SEC --> APP
-    SEC --> POLICY
-    SEC --> OUT
-```
-
-## 15.1 Responsibility by Layer
-
-| Layer | Main Responsibilities |
-|---|---|
-| CDN / edge | DDoS protection, basic request filtering |
-| API gateway | Routing, TLS termination, quotas, client identification |
-| Identity provider | Authentication, token issuance, MFA, session controls |
-| Application | Schema validation, business rules, secure error handling |
-| Authorization layer | Object, property, and function policies |
-| Database | Constraints, tenant scoping, least-privilege accounts |
-| Queue/workers | Concurrency, timeout, retry, and idempotency controls |
-| Egress proxy | Outbound destination restrictions and observability |
-| Monitoring | Detection, alerting, auditing, incident investigation |
-
-## 15.2 Gateway Limits Are Not Enough
-
-A gateway may apply 100 requests per minute, but one request could still:
-
-- Request one million database rows
-- Trigger thousands of GraphQL resolver calls
-- Upload a compressed bomb
-- Start an expensive AI-processing workflow
-- Reserve all remaining inventory
-
-The application must enforce domain-specific limits.
-
----
-
-# 16. Practical FastAPI Patterns
-
-The following examples show implementation patterns, not a complete production security framework.
-
-## 16.1 Authenticate and Load the Current User
+FastAPI-style implementation:
 
 ```python
 from typing import Annotated
+from fastapi import Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+class OrderUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    delivery_note: str | None = Field(default=None, max_length=500)
 
-bearer = HTTPBearer(auto_error=False)
-
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-):
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
-
-    try:
-        claims = token_service.validate_access_token(credentials.credentials)
-        user = await user_repository.get_active_by_id(claims.subject)
-    except TokenValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired access token",
-        ) from exc
-
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User is not active",
-        )
-
-    return user
-```
-
-The token service should validate signature, algorithm, issuer, audience, expiration, and token purpose.
-
-## 16.2 Enforce Object-Level Authorization in the Query
-
-```python
-@router.get("/orders/{order_id}", response_model=OrderResponse)
-async def get_order(
+@router.patch("/orders/{order_id}")
+async def update_order(
     order_id: int,
+    payload: OrderUpdateRequest,
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     order = await order_repository.get_for_customer(
@@ -1263,245 +452,96 @@ async def get_order(
     )
 
     if order is None:
-        # Returning 404 can avoid revealing whether another user's object exists.
         raise HTTPException(status_code=404, detail="Order not found")
 
-    return order
-```
-
-## 16.3 Use Explicit Update Schemas
-
-```python
-from pydantic import BaseModel, ConfigDict, Field
-
-class OrderUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    delivery_note: str | None = Field(default=None, max_length=500)
-
-class AdminOrderUpdateRequest(OrderUpdateRequest):
-    status: str | None = None
-    assigned_agent_id: int | None = None
-```
-
-Separate schemas make property-level permissions visible and reviewable.
-
-## 16.4 Function-Level Permission Dependency
-
-```python
-from collections.abc import Callable
-
-def require_permission(permission: str) -> Callable:
-    async def dependency(
-        current_user: Annotated[User, Depends(get_current_user)],
-    ) -> User:
-        if permission not in current_user.permissions:
-            raise HTTPException(status_code=403, detail="Forbidden")
-        return current_user
-
-    return dependency
-
-@router.delete("/admin/users/{user_id}")
-async def delete_user(
-    user_id: int,
-    current_admin: Annotated[
-        User,
-        Depends(require_permission("user:delete")),
-    ],
-):
-    await user_service.delete_user(
-        actor=current_admin,
-        target_user_id=user_id,
-    )
-    return {"status": "deleted"}
-```
-
-The service layer should still enforce domain and tenant rules.
-
-## 16.5 Restrict Pagination
-
-```python
-from fastapi import Query
-
-@router.get("/events")
-async def list_events(
-    limit: int = Query(default=20, ge=1, le=100),
-    cursor: str | None = None,
-):
-    return await event_service.list(limit=limit, cursor=cursor)
-```
-
-## 16.6 Safe Error Boundary
-
-```python
-import uuid
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-
-    logger.exception(
-        "Unhandled API error",
-        extra={"request_id": request_id, "path": request.url.path},
-    )
-
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "An unexpected error occurred.",
-            "request_id": request_id,
-        },
-        headers={"Cache-Control": "no-store"},
+    return await order_service.update_delivery_note(
+        order=order,
+        delivery_note=payload.delivery_note,
+        actor=current_user,
     )
 ```
 
-Do not log passwords, tokens, payment data, secrets, or complete sensitive request bodies.
+This single endpoint demonstrates:
+
+- **API2:** validate identity correctly.
+- **API1:** scope the order query to the user/tenant.
+- **API3:** accept only explicitly writable fields.
+- **API5:** add permission checks if the operation is privileged.
+- **API4:** enforce request/field/resource limits.
+- **Audit:** record important state changes.
 
 ---
 
-# 17. API Security Testing Strategy
+# 10. Practical Development Strategy
 
-Security testing should be part of normal API development rather than a final one-time activity.
+A strong API security flow is:
 
-## 17.1 Test Layers
-
-```mermaid
-flowchart LR
-    A[Unit Tests] --> B[Integration Tests]
-    B --> C[Authorization Matrix Tests]
-    C --> D[Contract and Schema Tests]
-    D --> E[DAST / API Scanning]
-    E --> F[Manual Security Review]
-    F --> G[Production Monitoring]
+```text
+Authenticate
+   ↓
+Authorize function
+   ↓
+Authorize object
+   ↓
+Authorize properties
+   ↓
+Validate input + business rules
+   ↓
+Apply rate/resource limits
+   ↓
+Execute safely
+   ↓
+Audit + monitor
 ```
 
-## 17.2 Authorization Test Pattern
-
-For each protected operation, create test identities such as:
+During testing, use multiple identities rather than only a happy-path user:
 
 - Anonymous client
 - Resource owner
-- Different user in the same tenant
-- User in another tenant
+- Different user
+- Different tenant
 - Read-only role
-- Manager role
-- Administrator
-- Disabled or deleted user
+- Admin role
 
-Test the combination of: `Identity x Function x Object x Property`
+Cross-user and cross-tenant tests are especially important because many authorization bugs depend on business ownership rules that automated scanners cannot fully infer.
 
-Example test table:
+---
 
-| Identity | Function | Object | Expected Result |
-|---|---|---|---|
-| Anonymous | Read order | Any order | 401 |
-| Customer A | Read order | Customer A order | 200 |
-| Customer A | Read order | Customer B order | 404 or 403 |
-| Support read-only | Delete order | Any order | 403 |
-| Admin | Delete order | Allowed tenant order | Success |
+# 11. Interview-Focused Takeaway
 
-## 17.3 Negative Testing
+The most useful mental model is to think in **security boundaries** rather than memorizing ten names.
 
-Test more than valid requests. Include:
-
-- Missing tokens
-- Expired tokens
-- Tokens for the wrong audience
-- Changed object IDs
-- Extra JSON properties
-- Oversized payloads
-- Very large pagination values
-- Duplicate requests
-- Invalid content types
-- Unexpected HTTP methods
-- Private IP URLs
-- Redirect chains
-- Slow upstream responses
-- Malformed third-party responses
-- Deprecated endpoints
-
-## 17.4 CI/CD Security Gates
-
-A practical pipeline may include:
-
-```mermaid
-flowchart LR
-    A[Commit] --> B[Lint and Unit Tests]
-    B --> C[Dependency and Secret Scan]
-    C --> D[Build Container]
-    D --> E[Container and IaC Scan]
-    E --> F[Deploy Test Environment]
-    F --> G[API Contract Tests]
-    G --> H[Authorization and DAST Tests]
-    H --> I[Deploy]
-    I --> J[Runtime Monitoring]
+```text
+Identity   -> API2
+Object     -> API1
+Property   -> API3
+Function   -> API5
+Resources  -> API4
+Business   -> API6
+Outbound   -> API7
+Config     -> API8
+Inventory  -> API9
+Upstream   -> API10
 ```
 
-Security gates should be risk-based. A critical authorization regression should block deployment.
+For backend interviews, be especially comfortable explaining:
+
+- Why a valid JWT does not solve authorization.
+- Why UUIDs do not solve BOLA.
+- The difference between BOLA, BOPLA, and BFLA.
+- Why resource limits must exist inside the application, not only at the gateway.
+- The difference between rate limiting and business-flow abuse prevention.
+- Why arbitrary URL fetching creates SSRF risk.
+- Why third-party API responses must be validated like user input.
+
+The core principle is simple:
+
+> Never trust a client-controlled identifier, field, URL, function call, or upstream response without validating it against the caller's permissions and the application's business rules.
 
 ---
 
-# 18. Production Security Checklist
+## References
 
-## 18.1 Authentication
-
-- [ ] All protected endpoints require valid authentication.
-- [ ] JWT signatures, algorithms, issuer, audience, and expiration are validated.
-- [ ] Login and password-reset flows have strict anti-brute-force controls.
-- [ ] Sensitive changes require recent authentication or step-up verification.
-- [ ] Service-to-service calls are authenticated.
-- [ ] Secrets and signing keys are stored in a secure secret-management system.
-
-## 18.2 Authorization
-
-- [ ] Every object lookup is scoped to an authorized user or tenant.
-- [ ] Every privileged function has a server-side permission check.
-- [ ] Writable and readable fields are explicitly allowlisted.
-- [ ] Authorization logic is centralized or consistently reusable.
-- [ ] Cross-tenant access is tested automatically.
-
-## 18.3 Input and Output
-
-- [ ] Request bodies use strict schemas.
-- [ ] Unexpected fields are rejected where appropriate.
-- [ ] Response models expose only required fields.
-- [ ] File type, size, content, and decompressed size are validated.
-- [ ] Third-party API responses are schema-validated.
-
-## 18.4 Availability and Abuse Protection
-
-- [ ] Request rates and bursts are limited.
-- [ ] Page size, batch size, and query complexity are bounded.
-- [ ] Expensive operations have per-user and global concurrency limits.
-- [ ] Timeouts and retry limits are configured.
-- [ ] Third-party cost-generating calls have budgets and quotas.
-- [ ] Sensitive business flows have anti-automation controls.
-
-## 18.5 Configuration and Infrastructure
-
-- [ ] Debug mode is disabled in production.
-- [ ] CORS uses an explicit, reviewed policy.
-- [ ] TLS is required.
-- [ ] Cloud resources use least-privilege permissions.
-- [ ] Management, health, and metrics endpoints have appropriate exposure.
-- [ ] Error responses do not expose stack traces or internal details.
-- [ ] Sensitive responses use appropriate cache-control headers.
-- [ ] Outbound network access is restricted.
-
-## 18.6 Inventory and Operations
-
-- [ ] Every API has a named owner.
-- [ ] All versions and environments are inventoried.
-- [ ] OpenAPI or equivalent contracts match deployed behavior.
-- [ ] Deprecated endpoints have removal dates.
-- [ ] Shadow and zombie APIs are discovered and removed.
-- [ ] Security events include request IDs and actor details.
-- [ ] Logs avoid credentials and sensitive personal data.
-- [ ] Alerts cover unusual authentication, authorization, cost, and business activity.
-
-Three items above carry disproportionate weight and are worth re-reading before any API design review: treat third-party API responses as untrusted input, keep an accurate inventory of every version, host, and environment, and test cross-user and cross-tenant access continuously — that last one is the only reliable way to catch BOLA, because no scanner knows who should own what.
-
----
+- OWASP API Security Top 10 — 2023: https://owasp.org/API-Security/editions/2023/en/0x00-toc/
+- OWASP Developer Guide — API Top 10: https://devguide.owasp.org/en/07-training-education/07-api-top-ten/
+- OWASP API Security Top 10 2023 release announcement: https://owasp.org/blog/2023/07/03/owasp-api-top10-2023

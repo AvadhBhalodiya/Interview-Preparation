@@ -7,360 +7,333 @@ updated: "3 August 2026"
 
 # Caching Layers and the Stampede Problem
 
-> Where caching actually lives — browser, CDN, application, database — and how a cache stampede takes a system down the moment a hot key expires.
+> Caching is not just “put Redis in front of the database.” A real system usually has several cache layers, and each layer protects the layer behind it. The hard part is deciding **what may be stale, how it is invalidated, and what happens when the cache misses or disappears**.
 
 ## In short
 
-- Caching is layered: browser → CDN/edge → gateway → in-process L1 → distributed L2 such as Redis → database buffer and OS page cache, and each layer exists to absorb the misses of the one in front of it.
-- Cache-aside is the default application pattern — check the cache, on a miss read the database and store the result; on a write, update the database and delete the key rather than rewriting it.
-- A TTL is a correctness decision, not a performance knob: it bounds how stale the system may become when explicit invalidation does not happen, and eviction can remove an entry earlier, so every read must handle a miss.
-- A cache stampede is many requests missing the *same hot key* at the same instant and all repeating the same expensive load — 10,000 requests/second against a 200 ms rebuild is roughly 2,000 concurrent recomputations.
-- The three mitigations that matter: single-flight plus a leased distributed lock so one caller rebuilds while the rest wait or take stale data; stale-while-revalidate so a soft-expired value is served during a background refresh; TTL jitter so groups of keys stop expiring together.
-- Jitter fixes the avalanche (many keys expiring at once), not the single hot key — coalescing, locking, or stale serving is what protects one key.
-- Design for the cache being gone: an outage sends full traffic to the database, so concurrency limits, deadlines, backoff, and circuit breakers belong on the fallback path.
-
-```mermaid
-flowchart TD
-    U["GET /products/42"] --> B{Browser cache?}
-    B -->|Hit| R[Return response]
-    B -->|Miss| C{CDN edge cache?}
-    C -->|Hit| R
-    C -->|Miss| L1{In-process L1?}
-    L1 -->|Hit| R
-    L1 -->|Miss| L2{Redis L2?}
-    L2 -->|Hit| R
-    L2 -->|Miss| DB[(Database)]
-    DB --> W[Populate L2, L1, CDN, browser]
-    W --> R
-```
-
-**Interview answer:** A request falls through browser, CDN, in-process L1, and Redis L2 before it reaches the database, and each layer protects the layer behind it. A stampede happens when one hot key expires and every concurrent request misses at the same moment, so they all run the same expensive query — the fix is to let exactly one caller rebuild the value, using in-process single-flight plus a leased Redis lock, while the others either wait within a bounded budget or receive the stale value under stale-while-revalidate. Add TTL jitter so unrelated keys stop expiring in lockstep, and cap concurrent database loads so a cache outage cannot turn into a database outage.
-
-**Gotcha:** Treating TTL jitter as stampede protection. Jitter only spreads out a *group* of keys that would expire together; one extremely hot key still collapses onto the database at its single expiry moment unless coalescing, a lock, or stale serving is in place.
-
----
-
-# 1. Why Caching Is Used
-
-A cache stores a copy of data in a location that is faster or closer to the consumer than the original source.
-
-For example, retrieving a product from Redis may take a few milliseconds, while retrieving the same product by running joins against a relational database may take much longer.
-
-Caching commonly improves:
-
-- **Latency:** Responses are returned faster.
-- **Throughput:** The system handles more requests with the same backend resources.
-- **Database protection:** Repeated reads do not continuously reach the primary database.
-- **Availability:** Some layers can continue serving previously cached content during a temporary origin failure.
-- **Cost:** Fewer database queries, API calls, computations, and network transfers may be required.
-
-However, caching introduces important trade-offs:
-
-- Cached data can become stale.
-- Invalidation becomes part of the correctness model.
-- A cache failure can suddenly expose the backend to full traffic.
-- Popular expired keys can create a cache stampede.
-- Different cache layers can disagree about which value is current.
-
-Caching should therefore be treated as a **distributed data-management problem**, not only as a performance optimization.
-
----
-
-# 2. The Main Caching Layers
-
-A typical web application may contain several cache layers.
+- A common request path is: **Browser → CDN → Gateway → L1 local cache → L2 distributed cache → Database**.
+- **Cache-aside** is the most common application pattern: read cache → on miss read database → populate cache; on write, update the database and invalidate the key.
+- A **TTL is a correctness choice** because it defines how long stale data may remain when explicit invalidation does not happen.
+- **Expiration and eviction are different**: a cache may evict a value before its TTL, so every read path must safely handle a miss.
+- A **cache stampede** happens when many requests miss the **same hot key** and all repeat the same expensive backend work.
+- For one hot key, use **single-flight/request coalescing**, a **leased distributed lock**, or **stale-while-revalidate**.
+- **TTL jitter** mainly prevents a **cache avalanche** where many keys expire together; it does not fully solve one extremely hot key.
+- Always design for **cache outage**: limit fallback database concurrency, use deadlines, avoid retry storms, and serve stale/fallback data when business rules allow.
 
 ```mermaid
 flowchart LR
-    U[User] --> B[Browser Cache]
-    B --> CDN[CDN / Edge Cache]
-    CDN --> GW[Reverse Proxy / API Gateway Cache]
-    GW --> APP[Application Service]
-    APP --> L1[In-Process L1 Cache]
-    L1 --> L2[Distributed L2 Cache]
-    L2 --> DB[(Primary Database)]
-    DB --> DBC[Database Buffer Cache]
-    DBC --> OSC[Operating-System Page Cache]
+    U[User] --> B{Browser}
+    B -->|Miss| C{CDN / Edge}
+    C -->|Miss| G{Gateway}
+    G -->|Miss| L1{L1 Local Cache}
+    L1 -->|Miss| L2{L2 Redis / Valkey}
+    L2 -->|Miss| DB[(Database)]
+    DB --> L2
+    L2 --> L1
+    L1 --> G
+    G --> C
+    C --> B
 ```
 
-The layers do not always appear in this exact order. For example, an application checks its in-process cache before calling Redis, while a database checks its own buffer cache internally while executing a query.
+---
 
-## 2.1 Layer 1: Client and Browser Cache
+# Index
 
-The browser can cache static resources and HTTP responses:
+1. Why caching exists
+2. Main caching layers
+3. Common cache access patterns
+4. Cache keys, TTL, invalidation, and eviction
+5. Cache stampede and related failures
+6. Stampede-prevention techniques
+7. Practical product-service example
+8. Observability and load testing
+9. Best practices
+10. References
+
+---
+
+# 1. Why Caching Exists
+
+A cache stores a copy of data closer to the consumer or in a faster system than the original source.
+
+For example, returning a product from process memory or Redis is usually cheaper than repeatedly executing joins, transferring rows, and rebuilding the same application object.
+
+Caching mainly improves:
+
+- **Latency** — repeated reads complete faster.
+- **Throughput** — the same backend can serve more traffic.
+- **Database protection** — fewer repeated reads reach the primary store.
+- **Resilience** — some layers can serve previously cached data during a temporary origin problem.
+- **Cost** — fewer database queries, computations, API calls, and cross-region requests.
+
+But caching creates trade-offs:
+
+- Data can become stale.
+- Invalidation becomes part of the correctness model.
+- Different layers can temporarily disagree.
+- A cold or failed cache can suddenly expose the database to full traffic.
+- A popular expired key can create a stampede.
+
+The important mental model is:
+
+> **Caching is a distributed data-management decision, not only a performance optimization.**
+
+---
+
+# 2. Main Caching Layers
+
+A production system may contain several cache layers at the same time.
+
+```mermaid
+flowchart LR
+    Browser[Browser Cache]
+    CDN[CDN / Edge Cache]
+    Gateway[Gateway / Reverse Proxy]
+    L1[L1 In-Process Cache]
+    L2[L2 Distributed Cache]
+    DB[(Database)]
+    OS[DB Buffer + OS Page Cache]
+
+    Browser --> CDN --> Gateway --> L1 --> L2 --> DB --> OS
+```
+
+## 2.1 Browser and Client Cache
+
+Browsers can reuse static assets and HTTP responses.
+
+Typical examples:
 
 - JavaScript bundles
-- CSS files
-- Fonts
-- Images
+- CSS
+- Images and fonts
 - Public API responses
 - Previously validated resources
 
-The server controls HTTP caching through headers such as:
+Common response headers:
 
 ```http
 Cache-Control: public, max-age=3600
 ETag: "product-v42"
 ```
 
-Important directives include:
+Useful directives:
 
 | Directive | Meaning |
 |---|---|
-| `public` | The response may be stored by shared caches such as a CDN. |
-| `private` | The response is intended for a private client cache, usually one browser. |
-| `max-age=300` | The response is considered fresh for 300 seconds. |
+| `public` | Shared caches such as a CDN may store the response. |
+| `private` | Intended for a private client cache. |
+| `max-age=300` | Response is fresh for 300 seconds. |
 | `s-maxage=300` | Freshness lifetime for shared caches. |
-| `no-cache` | The response may be stored, but it must be revalidated before reuse. |
-| `no-store` | The response should not be stored. |
-| `immutable` | The resource is not expected to change during its freshness lifetime. |
+| `no-cache` | May be stored, but must be revalidated before normal reuse. |
+| `no-store` | Do not store the response. |
+| `immutable` | Content is not expected to change while fresh. |
 | `stale-while-revalidate=30` | A stale response may be served while it is refreshed. |
-| `stale-if-error=300` | A stale response may be served when the origin fails. |
+| `stale-if-error=300` | A stale response may be reused when the upstream fails. |
 
-### Best use cases
+### Practical use
 
-Browser caching works especially well for versioned static assets such as `/app.94f3a8.js` and `/styles.18ac21.css`.
+Versioned assets such as:
 
-Because the filename changes when the content changes, the asset can safely use a long TTL: `Cache-Control: public, max-age=31536000, immutable`
+```text
+/app.94f3a8.js
+/styles.18ac21.css
+```
 
-### Security consideration
+can safely use a long lifetime:
 
-Do not place user-specific or sensitive data in a shared cache unless the cache key and response directives correctly isolate users. A personalized response accidentally marked `public` can leak information across users.
+```http
+Cache-Control: public, max-age=31536000, immutable
+```
+
+### Important security point
+
+Do not mark personalized or sensitive responses as `public` unless the cache key and response design guarantee correct user isolation.
 
 ---
 
-## 2.2 Layer 2: CDN and Edge Cache
+## 2.2 CDN and Edge Cache
 
-A Content Delivery Network stores content at geographically distributed edge locations close to users.
+A CDN stores cacheable content close to users.
 
-Typical cached content includes:
+Common examples:
 
-- Images, videos, CSS, and JavaScript
-- Public HTML pages
-- Product catalog responses
+- Static files
+- Product catalog pages
+- Public HTML
 - Public API responses
-- Generated reports that are safe to share
 - Downloadable files
+- Shareable generated reports
 
 ```mermaid
 flowchart LR
-    IN[User in India] --> EI[India Edge]
-    EU[User in Europe] --> EE[Europe Edge]
-    US[User in US] --> EA[US Edge]
+    IN[India User] --> E1[India Edge]
+    EU[Europe User] --> E2[Europe Edge]
+    US[US User] --> E3[US Edge]
 
-    EI --> ORIGIN[Application Origin]
-    EE --> ORIGIN
-    EA --> ORIGIN
+    E1 --> ORIGIN[Application Origin]
+    E2 --> ORIGIN
+    E3 --> ORIGIN
 ```
 
-### Benefits
+Benefits:
 
-- Lower user-perceived latency
-- Reduced traffic to the application origin
-- Better handling of traffic spikes
-- Less cross-region network traffic
-- Additional resilience when stale content can be served
+- Lower network latency
+- Reduced origin traffic
+- Better traffic-spike handling
+- Less cross-region transfer
+- Ability to serve stale content where permitted
 
-### Mid-tier and origin-shield caching
+### Origin shield / mid-tier cache
 
-A CDN may add another cache layer between edge locations and the origin:
+Large CDNs may add another cache layer between edge locations and the origin.
 
 ```mermaid
 flowchart LR
-    E1[Edge 1] --> OS[Origin Shield / Mid-Tier Cache]
-    E2[Edge 2] --> OS
-    E3[Edge 3] --> OS
-    OS --> O[Origin]
+    E1[Edge 1] --> S[Origin Shield]
+    E2[Edge 2] --> S
+    E3[Edge 3] --> S
+    S --> O[Origin]
 ```
 
-Without the shield, several edge locations missing the same object may independently request it from the origin. The shield aggregates those misses and reduces redundant origin requests.
+This is useful when several edge locations miss the same object. The shield can absorb those misses instead of allowing every edge to independently hit the origin.
 
-### Cache-key design at the CDN
+### Cache-key design matters
 
-The CDN cache key may include:
+A CDN key may vary by:
 
 - Path
 - Query parameters
 - Selected headers
 - Cookies
 - Language
-- Device type
 - Authentication state
 
-Including too many dimensions reduces the hit ratio because logically equivalent requests create different entries. Including too few dimensions risks returning the wrong representation.
+Too many dimensions reduce the hit ratio. Too few dimensions can return the wrong representation.
 
 ---
 
-## 2.3 Layer 3: Reverse Proxy and API Gateway Cache
+## 2.3 Gateway or Reverse-Proxy Cache
 
-A reverse proxy or API gateway can cache responses before requests reach application services.
+A reverse proxy or API gateway can cache a response before it reaches application instances.
 
-Examples include:
+Examples:
 
 - NGINX proxy cache
 - Varnish
 - API gateway response cache
-- Service-mesh sidecar cache
 - GraphQL gateway cache
 
-This layer is useful when several application instances produce the same public response.
-
-```mermaid
-flowchart TD
-    CLIENTS[Clients] --> GW["Load Balancer / API Gateway Cache"]
-    GW --> APPS[Application Instances]
-```
-
-### Suitable data
+Useful for:
 
 - Public reference data
-- Configuration returned to all users
-- Country, currency, and language lists
-- Public product catalog pages
-- Expensive but shareable API responses
+- Country/currency lists
+- Public configuration
+- Expensive responses shared by many users
 
-### Less suitable data
+Usually avoid it for:
 
-- Highly personalized data
+- Highly personalized responses
+- Authorization-sensitive data
 - Rapidly changing balances
-- Authorization-sensitive responses
-- Responses whose cache keys would become extremely high-cardinality
+- Responses with very high-cardinality cache keys
 
 ---
 
-## 2.4 Layer 4: In-Process Application Cache
+## 2.4 L1 In-Process Cache
 
-An in-process cache stores data inside the memory of one application instance.
+An L1 cache lives inside one application process.
 
-Common implementations include:
+Examples:
 
-- Python dictionaries with an LRU wrapper
+- Python LRU cache
 - Java Caffeine
-- Guava Cache
-- Node.js LRU libraries
-- Go local maps guarded by synchronization
-- Framework-specific memory caches
+- Node.js LRU cache
+- Go in-memory map with synchronization
 
-This is often called an **L1 cache**.
+Advantages:
 
-```mermaid
-flowchart TD
-    R[Request] --> P1[Application Instance A]
-    R --> P2[Application Instance B]
-    P1 --> C1[Local Cache A]
-    P2 --> C2[Local Cache B]
-```
-
-### Advantages
-
-- Very low latency
+- Extremely low latency
 - No network call
-- Useful for small and frequently reused data
-- Reduces load on the distributed cache
+- Reduces pressure on Redis/Valkey
 
-### Limitations
+Limitations:
 
-- Every process contains a separate copy.
-- Entries are lost when the process restarts.
-- Invalidation must reach all instances.
-- Memory usage is multiplied by the number of instances.
-- One instance may serve an older value than another.
+- Each process has its own copy.
+- Data disappears on restart.
+- Invalidation must reach every process.
+- Memory usage is duplicated across instances.
+- Different instances may temporarily serve different values.
 
-### Suitable data
+Use L1 for small, frequently reused, safe-to-stale data such as configuration, lookup tables, parsed metadata, or very hot L2 values.
 
-- Parsed configuration
-- Public feature metadata
-- Static lookup tables
-- Serialization results
-- Short-lived copies of very hot Redis entries
-- Expensive pure-function results
-
-### Important rule
-
-An in-process cache should normally be **small, bounded, and time-limited**. An unbounded local cache can become a memory leak.
+> Keep local caches **bounded and time-limited**. An unbounded local cache can become a memory problem.
 
 ---
 
-## 2.5 Layer 5: Distributed Cache
+## 2.5 L2 Distributed Cache
 
-A distributed cache is shared by multiple application instances.
+A distributed cache is shared across application instances.
 
-Common systems include:
+Common choices:
 
 - Redis
 - Valkey
 - Memcached
 - Managed cloud cache services
 
-This layer is often called an **L2 cache**.
-
 ```mermaid
 flowchart LR
-    A1[App Instance 1] --> R[(Redis / Valkey)]
-    A2[App Instance 2] --> R
-    A3[App Instance 3] --> R
+    A1[App 1] --> R[(Redis / Valkey)]
+    A2[App 2] --> R
+    A3[App 3] --> R
     R --> DB[(Database)]
 ```
 
-### Advantages
+Common cached values:
 
-- Shared view across application instances
-- Centralized TTL and eviction
-- Supports atomic operations
-- Can store counters, sessions, rate-limit state, and cached objects
-- Easier to invalidate than many independent local caches
-
-### Limitations
-
-- Adds a network dependency.
-- The cache can become a bottleneck.
-- Hot keys can overload one shard.
-- Serialization and deserialization consume CPU.
-- A cache outage may send full traffic to the database.
-- Distributed locking requires careful ownership and expiry handling.
-
-### Common cached values
-
-- User sessions
+- Sessions
 - Product details
 - Permissions
 - Search results
-- Feature flags
-- Exchange-rate snapshots
-- Aggregated dashboard data
-- Third-party API responses
-- Computed pricing or eligibility results
+- Feature/configuration data
+- Dashboard aggregates
+- Third-party API results
+
+Advantages:
+
+- Shared cache across stateless instances
+- Central TTL and eviction
+- Atomic operations
+- Easier shared invalidation than many independent local caches
+
+Limitations:
+
+- Network dependency
+- Hot keys can overload one node or shard
+- Serialization/deserialization has cost
+- A cache outage may push full traffic to the database
+- Distributed locking needs careful lease and ownership handling
 
 ---
 
-## 2.6 Layer 6: Database and Operating-System Cache
+## 2.6 Database and OS Cache
 
-Even without Redis, databases already use caching.
+Databases already cache data internally.
 
-A database may cache:
-
-- Data pages
-- Index pages
-- Query plans
-- Metadata
-- Prepared statements
-
-PostgreSQL, for example, uses shared buffers, while the operating system also keeps recently used file pages in memory.
+For example, PostgreSQL uses `shared_buffers`, while the operating system also caches recently accessed file pages.
 
 ```mermaid
 flowchart TD
-    Q[SQL Query] --> BP{Page in DB Buffer Cache?}
-    BP -->|Yes| M[Read from Memory]
-    BP -->|No| OS{Page in OS Cache?}
-    OS -->|Yes| COPY[Copy into DB Buffers]
-    OS -->|No| DISK[Read from Storage]
+    Q[SQL Query] --> B{Page in DB buffers?}
+    B -->|Yes| M[Read from memory]
+    B -->|No| O{Page in OS cache?}
+    O -->|Yes| C[Load into DB buffers]
+    O -->|No| D[Read storage]
 ```
 
-This is why the same SQL query can be much faster on its second execution even when the application has no explicit cache.
+This is different from application caching.
 
-### Important distinction
-
-A database buffer cache stores low-level pages used by many queries. An application cache usually stores a complete business-level result, such as:
+A database cache stores low-level pages and plans. An application cache may store the complete business result:
 
 ```json
 {
@@ -371,61 +344,36 @@ A database buffer cache stores low-level pages used by many queries. An applicat
 }
 ```
 
-Application caching can avoid query parsing, joins, row processing, network transfer, and object construction—not only disk reads.
+Application caching can avoid SQL execution, joins, row processing, network transfer, and object construction — not only disk I/O.
 
 ---
 
-# 3. How Requests Move Through Multiple Cache Layers
+# 3. Common Cache Access Patterns
 
-Consider a public product-detail request `GET /products/42`.
+Cache layers describe **where** data is stored. Cache access patterns describe **how** the application reads and writes it.
 
-The browser checks its own cache first. On a miss it asks the CDN, which checks its edge cache. On a CDN miss the request is forwarded to the application, which checks its in-process L1 cache, then Redis as the shared L2, and only then queries the database. On the way back, every layer stores what it is permitted to store: the application writes the value into Redis and keeps a short-lived local copy, the CDN stores the public response, and the browser keeps it if the response directives allow. The condensed form of that path is the flow diagram in **In short** above.
+## 3.1 Cache-Aside
 
-Each layer protects the layer behind it.
-
-A useful mental model is:
-
-```mermaid
-flowchart LR
-    BROWSER["Browser<br/>faster, smaller, closer"] --> CDN[CDN]
-    CDN --> GW[Gateway]
-    GW --> MEM[Local Memory]
-    MEM --> REDIS[(Redis)]
-    REDIS --> DB[("Database<br/>more authoritative, slower, larger")]
-```
-
-The closer a cache is to the user, the faster it can respond. The closer data is to the primary database, the more authoritative it generally is.
-
----
-
-# 4. Common Cache Access Patterns
-
-Caching layers describe **where** data is stored. Cache access patterns describe **how** reads and writes interact with the cache and database.
-
-## 4.1 Cache-Aside
-
-Cache-aside is the most common application-level pattern.
-
-The application explicitly checks the cache. On a miss, it reads from the database and stores the result.
+This is the most common application pattern.
 
 ```mermaid
 flowchart TD
-    R[Read Request] --> C{Cache Hit?}
-    C -->|Yes| V[Return Cached Value]
-    C -->|No| D[Read Database]
-    D --> S[Store in Cache]
-    S --> V2[Return Value]
+    R[Read] --> C{Cache hit?}
+    C -->|Yes| V[Return cached value]
+    C -->|No| D[Read database]
+    D --> S[Store in cache]
+    S --> V2[Return value]
 ```
 
-### Read pseudocode
+Basic read:
 
 ```python
 def get_product(product_id):
     key = f"product:{product_id}"
 
-    cached = cache.get(key)
-    if cached is not None:
-        return deserialize(cached)
+    value = cache.get(key)
+    if value is not None:
+        return deserialize(value)
 
     product = database.get_product(product_id)
 
@@ -435,13 +383,7 @@ def get_product(product_id):
     return product
 ```
 
-### Write flow
-
-A common write flow is:
-
-1. Update the database.
-2. Delete the cache entry.
-3. Allow the next read to repopulate the cache.
+Typical write:
 
 ```python
 def update_product(product_id, changes):
@@ -449,198 +391,151 @@ def update_product(product_id, changes):
     cache.delete(f"product:{product_id}")
 ```
 
-Deleting is often safer than directly rewriting because the database remains the source of truth, and the next reader reconstructs the correct cache representation.
+Updating the source of truth first and then invalidating the key is a simple and common strategy.
 
-### Strengths
-
-- Simple
-- Only requested data is cached
-- Cache failure can be handled as a miss
-- Works well for read-heavy systems
-
-### Weaknesses
-
-- The first request is slow.
-- A popular missing or expired key can cause a stampede.
-- Invalidation and database updates are not automatically atomic.
+**Strength:** simple and caches only requested data.  
+**Main risk:** the first request after a miss is slower, and concurrent misses can stampede the backend.
 
 ---
 
-## 4.2 Read-Through
+## 3.2 Read-Through
 
-With read-through caching, the application asks the cache for data, and the cache abstraction loads the value from the data source when required: `Application → Cache Provider → Database`.
+The application asks a cache abstraction for a value, and that abstraction loads the source when required.
 
-The application does not directly implement the miss-loading logic.
-
-### Use case
-
-Read-through works well when a framework or caching library provides a standard loader:
-
-```python
-product = cache.get_or_load(
-    key=f"product:{product_id}",
-    loader=lambda: database.get_product(product_id),
-)
+```text
+Application → Cache Provider → Database
 ```
 
-Request coalescing is easier to centralize in this abstraction.
+This is useful when a framework provides a standard `get_or_load()` mechanism and centralizes loading, expiry, and request coalescing.
 
 ---
 
-## 4.3 Write-Through
+## 3.3 Write-Through
 
-In write-through caching, a write is synchronously applied through the cache layer to the database.
+Writes go synchronously through the cache layer to the database.
 
-```mermaid
-flowchart LR
-    A[Application] --> C[Cache]
-    C --> D[(Database)]
+```text
+Application → Cache → Database
 ```
 
-The write completes only after the required stores are updated.
-
-### Advantages
-
-- Cache and database are more likely to remain aligned.
-- Recently written data is immediately warm.
-- Read paths become predictable.
-
-### Trade-offs
-
-- Higher write latency
-- More cache writes, including data that may never be read
-- Failure handling becomes more complex
+Useful when newly written data should already be warm, but it increases write latency and failure-handling complexity.
 
 ---
 
-## 4.4 Write-Behind
+## 3.4 Write-Behind
 
-In write-behind, also called write-back, the application writes to the cache first. The database is updated asynchronously later.
+The application writes first to a cache/buffer and persists to the database asynchronously.
 
-```mermaid
-flowchart LR
-    A[Application] --> C[(Cache)]
-    C --> Q[Durable Queue / Buffer]
-    Q --> D[(Database)]
+```text
+Application → Cache/Buffer → Durable Queue → Database
 ```
 
-### Advantages
+This can improve write throughput, but durability, ordering, retries, and idempotency become critical.
 
-- Very low write latency
-- Writes can be batched
-- Useful for high-volume counters or event-like workloads
-
-### Risks
-
-- Data may be lost if the cache or asynchronous pipeline fails.
-- Reads from the database can temporarily be stale.
-- Ordering, retries, deduplication, and durability become critical.
-- It should not be used casually for financial or strongly consistent state.
-
-A production write-behind design normally needs a durable queue or log rather than relying only on volatile cache memory.
+Do not use casual write-behind for financial or strongly consistent state.
 
 ---
 
-## 4.5 Refresh-Ahead
+## 3.5 Refresh-Ahead
 
-Refresh-ahead updates a cached value before it expires.
+Refresh a popular value before hard expiry.
 
-```mermaid
-flowchart TD
-    TTL[TTL remaining becomes small] --> WORKER[Background worker recomputes value]
-    WORKER --> FRESH[Cache receives fresh value before hard expiry]
+```text
+TTL becomes low → one background refresh → new value replaces old value
 ```
 
-This pattern is useful for:
-
-- Predictably popular keys
-- Expensive reports
-- Homepage content
-- Exchange-rate snapshots
-- Frequently accessed configuration
-- Data with known refresh intervals
-
-Refresh-ahead reduces user-facing misses, but it may waste work refreshing values that are no longer requested.
+Useful for predictably hot keys, reports, configuration snapshots, or regularly refreshed public data.
 
 ---
 
-# 5. Cache Keys, TTLs, Invalidation, and Eviction
+# 4. Cache Keys, TTL, Invalidation, and Eviction
 
-## 5.1 Cache-key design
+## 4.1 Cache-Key Design
 
-A cache key should represent every input that changes the returned value, for example `product:v3:{product_id}:{currency}:{language}` — which for product 42 in INR and English becomes `product:v3:42:INR:en`.
+A cache key must include every input that changes the result.
 
-The version component is useful when the serialized schema or business logic changes.
+Example:
 
-### Good key properties
+```text
+product:v3:42:INR:en
+```
+
+Possible dimensions:
+
+- Entity ID
+- Currency
+- Language
+- Tenant
+- Authorization scope
+- Algorithm/schema version
+
+Good keys are:
 
 - Deterministic
 - Namespaced
+- Versioned when needed
 - Easy to inspect
-- Contains required dimensions
-- Avoids sensitive raw information
-- Has controlled cardinality
-- Supports versioning
+- Free from unnecessary sensitive raw data
+- Controlled in cardinality
 
-### Avoid accidental collisions
+If currency affects the result, these must not use the same key:
 
-These two requests should not use the same cache entry: `GET /prices/42?currency=INR` and `GET /prices/42?currency=USD`.
-
-If currency is not part of the key, one user may receive the wrong price.
+```text
+GET /prices/42?currency=INR
+GET /prices/42?currency=USD
+```
 
 ---
 
-## 5.2 TTL selection
+## 4.2 TTL Is a Correctness Decision
 
-A TTL is not only a performance setting. It defines how stale the system is allowed to become when explicit invalidation does not occur.
+A TTL defines the maximum staleness window when explicit invalidation does not happen.
 
-A reasonable TTL depends on:
+Possible starting points:
 
-- Business freshness requirement
-- Update frequency
-- Cost of recomputation
-- Request frequency
-- Impact of stale data
-- Invalidation reliability
-- Database capacity during misses
-
-Example starting points:
-
-| Data | Possible TTL |
-|---|---:|
-| Versioned static asset | Months or one year |
-| Country/currency list | Hours or days |
+| Data | Typical direction |
+|---|---|
+| Versioned static asset | Months / 1 year |
+| Country/currency reference list | Hours or days |
 | Public product details | Minutes |
-| Product inventory | Seconds, event-driven invalidation, or no shared cache |
-| User permissions | Seconds to minutes with explicit invalidation |
-| Bank balance | Usually not served from an ordinary stale cache |
-| Expensive daily report | Until the next scheduled generation |
+| Display price | Seconds to minutes, depending on business rules |
+| User permissions | Short TTL plus explicit invalidation |
+| Bank balance | Usually not served from an ordinary stale application cache |
+| Daily generated report | Until next regeneration |
 
-These values are examples, not universal rules.
+There is no universal “best TTL.” Choose it from:
+
+- Allowed staleness
+- Update frequency
+- Recompute cost
+- Request rate
+- Invalidation reliability
+- Backend capacity during misses
 
 ---
 
-## 5.3 Invalidation
+## 4.3 Invalidation
 
-The classic statement “cache invalidation is hard” is true because the application must decide when every derived cached representation is no longer valid.
+Common strategies:
 
-Common invalidation approaches include:
+### TTL-only
 
-### TTL-only invalidation
+The entry naturally expires.
 
-The entry expires automatically: `SET product:42 <value> EX 300`.
+```text
+SET product:42 <value> EX 300
+```
 
-Simple, but stale data can remain until expiry.
+Simple, but stale data may remain until expiry.
 
 ### Explicit invalidation
 
-Delete related keys after a successful write.
+After a successful write:
 
 ```text
 UPDATE database
 DELETE product:42
 DELETE category:7:products
-DELETE homepage:featured
 ```
 
 This improves freshness but requires dependency tracking.
@@ -656,51 +551,51 @@ A service publishes a domain event:
 }
 ```
 
-Consumers invalidate or refresh related entries.
-
-This scales better across services, but delivery must be reliable and idempotent.
+Other services invalidate or refresh derived entries.
 
 ### Versioned keys
 
-Instead of deleting old entries, change the key version, for example `catalog:v17:category:7`.
+Instead of deleting a large cache namespace:
 
-Old entries naturally expire later. This is useful for deployments and bulk data refreshes.
+```text
+catalog:v17:category:7
+```
 
----
-
-## 5.4 Eviction
-
-Expiration and eviction are different:
-
-- **Expiration:** The entry becomes invalid because its TTL ends.
-- **Eviction:** The cache removes an entry to free memory.
-
-Common eviction policies include:
-
-- LRU-like policies: remove less recently used data
-- LFU-like policies: remove less frequently used data
-- TTL-based selection
-- Random eviction
-- No eviction, causing writes to fail when memory is full
-
-An application should not assume a key will exist until its TTL. Memory pressure may evict it earlier.
-
-Therefore, every cache read must safely handle a miss.
+Change the version and let old entries expire naturally.
 
 ---
 
-# 6. The Cache Stampede Problem
+## 4.4 Expiration vs Eviction
 
-A cache stampede occurs when many requests simultaneously discover that the same popular cache entry is absent or expired. Each request then performs the same expensive backend work.
+These are different:
 
-Assume:
+- **Expiration** — TTL says the value is no longer fresh/valid.
+- **Eviction** — the cache removes the value early to free memory.
 
-- `product:42` receives 5,000 requests per second.
-- Its TTL ends at exactly 12:00:00.
-- Loading it requires a complex database query.
-- Every application instance follows basic cache-aside logic.
+Therefore:
 
-At expiry:
+> Never assume a key exists until its TTL. Every cache read must correctly handle a miss.
+
+---
+
+# 5. Cache Stampede and Related Failures
+
+## 5.1 Cache Stampede
+
+A stampede happens when many concurrent requests miss the **same popular key** and all execute the same expensive fallback.
+
+Example:
+
+- `product:42` receives `10,000 req/s`
+- Rebuild takes `200 ms`
+- The key expires
+- No protection exists
+
+Approximate overlapping recomputations:
+
+```text
+10,000 × 0.2 = 2,000 concurrent recomputations
+```
 
 ```mermaid
 sequenceDiagram
@@ -713,379 +608,173 @@ sequenceDiagram
     R1->>C: GET product:42
     R2->>C: GET product:42
     R3->>C: GET product:42
+
     C-->>R1: MISS
     C-->>R2: MISS
     C-->>R3: MISS
+
     R1->>D: Load product
     R2->>D: Load product
     R3->>D: Load product
-    Note over D: Thousands of duplicate queries
+
+    Note over D: Duplicate expensive work
 ```
-
-The cache was intended to reduce database load, but its synchronized miss creates a sudden burst against the database.
-
-## 6.1 Why a stampede becomes dangerous
 
 The failure can amplify:
 
-```mermaid
-flowchart TD
-    EXPIRE[Popular key expires] --> MISS[Many requests miss]
-    MISS --> DUP[Duplicate database queries]
-    DUP --> LAT[Database latency rises]
-    LAT --> ACTIVE[Requests stay active longer]
-    ACTIVE --> POOL[Connection pools fill]
-    POOL --> RETRY[Retries create more traffic]
-    RETRY --> SICK[Application and database become unhealthy]
+```text
+hot key expires
+→ many misses
+→ duplicate DB queries
+→ DB latency increases
+→ requests remain active longer
+→ pools fill
+→ retries increase traffic
+→ system becomes unhealthy
 ```
 
-This is a positive feedback loop.
+---
 
-## 6.2 Common triggers
+## 5.2 Stampede vs Avalanche vs Penetration vs Hot Key
 
-- A highly popular key reaches its TTL.
-- A deployment clears local caches.
-- Redis restarts or fails over with a cold cache.
-- A bulk invalidation deletes many keys.
-- Many keys were created with the same TTL and expire together.
-- A new region or application cluster starts with an empty cache.
-- A previously unpopular key suddenly becomes viral.
-- A cache shard fails and traffic moves elsewhere.
+| Problem | Meaning | Main protection |
+|---|---|---|
+| **Stampede** | Many requests miss the same hot key | Single-flight, lock, stale serving |
+| **Avalanche** | Many keys expire/unavailable together | TTL jitter, staged warming |
+| **Penetration** | Repeated requests for data that does not exist | Negative cache, validation, abuse control |
+| **Hot key** | One key receives disproportionate traffic even when cached | L1, replication, request coalescing, CDN where possible |
 
-## 6.3 A simple load calculation
+A key point for interviews:
 
-Suppose:
-
-- Request rate for one hot key: `10,000 requests/second`
-- Database recomputation time: `200 ms`
-- No stampede protection
-
-The number of overlapping recomputations can approach: `10,000 × 0.2 = 2,000 concurrent recomputations`
-
-With request coalescing, the system may perform approximately one recomputation per cache scope while the other callers wait or receive stale data.
-
-This difference can determine whether the database remains healthy.
+> **TTL jitter helps spread expiration across many keys. It does not fully solve the single-hot-key stampede.**
 
 ---
 
-# 7. Related Cache Failure Patterns
+# 6. Stampede-Prevention Techniques
 
-The terms below are related but describe different problems.
+Production systems commonly combine several techniques.
 
-## 7.1 Cache stampede
+## 6.1 Single-Flight / Request Coalescing
 
-Many requests miss the **same hot key** and recompute it concurrently: `one hot key → many duplicate loads`.
-
-## 7.2 Cache avalanche
-
-Many keys expire or become unavailable around the same time: `many keys → broad backend traffic spike`.
-
-TTL jitter and staged warming are especially helpful here.
-
-## 7.3 Cache penetration
-
-Requests repeatedly ask for data that does not exist, so every request reaches the database: `missing key → cache miss → database miss → repeat`.
-
-Negative caching, input validation, Bloom filters, and abuse controls may help.
-
-## 7.4 Hot-key problem
-
-One key receives a disproportionately large amount of traffic and overloads one cache node, CPU core, network path, or lock.
-
-A hot key can exist even when it does not expire.
-
-Possible mitigations include:
-
-- Local L1 caching
-- Replicated read paths
-- CDN caching
-- Read-only key duplication or sharding where semantics allow
-- Request coalescing
-- Short stale-serving windows
-- Avoiding excessively large cached values
-
-## 7.5 Cache inconsistency
-
-The cache and source of truth contain different values because invalidation, write ordering, or event delivery failed.
-
-Stampede prevention protects availability. It does not automatically solve consistency.
-
----
-
-# 8. Techniques for Preventing a Cache Stampede
-
-No single technique fits every system. Production designs often combine several approaches.
-
-## 8.1 Request Coalescing (Single-Flight)
-
-Request coalescing allows only one request to load a missing value while other requests wait for the same result.
+Only one caller performs the backend load for a key. Other local callers join the existing work.
 
 ```mermaid
 flowchart TD
-    R1[Request 1] --> G{Load already running?}
-    R2[Request 2] --> G
-    R3[Request 3] --> G
-    G -->|No| L[Start one backend load]
-    G -->|Yes| W[Join existing work]
+    R1[Request 1] --> F{Load already running?}
+    R2[Request 2] --> F
+    R3[Request 3] --> F
+
+    F -->|No| L[Start one load]
+    F -->|Yes| W[Wait for same result]
+
     L --> D[(Database)]
     D --> C[Populate cache]
-    C --> OUT[Return same result to callers]
-    W --> OUT
+    C --> O[Return result]
+    W --> O
 ```
 
-### In-process example
+This is very effective inside one process.
 
-```python
-import asyncio
-from collections.abc import Awaitable, Callable
-from typing import TypeVar
-
-T = TypeVar("T")
-
-class SingleFlight:
-    def __init__(self) -> None:
-        self._inflight: dict[str, asyncio.Task[object]] = {}
-        self._lock = asyncio.Lock()
-
-    async def run(self, key: str, loader: Callable[[], Awaitable[T]]) -> T:
-        async with self._lock:
-            existing = self._inflight.get(key)
-
-            if existing is None:
-                task: asyncio.Task[T] = asyncio.create_task(loader())
-                self._inflight[key] = task
-                existing = task
-
-        try:
-            return await existing  # type: ignore[return-value]
-        finally:
-            async with self._lock:
-                if self._inflight.get(key) is existing:
-                    self._inflight.pop(key, None)
-```
-
-### Limitation
-
-An in-process single-flight mechanism coordinates requests only inside one process.
-
-If 50 application instances receive the same miss, each instance may still perform one backend load. To coordinate globally, use a distributed lock or a cache service that provides atomic loading.
+**Limitation:** with 50 application instances, each process can still start one backend load. Global coordination needs a distributed mechanism.
 
 ---
 
-## 8.2 Distributed Locking
+## 6.2 Distributed Lock with a Lease
 
-A distributed lock allows one process to rebuild a missing entry.
+Use a per-key distributed lock so only one application instance rebuilds the missing value.
 
-Other processes can:
+Typical Redis acquisition:
 
-- Wait briefly and retry the cache
-- Serve stale data
-- Return a controlled fallback
-- Fail fast when freshness is mandatory
-
-```mermaid
-sequenceDiagram
-    participant A as App A
-    participant B as App B
-    participant C as Cache
-    participant D as Database
-
-    A->>C: GET product:42
-    B->>C: GET product:42
-    C-->>A: MISS
-    C-->>B: MISS
-
-    A->>C: Acquire lock product:42
-    C-->>A: Lock acquired
-
-    B->>C: Acquire lock product:42
-    C-->>B: Lock unavailable
-
-    A->>D: Load product
-    D-->>A: Product
-    A->>C: Store product
-    A->>C: Release owned lock
-
-    B->>C: Retry GET product:42
-    C-->>B: HIT
+```text
+SET lock:product:42 <unique-token> NX PX 10000
 ```
 
-### Lock requirements
+Important requirements:
 
-A safe lock should have:
+1. **Unique owner token** — only the owner may release the lock.
+2. **Lease/expiry** — the lock must disappear if the owner crashes.
+3. **Atomic acquisition** — use `NX` with an expiry.
+4. **Ownership-checked release** — compare token and delete atomically.
+5. **Bounded wait** — callers should never wait forever.
+6. **Double-check after lock acquisition** — another process may already have populated the cache.
 
-1. **Unique ownership token**  
-   Only the process that owns the lock should release it.
+Safe release idea:
 
-2. **Expiry or lease time**  
-   The lock must eventually disappear if the owner crashes.
+```lua
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+```
 
-3. **Atomic acquisition**  
-   Redis commonly uses a conditional set such as `SET key token NX PX lease_ms`.
-
-4. **Ownership-checked release**  
-   Releasing should atomically compare the stored token and delete only when it matches.
-
-5. **Bounded waiting**  
-   Requests should not wait forever.
-
-6. **Lease sizing**  
-   The lease must cover normal recomputation time, or it must be safely extended.
-
-### Important race condition
-
-This release is unsafe:
+Avoid this non-atomic pattern:
 
 ```python
 if redis.get(lock_key) == token:
     redis.delete(lock_key)
 ```
 
-The `GET` and `DELETE` are separate commands. Between them, the lock could expire and be acquired by another process.
+The lock may expire and be acquired by another process between the `GET` and `DELETE`.
 
-Use an atomic Lua script:
+### Important trade-off
 
-```lua
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("DEL", KEYS[1])
-end
+A lock changes the failure mode from **duplicate backend work** to **waiting**.
 
-return 0
-```
-
-### Lock trade-off
-
-A lock changes the failure mode from duplicate backend work to waiting and queueing. For very hot keys, serving a slightly stale response is often better than making thousands of callers wait.
+For very hot read paths, serving a slightly stale value is often better than queueing thousands of requests.
 
 ---
 
-## 8.3 Stale-While-Revalidate
+## 6.3 Stale-While-Revalidate
 
-Stale-while-revalidate separates **freshness** from **availability**.
-
-Store two expiry concepts:
-
-- **Soft expiry:** The value is old enough to refresh.
-- **Hard expiry:** The value is too old to serve.
+Separate **freshness** from **availability**.
 
 ```text
-Fresh period          Stale-but-servable period       Unusable
-|--------------------|-------------------------------|
-created            soft expiry                    hard expiry
+Fresh                 Stale but allowed                Too old
+|---------------------|--------------------------------|
+created            soft expiry                     hard expiry
 ```
 
 Behavior:
 
-1. Before soft expiry: serve normally.
-2. After soft expiry: serve the stale value immediately.
-3. One worker refreshes the entry in the background.
-4. After hard expiry: wait for a synchronous refresh or return a fallback.
+- Before soft expiry → return fresh data.
+- After soft expiry → immediately return stale data and let one worker refresh.
+- After hard expiry → perform a protected synchronous load or return a controlled fallback.
 
 ```mermaid
 flowchart TD
-    R[Request] --> S{Value state}
-    S -->|Fresh| F[Return value]
-    S -->|Soft-expired| ST[Return stale value]
-    ST --> BG[Trigger one background refresh]
-    S -->|Hard-expired or missing| SYNC[Synchronous protected load]
+    R[Request] --> S{Cache state}
+    S -->|Fresh| F[Return]
+    S -->|Soft expired| ST[Return stale]
+    ST --> BG[One background refresh]
+    S -->|Missing / hard expired| P[Protected synchronous load]
 ```
 
-### Advantages
+Good for:
 
-- Low user-facing latency
-- Reduced backend spikes
-- Better behavior during temporary origin failures
-
-### Trade-off
-
-The system intentionally serves stale data. This is appropriate only when the business accepts bounded staleness.
-
-Suitable examples:
-
-- Public product descriptions
-- News feeds
-- Recommendation blocks
+- Product descriptions
+- News/feed data
+- Recommendations
 - Dashboard aggregates
 - Public configuration
-- Exchange-rate displays with a clear timestamp
 
-Less suitable examples:
+Usually not appropriate for:
 
-- Current bank balance
-- One-time authorization decisions
+- Authorization decisions
 - Inventory reservation
-- Security-sensitive permission changes
-- Values that control irreversible financial actions
+- Current bank balance
+- Irreversible financial decisions
 
 ---
 
-## 8.4 Early Refresh
+## 6.4 TTL Jitter
 
-Instead of waiting for the entry to expire, refresh it when its remaining TTL becomes small.
+Instead of every key using exactly 300 seconds:
 
 ```python
-if cached_value.exists:
-    if cached_value.remaining_ttl < refresh_threshold:
-        trigger_background_refresh(key)
-
-    return cached_value.data
+ttl = 300
 ```
 
-Use a per-key lock so that only one worker performs the refresh.
-
-### Benefit
-
-The hot key remains warm, and normal requests continue receiving the current cached value.
-
-### Cost
-
-A deterministic threshold can still cause several workers to attempt refresh around the same time unless refresh execution is coordinated.
-
----
-
-## 8.5 Probabilistic Early Expiration
-
-Probabilistic early expiration makes each request independently decide whether to refresh before the hard TTL. The probability increases as the entry approaches expiry and may account for the time required to recompute it.
-
-Conceptually:
-
-```text
-Far from expiry       → very small refresh probability
-Near expiry           → larger refresh probability
-Expensive recompute   → refresh earlier
-```
-
-This spreads refresh attempts over time instead of concentrating them at one exact expiry moment.
-
-A simplified conceptual rule is: `should_refresh = random_probability_increases_as_ttl_decreases()`
-
-A production implementation should follow a tested algorithm rather than inventing an arbitrary probability function.
-
-### Strengths
-
-- Reduces synchronized expiration
-- Avoids a permanent central scheduler
-- Works well for highly requested values
-- Can reduce dependence on long lock wait queues
-
-### Trade-offs
-
-- More difficult to reason about than a fixed refresh threshold
-- May perform occasional early recomputations
-- Still needs protection against multiple successful refreshers
-- Requires careful tuning and observability
-
-The XFetch family of approaches is based on research into optimal probabilistic early recomputation.
-
----
-
-## 8.6 TTL Jitter
-
-TTL jitter adds randomness to expiry times.
-
-Instead of assigning every key exactly 300 seconds: `ttl = 300`
-
-Use:
+use a small randomized range:
 
 ```python
 import random
@@ -1093,442 +782,213 @@ import random
 ttl = 300 + random.randint(-30, 30)
 ```
 
-Now entries expire between 270 and 330 seconds.
+This reduces synchronized expiration across a group of keys.
+
+Use jitter with single-flight, stale serving, or locking when individual keys can also become very hot.
+
+---
+
+## 6.5 Negative Caching
+
+Cache a short-lived “not found” result.
+
+Without it:
 
 ```text
-Without jitter:
-Key A ───────── expires at 12:05:00
-Key B ───────── expires at 12:05:00
-Key C ───────── expires at 12:05:00
-
-With jitter:
-Key A ─────── expires at 12:04:42
-Key B ────────── expires at 12:05:18
-Key C ──────── expires at 12:04:55
+cache miss → DB miss → repeat forever
 ```
 
-### What jitter solves
-
-TTL jitter helps prevent a cache avalanche caused by many synchronized keys.
-
-### What jitter does not solve
-
-It does not fully protect a single extremely hot key. Thousands of requests may still arrive when that one key expires.
-
-Use jitter together with request coalescing, stale serving, locking, or early refresh.
-
----
-
-## 8.7 Cache Prewarming
-
-Prewarming loads important values before normal traffic requires them.
-
-Useful moments include:
-
-- Before a major product launch
-- Before a scheduled sale
-- During deployment
-- When starting a new region
-- After planned cache maintenance
-- Before daily reporting traffic
-- After bulk invalidation
-
-Example:
-
-```python
-POPULAR_PRODUCT_IDS = [42, 51, 77, 103]
-
-for product_id in POPULAR_PRODUCT_IDS:
-    product = database.get_product(product_id)
-    cache.set(
-        f"product:{product_id}",
-        serialize(product),
-        ttl=300 + random.randint(0, 60),
-    )
-```
-
-### Important consideration
-
-Prewarming everything can overload the database and fill the cache with unused data. Warm only data that is likely to be requested or critical for an upcoming event.
-
-Use controlled concurrency and rate limits during warming.
-
----
-
-## 8.8 Negative Caching
-
-Negative caching stores the fact that a value does not exist.
-
-Without negative caching:
+With negative caching:
 
 ```text
-GET unknown-user
-Cache miss
-Database miss
-Repeat for every request
+user:999999 → NOT_FOUND, TTL 30 seconds
 ```
 
-With negative caching, the absence itself is stored: `user:999999 → NOT_FOUND, TTL 30 seconds`.
-
-Example:
-
-```python
-NOT_FOUND = b"__NOT_FOUND__"
-
-cached = redis.get(key)
-
-if cached == NOT_FOUND:
-    return None
-
-if cached is not None:
-    return deserialize(cached)
-
-value = database.find(key)
-
-if value is None:
-    redis.set(key, NOT_FOUND, ex=30)
-    return None
-```
-
-### Use a short TTL
-
-A missing object may be created shortly afterward. A long negative TTL can hide newly created data.
-
-Negative caching also helps protect against repeated invalid identifiers and some abusive request patterns.
+Use a short TTL because the object may be created shortly afterward.
 
 ---
 
-## 8.9 Backpressure and Rate Limiting
+## 6.6 Prewarming
 
-Stampede protection should not assume the cache will always work.
+Load known hot keys before traffic needs them.
 
-When the cache is unavailable, the system may suddenly direct all reads to the database. Backpressure protects the backend.
+Useful before:
 
-Possible controls include:
+- Sales or launches
+- A new region starts
+- Planned cache maintenance
+- Predictable reporting traffic
 
-- Limit concurrent database recomputations.
-- Use separate connection pools for critical and non-critical traffic.
-- Apply request deadlines.
-- Shed low-priority work.
-- Rate-limit expensive endpoints.
-- Use circuit breakers for failing dependencies.
-- Avoid unlimited retries.
-- Add exponential backoff and jitter to retries.
-- Serve stale or partial responses when permitted.
+Warm only likely hot data and use controlled concurrency so prewarming itself does not overload the database.
+
+---
+
+## 6.7 Backpressure on the Fallback Path
+
+The cache can fail completely. When that happens, do not allow unlimited fallback traffic to the database.
+
+Protect the backend with:
+
+- Concurrency limits
+- Request deadlines
+- Circuit breakers
+- Bounded retries
+- Exponential backoff with jitter
+- Load shedding
+- Stale or partial fallback responses when allowed
+- Separate capacity for critical operations
+
+> A controlled degraded response is safer than turning a cache outage into a database outage.
+
+---
+
+# 7. Practical Product-Service Example
+
+Consider an e-commerce product endpoint.
+
+Requirements:
+
+- Product description may be stale for up to 5 minutes.
+- Display price may be stale for a few seconds.
+- Inventory reservation must use authoritative state.
+- The service runs on many instances.
+- Redis/Valkey is shared.
+- Public product responses may also be cached at the CDN.
+
+## 7.1 Separate Data by Freshness Requirement
+
+Do not place every field under one TTL.
+
+```text
+product:details:42          TTL ≈ 5 minutes
+product:display-price:42    TTL ≈ 10 seconds
+inventory reservation      authoritative service/database
+```
+
+This lets browsing stay fast without weakening correctness for checkout.
+
+## 7.2 Architecture
+
+```mermaid
+flowchart LR
+    U[User] --> CDN[CDN]
+    CDN --> API[Product API]
+    API --> L1[L1]
+    L1 --> L2[(Redis / Valkey)]
+    L2 --> PDB[(Product DB)]
+
+    API --> INV[Inventory Service]
+    INV --> IDB[(Inventory DB)]
+```
+
+## 7.3 Protected Cache-Aside Flow
 
 ```mermaid
 flowchart TD
-    R[Incoming Requests] --> L{Load within safe limit?}
-    L -->|Yes| P[Process normally]
-    L -->|No| F{Fallback available?}
-    F -->|Yes| S[Serve stale or partial response]
-    F -->|No| E[Return controlled overload response]
+    R[GET product 42] --> L1{L1 hit?}
+    L1 -->|Yes| OUT[Return]
+    L1 -->|No| L2{L2 hit?}
+    L2 -->|Yes| SAVE[Populate short L1]
+    SAVE --> OUT
+
+    L2 -->|No| LOCK{Acquire per-key lock?}
+    LOCK -->|Yes| CHECK{Check cache again}
+    CHECK -->|Now hit| OUT
+    CHECK -->|Still miss| DB[Load DB once]
+    DB --> SET[Store with TTL + jitter]
+    SET --> OUT
+
+    LOCK -->|No| STALE{Stale value available?}
+    STALE -->|Yes| S[Return stale]
+    STALE -->|No| WAIT[Brief bounded wait]
+    WAIT --> L2
 ```
 
-A controlled error is usually safer than allowing every request to enter an already overloaded database.
+The important details are:
 
----
+1. Check cache.
+2. On miss, use local single-flight if possible.
+3. Acquire a distributed per-key lock.
+4. **Check the cache again after acquiring the lock.**
+5. Only the lock owner loads the database.
+6. Store the value with an appropriate TTL and jitter.
+7. Other callers use stale data or wait for a short bounded time.
+8. Limit concurrent database fallbacks during Redis failure.
 
-# 9. Practical Redis Implementation
+### Why the second cache check matters
 
-The following example demonstrates cache-aside with:
-
-- Distributed lock ownership
-- Lock expiry
-- Bounded retry
-- TTL jitter
-- Negative caching
-- Safe lock release
-- Double-checking the cache after acquiring the lock
-
-The code is intentionally framework-neutral.
-
-```python
-from __future__ import annotations
-
-import json
-import random
-import time
-import uuid
-from collections.abc import Callable
-from typing import Any, TypeVar
-
-from redis import Redis
-
-T = TypeVar("T")
-
-NOT_FOUND = "__NOT_FOUND__"
-
-RELEASE_LOCK_SCRIPT = """
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("DEL", KEYS[1])
-end
-
-return 0
-"""
-
-class CacheLoadTimeout(RuntimeError):
-    pass
-
-def get_or_load(
-    redis: Redis,
-    *,
-    key: str,
-    loader: Callable[[], T | None],
-    base_ttl_seconds: int = 300,
-    negative_ttl_seconds: int = 30,
-    lock_lease_ms: int = 10_000,
-    wait_timeout_seconds: float = 1.0,
-) -> T | None:
-    cached = redis.get(key)
-
-    if cached is not None:
-        decoded = cached.decode("utf-8")
-
-        if decoded == NOT_FOUND:
-            return None
-
-        return json.loads(decoded)
-
-    lock_key = f"lock:{key}"
-    lock_token = str(uuid.uuid4())
-
-    acquired = redis.set(
-        lock_key,
-        lock_token,
-        nx=True,
-        px=lock_lease_ms,
-    )
-
-    if acquired:
-        try:
-            # Double-check because another process may have populated the
-            # cache between our first GET and lock acquisition.
-            cached = redis.get(key)
-
-            if cached is not None:
-                decoded = cached.decode("utf-8")
-
-                if decoded == NOT_FOUND:
-                    return None
-
-                return json.loads(decoded)
-
-            value = loader()
-
-            if value is None:
-                redis.set(key, NOT_FOUND, ex=negative_ttl_seconds)
-                return None
-
-            jitter = random.randint(0, max(1, base_ttl_seconds // 10))
-            ttl = base_ttl_seconds + jitter
-
-            redis.set(
-                key,
-                json.dumps(value),
-                ex=ttl,
-            )
-
-            return value
-        finally:
-            redis.eval(
-                RELEASE_LOCK_SCRIPT,
-                1,
-                lock_key,
-                lock_token,
-            )
-
-    deadline = time.monotonic() + wait_timeout_seconds
-    sleep_seconds = 0.02
-
-    while time.monotonic() < deadline:
-        time.sleep(sleep_seconds + random.uniform(0, sleep_seconds))
-
-        cached = redis.get(key)
-
-        if cached is not None:
-            decoded = cached.decode("utf-8")
-
-            if decoded == NOT_FOUND:
-                return None
-
-            return json.loads(decoded)
-
-        sleep_seconds = min(sleep_seconds * 2, 0.2)
-
-    raise CacheLoadTimeout(f"Timed out waiting for cache key: {key}")
-```
-
-## 9.1 Why the second cache check matters
-
-Consider:
-
-1. Request A checks the cache and sees a miss.
-2. Request B loads the value and populates the cache.
-3. Request A acquires the lock after B has finished.
-4. Without a second cache check, A unnecessarily queries the database again.
-
-This is why the lock owner should check the cache again after acquiring the lock.
-
-## 9.2 Why the lock has a lease
-
-If the lock owner crashes, a lock without expiry may remain forever.
-
-The lease ensures eventual recovery: `SET lock:product:42 <token> NX PX 10000`.
-
-However, the lease creates another challenge. If recomputation takes longer than the lease, another process may acquire the lock and begin a duplicate load.
-
-Possible responses:
-
-- Set the lease above the expected high-percentile load time.
-- Extend the lease only while ownership is still valid.
-- Make the backend computation idempotent.
-- Allow occasional duplicate work where acceptable.
-- Use stale-while-revalidate to reduce lock pressure.
-
-## 9.3 Failure behavior should be explicit
-
-The example raises a timeout when it cannot receive the value within the wait budget.
-
-A real endpoint may choose one of these policies:
-
-```python
-try:
-    return get_or_load(...)
-except CacheLoadTimeout:
-    if stale_value_is_available:
-        return stale_value
-
-    if endpoint_is_non_critical:
-        return partial_response
-
-    raise ServiceUnavailable()
-```
-
-The choice depends on business correctness, not only infrastructure convenience.
-
----
-
-# 10. Choosing the Right Protection Strategy
-
-| Situation | Recommended starting strategy |
-|---|---|
-| One process, moderate traffic | In-process single-flight |
-| Many instances, strict freshness | Distributed lock with bounded waiting |
-| Many instances, stale data acceptable | Stale-while-revalidate plus one refresher |
-| Predictably hot values | Refresh-ahead or probabilistic early refresh |
-| Many keys created together | TTL jitter |
-| Planned traffic event | Prewarming plus controlled concurrency |
-| Repeated missing identifiers | Negative caching |
-| Cache outage could overload database | Backpressure, concurrency limits, stale fallback |
-| CDN edges cause duplicate origin misses | Mid-tier cache or origin shield |
-| Very hot Redis key | L1 cache, replication strategy, request coalescing, stale serving |
-
-A common robust combination is:
+Possible race:
 
 ```text
-L1 local cache
-    +
-L2 distributed cache
-    +
-TTL jitter
-    +
-single-flight per process
-    +
-distributed lock for global coordination
-    +
-stale fallback
-    +
-database concurrency limit
+A checks cache → MISS
+B rebuilds and fills cache
+A later acquires lock
 ```
 
-Not every service needs every mechanism. Add complexity according to measured risk.
+If A does not check again, it performs an unnecessary duplicate database load.
 
 ---
 
-# 11. Observability and Capacity Planning
+# 8. Observability and Load Testing
 
-A cache should be observable as part of the request path.
+A cache is part of the request path, so it needs normal production observability.
 
-## 11.1 Core metrics
+## 8.1 Important Metrics
 
 ### Cache effectiveness
 
-- Cache hit ratio
-- Cache miss ratio
-- Hit ratio by cache layer
-- Hit ratio by key namespace
+- Hit ratio
+- Miss ratio
+- Hit ratio per layer
+- Hit ratio per key namespace
 - Cache lookup latency
-- Value serialization and deserialization time
+- Serialization/deserialization latency
 
-Basic formula: `Hit Ratio = Cache Hits / (Cache Hits + Cache Misses)`.
+Formula:
 
-A high global hit ratio can hide a serious problem. For example, the system may have a 98% hit ratio while one business-critical hot key repeatedly stampedes.
+```text
+Hit Ratio = Hits / (Hits + Misses)
+```
 
-Measure per namespace and, when safe, identify the hottest keys.
+A high global hit ratio can still hide one badly behaving hot key.
 
 ### Cache health
 
 - Memory usage
-- Eviction rate
-- Expired key rate
-- Connection count
-- Network throughput
+- Evictions
+- Expired-key rate
 - Command latency
-- CPU usage
-- Replication lag
-- Failover count
-- Rejected writes
-- Cache-node errors
+- CPU/network usage
+- Connection count
+- Replication/failover health
+- Cache errors
 
 ### Stampede indicators
 
-- Concurrent loaders per key or namespace
-- Lock acquisition success and failure
+- Concurrent loaders per key/namespace
+- Lock acquisition success/failure
 - Lock wait duration
-- Lock lease expiry before completion
 - Duplicate backend loads
-- Background refresh success and failure
+- Refresh duration
 - Stale responses served
-- Cache rebuild duration
-- Database traffic immediately after expirations
+- Lock lease expiry before load completion
 
 ### Backend protection
 
-- Database query latency
+- Database QPS and latency
 - Connection-pool utilization
 - Active queries
-- Timeout rate
-- Retry rate
+- Timeout/retry rate
 - Circuit-breaker state
 - Requests rejected by concurrency limits
-- Queue depth
 
 ---
 
-## 11.2 Useful alerts
+## 8.2 Load-Test Scenarios
 
-Examples:
+Do not test only a warm cache.
 
-```text
-Cache hit ratio drops below expected baseline
-Evictions rise rapidly
-Database QPS rises while cache QPS falls
-Lock wait p95 exceeds request latency budget
-Background refresh failures exceed threshold
-Database pool remains above 85% utilization
-Cache node memory reaches unsafe level
-```
-
-Alerts should consider normal traffic patterns. A lower hit ratio after deployment may be expected for a short warm-up period, but it should recover predictably.
-
----
-
-## 11.3 Load testing
-
-Test more than steady-state cache hits.
-
-Important scenarios include:
+Test:
 
 1. Cold cache at normal traffic
 2. Cold cache at peak traffic
@@ -1536,151 +996,87 @@ Important scenarios include:
 4. Thousands of keys expiring together
 5. Distributed cache unavailable
 6. Database slowed down
-7. Lock owner crashing during recomputation
-8. Lock lease expiring too early
-9. New application region starting
+7. Lock owner crashes during refresh
+8. Lock lease expires too early
+9. New application region starts cold
 10. Bulk invalidation during peak traffic
 
-A cache-heavy system that is tested only with a warm cache is not fully tested.
-
 ---
 
-# 12. Production Design Example
-
-Consider an e-commerce product-detail service.
-
-## 12.1 Requirements
-
-- Product descriptions can be stale for up to five minutes.
-- Price can be stale for a few seconds on the display page.
-- Inventory reservation must use authoritative inventory state.
-- A product may become viral during a sale.
-- The service runs on many application instances.
-- Redis is shared across instances.
-- A CDN serves public product responses.
-
-## 12.2 Cache separation by data semantics
-
-Do not place every product field into one entry with one TTL.
-
-```text
-product:details:42       TTL 5 minutes
-product:display-price:42 TTL 10 seconds
-product:inventory:42     not trusted for reservation
-```
-
-This avoids forcing rapidly changing inventory requirements onto stable product descriptions.
-
-## 12.3 Architecture
-
-```mermaid
-flowchart LR
-    U[User] --> CDN[CDN]
-    CDN --> API[Product API]
-    API --> L1[Local L1 Cache]
-    L1 --> REDIS[(Redis L2)]
-    REDIS --> PDB[(Product Database)]
-    API --> INV[Inventory Service]
-    INV --> IDB[(Inventory Database)]
-```
-
-## 12.4 Product-detail read
-
-1. CDN checks the public response.
-2. Application checks a short-lived L1 entry.
-3. Application checks Redis.
-4. On a Redis miss, per-process single-flight reduces local duplication.
-5. A Redis lock selects one global loader.
-6. Other requests receive a stale value or briefly wait.
-7. The lock owner queries the product database.
-8. It stores the value with TTL jitter.
-9. The CDN receives a response with a bounded public freshness time.
-
-## 12.5 Inventory reservation
-
-The cached display value is not used as the final reservation decision: displayed inventory is a cached approximation, while the checkout reservation issues an authoritative inventory command.
-
-This separation gives a fast browsing experience without weakening correctness for the irreversible operation.
-
-## 12.6 Sale preparation
-
-Before a planned sale:
-
-- Prewarm the most likely product keys.
-- Add jitter to their TTLs.
-- Increase cache and database capacity if required.
-- Verify distributed-lock and stale-serving metrics.
-- Limit concurrent fallback database loads.
-- Avoid clearing all product caches during deployment.
-- Run a cold-cache peak-load test.
-
----
-
-# 13. Best-Practice Checklist
+# 9. Best Practices
 
 ## Cache placement
 
 - Cache as close to the consumer as correctness allows.
-- Remember that the fastest layer is not automatically the correct layer: sensitivity, authorization, consistency, and invalidation decide where an item may safely live.
-- Use browser and CDN caching for public, reusable HTTP responses.
-- Use a bounded local L1 cache for extremely hot, safe-to-stale values.
-- Use a distributed L2 cache for shared application state and computed results.
-- Remember that the database already has internal caching.
+- Use browser/CDN caching for reusable public HTTP responses.
+- Keep L1 small, bounded, and short-lived.
+- Use L2 for data shared across application instances.
+- Remember that databases already have internal memory caches.
 
 ## Data design
 
-- Design cache keys from all inputs that affect the result.
-- Version keys when schemas or algorithms change.
-- Separate data with different freshness requirements.
-- Avoid storing sensitive personalized data in shared caches.
-- Keep values reasonably small.
-- Define maximum acceptable staleness with the business.
+- Put every value-changing dimension in the cache key.
+- Version keys when schemas or business logic change.
+- Separate data that has different freshness requirements.
+- Avoid sensitive user-specific data in shared caches unless isolation is guaranteed.
+- Keep cached values reasonably small.
 
 ## Expiry and invalidation
 
-- Treat TTL as a correctness decision.
-- Add TTL jitter when many keys may expire together, but do not treat it as protection for one extremely hot key.
-- Use explicit or event-driven invalidation for important updates.
-- Expect entries to disappear before TTL because of eviction.
-- Use short negative caching for repeated not-found results.
+- Treat TTL as a business/correctness decision.
+- Use explicit invalidation when important data changes.
+- Expect eviction before TTL.
+- Use short negative caching for repeated misses.
+- Use TTL jitter for groups of keys that might expire together.
 
 ## Stampede protection
 
-- Coalesce concurrent work.
-- Use distributed coordination when many instances share the miss.
-- Double-check the cache after acquiring a lock.
-- Give locks unique ownership tokens and leases.
+- Use single-flight for concurrent local requests.
+- Use distributed coordination across application instances.
+- Double-check the cache after lock acquisition.
+- Give locks unique owner tokens and leases.
 - Release locks atomically and only by the owner.
-- Bound lock waiting by the request latency budget.
-- Prefer stale serving over mass waiting when bounded staleness is acceptable.
-- Prewarm known hot data before planned traffic.
-- Protect the database when the cache is unavailable.
+- Bound waiting by the request latency budget.
+- Prefer stale serving when bounded staleness is acceptable.
+- Prewarm known hot data before planned spikes.
+- Limit fallback database concurrency.
 
 ## Reliability
 
-- Cache failure should degrade in a controlled way.
-- Do not create unlimited retries.
-- Add backoff and jitter to retry loops.
-- Limit concurrent backend recomputations.
-- Use request deadlines and circuit breakers.
-- Load-test cold-cache and cache-outage scenarios.
-- Monitor hit ratio together with database load, not in isolation.
-- Design correctness, invalidation, failure handling, and observability together; caching improves performance only when all four are in place.
+- Design for Redis/Valkey being unavailable.
+- Avoid unlimited retries.
+- Use deadlines, backoff, jitter, and circuit breakers.
+- Load-test cold-cache and outage scenarios.
+- Monitor cache metrics together with database load.
 
 ---
 
-# 14. References
+# 10. Interview Takeaway
 
-The following sources were used to verify terminology and current implementation guidance:
+A strong mental model is:
 
-1. [Redis documentation: Cache-aside and stampede protection](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
-2. [Redis documentation: Cache-aside with redis-py](https://redis.io/docs/latest/develop/use-cases/cache-aside/redis-py/)
-3. [AWS: Database caching patterns](https://docs.aws.amazon.com/whitepapers/latest/database-caching-strategies-using-redis/caching-patterns.html)
-4. [AWS: Caching best practices](https://aws.amazon.com/caching/best-practices/)
-5. [AWS CloudFront: Origin Shield](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-shield.html)
-6. [AWS CloudFront: Caching and availability](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/ConfiguringCaching.html)
-7. [MDN Web Docs: HTTP caching](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching)
-8. [MDN Web Docs: Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control)
-9. [PostgreSQL documentation: pg_buffercache](https://www.postgresql.org/docs/current/pgbuffercache.html)
-10. [PostgreSQL documentation: pg_prewarm](https://www.postgresql.org/docs/current/pgprewarm.html)
-11. [Vattani, Chierichetti, and Lowenstein: Optimal Probabilistic Cache Stampede Prevention](https://www.vldb.org/pvldb/vol8/p886-vattani.pdf)
+> A request normally falls through several cache layers before reaching the authoritative database. Cache-aside is the common application pattern, but the dangerous moment is a synchronized miss. If one hot key expires under high traffic, thousands of requests can repeat the same backend work. Use local single-flight plus a leased distributed lock for global coordination, or serve stale data while one caller refreshes. Add TTL jitter to prevent many unrelated keys from expiring together, and always protect the database for the case where the cache is cold or unavailable.
+
+---
+
+# 11. References
+
+Current terminology and implementation guidance were checked against:
+
+1. Redis — Cache-aside  
+   https://redis.io/docs/latest/develop/use-cases/cache-aside/
+
+2. Redis — Cache-aside with redis-py  
+   https://redis.io/docs/latest/develop/use-cases/cache-aside/redis-py/
+
+3. MDN — HTTP caching  
+   https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching
+
+4. MDN — `Cache-Control`  
+   https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control
+
+5. AWS CloudFront — Origin Shield  
+   https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-shield.html
+
+6. PostgreSQL — Resource consumption / `shared_buffers`  
+   https://www.postgresql.org/docs/current/runtime-config-resource.html

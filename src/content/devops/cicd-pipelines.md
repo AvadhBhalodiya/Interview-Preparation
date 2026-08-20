@@ -7,764 +7,612 @@ updated: "July 30, 2026"
 
 # CI/CD Pipeline Concepts: Build → Test → Deploy
 
-> Practical CI/CD concepts used in day-to-day development and technical interviews
+> Practical CI/CD concepts used in day-to-day development and technical interviews.
 
 ## In short
 
-- **CI**, **continuous delivery**, and **continuous deployment** are not the same thing — the difference is who presses the button: CI validates every change, delivery keeps validated changes releasable behind a manual approval, deployment ships them to production automatically once checks pass.
-- **Build once, promote the same artifact** through every environment instead of rebuilding per environment — a rebuild can pick up a newer dependency or base image, so what reaches production is no longer exactly what passed the tests.
-- The **test pyramid**: many fast, isolated unit tests at the base, fewer integration tests exercising real components together, and a small number of slow, high-confidence end-to-end tests at the top — run the cheap checks first.
-- Four deployment strategies trade safety for cost differently: **recreate** (simple, causes downtime), **rolling** (gradual, no full outage but old and new versions coexist), **blue-green** (fast rollback, needs duplicate capacity), and **canary** (limits blast radius, needs traffic splitting and observability); **feature flags** decouple deploying code from releasing it to users.
-- **Gates** — passing tests, a coverage floor, no critical vulnerabilities, a manual approval — decide whether the pipeline may continue; a production approval should target a specific artifact digest, not "whatever is on the branch right now."
-- **Rollback** is only real once it has been exercised: redeploy the last known-good artifact, switch blue/green traffic back, trip the ECS deployment circuit breaker, or disable a feature flag — a rollback procedure nobody has run is an assumption, not a safety net.
-- Database migrations need the **expand-and-contract** pattern (add the column, backfill, switch reads, remove the old column later) because old and new application versions run against the same schema mid-rollout, and application rollback does not undo a migration.
+- **CI (Continuous Integration)** automatically validates code changes using build, lint, tests, and security checks.
+- **Continuous Delivery** keeps a tested release ready for production, but production normally has a **manual approval**.
+- **Continuous Deployment** automatically releases every change that passes the required gates.
+- A reliable pipeline follows **build once, promote the same artifact**. Do not rebuild separately for staging and production.
+- Run **fast checks first**: lint → unit tests → integration tests → security checks → deployment.
+- Use an **immutable artifact** such as a Docker image identified by a commit SHA or image digest.
+- Choose deployment strategies based on risk: **rolling, blue/green, canary, or linear**.
+- A deployment is not successful only because the command finished; verify **health, error rate, latency, and smoke tests**.
+- Database changes should remain backward compatible during rollout. The common approach is **expand-and-contract**.
+- Rollback must be designed and tested before production incidents happen.
 
 ```mermaid
 flowchart LR
-    A[Source Change] --> B[Build]
-    B --> C[Test]
-    C --> D{Checks Passed?}
+    A[Code Change] --> B[Build]
+    B --> C[Test and Scan]
+    C --> D{Checks Pass?}
     D -- No --> E[Stop and Notify]
-    D -- Yes --> F[Deploy]
-    F --> G[Health Verification]
-    G --> H{Healthy?}
-    H -- Yes --> I[Release Complete]
-    H -- No --> J[Rollback]
+    D -- Yes --> F[Publish Artifact]
+    F --> G[Deploy]
+    G --> H[Health Verification]
+    H --> I{Healthy?}
+    I -- Yes --> J[Release Complete]
+    I -- No --> K[Rollback]
 ```
 
-**Interview answer:** A CI/CD pipeline automates moving a code change from commit to a running environment: build produces an immutable artifact, test decides whether it is safe to proceed, and deploy releases that same tested artifact using a strategy such as rolling, blue-green, or canary. CI, continuous delivery, and continuous deployment differ only in how much of that path runs without a human — delivery stops at a manual approval before production, deployment does not. What makes it trustworthy in practice is gates that block on real signals, promoting one build artifact everywhere instead of rebuilding it per environment, and a rollback path that has actually been exercised rather than just documented.
+---
 
-**Gotcha:** Rebuilding the artifact separately for staging and production "to be safe." A rebuild between the two can pick up a newer dependency or base image, so the code that passed every test in staging is not byte-identical to what reaches production — build once, then promote and deploy that exact same artifact everywhere.
+# Index
+
+1. [What Is CI/CD?](#1-what-is-cicd)
+2. [CI vs Continuous Delivery vs Continuous Deployment](#2-ci-vs-continuous-delivery-vs-continuous-deployment)
+3. [Core Pipeline: Build → Test → Deploy](#3-core-pipeline-build--test--deploy)
+4. [Pipeline Building Blocks](#4-pipeline-building-blocks)
+5. [Testing Strategy](#5-testing-strategy)
+6. [Artifacts and Environment Promotion](#6-artifacts-and-environment-promotion)
+7. [Deployment Strategies](#7-deployment-strategies)
+8. [Database Migrations](#8-database-migrations)
+9. [CI/CD Security](#9-cicd-security)
+10. [Practical Example: FastAPI → Docker → ECR → ECS](#10-practical-example-fastapi--docker--ecr--ecs)
+11. [Failure Handling and Rollback](#11-failure-handling-and-rollback)
+12. [Observability and Delivery Metrics](#12-observability-and-delivery-metrics)
+13. [AWS Services Used in CI/CD](#13-aws-services-used-in-cicd)
+14. [Key Takeaways](#14-key-takeaways)
 
 ---
 
-# 1. What Is a CI/CD Pipeline?
+# 1. What Is CI/CD?
 
-A **CI/CD pipeline** is an automated workflow that takes a software change from source code to a running environment. A typical pipeline pushes the code, compiles or packages the application, runs automated checks and tests, creates a versioned artifact or Docker image, deploys it to an environment, and verifies application health.
+A **CI/CD pipeline** is an automated path that moves a code change from a repository to a running environment.
 
-The main purpose is to make software delivery:
+A normal flow looks like:
 
-- Repeatable
-- Fast
-- Testable
-- Traceable
-- Safer than manual deployment
+```text
+Developer
+   │
+   ▼
+Git Push / Pull Request
+   │
+   ▼
+Build → Test → Scan → Artifact
+   │
+   ▼
+Staging
+   │
+   ▼
+Approval / Policy Gate
+   │
+   ▼
+Production
+   │
+   ▼
+Monitor → Rollback if required
+```
 
-Without a pipeline, deployment knowledge often lives in shell history, local machines, or manual checklists. With a pipeline, the release process becomes code that can be reviewed and repeated.
+The main goals are:
+
+- **Repeatability** — deployment does not depend on one developer's local machine.
+- **Fast feedback** — broken changes are detected early.
+- **Traceability** — every deployment maps to a commit and artifact.
+- **Safety** — tests, approvals, health checks, and rollback reduce release risk.
+- **Automation** — routine steps happen consistently.
+
+A pipeline is effectively **release process as code**.
 
 ---
 
-# 2. CI, Continuous Delivery, and Continuous Deployment
+# 2. CI vs Continuous Delivery vs Continuous Deployment
 
-These terms are related but not identical.
+These three terms are related, but they describe different levels of automation.
 
-## 2.1 Continuous Integration — CI
+## 2.1 Continuous Integration
 
-**Continuous Integration** means developers merge small code changes frequently, and every change is automatically validated: `Commit → Build → Test → Feedback`.
+Developers merge small changes frequently, and every change is automatically validated.
 
-Typical CI activities include:
+```text
+Commit → Build → Lint → Test → Scan → Feedback
+```
 
-- Installing dependencies
-- Compiling code
-- Running linting and formatting checks
-- Running unit and integration tests
-- Performing security scans
-- Building an application artifact or Docker image
+Typical CI work:
 
-The primary goal of CI is to detect integration problems early.
+- Install dependencies
+- Compile or package code
+- Run linting and type checks
+- Run unit and integration tests
+- Run security scans
+- Build an artifact or Docker image
+
+The main goal is to catch integration problems quickly.
 
 ## 2.2 Continuous Delivery
 
-**Continuous Delivery** means the application is always kept in a deployable state, but production deployment may require a manual approval: `Commit → Build → Test → Staging → Manual Approval → Production`.
+The application is always kept in a deployable state.
 
-This approach is common when:
+```text
+Commit → CI → Staging → Manual Approval → Production
+```
 
-- Production changes require business approval
-- The organization has compliance requirements
-- Releases must happen during approved deployment windows
-- A release manager controls production promotion
+Production release is intentionally controlled by a person or business process.
+
+This is common when a team has:
+
+- Compliance requirements
+- Release windows
+- Change-management approvals
+- Business sign-off before production
 
 ## 2.3 Continuous Deployment
 
-**Continuous Deployment** automatically deploys every change that passes all required checks: `Commit → Build → Test → Production`.
+Every change that passes all required checks is automatically released.
 
-There is no manual approval gate. This requires strong automated tests, observability, safe rollout methods, and reliable rollback.
+```text
+Commit → CI → Automated Gates → Production
+```
 
-## 2.4 Quick Comparison
+There is no manual production approval.
 
-| Concept | What is automated? | Production approval |
-|---|---|---|
-| Continuous Integration | Build and validation | Not applicable |
-| Continuous Delivery | Build, test, and release preparation | Usually manual |
-| Continuous Deployment | Build, test, and production deployment | Automatic |
+This requires strong automated testing, observability, progressive rollout, and reliable rollback.
+
+## 2.4 Quick Difference
+
+| Concept | Automated validation | Automatic production release |
+|---|---:|---:|
+| Continuous Integration | Yes | No |
+| Continuous Delivery | Yes | Usually no |
+| Continuous Deployment | Yes | Yes |
 
 ---
 
-# 3. The Core Pipeline: Build → Test → Deploy
-
-The simplest useful pipeline contains three logical stages — build, test, and deploy — with a gate after each of the first two: a failed test stops the pipeline, and a failed post-deploy health check triggers a rollback instead of completing the release.
+# 3. Core Pipeline: Build → Test → Deploy
 
 ## 3.1 Build
 
-The build stage converts source code into a deployable output.
+The build stage converts source code into something deployable.
 
 Examples:
 
-- Java source → JAR file
-- TypeScript source → JavaScript bundle
-- Python application → packaged wheel or Docker image
-- React source → static production files
-- Application source → Docker/OCI image
+- Python app → wheel or Docker image
+- Java app → JAR
+- React app → static production bundle
+- Service → OCI/Docker container image
+
+A good build should be reproducible and traceable.
+
+Typical flow:
+
+```mermaid
+flowchart LR
+    A[Checkout] --> B[Install Dependencies]
+    B --> C[Compile or Package]
+    C --> D[Build Image]
+    D --> E[Tag Artifact]
+    E --> F[Publish Artifact]
+```
+
+Useful practices:
+
+- Lock dependency versions.
+- Use clean runners.
+- Pin important build-tool versions.
+- Use fixed base-image versions or digests.
+- Avoid depending on software manually installed on a developer machine.
 
 ## 3.2 Test
 
-The test stage checks whether the change is safe enough to move forward.
+The test stage decides whether the change is safe enough to continue.
 
-Examples:
+Common checks:
 
+- Formatting
+- Linting
+- Type checking
 - Unit tests
 - Integration tests
-- API tests
-- Static analysis
-- Dependency scanning
-- Container vulnerability scanning
+- API or contract tests
+- Dependency vulnerability scanning
+- Secret scanning
+- Container scanning
+
+The pipeline should stop immediately when a required gate fails.
 
 ## 3.3 Deploy
 
-The deploy stage releases the validated artifact into an environment.
+Deployment changes the state of a runtime environment.
 
 Examples:
 
-- Push static files to Amazon S3
-- Update an Amazon ECS service
-- Update a Kubernetes deployment in Amazon EKS
-- Publish a Lambda function version
-- Install an application revision on EC2 instances
+- Update an ECS service.
+- Apply a Kubernetes deployment.
+- Publish a Lambda version.
+- Upload frontend files to S3/CloudFront.
+- Deploy an application revision to EC2.
+
+Deployment should always include **verification**, not only execution.
 
 ---
 
-# 4. Important CI/CD Building Blocks
-
-A pipeline is more than three commands. Several supporting concepts make it reliable.
+# 4. Pipeline Building Blocks
 
 ## 4.1 Trigger
 
-A trigger starts the pipeline.
+A **trigger** starts the workflow.
 
-Common triggers are:
+Common triggers:
 
+- Pull request opened or updated
 - Push to a branch
-- Pull request creation or update
+- Merge to `main`
 - Git tag creation
 - Manual execution
-- Scheduled execution
-- Another pipeline or workflow
-- External webhook event
+- Scheduled workflow
+- External webhook
 
-A common setup is:
+A common design is:
 
 ```mermaid
 flowchart LR
     A[Pull Request] --> B[Validation Pipeline]
-    C[Merge to Main] --> D[Staging Deployment]
-    E[Version Tag] --> F[Production Deployment]
+    C[Merge to Main] --> D[Build + Staging]
+    E[Release Tag] --> F[Production Promotion]
 ```
 
-## 4.2 Pipeline Vocabulary
+## 4.2 Stage, Job, Step, and Runner
 
 | Term | Meaning |
 |---|---|
-| **Stage** | A logical section of the pipeline — Build, Test, Staging, Approval, Production — containing one or more jobs that run sequentially or in parallel. |
-| **Job** | A group of related steps executed on the same runner or build environment, e.g. `unit-tests`, `integration-tests`, `build-image`, `deploy-staging`. |
-| **Step** | A single command or reusable action inside a job, e.g. `checkout-source`, `install-dependencies`, `run-tests`, `build-image`. |
-| **Runner (build agent)** | The machine or container that executes a job — managed by GitHub Actions, GitLab, or another CI provider; an AWS CodeBuild environment; a self-hosted EC2 instance; or a Kubernetes-based runner. A clean, temporary runner improves repeatability because the build cannot depend on undeclared software from a developer machine. |
-| **Environment** | A deployment target with its own configuration (`Development → Test → Staging → Production`). Application code should remain the same; environment-specific values should come from configuration, parameter stores, secrets, or deployment manifests. |
+| **Stage** | Logical pipeline section such as Build, Test, Staging, Production |
+| **Job** | Group of related work executed on one runner |
+| **Step** | Individual command or reusable action inside a job |
+| **Runner / Agent** | Machine or container executing the job |
+| **Environment** | Deployment target such as staging or production |
+| **Gate** | Rule that must pass before the next stage starts |
 
-## 4.3 Artifact
-
-An **artifact** is the immutable output produced by a build.
-
-Examples:
-
-- `.jar`, `.war`, `.zip`, or `.whl` file
-- Frontend build directory
-- Test report
-- Infrastructure plan
-- Docker image
-
-The same tested artifact should be promoted across environments instead of rebuilding it separately for staging and production — build once, test once, promote that same artifact.
-
-## 4.4 Gate
-
-A gate controls whether execution may continue.
-
-Examples:
-
-- All tests must pass
-- No critical vulnerability is allowed
-- Code coverage must be at least 80%
-- Manual production approval is required
-- CloudWatch alarms must remain healthy
-
----
-
-# 5. Build Stage
-
-The build stage creates the output that later stages will validate and deploy.
-
-## 5.1 Typical Build Flow
-
-```mermaid
-flowchart TD
-    A[Checkout Source] --> B[Restore Dependency Cache]
-    B --> C[Install Dependencies]
-    C --> D[Compile or Package]
-    D --> E[Build Docker Image]
-    E --> F[Tag Image]
-    F --> G[Publish Artifact]
-```
-
-## 5.2 Build Responsibilities
-
-A well-designed build stage normally handles:
-
-1. Source checkout
-2. Dependency installation
-3. Compilation or packaging
-4. Artifact generation
-5. Artifact versioning
-6. Publishing to an artifact repository or container registry
-
-## 5.3 Artifact Versioning
-
-Every artifact should be traceable to its source revision, using an image tag such as `api:1.8.0`, `api:git-a7c31e2`, or `api:release-2026-07-30`. Avoid depending only on the `latest` tag because it does not clearly identify the deployed code — a practical approach combines a human-readable tag (`1.8.0`), an immutable tag (the Git commit SHA), and a deployment reference (the image digest).
-
-## 5.4 Reproducible Builds
-
-The same commit should produce functionally equivalent output whenever it is built.
-
-Use:
-
-- Locked dependency versions
-- Fixed base image versions or digests, e.g. `FROM python:3.13.5-slim`
-- Versioned build tools
-- Clean build environments
-- Explicit build commands
-
-For stronger immutability, pin the base image by digest after establishing an update process.
-
-## 5.5 Build Cache
-
-Caching can reduce pipeline duration significantly.
-
-Commonly cached data:
-
-- Python package downloads
-- npm package cache
-- Maven or Gradle dependencies
-- Docker BuildKit layers
-
-Cache only reusable inputs. Do not allow cache data to become the source of truth for the release artifact.
-
----
-
-# 6. Test Stage
-
-The test stage should give fast and trustworthy feedback.
-
-## 6.1 Test Pyramid in CI/CD
+Example:
 
 ```text
-              ┌───────────────┐
-              │ End-to-End    │  Few, slower, high confidence
-              ├───────────────┤
-              │ Integration   │  API, database, service behavior
-              ├───────────────┤
-              │ Unit Tests    │  Many, fast, isolated
-              └───────────────┘
+Test Stage
+└── test job
+    ├── checkout step
+    ├── install step
+    ├── lint step
+    └── pytest step
 ```
 
-A pipeline normally runs fast tests first. Expensive tests run only after basic validation succeeds — `Lint → Unit Tests → Integration Tests → End-to-End Tests`.
+## 4.3 Gates
 
-## 6.2 Common Quality Checks
+Typical gates include:
 
-### Static Checks
+- All required tests passed
+- Coverage meets an agreed threshold
+- No critical vulnerability
+- Staging smoke tests passed
+- Required production approval
+- CloudWatch alarms remain healthy
 
-- Linting
-- Formatting verification
-- Type checking
-- Static code analysis
+A production approval should apply to a **specific artifact**, not simply "whatever is currently on the branch."
 
-### Automated Tests
+---
 
-- Unit tests
-- Integration tests
-- Contract tests
-- API tests
-- End-to-end tests
-- Smoke tests
+# 5. Testing Strategy
 
-### Security Checks
+A CI pipeline should provide fast feedback without making developers wait unnecessarily.
 
-- Dependency vulnerability scanning
-- Secret scanning
-- Static application security testing
-- Container image scanning
-- Infrastructure-as-code scanning
+## 5.1 Test Pyramid
 
-## 6.3 Parallel Testing
+```text
+            ┌──────────────┐
+            │     E2E      │  Few and slow
+            ├──────────────┤
+            │ Integration  │  Fewer
+            ├──────────────┤
+            │ Unit Tests   │  Many and fast
+            └──────────────┘
+```
 
-Independent tests can run in parallel.
+A practical execution order is:
+
+```text
+Lint
+  ↓
+Unit Tests
+  ↓
+Integration Tests
+  ↓
+Security Checks
+  ↓
+E2E / Smoke Tests
+```
+
+Independent jobs can run in parallel:
 
 ```mermaid
 flowchart LR
-    A[Build Complete] --> B[Unit Tests]
-    A --> C[Security Scan]
-    A --> D[Integration Tests]
+    A[Build Ready] --> B[Unit Tests]
+    A --> C[Integration Tests]
+    A --> D[Security Scan]
     B --> E[Quality Gate]
     C --> E
     D --> E
 ```
 
-This reduces total pipeline duration, but the next stage must wait for all required jobs.
+## 5.2 Flaky Tests
 
-## 6.4 Test Reports
+A flaky test sometimes passes and sometimes fails without a relevant code change.
 
-Pipeline systems should retain useful outputs such as:
+Do not hide flaky behavior with unlimited retries.
 
-- JUnit XML reports
-- Code coverage reports
-- Browser screenshots
-- Playwright traces
-- Security scan reports
-- Application logs from failed tests
+Prefer:
 
-A failed pipeline should explain what failed, not only display a red status.
-
-## 6.5 Flaky Tests
-
-A flaky test passes and fails without a relevant code change. Flaky tests reduce trust in the pipeline.
-
-A reasonable policy is:
-
-- Record and investigate flaky behavior
-- Temporarily isolate a known flaky test if required
-- Do not use unlimited automatic retries
-- Fix the root cause
-
-Retries can hide real problems, so they should be limited and observable.
+1. Record the failure.
+2. Use a small bounded retry only for known transient cases.
+3. Fix the root cause.
+4. Keep retry behavior visible in reports.
 
 ---
 
-# 7. Deploy Stage
+# 6. Artifacts and Environment Promotion
 
-Deployment changes the state of a runtime environment.
-
-## 7.1 Deployment Inputs
-
-A deployment normally needs:
-
-- An immutable artifact or image
-- Environment configuration
-- Credentials or a temporary cloud identity
-- Deployment manifest or infrastructure definition
-- Health-check rules
-- Rollback strategy
-
-## 7.2 Typical Deployment Flow
-
-```mermaid
-flowchart TD
-    A[Select Tested Artifact] --> B[Update Runtime Definition]
-    B --> C[Start New Version]
-    C --> D[Run Health Checks]
-    D --> E{Healthy?}
-    E -- Yes --> F[Shift Traffic]
-    E -- No --> G[Rollback]
-    F --> H[Post-Deployment Smoke Test]
-```
-
-## 7.3 Health Checks
-
-Deployment success should not mean that a command returned exit code `0`. The application must also be healthy.
-
-Health checks may validate:
-
-- Process is running
-- Container is healthy
-- HTTP health endpoint returns success
-- Application can connect to required dependencies
-- Error rate is below a threshold
-- Latency remains acceptable
-
-Useful endpoints are often separated: `/health/live` (is the process alive?) and `/health/ready` (can it receive traffic safely?).
-
-## 7.4 Smoke Tests
-
-Smoke tests run after deployment and validate a few critical journeys.
+An **artifact** is the output produced by the build.
 
 Examples:
 
-- Login endpoint responds
-- User can fetch a profile
-- Basic database read succeeds
-- A critical business API returns expected status
+- Docker image
+- JAR or WAR
+- Python wheel
+- ZIP package
+- Frontend build bundle
 
-Smoke tests are not a replacement for the full test suite. They confirm that the deployed system works in the target environment.
+## 6.1 Build Once, Promote Many
+
+The preferred model is:
+
+```mermaid
+flowchart LR
+    A[Build Once] --> B[Test Artifact]
+    B --> C[Deploy Staging]
+    C --> D[Promote Same Artifact]
+    D --> E[Deploy Production]
+```
+
+Avoid:
+
+```text
+Build for staging → Test → Rebuild for production
+```
+
+A second build may use a different dependency, base image, or build environment. Production would then receive something different from what staging tested.
+
+## 6.2 Tags vs Digests
+
+A Docker tag is readable:
+
+```text
+api:1.8.0
+api:git-a7c31e2
+```
+
+A digest identifies exact image content:
+
+```text
+api@sha256:4d1c...
+```
+
+Use tags for humans and a commit SHA or digest for exact deployment identity.
+
+## 6.3 Environment Configuration
+
+The application artifact should remain the same across environments.
+
+Environment-specific values should come from runtime configuration:
+
+- Database URL
+- Log level
+- API endpoints
+- Feature flags
+- Secrets
+
+Common stores include:
+
+- AWS Secrets Manager
+- AWS Systems Manager Parameter Store
+- Kubernetes ConfigMaps and Secrets
+- Runtime environment variables
 
 ---
 
-# 8. Deployment Strategies
+# 7. Deployment Strategies
 
-The deployment strategy controls how the new version replaces the old version.
+Deployment strategy determines how the new version replaces the old one.
 
-## 8.1 Recreate Deployment
-
-The old application is stopped before the new version starts.
-
-```text
-Old Version:  ████████ → OFF
-New Version:             → ████████
-```
-
-Use it for non-critical internal systems or development environments.
-
-## 8.2 Rolling Deployment
+## 7.1 Rolling
 
 Instances or containers are replaced gradually.
 
-| Step | Instance 1 | Instance 2 | Instance 3 | Instance 4 |
-|---|---|---|---|---|
-| Step 1 | Old | Old | Old | New |
-| Step 2 | Old | Old | New | New |
-| Step 3 | Old | New | New | New |
-| Step 4 | New | New | New | New |
+```text
+Step 1: Old  Old  Old  New
+Step 2: Old  Old  New  New
+Step 3: Old  New  New  New
+Step 4: New  New  New  New
+```
 
-The application and database changes must remain compatible during the rollout.
+**Best when:** infrastructure cost matters and the application can safely run old and new versions together.
 
-## 8.3 Blue/Green Deployment
+## 7.2 Blue/Green
 
-Two complete environments are maintained:
-
-- **Blue:** current production
-- **Green:** new version
+Two environments exist temporarily:
 
 ```mermaid
 flowchart LR
     U[Users] --> LB[Load Balancer]
-    LB --> B[Blue: Current Version]
-    LB -. Traffic Switch .-> G[Green: New Version]
+    LB --> B[Blue: Current]
+    LB -. switch traffic .-> G[Green: New]
 ```
 
-After validating green, traffic is switched from blue to green.
+After green is validated, traffic moves from blue to green.
 
-## 8.4 Canary Deployment
+**Best when:** fast rollback and strong release isolation are important.
 
-A small percentage of traffic is sent to the new version first, with metrics monitored at each step.
+## 7.3 Canary
 
-| Stage | Old | New |
+A small percentage of production traffic reaches the new version first.
+
+```text
+95% old / 5% new
+        ↓
+Observe metrics
+        ↓
+0% old / 100% new
+```
+
+**Best when:** you want to limit blast radius and validate with real traffic.
+
+## 7.4 Linear
+
+Traffic moves in equal increments.
+
+```text
+90/10 → 80/20 → 70/30 → ... → 0/100
+```
+
+**Best when:** you want gradual validation at several checkpoints.
+
+## 7.5 Comparison
+
+| Strategy | Main benefit | Main trade-off |
 |---|---|---|
-| Initial | 95% | 5% |
-| Next | 75% | 25% |
-| Next | 50% | 50% |
-| Final | 0% | 100% |
+| Rolling | Low additional cost | Old and new versions coexist |
+| Blue/Green | Very fast traffic rollback | Temporary duplicate capacity |
+| Canary | Small initial blast radius | Requires traffic control and observability |
+| Linear | Gradual controlled rollout | Release takes longer |
 
-## 8.5 Comparing the Strategies
+### AWS note for 2026
 
-The four strategies above trade safety, speed, and infrastructure cost differently:
+Amazon ECS now supports **rolling, blue/green, linear, and canary** deployment strategies natively. For new ECS designs, native ECS deployment strategies are usually simpler than adding CodeDeploy only for traffic shifting.
 
-| Strategy | Advantages | Trade-offs |
-|---|---|---|
-| Recreate | Simple, low infrastructure cost | Usually causes downtime |
-| Rolling | Lower additional infrastructure cost, usually no complete outage | Old and new versions run together temporarily; rollback may take time |
-| Blue/Green | Fast rollback by switching traffic back, strong isolation between versions | Requires temporary duplicate capacity; database compatibility still matters |
-| Canary | Limits the impact of defects, tests the new version using real traffic | Requires traffic splitting and strong observability; both versions must work safely at once |
-
-## 8.6 Feature Flags
+## 7.6 Feature Flags
 
 Feature flags separate **deployment** from **feature release**.
 
 ```mermaid
-flowchart TD
-    A[Deploy Code with Feature Disabled] --> B[Enable for Internal Users]
-    B --> C[Enable for 5% of Users]
-    C --> D[Increase Gradually]
+flowchart LR
+    A[Deploy Disabled Feature] --> B[Enable Internally]
+    B --> C[Enable for Small Group]
+    C --> D[Enable for Everyone]
 ```
 
-This allows a team to deploy code safely without immediately exposing the feature to everyone.
+This lets you deploy code without exposing the feature immediately.
 
 ---
 
-# 9. Environment Promotion
+# 8. Database Migrations
 
-A mature pipeline promotes an artifact through multiple environments.
+Database changes are difficult because old and new application versions may run at the same time.
 
-```mermaid
-flowchart LR
-    A[Build Artifact] --> B[Automated Tests]
-    B --> C[Development]
-    C --> D[Staging]
-    D --> E{Approval or Policy Gate}
-    E --> F[Production]
+A breaking migration such as renaming or deleting a column can break old containers during a rolling or canary deployment.
+
+## 8.1 Expand-and-Contract
+
+Use backward-compatible changes across releases.
+
+```text
+Release 1 — Expand
+Add new column
+Keep old column
+Application supports both
+
+Release 2 — Migrate
+Backfill data
+Switch reads/writes to new column
+
+Release 3 — Contract
+Remove old application usage
+Remove old column later
 ```
 
-## 9.1 Build Once, Promote Many
+The key idea is simple:
 
-Do not rebuild the application separately for every environment. A bad flow builds for staging, tests, then rebuilds for production before deploying; the preferred flow builds once, tests that artifact, deploys the same artifact to staging, then promotes it to production. A rebuild can introduce differences caused by dependency updates, base image changes, or build configuration.
+> **Application rollback does not automatically undo a database migration.**
 
-## 9.2 Configuration Per Environment
-
-Keep environment-specific settings outside the image.
-
-Examples:
-
-- Database URL
-- Log level
-- Feature flag configuration
-- External API endpoint
-- Secrets
-
-Use services such as:
-
-- AWS Systems Manager Parameter Store
-- AWS Secrets Manager
-- Runtime environment variables
-- Kubernetes ConfigMaps and Secrets
-
-## 9.3 Approval Gates
-
-Production deployment may require approval after staging verification. The approval should apply to a specific artifact version — for example, approve image digest `sha256:abc...` for production — not simply to the current branch state.
+For production, prefer forward-compatible changes and delayed destructive migrations.
 
 ---
 
-# 10. Docker in a CI/CD Pipeline
+# 9. CI/CD Security
 
-Docker creates a consistent application package containing the application and its runtime dependencies. Layers, cache invalidation and multi-stage builds are covered in depth in [Docker Images & Builds](docker-images-builds.md).
+A CI/CD system can modify production, so it is part of the production security boundary.
 
-## 10.1 Docker Pipeline Flow
+## 9.1 Secrets
+
+Never commit:
+
+- AWS access keys
+- Database passwords
+- API tokens
+- Private keys
+- Production `.env` files
+
+Use a secret manager and inject secrets only into jobs that need them.
+
+## 9.2 Prefer OIDC and Short-Lived Credentials
+
+For GitHub Actions → AWS, prefer OpenID Connect.
 
 ```mermaid
-flowchart LR
-    A[Source Code] --> B[Docker Build]
-    B --> C[Run Tests]
-    C --> D[Scan Image]
-    D --> E[Push to ECR]
-    E --> F[Deploy Image Digest]
-```
+sequenceDiagram
+    participant G as GitHub Actions
+    participant I as AWS IAM
+    participant A as AWS Service
 
-## 10.2 Multi-Stage Dockerfile Example
-
-The build stage contains build tools. The runtime stage contains only what is required to run the application.
-
-```dockerfile
-# ---------- Build stage ----------
-FROM python:3.13-slim AS builder
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# ---------- Runtime stage ----------
-FROM python:3.13-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-COPY --from=builder /install /usr/local
-COPY . .
-
-RUN useradd --create-home appuser
-USER appuser
-
-EXPOSE 8000
-
-CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+    G->>I: Present OIDC identity token
+    I-->>G: Temporary AWS credentials
+    G->>A: Perform allowed deployment actions
 ```
 
 Benefits:
 
-- Smaller final image
-- Fewer unnecessary tools in production
-- Reduced attack surface
-- Clear separation between build and runtime dependencies
+- No long-lived AWS key in GitHub
+- Credentials expire automatically
+- IAM trust can restrict repository, branch, or environment
+- Permissions follow least privilege
 
-## 10.3 Docker Layer Cache
+## 9.3 Protect the Pipeline
 
-Place stable instructions before frequently changing instructions:
+Use:
 
-```dockerfile
-# Better: the dependency layer stays cached across builds
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
+- Protected branches
+- Required pull-request reviews
+- Required status checks
+- Protected production environments
+- Separate staging and production roles
+- `CODEOWNERS` for workflow and infrastructure files
+- Restricted permissions for pull requests from forks
 
-# Worse: any source-code change invalidates the dependency layer below it
-COPY . .
-RUN pip install -r requirements.txt
-```
+For stronger supply-chain security, pin third-party actions to immutable commit SHAs after validating them.
 
-## 10.4 Image Tags and Digests
+---
 
-Tags can be changed to point to another image; digests identify exact image content — for example, tag `api:1.8.0` versus digest `api@sha256:4d1c...`. Use tags for readability and digests for exact deployment identity when practical.
+# 10. Practical Example: FastAPI → Docker → ECR → ECS
 
-## 10.5 Image Scanning
+Consider a FastAPI service deployed to Amazon ECS using Fargate.
 
-Scan the final image before production deployment.
-
-A practical policy may be:
+## 10.1 Architecture
 
 ```mermaid
 flowchart LR
-    A[Critical Vulnerability] --> B[Block Deployment]
-    C[High Vulnerability] --> D[Block or Require Approved Exception]
-    E[Medium Vulnerability] --> F[Track and Remediate]
+    DEV[Developer] --> GH[GitHub]
+    GH --> CI[GitHub Actions]
+    CI --> TEST[Lint + Tests]
+    TEST --> IMG[Docker Build]
+    IMG --> ECR[Amazon ECR]
+    ECR --> STG[ECS Staging]
+    STG --> SMOKE[Smoke Test]
+    SMOKE --> GATE{Approval / Policy}
+    GATE --> PROD[ECS Production]
+    PROD --> CW[CloudWatch]
 ```
 
-The policy should account for whether the vulnerable package is used, whether a fix is available, and the risk of the target environment.
+## 10.2 GitHub Actions Example
 
----
-
-# 11. CI/CD on AWS
-
-AWS provides managed services for different pipeline responsibilities. Each service is introduced in [AWS Core Services](aws-core-services.md).
-
-## 11.1 Main AWS Services
-
-| Pipeline need | AWS service | Purpose |
-|---|---|---|
-| Pipeline orchestration | AWS CodePipeline | Connects source, build, test, approval, and deployment actions |
-| Build and test | AWS CodeBuild | Runs commands in managed build environments using a build specification |
-| Container registry | Amazon ECR | Stores Docker and OCI images |
-| EC2/ECS/Lambda deployment | AWS CodeDeploy | Automates supported deployment workflows and traffic shifting |
-| Container runtime | Amazon ECS | Runs and manages containerized applications |
-| Kubernetes runtime | Amazon EKS | Managed Kubernetes control plane |
-| Serverless runtime | AWS Lambda | Runs functions without managing servers |
-| Infrastructure as code | AWS CloudFormation / AWS CDK | Creates and updates infrastructure |
-| Secrets | AWS Secrets Manager | Stores and rotates secrets |
-| Configuration | Systems Manager Parameter Store | Stores hierarchical configuration values |
-| Monitoring | Amazon CloudWatch | Metrics, logs, alarms, and dashboards |
-| Events | Amazon EventBridge | Reacts to pipeline, scan, and deployment events |
-
-## 11.2 AWS CodePipeline Concepts
-
-A CodePipeline pipeline contains stages, and each stage contains actions.
-
-```text
-Pipeline
-├── Source Stage
-│   └── Source Action
-├── Build Stage
-│   ├── Build Action
-│   └── Test Action
-├── Approval Stage
-│   └── Manual Approval Action
-└── Deploy Stage
-    └── Deploy Action
-```
-
-Common CodePipeline action categories include:
-
-- Source
-- Build
-- Test
-- Deploy
-- Approval
-- Invoke
-
-## 11.3 AWS CodeBuild
-
-CodeBuild downloads the source, starts a build environment, and executes commands defined in a `buildspec.yml` file or in the project configuration, using four phases: `install`, `pre_build`, `build`, and `post_build`.
-
-## 11.4 Amazon ECR
-
-Amazon ECR stores versioned container images.
-
-Typical image flow:
-
-```mermaid
-flowchart TD
-    A[CodeBuild or GitHub Actions] -- docker push --> B[Amazon ECR]
-    B -- image reference --> C["Amazon ECS / EKS / Lambda"]
-```
-
-ECR can perform image vulnerability scanning. Enhanced scanning integrates with Amazon Inspector and can continuously update findings as new vulnerabilities are discovered.
-
-## 11.5 Amazon ECS Deployment
-
-For an ECS service, a pipeline normally:
-
-1. Pushes the new image to ECR
-2. Creates a new ECS task definition revision
-3. Updates the ECS service
-4. Starts new tasks
-5. Checks task and load-balancer health
-6. Stops old tasks after the new deployment becomes healthy
-
-ECS rolling deployments can use a deployment circuit breaker to mark a failed deployment and automatically roll back to the last completed deployment.
-
----
-
-# 12. Practical AWS + Docker Pipeline
-
-Consider a FastAPI application deployed to Amazon ECS using AWS Fargate.
-
-## 12.1 Architecture
-
-```mermaid
-flowchart LR
-    DEV[Developer] --> GH[Git Repository]
-    GH --> CI[CI/CD Workflow]
-    CI --> T[Lint and Tests]
-    T --> DB[Docker Build]
-    DB --> SCAN[Image Scan]
-    SCAN --> ECR[Amazon ECR]
-    ECR --> ECS_STG[ECS Staging]
-    ECS_STG --> SMOKE[Smoke Tests]
-    SMOKE --> APPROVAL{Approval Gate}
-    APPROVAL --> ECS_PROD[ECS Production]
-    ECS_PROD --> CW[CloudWatch Monitoring]
-```
-
-This covers the full path from a developer's push to production monitoring; the two pipelines below zoom into its pull-request and release-promotion edges.
-
-## 12.2 Pull Request Pipeline
-
-Runs when a pull request is opened or updated.
-
-```mermaid
-flowchart TD
-    A[Checkout] --> B[Install Dependencies]
-    B --> C[Lint + Type Check]
-    C --> D[Unit Tests]
-    D --> E[Integration Tests]
-    E --> F[Optional Docker Build Validation]
-```
-
-It should not deploy untrusted pull-request code to production.
-
-## 12.3 Production Release Pipeline
-
-Triggered by an approved release tag or manual promotion.
-
-```mermaid
-flowchart TD
-    A[Select Already-Tested Image Digest] --> B[Production Approval]
-    B --> C[Update ECS Service]
-    C --> D[Monitor Health and Alarms]
-    D --> E[Complete or Roll Back]
-```
-
----
-
-# 13. GitHub Actions Example: Docker to Amazon ECS
-
-The following workflow demonstrates the important structure. Resource names and IAM configuration must be adapted for the project.
+The versions below reflect the current major action versions available in 2026. For production supply-chain hardening, pin validated actions to immutable commit SHAs.
 
 ```yaml
-name: Build, Test and Deploy
+name: CI and Deploy
 
 on:
   push:
@@ -792,13 +640,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies
@@ -807,564 +653,231 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Run tests
-        run: pytest --junitxml=test-results.xml --cov=app
+      - name: Test
+        run: pytest
 
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: test-results.xml
-
-  build-and-deploy:
+  deploy:
     needs: test
     runs-on: ubuntu-latest
     environment: production
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Configure temporary AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        id: login-ecr
+      - name: Login to ECR
+        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
-        id: build-image
+        id: image
         env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           IMAGE_URI="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker build --pull -t "$IMAGE_URI" .
+          docker build -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
-          echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
 
-      - name: Render task definition
-        id: task-definition
+      - name: Render ECS task definition
+        id: task
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: ${{ env.ECS_TASK_DEFINITION }}
           container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ steps.build-image.outputs.image }}
+          image: ${{ steps.image.outputs.uri }}
 
-      - name: Deploy to Amazon ECS
+      - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
-          task-definition: ${{ steps.task-definition.outputs.task-definition }}
+          task-definition: ${{ steps.task.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
 ```
 
-## 13.1 What This Workflow Demonstrates
+### What matters in this example
 
-- The test job must pass before deployment starts.
+- `test` must pass before deployment.
 - The image is tagged with the Git commit SHA.
-- AWS authentication uses temporary OIDC credentials rather than a long-lived access key.
-- A GitHub environment can protect production with approval rules.
-- `concurrency` prevents overlapping production deployments.
-- The ECS deployment waits for service stability.
+- GitHub uses OIDC instead of a long-lived AWS access key.
+- `environment: production` can apply GitHub deployment protection rules.
+- Production deployments are serialized with `concurrency`.
+- ECS waits for service stability before the workflow finishes.
 
-## 13.2 Recommended Production Improvements
-
-Add the following according to project needs:
-
-- Pin third-party actions to immutable commit SHAs
-- Generate a software bill of materials
-- Sign the container image
-- Scan the pushed image and enforce a severity policy
-- Deploy to staging before production
-- Use an exact ECR image digest for promotion
-- Add post-deployment smoke tests
-- Connect CloudWatch alarms to rollback logic
+A more mature pipeline would first deploy this same image to staging, run smoke tests, then promote the exact image digest to production.
 
 ---
 
-# 14. AWS CodeBuild Example
+# 11. Failure Handling and Rollback
 
-CodeBuild commonly reads commands from `buildspec.yml` at the repository root.
+A pipeline must define what happens when a stage fails.
 
-```yaml
-version: 0.2
+## 11.1 Fail Fast
 
-env:
-  variables:
-    AWS_DEFAULT_REGION: ap-south-1
-    ECR_REPOSITORY: interview-api
-
-phases:
-  install:
-    runtime-versions:
-      python: 3.13
-    commands:
-      - python --version
-      - pip install -r requirements.txt -r requirements-dev.txt
-
-  pre_build:
-    commands:
-      - ruff check .
-      - pytest --junitxml=reports/test-results.xml --cov=app
-      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      - ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPOSITORY"
-      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:12}"
-      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
-
-  build:
-    commands:
-      - docker build --pull -t "$ECR_URI:$IMAGE_TAG" .
-
-  post_build:
-    commands:
-      - docker push "$ECR_URI:$IMAGE_TAG"
-      - printf '[{"name":"api","imageUri":"%s"}]' "$ECR_URI:$IMAGE_TAG" > imagedefinitions.json
-
-reports:
-  pytest_reports:
-    files:
-      - reports/test-results.xml
-    file-format: JUNITXML
-
-artifacts:
-  files:
-    - imagedefinitions.json
-```
-
-## 14.1 Phase Meaning
-
-| Phase | Typical use |
-|---|---|
-| `install` | Configure language runtime and install tools |
-| `pre_build` | Authenticate, lint, and run tests |
-| `build` | Compile or build the Docker image |
-| `post_build` | Push artifacts and generate deployment metadata |
-
-The `imagedefinitions.json` file can be passed to a later ECS deploy action in CodePipeline.
-
----
-
-# 15. Database Migrations in CI/CD
-
-Database migrations are one of the most sensitive deployment concerns.
-
-## 15.1 Migration Challenges
-
-During a rolling or canary deployment, old and new application versions may use the same database simultaneously, and a breaking schema change can make one version fail. For example: rename a database column, deploy the new application — the old containers still expect the old column, so requests fail during the rollout.
-
-## 15.2 Expand-and-Contract Pattern
-
-Use backward-compatible changes in separate releases.
+Run inexpensive validation before expensive work:
 
 ```text
-Release 1 — Expand
-- Add the new column
-- Keep the old column
-- Application supports both
-
-Release 2 — Migrate
-- Backfill data
-- Start reading from the new column
-
-Release 3 — Contract
-- Remove old application usage
-- Remove the old column later
+Format → Lint → Unit → Integration → Build → Deploy
 ```
 
-## 15.3 Migration Execution Options
+Do not start deployment after a basic validation failure.
 
-A migration may run as:
-
-- A dedicated pipeline job
-- A one-time ECS task
-- A Kubernetes Job
-- A deployment hook
-
-Avoid allowing every application replica to run the same migration during startup unless the migration tool provides reliable locking and the design intentionally supports it.
-
-## 15.4 Rollback Limitation
-
-Application rollback does not always reverse a database migration safely.
-
-Prefer forward-compatible and forward-fix strategies for production databases. Destructive migrations should be delayed until the old application version is no longer needed.
-
----
-
-# 16. Secrets and AWS Authentication
-
-## 16.1 Never Store Secrets in Source Code
-
-Do not commit:
-
-- AWS access keys
-- Database passwords
-- API tokens
-- Private keys
-- `.env` files containing production secrets
-
-Use a managed secret store and inject values only where required.
-
-## 16.2 Prefer Short-Lived Credentials
-
-For GitHub Actions to AWS, OpenID Connect can exchange the workflow identity for temporary AWS credentials.
-
-```mermaid
-sequenceDiagram
-    participant G as GitHub Actions
-    participant O as GitHub OIDC Provider
-    participant I as AWS IAM
-    participant A as AWS Service
-
-    G->>O: Request signed OIDC token
-    O-->>G: Short-lived identity token
-    G->>I: Assume trusted IAM role
-    I-->>G: Temporary AWS credentials
-    G->>A: Perform permitted deployment actions
-```
-
-Benefits:
-
-- No long-lived AWS key stored in GitHub
-- Credentials expire automatically
-- IAM trust can be restricted by repository, branch, or environment claims
-- Permissions can follow least privilege
-
-## 16.3 Separate Roles by Responsibility
-
-Use different roles for different activities.
-
-```mermaid
-flowchart LR
-    A[CI Test Role] --> B[Read Test Resources Only]
-    C[Image Publisher] --> D[Push to Specific ECR Repositories]
-    E[Staging Deployer] --> F[Update Staging Services]
-    G[Production Deployer] --> H[Update Approved Production Services]
-```
-
-The build role should not automatically have administrator access.
-
----
-
-# 17. Pipeline Security
-
-CI/CD systems are part of the production security boundary because they can modify application code and infrastructure.
-
-## 17.1 Least Privilege
-
-Grant only the actions and resources required by each job.
-
-For example, an ECS deploy role may need permission to:
-
-- Register a task definition
-- Update a specific ECS service
-- Pass specific task roles
-- Read the required ECR image
-
-It should not receive unrestricted access to every AWS service.
-
-## 17.2 Protect Production Environments
-
-Use:
-
-- Protected branches
-- Required pull-request review
-- Required status checks
-- Environment approvals
-- Restricted production deploy branches or tags
-- Deployment concurrency controls
-
-## 17.3 Protect Workflow Definitions
-
-A change to the pipeline can be as powerful as a change to application code. Require review for paths such as `.github/workflows/**`, `buildspec.yml`, `Dockerfile`, and `infrastructure/**`, using repository ownership rules such as `CODEOWNERS` for sensitive paths.
-
-## 17.4 Third-Party Actions and Dependencies
-
-For stronger supply-chain security:
-
-- Prefer trusted publishers
-- Pin actions to an immutable commit SHA
-- Review action source and permissions
-- Keep dependencies updated
-- Generate dependency and image inventories
-- Scan build outputs
-
-## 17.5 Untrusted Pull Requests
-
-Pull requests from forks may contain malicious code. Do not expose production secrets or highly privileged credentials to untrusted code.
-
-Separate pull-request validation from privileged deployment workflows.
-
----
-
-# 18. Failure Handling and Rollback
-
-A pipeline must define what happens when each stage fails.
-
-## 18.1 Fail Fast
-
-Run inexpensive checks early — `Formatting → Lint → Unit Tests → Integration Tests → Build → Deploy`. There is no benefit in starting an expensive deployment workflow when basic validation has already failed.
-
-## 18.2 Rollback Options
+## 11.2 Rollback Options
 
 | Option | How it works |
 |---|---|
-| Redeploy previous artifact | Store the last known good version and deploy it again — e.g. roll back from `api@sha256:new` to `api@sha256:previous-good`. |
-| Blue/green traffic switch | Move traffic back to the blue environment. |
-| ECS automatic rollback | Enable the ECS deployment circuit breaker with rollback, or use deployment alarms, so a failed rollout returns to the last completed deployment. |
-| Feature flag disablement | If the issue is isolated to a new feature, disable it without rolling back the full deployment. |
+| Redeploy previous artifact | Deploy the last known-good image/digest |
+| Blue/green switch | Move traffic back to the previous revision |
+| ECS rollback | Use deployment failure detection and rollback |
+| Feature flag | Disable the problematic feature without replacing the whole release |
 
-## 18.3 Automatic vs Manual Rollback
+Amazon ECS can use deployment health checks and CloudWatch alarms to detect a failed rollout and roll back when rollback is configured.
 
-Automatic rollback is useful when reliable signals exist, such as:
+## 11.3 When Rollback Is Risky
 
-- New tasks cannot start
-- Health checks fail
-- Error rate crosses a defined threshold
-- Latency exceeds a safe threshold
+Automatic rollback may not be safe when:
 
-Manual rollback may be safer when:
+- A destructive database migration already ran.
+- The release changed external data formats.
+- Business transactions were partially processed.
+- Failure signals are ambiguous.
 
-- The failure signal is ambiguous
-- Database changes make rollback risky
-- Business data may be affected
+In those cases, a **forward fix** may be safer.
 
-## 18.4 Rollback Must Be Tested
-
-A rollback procedure that has never been exercised is only an assumption.
-
-Test rollback in staging and during controlled production exercises.
+Rollback procedures should be tested in staging and periodically exercised.
 
 ---
 
-# 19. Pipeline Performance and Reliability
+# 12. Observability and Delivery Metrics
 
-A slow pipeline encourages developers to batch changes or bypass checks.
+A successful deployment should be verified using real runtime signals.
 
-## 19.1 Improve Pipeline Speed
+## 12.1 Post-Deployment Signals
 
-Use:
+Watch:
 
-- Dependency caching
-- Docker layer caching
-- Parallel jobs
-- Test splitting
-- Smaller build contexts
-- Multi-stage Docker builds
-- Conditional jobs for unaffected components
-- Prebuilt, controlled build images
-
-## 19.2 Avoid Unnecessary Rebuilds
-
-In a monorepo, run only affected pipelines when practical.
-
-```mermaid
-flowchart LR
-    A["frontend/** changed"] --> B[Run Frontend Pipeline]
-    C["backend/** changed"] --> D[Run Backend Pipeline]
-    E["infra/** changed"] --> F[Run Infrastructure Validation]
-```
-
-Shared changes should still trigger all dependent components.
-
-## 19.3 Pipeline Concurrency
-
-Multiple commits can create overlapping deployments. A production deployment should generally be serialized — a running deployment finishes before the next one starts, and later commits wait or cancel rather than racing it, to prevent conflicting updates.
-
-For validation pipelines, canceling an older run after a newer commit arrives can save resources.
-
-For production deployments, canceling an active deployment may be unsafe, so use a deliberate concurrency policy.
-
-## 19.4 Retry Policy
-
-Retry transient operations such as:
-
-- Temporary network failure
-- Rate limiting
-- Registry timeout
-
-Do not repeatedly retry deterministic failures such as:
-
-- Compilation error
-- Failed assertion
-- Invalid configuration
-- Missing file
-
-Use bounded retries with backoff and clear logs.
-
----
-
-# 20. Observability and Useful Metrics
-
-The pipeline and deployed application should both be observable.
-
-## 20.1 Pipeline Metrics
-
-Useful measurements include:
-
-| Metric | Meaning |
-|---|---|
-| Pipeline duration | Time from trigger to completion |
-| Queue time | Time waiting for a runner |
-| Success rate | Percentage of successful executions |
-| Failure rate by stage | Where failures occur most often |
-| Flaky test rate | Tests that fail inconsistently |
-| Deployment frequency | How often production is released |
-| Lead time for changes | Time from code change to production |
-| Mean time to restore | Time to recover from a production failure |
-| Change failure rate | Percentage of deployments causing failure or rollback |
-
-The last four are commonly associated with software delivery performance.
-
-## 20.2 Deployment Signals
-
-Monitor after deployment:
-
-- HTTP error rate
+- HTTP 5xx rate
 - Request latency
 - CPU and memory
 - Container restarts
 - Failed health checks
 - Queue backlog
-- Database connection errors
-- Business transaction success rate
+- Database errors
+- Critical business transaction success rate
 
-## 20.3 Notifications
+Useful application endpoints:
 
-Send actionable notifications with:
+```text
+/health/live   → Is the process alive?
+/health/ready  → Can the service safely receive traffic?
+```
 
-- Pipeline name
-- Failed stage and job
-- Commit and author
-- Artifact or image version
-- Environment
-- Direct link to logs
-- Rollback status
+A post-deployment smoke test should cover only a few critical journeys, such as login, a basic database read, or a core API request.
 
-Avoid sending alerts that only say “deployment failed” without context.
+## 12.2 Delivery Metrics
+
+Common software-delivery metrics include:
+
+| Metric | Meaning |
+|---|---|
+| Deployment frequency | How often production is released |
+| Lead time for changes | Time from code change to production |
+| Change failure rate | Percentage of releases causing failure |
+| Mean time to restore | Time needed to recover service |
+| Pipeline duration | Total workflow execution time |
+| Flaky test rate | Frequency of inconsistent test failures |
+
+The first four are commonly associated with DORA-style delivery performance.
 
 ---
 
-# 21. Common Pipeline Designs
+# 13. AWS Services Used in CI/CD
 
-## 21.1 Basic Team Pipeline
+You do not need every AWS service in every pipeline.
 
-```mermaid
-flowchart LR
-    subgraph PR[Pull Request]
-        A[Lint] --> B[Unit Tests] --> C[Build Validation]
-    end
-    subgraph MAIN[Main Branch]
-        D[Build Image] --> E[Push ECR] --> F[Deploy Staging] --> G[Smoke Test]
-    end
-    subgraph PROD[Production]
-        H[Manual Approval] --> I[Deploy] --> J[Health Check]
-    end
-```
+| Need | AWS Service | Typical purpose |
+|---|---|---|
+| Pipeline orchestration | **CodePipeline** | Connect source, build, approval, and deploy stages |
+| Build and test | **CodeBuild** | Run managed build jobs |
+| Container registry | **Amazon ECR** | Store Docker/OCI images |
+| Container runtime | **Amazon ECS** | Run containerized services |
+| Kubernetes | **Amazon EKS** | Run Kubernetes workloads |
+| Serverless | **AWS Lambda** | Deploy functions |
+| Secrets | **Secrets Manager** | Store sensitive values |
+| Configuration | **Parameter Store** | Store runtime configuration |
+| Monitoring | **CloudWatch** | Metrics, logs, alarms |
+| Infrastructure as Code | **CloudFormation / CDK** | Provision infrastructure |
 
-This is suitable for many small and medium application teams.
+### Current AWS details worth remembering
 
-## 21.2 Mature Production Pipeline
-
-```mermaid
-flowchart LR
-    A[Pull Request] --> B[Lint and Unit Tests]
-    B --> C[Integration and Security Tests]
-    C --> D[Merge to Main]
-    D --> E[Build and Sign Image]
-    E --> F[Push to ECR]
-    F --> G[Deploy Staging]
-    G --> H[API and E2E Tests]
-    H --> I[Approval or Policy Gate]
-    I --> J[Canary Production Deploy]
-    J --> K[Observe Metrics]
-    K --> L{Healthy?}
-    L -- Yes --> M[Complete Rollout]
-    L -- No --> N[Automatic Rollback]
-```
-
-## 21.3 AWS-Native Pipeline
-
-```mermaid
-flowchart TD
-    A["GitHub / S3 / External Source"] --> B[AWS CodePipeline]
-    B --> C[AWS CodeBuild]
-    C --> D[Amazon ECR]
-    D --> E["ECS Rolling Deployment<br/>or CodeDeploy Blue/Green"]
-    E --> F[CloudWatch Health Signals]
-```
-
-## 21.4 GitHub-Orchestrated AWS Pipeline
-
-```mermaid
-flowchart TD
-    A[GitHub Actions] --> B[Test on Managed Runner]
-    B --> C[Authenticate to AWS Using OIDC]
-    C --> D[Build Docker Image]
-    D --> E[Push Image to ECR]
-    E --> F[Render ECS Task Definition]
-    F --> G[Update ECS Service]
-```
-
-Both designs are valid. The choice depends on team familiarity, compliance, integration needs, cost, and operational ownership.
+- CodeBuild supports **Python 3.14** in supported managed build images.
+- ECS supports **rolling, blue/green, linear, and canary** strategies.
+- ECS can use **CloudWatch alarms** for deployment failure detection and rollback.
+- ECR can scan container images; enhanced scanning integrates with Amazon Inspector.
 
 ---
 
-# 22. Key Interview Takeaways
+# 14. Key Takeaways
 
-A few principles that do not fit neatly into the bullets above:
+For interviews and normal development, remember these ideas:
 
-- Keep changes small and integrate frequently.
-- Keep environment configuration outside the artifact.
-- Use short-lived cloud credentials and least-privilege roles.
-- Separate untrusted pull-request validation from privileged deployment.
-- Treat pipeline code as production code.
-
-The CI boundary ends at an immutable artifact; everything after that is CD:
+1. **CI validates changes; CD releases validated changes.**
+2. **Continuous delivery normally has a production approval; continuous deployment does not.**
+3. **Build once and promote the same immutable artifact across environments.**
+4. **Run cheap tests first and stop the pipeline on required gate failures.**
+5. **Use tags for readability and digests/commit SHAs for exact release identity.**
+6. **Choose rolling, blue/green, canary, or linear based on risk, cost, and rollback needs.**
+7. **Use feature flags to separate deploying code from releasing features.**
+8. **Keep database migrations backward compatible during multi-version rollouts.**
+9. **Use short-lived credentials, least privilege, protected environments, and reviewed pipeline code.**
+10. **A deployment is complete only after health verification, observability checks, and a usable rollback path.**
 
 ```mermaid
 flowchart TD
     A[Code Change] --> CI
+
     subgraph CI[Continuous Integration]
         B[Build]
         C[Lint]
         D[Test]
         E[Scan]
     end
+
     CI --> F[Immutable Artifact]
     F --> CD
-    subgraph CD["Continuous Delivery / Deployment"]
-        G[Deploy to Staging]
+
+    subgraph CD[Continuous Delivery / Deployment]
+        G[Deploy Staging]
         H[Verify]
-        I[Approve or Automatically Promote]
-        J[Deploy Safely to Production]
-        K[Monitor and Roll Back When Required]
+        I[Approve or Auto-Promote]
+        J[Deploy Production]
+        K[Monitor]
+        L[Rollback if Needed]
     end
 ```
 
 ---
 
-# 23. References
+# References
 
-The concepts and examples in this guide were reviewed against current official documentation:
+Reviewed against current official documentation and project releases as of August 20, 2026:
 
-- AWS CodePipeline concepts: <https://docs.aws.amazon.com/codepipeline/latest/userguide/concepts.html>
-- AWS CodePipeline execution behavior: <https://docs.aws.amazon.com/codepipeline/latest/userguide/concepts-how-it-works.html>
-- AWS CodeBuild build specification reference: <https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html>
-- AWS CodeDeploy deployment configurations: <https://docs.aws.amazon.com/codedeploy/latest/userguide/deployment-configurations.html>
-- Amazon ECS deployment circuit breaker: <https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-circuit-breaker.html>
-- Amazon ECR image scanning: <https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning.html>
-- Docker multi-stage builds: <https://docs.docker.com/build/building/multi-stage/>
-- Docker build cache optimization: <https://docs.docker.com/build/cache/optimize/>
-- GitHub Actions workflows: <https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows>
-- GitHub Actions deployments and environments: <https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments>
-- GitHub OIDC with AWS: <https://docs.github.com/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services>
-
----
-
-> **Summary:** A strong CI/CD pipeline does not merely automate deployment. It creates a controlled path where every change is built consistently, tested at appropriate levels, released as an identifiable artifact, deployed through a safe strategy, and verified with real operational signals.
+- GitHub Actions setup-python: https://github.com/actions/setup-python
+- GitHub Actions checkout releases: https://github.com/actions/checkout/releases
+- GitHub deployments and environments: https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments
+- AWS configure-aws-credentials: https://github.com/aws-actions/configure-aws-credentials
+- AWS Amazon ECR login action: https://github.com/aws-actions/amazon-ecr-login
+- AWS ECS render task definition action: https://github.com/aws-actions/amazon-ecs-render-task-definition
+- AWS ECS deploy task definition action: https://github.com/aws-actions/amazon-ecs-deploy-task-definition
+- AWS CodeBuild runtime versions: https://docs.aws.amazon.com/codebuild/latest/userguide/runtime-versions.html
+- AWS CodeBuild buildspec reference: https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html
+- Amazon ECS deployment strategies: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs_service-options.html
+- Amazon ECS deployment alarms: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-alarm-failure.html
+- Amazon ECR image scanning: https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning.html
